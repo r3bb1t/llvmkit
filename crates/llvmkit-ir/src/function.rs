@@ -38,8 +38,10 @@ use super::ap_float::ApFloatSemantics;
 use super::argument::Argument;
 use super::attributes::{AttrKind, Attribute, AttributeStorage, AttributeStored, StrBoolAttrKind};
 use super::basic_block::{BasicBlock, BasicBlockData};
+use super::block_params::BlockParamsDyn;
 use super::block_state::{BlockTerminationState, Terminated, Unterminated};
 use super::calling_conv::CallingConv;
+use super::capability::{CanMutate, Capability, CapabilityOf, Mutable, ReadOnly};
 use super::comdat::ComdatRef;
 use super::constant::{Constant, IsConstant};
 use super::denormal_mode::DenormalMode;
@@ -61,8 +63,8 @@ use super::pass_context::FunctionView;
 use super::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
-    GlobalFieldKind, HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueKindData,
-    ValueSlot, ValueSlotAccess, sealed,
+    GlobalFieldKind, HasDebugLoc, HasName, IsValue, SetName, Typed, Value, ValueData,
+    ValueKindData, ValueSlot, ValueSlotAccess, sealed,
 };
 use super::value_id::ViewIn;
 use super::value_id::{FunctionId, TypedFunctionId};
@@ -77,7 +79,6 @@ use crate::Branded;
 /// [`ValueKindData::Function`](crate::value::ValueKindData::Function).
 #[derive(Debug)]
 pub(super) struct FunctionData {
-    pub(super) name: String,
     pub(super) signature: TypeSlot,
     pub(super) linkage: RefCell<Linkage>,
     pub(super) visibility: RefCell<Visibility>,
@@ -103,20 +104,21 @@ pub(super) struct FunctionData {
     pub(super) attributes: RefCell<AttributeStorage>,
     pub(super) function_attr_groups: RefCell<Vec<u32>>,
     pub(super) metadata: RefCell<MetadataAttachmentSet<StoredBrand>>,
-    pub(super) intrinsic: Option<IntrinsicFunctionData>,
+    /// The intrinsic this function's name and signature declare, if any —
+    /// upstream's `IntID`, recomputed on a rename as
+    /// `Function::updateAfterNameChange` does.
+    pub(super) intrinsic: RefCell<Option<IntrinsicFunctionData>>,
     pub(super) symbol_table: ValueSymbolTable,
 }
 
 impl FunctionData {
     pub(super) fn new(
-        name: String,
         signature: TypeSlot,
         linkage: Linkage,
         calling_conv: CallingConv,
         intrinsic: Option<IntrinsicFunctionData>,
     ) -> Self {
         Self {
-            name,
             signature,
             linkage: RefCell::new(linkage),
             visibility: RefCell::new(Visibility::Default),
@@ -138,7 +140,7 @@ impl FunctionData {
             attributes: RefCell::new(AttributeStorage::new()),
             function_attr_groups: RefCell::new(Vec::new()),
             metadata: RefCell::new(MetadataAttachmentSet::new()),
-            intrinsic,
+            intrinsic: RefCell::new(intrinsic),
             symbol_table: ValueSymbolTable::new(),
         }
     }
@@ -153,9 +155,13 @@ impl FunctionData {
 /// The `R: ReturnMarker` parameter encodes the return type at compile
 /// time (see [`crate::marker`]). Use [`FunctionValue::as_dyn`]
 /// to widen to the runtime-checked [`Dyn`] form.
-pub struct FunctionValue<'ctx, R: ReturnMarker, B: ModuleBrand> {
+///
+/// `C` is the handle's [`Capability`] (D8): a function viewed through an
+/// unverified module is [`Mutable`]; one viewed through a verified module or
+/// reached from a read-only view is [`ReadOnly`] and has no setters.
+pub struct FunctionValue<'ctx, R: ReturnMarker, B: ModuleBrand, C: Capability = Mutable> {
     id: ValueSlot,
-    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) module: ModuleRef<'ctx, B, C>,
     /// Cached signature type id. The value's value-arena type is the
     /// pointer-to-function on real LLVM; here we cache the function-
     /// type id directly so `signature()` is a thin lookup.
@@ -166,28 +172,34 @@ pub struct FunctionValue<'ctx, R: ReturnMarker, B: ModuleBrand> {
 // Manual derives — `derive` would propagate `R: Trait` bounds that
 // callers should not have to spell. The fields themselves are all
 // trivially `Copy`/`Hash`/`Eq`.
-impl<'ctx, R: ReturnMarker, B: ModuleBrand> Clone for FunctionValue<'ctx, R, B> {
+impl<'ctx, R: ReturnMarker, B: ModuleBrand, C: Capability> Clone for FunctionValue<'ctx, R, B, C> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<'ctx, R: ReturnMarker, B: ModuleBrand> Copy for FunctionValue<'ctx, R, B> {}
-impl<'ctx, R: ReturnMarker, B: ModuleBrand> PartialEq for FunctionValue<'ctx, R, B> {
+impl<'ctx, R: ReturnMarker, B: ModuleBrand, C: Capability> Copy for FunctionValue<'ctx, R, B, C> {}
+impl<'ctx, R: ReturnMarker, B: ModuleBrand, C: Capability> PartialEq
+    for FunctionValue<'ctx, R, B, C>
+{
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.signature == other.signature
     }
 }
-impl<'ctx, R: ReturnMarker, B: ModuleBrand> Eq for FunctionValue<'ctx, R, B> {}
-impl<'ctx, R: ReturnMarker, B: ModuleBrand> core::hash::Hash for FunctionValue<'ctx, R, B> {
+impl<'ctx, R: ReturnMarker, B: ModuleBrand, C: Capability> Eq for FunctionValue<'ctx, R, B, C> {}
+impl<'ctx, R: ReturnMarker, B: ModuleBrand, C: Capability> core::hash::Hash
+    for FunctionValue<'ctx, R, B, C>
+{
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.id.hash(h);
         self.module.hash(h);
         self.signature.hash(h);
     }
 }
-impl<'ctx, R: ReturnMarker, B: ModuleBrand> core::fmt::Debug for FunctionValue<'ctx, R, B> {
+impl<'ctx, R: ReturnMarker, B: ModuleBrand, C: Capability> core::fmt::Debug
+    for FunctionValue<'ctx, R, B, C>
+{
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("FunctionValue")
             .field("id", &self.id)
@@ -196,14 +208,18 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand> core::fmt::Debug for FunctionValue<'
     }
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
+impl<R: ReturnMarker, B: ModuleBrand, C: Capability> CapabilityOf for FunctionValue<'_, R, B, C> {
+    type Capability = C;
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<'ctx, R, B, C> {
     /// Construct from raw parts. Crate-internal: only the
     /// function-creation paths hand these out, after they've
     /// validated that the signature's return type matches `R`.
     #[inline]
     pub(super) fn from_parts_unchecked<M>(id: ValueSlot, module: M) -> Self
     where
-        M: Into<ModuleRef<'ctx, B>>,
+        M: Into<ModuleRef<'ctx, B, C>>,
     {
         let module = module.into();
         let data = module.value_data(id);
@@ -223,9 +239,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// the function-pointer type; we use the cached signature here
     /// because the slice does not yet need the pointer wrapper, and
     /// LLVM 17+ pointers are opaque (so the signature is the only
-    /// useful per-value type-side information).
+    /// useful per-value type-side information). Keeps this handle's
+    /// capability.
     #[inline]
-    pub fn as_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.signature)
     }
 
@@ -240,12 +257,26 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 
     /// Erase the return-shape marker, producing a runtime-checked
-    /// [`Dyn`] handle.
+    /// [`Dyn`] handle at the same capability.
     #[inline]
-    pub fn as_dyn(self) -> FunctionValue<'ctx, Dyn, B> {
+    pub fn as_dyn(self) -> FunctionValue<'ctx, Dyn, B, C> {
         FunctionValue {
             id: self.id,
             module: self.module,
+            signature: self.signature,
+            _r: PhantomData,
+        }
+    }
+
+    /// This function at [`ReadOnly`]. Always sound — reading is a subset of
+    /// mutating — and the way to compare a function reached through a
+    /// read-only route with one reached from the module: equality is defined
+    /// within one capability.
+    #[inline]
+    pub fn read_only(self) -> FunctionValue<'ctx, R, B, ReadOnly> {
+        FunctionValue {
+            id: self.id,
+            module: self.module.read_only(),
             signature: self.signature,
             _r: PhantomData,
         }
@@ -265,10 +296,51 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         }
     }
 
-    /// Function name.
+    /// Function name; [`None`] for an unnamed function, which the printer
+    /// numbers. Mirrors `Value::getName`, which answers the empty string there.
     #[inline]
-    pub fn name(self) -> &'ctx str {
-        &self.data().name
+    pub fn name(self) -> Option<String> {
+        self.as_erased().name()
+    }
+
+    /// Rename this function through its module's symbol table. Mirrors
+    /// `Value::setName` on a `Function`: a name another global value holds is
+    /// uniqued (`name.1`, or `name1` on an NVPTX module), and the intrinsic
+    /// identity is recomputed from the new name
+    /// (`Function::updateAfterNameChange`).
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidValueName`] for a name containing a NUL byte, which
+    /// `Value::setNameImpl` asserts against; the function keeps its name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this function's module — reachable
+    /// with two modules of one brand, such as two [`Module::dynamic`] values.
+    pub fn set_name<Name>(
+        self,
+        module_token: &'ctx Module<B, Unverified>,
+        name: Name,
+    ) -> IrResult<()>
+    where
+        Name: Into<String>,
+        C: CanMutate,
+    {
+        self.as_erased().set_name(module_token, name)
+    }
+
+    /// Leave this function unnamed. Mirrors `Value::setName("")`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this function's module — reachable
+    /// with two modules of one brand, such as two [`Module::dynamic`] values.
+    pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>)
+    where
+        C: CanMutate,
+    {
+        self.as_erased().clear_name(module_token);
     }
 
     /// Owning module reference.
@@ -277,21 +349,24 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         ModuleView::new(self.module.module())
     }
 
-    /// Function signature.
+    /// Function signature, at this function's capability.
     #[inline]
-    pub fn signature(self) -> FunctionType<'ctx, B> {
+    pub fn signature(self) -> FunctionType<'ctx, B, C> {
         FunctionType::new(self.signature, self.module)
     }
 
-    /// Generated intrinsic identity, when this function is an intrinsic declaration.
+    /// Generated intrinsic identity, when this function's name and signature
+    /// declare an intrinsic.
     #[inline]
     pub fn intrinsic_id(self) -> Option<IntrinsicId> {
-        self.data().intrinsic.as_ref().map(|data| data.id)
+        self.data().intrinsic.borrow().as_ref().map(|data| data.id)
     }
 
-    /// Generated intrinsic descriptor, including overload types, when present.
-    pub fn intrinsic_descriptor(self) -> Option<IntrinsicDescriptor<'ctx, B>> {
-        let data = self.data().intrinsic.as_ref()?;
+    /// Generated intrinsic descriptor, including overload types, when present,
+    /// at this function's capability.
+    pub fn intrinsic_descriptor(self) -> Option<IntrinsicDescriptor<'ctx, B, C>> {
+        let intrinsic = self.data().intrinsic.borrow();
+        let data = intrinsic.as_ref()?;
         let overloads = data
             .overloads
             .iter()
@@ -300,15 +375,20 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         IntrinsicDescriptor::new(data.id, overloads).ok()
     }
 
-    /// Whether this function was created through the intrinsic declaration API.
+    /// Whether this function's name starts with `llvm.`. Mirrors
+    /// `Function::isIntrinsic`, which answers `HasLLVMReservedName` — set from
+    /// the name alone, by `Function`'s constructor and
+    /// `Function::updateAfterNameChange`. As upstream warns, this can be
+    /// `true` while [`Self::intrinsic_id`] answers [`None`]: an `llvm.` name no
+    /// intrinsic has, or one whose signature is not the name's.
     #[inline]
     pub fn is_intrinsic(self) -> bool {
-        self.intrinsic_id().is_some()
+        self.name().is_some_and(|name| name.starts_with("llvm."))
     }
 
-    /// Function return type.
+    /// Function return type, at this function's capability.
     #[inline]
-    pub fn return_type(self) -> Type<'ctx, B> {
+    pub fn return_type(self) -> Type<'ctx, B, C> {
         self.signature().return_type()
     }
 
@@ -321,7 +401,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         R: FunctionReturn<Marker = R>,
         Params: FunctionParamList,
     {
-        TypedFunctionValue::<R, Params, B>::try_from_function(self).map(|f| f.id())
+        TypedFunctionValue::<R, Params, B, C>::try_from_function(self).map(|f| f.id())
     }
 
     /// Wrap this function with a Rust function-pointer signature schema,
@@ -332,7 +412,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Sig: FunctionSignature,
         Sig::Ret: FunctionReturn<Marker = R>,
     {
-        TypedFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(self).map(|f| f.id())
+        TypedFunctionValue::<Sig::Ret, Sig::Params, B, C>::try_from_function(self).map(|f| f.id())
     }
 
     /// Linkage of this function.
@@ -343,7 +423,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
 
     /// Update linkage.
     #[inline]
-    pub fn set_linkage(self, _module: &'ctx Module<B, Unverified>, linkage: Linkage) {
+    pub fn set_linkage(self, _module: &'ctx Module<B, Unverified>, linkage: Linkage)
+    where
+        C: CanMutate,
+    {
         *self.data().linkage.borrow_mut() = linkage;
     }
 
@@ -353,7 +436,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 
     #[inline]
-    pub fn set_visibility(self, _module: &'ctx Module<B, Unverified>, visibility: Visibility) {
+    pub fn set_visibility(self, _module: &'ctx Module<B, Unverified>, visibility: Visibility)
+    where
+        C: CanMutate,
+    {
         *self.data().visibility.borrow_mut() = visibility;
     }
 
@@ -363,7 +449,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 
     #[inline]
-    pub fn set_dll_storage_class(self, _module: &'ctx Module<B, Unverified>, cls: DllStorageClass) {
+    pub fn set_dll_storage_class(self, _module: &'ctx Module<B, Unverified>, cls: DllStorageClass)
+    where
+        C: CanMutate,
+    {
         *self.data().dll_storage_class.borrow_mut() = cls;
     }
 
@@ -373,7 +462,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 
     #[inline]
-    pub fn set_dso_locality(self, _module: &'ctx Module<B, Unverified>, locality: DsoLocality) {
+    pub fn set_dso_locality(self, _module: &'ctx Module<B, Unverified>, locality: DsoLocality)
+    where
+        C: CanMutate,
+    {
         *self.data().dso_locality.borrow_mut() = locality;
     }
 
@@ -385,7 +477,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
 
     /// Update calling convention.
     #[inline]
-    pub fn set_calling_conv(self, _module: &'ctx Module<B, Unverified>, cc: CallingConv) {
+    pub fn set_calling_conv(self, _module: &'ctx Module<B, Unverified>, cc: CallingConv)
+    where
+        C: CanMutate,
+    {
         *self.data().calling_conv.borrow_mut() = cc;
     }
 
@@ -398,7 +493,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// Update the unnamed-address marker. Mirrors
     /// `GlobalValue::setUnnamedAddr`.
     #[inline]
-    pub fn set_unnamed_addr(self, _module: &'ctx Module<B, Unverified>, value: UnnamedAddr) {
+    pub fn set_unnamed_addr(self, _module: &'ctx Module<B, Unverified>, value: UnnamedAddr)
+    where
+        C: CanMutate,
+    {
         *self.data().unnamed_addr.borrow_mut() = value;
     }
 
@@ -408,7 +506,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 
     #[inline]
-    pub fn set_address_space(self, _module: &'ctx Module<B, Unverified>, address_space: u32) {
+    pub fn set_address_space(self, _module: &'ctx Module<B, Unverified>, address_space: u32)
+    where
+        C: CanMutate,
+    {
         *self.data().address_space.borrow_mut() = address_space;
     }
 
@@ -419,11 +520,15 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     pub fn set_section<S>(self, _module: &'ctx Module<B, Unverified>, section: S)
     where
         S: Into<String>,
+        C: CanMutate,
     {
         *self.data().section.borrow_mut() = Some(section.into());
     }
 
-    pub fn clear_section(self, _module: &'ctx Module<B, Unverified>) {
+    pub fn clear_section(self, _module: &'ctx Module<B, Unverified>)
+    where
+        C: CanMutate,
+    {
         *self.data().section.borrow_mut() = None;
     }
 
@@ -434,11 +539,15 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     pub fn set_partition<P>(self, _module: &'ctx Module<B, Unverified>, partition: P)
     where
         P: Into<String>,
+        C: CanMutate,
     {
         *self.data().partition.borrow_mut() = Some(partition.into());
     }
 
-    pub fn clear_partition(self, _module: &'ctx Module<B, Unverified>) {
+    pub fn clear_partition(self, _module: &'ctx Module<B, Unverified>)
+    where
+        C: CanMutate,
+    {
         *self.data().partition.borrow_mut() = None;
     }
 
@@ -448,7 +557,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 
     #[inline]
-    pub fn set_align(self, _module: &'ctx Module<B, Unverified>, align: MaybeAlign) {
+    pub fn set_align(self, _module: &'ctx Module<B, Unverified>, align: MaybeAlign)
+    where
+        C: CanMutate,
+    {
         *self.data().align.borrow_mut() = align;
     }
 
@@ -459,23 +571,32 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     pub fn set_gc<G>(self, _module: &'ctx Module<B, Unverified>, gc: G)
     where
         G: Into<String>,
+        C: CanMutate,
     {
         *self.data().gc.borrow_mut() = Some(gc.into());
     }
 
-    pub fn clear_gc(self, _module: &'ctx Module<B, Unverified>) {
+    pub fn clear_gc(self, _module: &'ctx Module<B, Unverified>)
+    where
+        C: CanMutate,
+    {
         *self.data().gc.borrow_mut() = None;
     }
-    pub fn prefix_data(self) -> Option<Constant<'ctx, B>> {
+    pub fn prefix_data(self) -> Option<Constant<'ctx, B, C>> {
         self.data().prefix_data.get().map(|id| {
             let data = self.module.module().context().value_data(id);
             Constant::from_parts(Value::from_parts(id, self.module, data.ty))
         })
     }
 
-    pub fn set_prefix_data<C>(self, _module: &'ctx Module<B, Unverified>, data: C) -> IrResult<()>
+    pub fn set_prefix_data<Data>(
+        self,
+        _module: &'ctx Module<B, Unverified>,
+        data: Data,
+    ) -> IrResult<()>
     where
-        C: IsConstant<'ctx, B>,
+        Data: IsConstant<'ctx, B>,
+        C: CanMutate,
     {
         let id = self.checked_constant_id(data)?;
         self.retarget_global_field_use(
@@ -487,7 +608,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Ok(())
     }
 
-    pub fn clear_prefix_data(self, _module: &'ctx Module<B, Unverified>) {
+    pub fn clear_prefix_data(self, _module: &'ctx Module<B, Unverified>)
+    where
+        C: CanMutate,
+    {
         self.retarget_global_field_use(
             GlobalFieldKind::PrefixData,
             self.data().prefix_data.get(),
@@ -496,16 +620,21 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         self.data().prefix_data.set(None);
     }
 
-    pub fn prologue_data(self) -> Option<Constant<'ctx, B>> {
+    pub fn prologue_data(self) -> Option<Constant<'ctx, B, C>> {
         self.data().prologue_data.get().map(|id| {
             let data = self.module.module().context().value_data(id);
             Constant::from_parts(Value::from_parts(id, self.module, data.ty))
         })
     }
 
-    pub fn set_prologue_data<C>(self, _module: &'ctx Module<B, Unverified>, data: C) -> IrResult<()>
+    pub fn set_prologue_data<Data>(
+        self,
+        _module: &'ctx Module<B, Unverified>,
+        data: Data,
+    ) -> IrResult<()>
     where
-        C: IsConstant<'ctx, B>,
+        Data: IsConstant<'ctx, B>,
+        C: CanMutate,
     {
         let id = self.checked_constant_id(data)?;
         self.retarget_global_field_use(
@@ -517,7 +646,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Ok(())
     }
 
-    pub fn clear_prologue_data(self, _module: &'ctx Module<B, Unverified>) {
+    pub fn clear_prologue_data(self, _module: &'ctx Module<B, Unverified>)
+    where
+        C: CanMutate,
+    {
         self.retarget_global_field_use(
             GlobalFieldKind::PrologueData,
             self.data().prologue_data.get(),
@@ -526,20 +658,21 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         self.data().prologue_data.set(None);
     }
 
-    pub fn personality_fn(self) -> Option<Constant<'ctx, B>> {
+    pub fn personality_fn(self) -> Option<Constant<'ctx, B, C>> {
         self.data().personality_fn.get().map(|id| {
             let data = self.module.module().context().value_data(id);
             Constant::from_parts(Value::from_parts(id, self.module, data.ty))
         })
     }
 
-    pub fn set_personality_fn<C>(
+    pub fn set_personality_fn<Data>(
         self,
         _module: &'ctx Module<B, Unverified>,
-        data: C,
+        data: Data,
     ) -> IrResult<()>
     where
-        C: IsConstant<'ctx, B>,
+        Data: IsConstant<'ctx, B>,
+        C: CanMutate,
     {
         let id = self.checked_constant_id(data)?;
         self.retarget_global_field_use(
@@ -551,7 +684,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Ok(())
     }
 
-    pub fn clear_personality_fn(self, _module: &'ctx Module<B, Unverified>) {
+    pub fn clear_personality_fn(self, _module: &'ctx Module<B, Unverified>)
+    where
+        C: CanMutate,
+    {
         self.retarget_global_field_use(
             GlobalFieldKind::PersonalityFn,
             self.data().personality_fn.get(),
@@ -566,37 +702,53 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         field: GlobalFieldKind,
         old: Option<ValueSlot>,
         new: Option<ValueSlot>,
-    ) {
+    ) where
+        C: CanMutate,
+    {
         self.module
             .module()
             .context()
             .retarget_global_field_use(self.id, field, old, new);
     }
 
-    fn checked_constant_id<C>(self, data: C) -> IrResult<ValueSlot>
+    fn checked_constant_id<Data>(self, data: Data) -> IrResult<ValueSlot>
     where
-        C: IsConstant<'ctx, B>,
+        Data: IsConstant<'ctx, B>,
     {
         // Boundary: the caller's constant, admitted against this function's
         // module before it is stored.
         data.as_constant().slot_in(self.module.id())
     }
 
-    pub fn comdat(self) -> Option<ComdatRef<'ctx, B>> {
+    /// Comdat reference, if attached, at this function's capability.
+    pub fn comdat(self) -> Option<ComdatRef<'ctx, B, C>> {
         let name = self.data().comdat.borrow().clone()?;
-        self.module.module().comdat::<B>(&name)
+        self.module.comdat(&name)
     }
 
-    pub fn set_comdat(
+    /// Attach a comdat. A comdat another module minted — one that shares
+    /// this brand, since a different brand is a type error — is refused with
+    /// [`IrError::ForeignComdat`] and the attachment stays as it was. Only the
+    /// comdat's name is read, so a comdat of any capability is accepted.
+    pub fn set_comdat<ComdatCapability: Capability>(
         self,
         _module: &'ctx Module<B, Unverified>,
-        comdat: ComdatRef<'ctx, B>,
-    ) -> IrResult<()> {
-        *self.data().comdat.borrow_mut() = Some(comdat.name().to_owned());
+        comdat: ComdatRef<'ctx, B, ComdatCapability>,
+    ) -> IrResult<()>
+    where
+        C: CanMutate,
+    {
+        // Boundary: the caller's comdat, admitted against this function's
+        // module before its name is stored.
+        let name = comdat.name_in(self.module.id())?;
+        *self.data().comdat.borrow_mut() = Some(name.to_owned());
         Ok(())
     }
 
-    pub fn clear_comdat(self, _module: &'ctx Module<B, Unverified>) {
+    pub fn clear_comdat(self, _module: &'ctx Module<B, Unverified>)
+    where
+        C: CanMutate,
+    {
         *self.data().comdat.borrow_mut() = None;
     }
 
@@ -622,7 +774,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         module: &'ctx Module<B, Unverified>,
         kind: MetadataAttachmentKind,
         id: MetadataId<B>,
-    ) -> IrResult<()> {
+    ) -> IrResult<()>
+    where
+        C: CanMutate,
+    {
         let id = id.into_stored(module.id())?;
         self.data().metadata.borrow_mut().insert(kind, id);
         Ok(())
@@ -642,21 +797,25 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         _module: &'ctx Module<B, Unverified>,
         index: AttrIndex,
         attr: crate::Attribute<'ctx, B>,
-    ) {
+    ) where
+        C: CanMutate,
+    {
         self.data().attributes.borrow_mut().add(index, attr);
     }
 
-    pub fn add_function_attr_group(self, _module: &'ctx Module<B, Unverified>, group: u32) {
+    pub fn add_function_attr_group(self, _module: &'ctx Module<B, Unverified>, group: u32)
+    where
+        C: CanMutate,
+    {
         let mut groups = self.data().function_attr_groups.borrow_mut();
         if !groups.contains(&group) {
             groups.push(group);
         }
     }
-    pub fn set_attributes(
-        self,
-        _module: &'ctx Module<B, Unverified>,
-        attributes: AttributeStorage,
-    ) {
+    pub fn set_attributes(self, _module: &'ctx Module<B, Unverified>, attributes: AttributeStorage)
+    where
+        C: CanMutate,
+    {
         *self.data().attributes.borrow_mut() = attributes;
     }
 
@@ -677,6 +836,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     ) where
         Key: Into<String>,
         ValueText: Into<String>,
+        C: CanMutate,
     {
         self.add_attribute(module, index, crate::Attribute::string(key, value));
     }
@@ -813,8 +973,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             .unwrap_or_else(|_| unreachable!("function has more than u32::MAX params"))
     }
 
-    /// Parameter at slot `index`. Mirrors `Function::getArg`.
-    pub fn param(self, index: u32) -> IrResult<Argument<'ctx, B>> {
+    /// Parameter at slot `index`, at this function's capability. Mirrors
+    /// `Function::getArg`.
+    pub fn param(self, index: u32) -> IrResult<Argument<'ctx, B, C>> {
         let count = self.arg_count();
         let slot = usize::try_from(index)
             .unwrap_or_else(|_| unreachable!("u32 fits in usize on supported targets"));
@@ -840,10 +1001,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         ))
     }
 
-    /// Iterate the function parameters in declaration order.
+    /// Iterate the function parameters in declaration order, at this
+    /// function's capability.
     pub fn params(
         self,
-    ) -> impl ExactSizeIterator<Item = Argument<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    ) -> impl ExactSizeIterator<Item = Argument<'ctx, B, C>> + DoubleEndedIterator + FusedIterator + 'ctx
     {
         let module = self.module;
         let parent = self.id;
@@ -877,6 +1039,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     ) -> BasicBlock<'ctx, R, Unterminated, B>
     where
         Name: Into<String>,
+        C: CanMutate,
     {
         self.append_basic_block_unchecked(name)
     }
@@ -892,7 +1055,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// `Module` now owns its core, the ephemeral token it can reconstruct is a
     /// *local* whose region is too short to satisfy `&'ctx Module<…>`.
     /// Every builder was itself constructed from a module token or from a block
-    /// minted through one, so the capability is already established.
+    /// minted through one, so the capability is already established; the
+    /// handle's own [`CanMutate`] bound is the type-level half of that proof.
     #[inline]
     pub(crate) fn append_basic_block_unchecked<Name>(
         self,
@@ -900,6 +1064,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     ) -> BasicBlock<'ctx, R, Unterminated, B>
     where
         Name: Into<String>,
+        C: CanMutate,
     {
         let end = self.data().basic_blocks.borrow().len();
         self.insert_basic_block_at_unchecked(end, name)
@@ -921,6 +1086,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     ) -> BasicBlock<'ctx, R, Unterminated, B>
     where
         Name: Into<String>,
+        C: CanMutate,
     {
         let name = name.into();
         let label_ty = self
@@ -941,7 +1107,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         if !name.is_empty() {
             self.set_local_value_name(bb_id, Some(&name));
         }
-        BasicBlock::from_parts(bb_id, self.module, label_ty)
+        BasicBlock::from_parts(bb_id, self.module.proven_mutable(), label_ty)
     }
 
     /// Move an already-attached basic block to the end of this function's
@@ -955,6 +1121,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     where
         R2: ReturnMarker,
         S2: BlockTerminationState,
+        C: CanMutate,
     {
         let _ = module;
         // Boundary: the caller's block, admitted against this function's
@@ -982,10 +1149,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Ok(())
     }
 
-    /// Iterate the basic blocks in insertion order as non-insertion labels/views.
+    /// Iterate the basic blocks in insertion order as non-insertion
+    /// labels/views, at this function's capability.
     pub fn basic_blocks(
         self,
-    ) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, R, Terminated, B>>
+    ) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, R, Terminated, B, BlockParamsDyn, C>>
     + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
@@ -994,12 +1162,14 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             .label_type::<B>()
             .as_type()
             .slot_trusting_same_module();
+        let block_module = self.module;
         let ids: Vec<ValueSlot> = self.data().basic_blocks.borrow().clone();
         ids.into_iter()
-            .map(move |id| BasicBlock::from_parts(id, self.module, label_ty))
+            .map(move |id| BasicBlock::from_parts(id, block_module, label_ty))
     }
 
-    pub fn entry_block(self) -> Option<BasicBlock<'ctx, R, Terminated, B>> {
+    /// The entry block, at this function's capability.
+    pub fn entry_block(self) -> Option<BasicBlock<'ctx, R, Terminated, B, BlockParamsDyn, C>> {
         let id = *self.data().basic_blocks.borrow().first()?;
         let module = self.module.module();
         Some(BasicBlock::from_parts(
@@ -1020,7 +1190,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         self,
         module: &'ctx Module<B, Unverified>,
         value: Value<'ctx, B>,
-    ) -> IrResult<BasicBlock<'ctx, R, Unterminated, B>> {
+    ) -> IrResult<BasicBlock<'ctx, R, Unterminated, B>>
+    where
+        C: CanMutate,
+    {
         let _ = module;
         // Boundary: the caller's value, admitted against this function's
         // module before its parent is compared or a handle is made of it.
@@ -1038,7 +1211,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         }
         let block = BasicBlock::from_parts(
             block_id,
-            self.module,
+            self.module.proven_mutable(),
             value.ty().slot_trusting_same_module(),
         );
         if block.terminator().is_some_and(|inst| inst.is_terminator()) {
@@ -1048,22 +1221,22 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         }
         Ok(block)
     }
-    pub(super) fn set_local_value_name(
-        self,
-        id: ValueSlot,
-        requested: Option<&str>,
-    ) -> Option<String> {
+    pub(super) fn set_local_value_name(self, id: ValueSlot, requested: Option<&str>)
+    where
+        C: CanMutate,
+    {
         let value = self.module.module().context().value_data(id);
-        let current = value.name.borrow().clone();
-        let final_name =
-            self.data()
-                .symbol_table
-                .rename_value(current.as_deref(), requested, id, false);
-        *value.name.borrow_mut() = final_name.clone();
-        final_name
+        // `makeUniqueName` appends a dot only for a `GlobalValue`, which a
+        // function-local value never is.
+        self.data()
+            .symbol_table
+            .set_value_name(value, id, requested, false);
     }
 
-    pub(super) fn remove_local_value_name(self, id: ValueSlot) {
+    pub(super) fn remove_local_value_name(self, id: ValueSlot)
+    where
+        C: CanMutate,
+    {
         let value = self.module.module().context().value_data(id);
         if let Some(name) = value.name.borrow().as_deref() {
             self.data().symbol_table.remove_value_name(name, id);
@@ -1078,7 +1251,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// signature, while the constant's type is the default-address-space
     /// pointer returned by `GlobalValue::getType`.
     #[inline]
-    pub fn as_global_constant_ptr(self) -> Constant<'ctx, B> {
+    pub fn as_global_constant_ptr(self) -> Constant<'ctx, B, C> {
         let module = self.module.module();
         // A function's address has the function's own address space, not 0.
         // Mirrors `GlobalValue::getType`, which is built from
@@ -1107,7 +1280,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// (invalid — "functions are not values"), whereas this prints as a proper
     /// `ptr getelementptr (...)` element. The byte offset is always 0 (the
     /// function entry).
-    pub fn as_aggregate_ptr(self, addr_space: u32) -> Constant<'ctx, B> {
+    pub fn as_aggregate_ptr(self, addr_space: u32) -> Constant<'ctx, B, C> {
         let module = self.module.module();
         let ptr_ty = module
             .ptr_type::<B>(addr_space)
@@ -1120,26 +1293,101 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 }
 
+/// The member that takes a [`Mutable`] receiver: the rename hook a mutator
+/// runs.
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B, Mutable> {
+    /// Recompute the intrinsic identity from the current name. Ports
+    /// `Function::updateAfterNameChange`: a name without the `llvm.` prefix is
+    /// no intrinsic (`IntID = Intrinsic::not_intrinsic`), and otherwise
+    /// upstream sets `IntID = Intrinsic::lookupIntrinsicID(Name)`. llvmkit's
+    /// identity carries the overload types the signature determines, so it is
+    /// stored only when this function's signature is the one the name declares
+    /// — a name-only identity has no spelling here (`docs/divergences.md`,
+    /// the `updateAfterNameChange` entry). `LibFuncCache` and
+    /// `HasLLVMReservedName` have no stored counterpart: llvmkit caches no
+    /// library-function classification on a function, and
+    /// [`Self::is_intrinsic`] reads the reserved prefix from the name.
+    pub(crate) fn update_after_name_change(self) {
+        let name = self.name().unwrap_or_default();
+        let intrinsic = if name.starts_with("llvm.") {
+            match self
+                .module
+                .intrinsic_descriptor_from_signature(&name, self.signature())
+            {
+                Ok(descriptor) => Some(descriptor.to_function_data()),
+                // `lookupIntrinsicID` finds no intrinsic of this name and
+                // answers `not_intrinsic`: upstream's answer too.
+                Err(IrError::UnknownIntrinsic { .. }) => None,
+                // The name resolves to an intrinsic, but no descriptor of it
+                // has this signature, or the name's overload suffix does not
+                // spell one: `descriptor_for_name`, `function_type_ref` and
+                // the final comparison all answer `IntrinsicSignatureMismatch`
+                // here. `InvalidOperation` is the same answer from inside the
+                // generated tables — an `IIT` entry `iit_descriptors` cannot
+                // decode, an overload `append_mangled_type` cannot spell, or an
+                // overload that would put an element no vector may hold into a
+                // decoded vector (`intrinsics.rs`'s `fixed_vector_type` /
+                // `scalable_vector_type` refuse it as that mismatch).
+                // Upstream would still store the id (`docs/divergences.md`,
+                // the `updateAfterNameChange` entry).
+                Err(
+                    IrError::IntrinsicSignatureMismatch { .. } | IrError::InvalidOperation { .. },
+                ) => None,
+                // Read off `intrinsic_descriptor_from_signature`,
+                // `descriptor_for_name` and `IntrinsicDescriptor::new`, the
+                // one other variant they return is `ForeignType`, which needs
+                // a type of another module: this function's own signature and
+                // the overloads demangled into its own module are neither.
+                // No identity either way.
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+        *self.data().intrinsic.borrow_mut() = intrinsic;
+    }
+}
+
 /// Iterator over the basic blocks of one function, in insertion order. The
 /// named form of [`FunctionValue::basic_blocks`]'s walk, returned by
 /// [`FunctionValue`]'s `IntoIterator`: it snapshots the function's block ids
-/// up front, so IR mutation during the walk does not disturb it.
+/// up front, so IR mutation during the walk does not disturb it. `C` is the
+/// capability of the function it walks, and of the blocks it yields.
 #[derive(Branded)]
 #[branded(Debug)]
-pub struct FunctionBasicBlocks<'ctx, R: ReturnMarker, B: ModuleBrand> {
+pub struct FunctionBasicBlocks<'ctx, R: ReturnMarker, B: ModuleBrand, C: Capability = Mutable> {
     ids: std::vec::IntoIter<ValueSlot>,
-    module: ModuleRef<'ctx, B>,
+    module: ModuleRef<'ctx, B, C>,
     label_ty: TypeSlot,
     _r: PhantomData<R>,
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> Iterator for FunctionBasicBlocks<'ctx, R, B> {
-    type Item = BasicBlock<'ctx, R, Terminated, B>;
+impl<R: ReturnMarker, B: ModuleBrand, C: Capability> CapabilityOf
+    for FunctionBasicBlocks<'_, R, B, C>
+{
+    type Capability = C;
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability>
+    FunctionBasicBlocks<'ctx, R, B, C>
+{
+    /// The block at `id`, as the walk yields it: at the walked function's
+    /// capability.
+    #[inline]
+    fn block(&self, id: ValueSlot) -> BasicBlock<'ctx, R, Terminated, B, BlockParamsDyn, C> {
+        BasicBlock::from_parts(id, self.module, self.label_ty)
+    }
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> Iterator
+    for FunctionBasicBlocks<'ctx, R, B, C>
+{
+    type Item = BasicBlock<'ctx, R, Terminated, B, BlockParamsDyn, C>;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         let id = self.ids.next()?;
-        Some(BasicBlock::from_parts(id, self.module, self.label_ty))
+        Some(self.block(id))
     }
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -1147,8 +1395,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> Iterator for FunctionBasicBlo
     }
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ExactSizeIterator
-    for FunctionBasicBlocks<'ctx, R, B>
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> ExactSizeIterator
+    for FunctionBasicBlocks<'ctx, R, B, C>
 {
     #[inline]
     fn len(&self) -> usize {
@@ -1156,19 +1404,19 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ExactSizeIterator
     }
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> DoubleEndedIterator
-    for FunctionBasicBlocks<'ctx, R, B>
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> DoubleEndedIterator
+    for FunctionBasicBlocks<'ctx, R, B, C>
 {
     #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
         let id = self.ids.next_back()?;
-        Some(BasicBlock::from_parts(id, self.module, self.label_ty))
+        Some(self.block(id))
     }
 }
 
 // The inner `vec::IntoIter` is fused, and `next` forwards to it directly.
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FusedIterator
-    for FunctionBasicBlocks<'ctx, R, B>
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FusedIterator
+    for FunctionBasicBlocks<'ctx, R, B, C>
 {
 }
 
@@ -1176,9 +1424,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FusedIterator
 /// walk as [`FunctionValue::basic_blocks`]), matching LLVM's
 /// `for (BasicBlock &BB : F)`. Sugar beside the named method, not a
 /// replacement.
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoIterator for FunctionValue<'ctx, R, B> {
-    type Item = BasicBlock<'ctx, R, Terminated, B>;
-    type IntoIter = FunctionBasicBlocks<'ctx, R, B>;
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> IntoIterator
+    for FunctionValue<'ctx, R, B, C>
+{
+    type Item = BasicBlock<'ctx, R, Terminated, B, BlockParamsDyn, C>;
+    type IntoIter = FunctionBasicBlocks<'ctx, R, B, C>;
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
@@ -1234,56 +1484,71 @@ pub(super) fn signature_matches_marker<R: ReturnMarker>(ret: &TypeData) -> bool 
     }
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand> sealed::Sealed for FunctionValue<'ctx, R, B> {}
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for FunctionValue<'ctx, R, B> {
+impl<'ctx, R: ReturnMarker, B: ModuleBrand, C: Capability> sealed::Sealed
+    for FunctionValue<'ctx, R, B, C>
+{
+}
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> IsValue<'ctx, B>
+    for FunctionValue<'ctx, R, B, C>
+{
     #[inline]
-    fn as_erased(self) -> Value<'ctx, B> {
+    fn as_erased(self) -> Value<'ctx, B, C> {
         FunctionValue::as_erased(self)
     }
 }
 crate::value::impl_into_erased_value_for_handle!(FunctionValue[R: ReturnMarker]);
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> Typed<'ctx, B> for FunctionValue<'ctx, R, B> {
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> Typed<'ctx, B>
+    for FunctionValue<'ctx, R, B, C>
+{
     #[inline]
-    fn ty(self) -> Type<'ctx, B> {
+    fn ty(self) -> Type<'ctx, B, C> {
         Type::new(self.signature, self.module)
     }
 }
-impl<'ctx, R: ReturnMarker, B: ModuleBrand> HasName<'ctx, B> for FunctionValue<'ctx, R, B> {
+impl<'ctx, R: ReturnMarker, B: ModuleBrand, C: Capability> HasName<'ctx, B>
+    for FunctionValue<'ctx, R, B, C>
+{
     #[inline]
     fn name(self) -> Option<String> {
         self.as_erased().name()
     }
+}
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: CanMutate> SetName<'ctx, B>
+    for FunctionValue<'ctx, R, B, C>
+{
     #[inline]
-    fn set_name<Name>(self, _module_token: &'ctx Module<B, Unverified>, _name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
     where
         Name: Into<String>,
     {
-        // Renaming a function in place is its own diff: the symbol
-        // table needs updating, and external linkers care. Phase D
-        // adds the proper path; today this is a no-op.
+        FunctionValue::set_name(self, module_token, name)
     }
     #[inline]
-    fn clear_name(self, _module_token: &'ctx Module<B, Unverified>) {}
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
+        FunctionValue::clear_name(self, module_token);
+    }
 }
-impl<R: ReturnMarker, B: ModuleBrand> HasDebugLoc for FunctionValue<'_, R, B> {
+impl<R: ReturnMarker, B: ModuleBrand, C: Capability> HasDebugLoc for FunctionValue<'_, R, B, C> {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
         self.as_erased().debug_loc()
     }
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> From<FunctionValue<'ctx, R, B>>
-    for Value<'ctx, B>
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> From<FunctionValue<'ctx, R, B, C>>
+    for Value<'ctx, B, C>
 {
     #[inline]
-    fn from(f: FunctionValue<'ctx, R, B>) -> Self {
+    fn from(f: FunctionValue<'ctx, R, B, C>) -> Self {
         f.as_erased()
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for FunctionValue<'ctx, Dyn, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> TryFrom<Value<'ctx, B, C>>
+    for FunctionValue<'ctx, Dyn, B, C>
+{
     type Error = IrError;
-    fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
+    fn try_from(v: Value<'ctx, B, C>) -> IrResult<Self> {
         match &v.data().kind {
             ValueKindData::Function(f) => Ok(Self {
                 // Internal: a re-wrap that keeps `v`'s own module.
@@ -1327,19 +1592,42 @@ pub trait IntoCallee<'ctx, R: ReturnMarker, B: ModuleBrand>: into_callee_sealed:
     fn into_callee(self, module: ModuleRef<'ctx, B>) -> IrResult<FunctionValue<'ctx, R, B>>;
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand> into_callee_sealed::Sealed
-    for FunctionValue<'ctx, R, B>
+impl<'ctx, R: ReturnMarker, B: ModuleBrand, C: Capability> into_callee_sealed::Sealed
+    for FunctionValue<'ctx, R, B, C>
 {
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoCallee<'ctx, R, B>
-    for FunctionValue<'ctx, R, B>
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> IntoCallee<'ctx, R, B>
+    for FunctionValue<'ctx, R, B, C>
 {
     #[inline]
     fn into_callee(self, module: ModuleRef<'ctx, B>) -> IrResult<FunctionValue<'ctx, R, B>> {
-        // Boundary: refuse a handle minted by another module.
-        self.slot_in(module.id())?;
-        Ok(self)
+        // Boundary: refuse a handle minted by another module. A handle of any
+        // capability is admitted and re-minted at `module`'s, so naming a
+        // function as a callee is not mutating it.
+        self.admitted_at(module)
+    }
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<'ctx, R, B, C> {
+    /// Crate-internal: this function admitted at `module` through the checked
+    /// door — [`IrError::ForeignValueId`] unless `module` is this function's
+    /// own — and re-minted at `module`'s capability. The function twin of
+    /// [`Value::admitted_at`](crate::value::Value): how an authority lifts a
+    /// function of any capability, taking the capability from a reference it
+    /// already holds, never from the operand.
+    #[inline]
+    pub(crate) fn admitted_at<C2: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, C2>,
+    ) -> IrResult<FunctionValue<'ctx, R, B, C2>> {
+        let id = self.slot_in(module.id())?;
+        Ok(FunctionValue {
+            id,
+            module,
+            signature: self.signature,
+            _r: PhantomData,
+        })
     }
 }
 
@@ -1380,7 +1668,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoCallee<'ctx, R, B> for Fu
 pub struct FunctionBuilder<'ctx, R: ReturnMarker, B: ModuleBrand> {
     module: ModuleRef<'ctx, B>,
     name: String,
-    signature: FunctionType<'ctx, B>,
+    /// Kept at `ReadOnly` — a signature of any capability is accepted — and
+    /// admitted against the module at `build`.
+    signature: FunctionType<'ctx, B, ReadOnly>,
     linkage: Linkage,
     visibility: Visibility,
     dll_storage_class: DllStorageClass,
@@ -1392,10 +1682,15 @@ pub struct FunctionBuilder<'ctx, R: ReturnMarker, B: ModuleBrand> {
     partition: Option<String>,
     align: MaybeAlign,
     gc: Option<String>,
-    prefix_data: Option<Constant<'ctx, B>>,
-    prologue_data: Option<Constant<'ctx, B>>,
-    personality_fn: Option<Constant<'ctx, B>>,
-    comdat: Option<ComdatRef<'ctx, B>>,
+    // Kept at `ReadOnly` — a constant of any capability is accepted — and
+    // admitted against the module at `build`.
+    prefix_data: Option<Constant<'ctx, B, ReadOnly>>,
+    prologue_data: Option<Constant<'ctx, B, ReadOnly>>,
+    personality_fn: Option<Constant<'ctx, B, ReadOnly>>,
+    /// Kept at `ReadOnly` for the same reason — a comdat of any capability is
+    /// accepted — and admitted against the module at `build` before its name
+    /// is stored.
+    comdat: Option<ComdatRef<'ctx, B, ReadOnly>>,
     attributes: AttributeStorage,
     function_attr_groups: Vec<u32>,
     /// Pending `(slot, name)` pairs to apply after the function value
@@ -1410,7 +1705,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
     pub(super) fn new<N>(
         module: ModuleRef<'ctx, B>,
         name: N,
-        signature: FunctionType<'ctx, B>,
+        signature: FunctionType<'ctx, B, impl Capability>,
     ) -> Self
     where
         N: Into<String>,
@@ -1418,7 +1713,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
         Self {
             module,
             name: name.into(),
-            signature,
+            signature: signature.read_only(),
             linkage: Linkage::default(),
             visibility: Visibility::Default,
             dll_storage_class: DllStorageClass::Default,
@@ -1519,7 +1814,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
     where
         C: IsConstant<'ctx, B>,
     {
-        self.prefix_data = Some(data.as_constant());
+        self.prefix_data = Some(data.as_constant().read_only());
         self
     }
 
@@ -1527,7 +1822,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
     where
         C: IsConstant<'ctx, B>,
     {
-        self.prologue_data = Some(data.as_constant());
+        self.prologue_data = Some(data.as_constant().read_only());
         self
     }
 
@@ -1535,13 +1830,16 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
     where
         C: IsConstant<'ctx, B>,
     {
-        self.personality_fn = Some(data.as_constant());
+        self.personality_fn = Some(data.as_constant().read_only());
         self
     }
 
+    /// Attach a comdat. One minted by another module that shares the brand is
+    /// refused by [`build`](Self::build) with [`IrError::ForeignComdat`]. A
+    /// comdat of any capability is accepted.
     #[must_use]
-    pub fn comdat(mut self, comdat: ComdatRef<'ctx, B>) -> Self {
-        self.comdat = Some(comdat);
+    pub fn comdat<C: Capability>(mut self, comdat: ComdatRef<'ctx, B, C>) -> Self {
+        self.comdat = Some(comdat.read_only());
         self
     }
 
@@ -1603,21 +1901,27 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
     /// method, where the collected settings are applied.
     ///
     /// Returns [`IrError::ReturnTypeMismatch`] if the signature's
-    /// return type does not match the chosen [`ReturnMarker`].
+    /// return type does not match the chosen [`ReturnMarker`], and
+    /// [`IrError::ForeignType`], [`IrError::ForeignValueId`] or
+    /// [`IrError::ForeignComdat`] if the signature, a constant or the comdat
+    /// was minted by another module sharing this brand; nothing is created.
     pub fn build(self) -> IrResult<FunctionId<R, B>> {
-        // Boundary: the caller's signature and constants, parked by the
-        // infallible setters, are admitted against this module before the
-        // function is created — `ForeignType` / `ForeignValueId`.
+        // Boundary: the caller's signature, constants and comdat, parked by
+        // the infallible setters, are admitted against this module before the
+        // function is created — `ForeignType` / `ForeignValueId` /
+        // `ForeignComdat`.
         let owner = self.module.id();
-        self.signature.slot_in(owner)?;
+        let signature = self.signature.admitted_at(self.module)?;
         let prefix_data = self.prefix_data.map(|c| c.slot_in(owner)).transpose()?;
         let prologue_data = self.prologue_data.map(|c| c.slot_in(owner)).transpose()?;
         let personality_fn = self.personality_fn.map(|c| c.slot_in(owner)).transpose()?;
-        let f = self.module.module().add_function_checked::<B, R, _>(
-            &self.name,
-            self.signature,
-            self.linkage,
-        )?;
+        let comdat = self
+            .comdat
+            .map(|comdat| comdat.name_in(owner).map(str::to_owned))
+            .transpose()?;
+        let f = self
+            .module
+            .add_function_checked::<R, _>(&self.name, signature, self.linkage)?;
         *f.data().visibility.borrow_mut() = self.visibility;
         *f.data().dll_storage_class.borrow_mut() = self.dll_storage_class;
         *f.data().dso_locality.borrow_mut() = self.dso_locality;
@@ -1648,8 +1952,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
             f.retarget_global_field_use(GlobalFieldKind::PersonalityFn, None, Some(personality_fn));
             f.data().personality_fn.set(Some(personality_fn));
         }
-        if let Some(comdat) = self.comdat {
-            *f.data().comdat.borrow_mut() = Some(comdat.name().to_owned());
+        if let Some(comdat) = comdat {
+            *f.data().comdat.borrow_mut() = Some(comdat);
         }
         *f.data().attributes.borrow_mut() = self.attributes;
         for group in self.function_attr_groups {
@@ -1677,11 +1981,13 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
 // the type-state-aware impl blocks where the IrBuilder constructs
 // them; here we expose only what's universally needed.
 
-impl<'ctx, W: IntWidth + ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, W, B> {
-    /// Return type as an integer-typed handle. Mirrors the
-    /// `Function::getReturnType()` round-trip on a typed function.
+impl<'ctx, W: IntWidth + ReturnMarker, B: ModuleBrand + 'ctx, C: Capability>
+    FunctionValue<'ctx, W, B, C>
+{
+    /// Return type as an integer-typed handle, at this function's capability.
+    /// Mirrors the `Function::getReturnType()` round-trip on a typed function.
     #[inline]
-    pub fn return_int_type(self) -> IntType<'ctx, W, B> {
+    pub fn return_int_type(self) -> IntType<'ctx, W, B, C> {
         let signature = self.signature();
         IntType::new(
             signature.return_type().slot_trusting_same_module(),
@@ -1690,10 +1996,13 @@ impl<'ctx, W: IntWidth + ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx
     }
 }
 
-impl<'ctx, K: FloatKind + ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, K, B> {
-    /// Return type as a kind-typed float handle.
+impl<'ctx, K: FloatKind + ReturnMarker, B: ModuleBrand + 'ctx, C: Capability>
+    FunctionValue<'ctx, K, B, C>
+{
+    /// Return type as a kind-typed float handle, at this function's
+    /// capability.
     #[inline]
-    pub fn return_float_type(self) -> FloatType<'ctx, K, B> {
+    pub fn return_float_type(self) -> FloatType<'ctx, K, B, C> {
         let signature = self.signature();
         FloatType::new(
             signature.return_type().slot_trusting_same_module(),
@@ -1702,8 +2011,8 @@ impl<'ctx, K: FloatKind + ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ct
     }
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> core::fmt::Display
-    for FunctionValue<'ctx, R, B>
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> core::fmt::Display
+    for FunctionValue<'ctx, R, B, C>
 {
     /// Print the full `define` form -- header, signature, attributes and
     /// every basic block -- exactly as it appears in module output. A

@@ -26,7 +26,10 @@ fn parse(source: &str) -> Module<DynBrand, Unverified> {
 }
 
 /// The instruction named `%name`.
-fn named<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, DynBrand> {
+fn named<'m>(
+    module: &'m Module<DynBrand, Unverified>,
+    name: &str,
+) -> Value<'m, DynBrand, llvmkit_ir::ReadOnly> {
     module
         .as_view()
         .functions()
@@ -41,7 +44,7 @@ fn named<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, 
 fn instruction<'m>(
     module: &'m Module<DynBrand, Unverified>,
     name: &str,
-) -> InstructionView<'m, DynBrand> {
+) -> InstructionView<'m, DynBrand, llvmkit_ir::ReadOnly> {
     module
         .as_view()
         .functions()
@@ -755,14 +758,14 @@ define float @ret_plain(float %x) {
         let view = module.as_view();
         let function = view
             .functions()
-            .find(|f| f.name() == function_name)
+            .find(|f| f.name().as_deref() == Some(function_name))
             .unwrap_or_else(|| panic!("fixture defines @{function_name}"));
         let terminator = function
             .basic_blocks()
             .flat_map(|block| block.instructions())
             .next_back()
             .expect("the function has a terminator");
-        <InstructionView<'_, DynBrand> as llvmkit_ir::User<'_, DynBrand>>::operand_use(
+        <InstructionView<'_, DynBrand, llvmkit_ir::ReadOnly> as llvmkit_ir::User<'_, DynBrand>>::operand_use(
             terminator, 0,
         )
         .expect("`ret` has one operand")

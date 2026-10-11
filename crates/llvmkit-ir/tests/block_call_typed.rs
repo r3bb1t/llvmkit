@@ -27,7 +27,7 @@ fn build_br_call_seeds_typed_head_phi_and_verifies() -> Result<(), IrError> {
     // head(%p: i32): a typed one-i32-parameter block. `params` is the typed
     // `(IntValue<'_, i32>,)` head-phi handle tuple.
     let bwp = IrBuilder::new_for::<i32>(&m);
-    let (head, (p,)) = bwp.append_block_typed::<(i32,), _>(m.view(f), "head")?;
+    let (head, (p,)) = bwp.append_block_typed::<(i32,), _, _>(m.view(f), "head")?;
 
     // entry: %x = add i32 %a, 1 ; br head(%x)
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
@@ -67,7 +67,7 @@ fn block_call_convenience_two_params_verifies() -> Result<(), IrError> {
 
     // head(%pi: i32, %pp: ptr): a typed two-parameter block.
     let bwp = IrBuilder::new_for::<i32>(&m);
-    let (head, (pi, _pp)) = bwp.append_block_typed::<(i32, Ptr), _>(m.view(f), "head")?;
+    let (head, (pi, _pp)) = bwp.append_block_typed::<(i32, Ptr), _, _>(m.view(f), "head")?;
 
     // entry: br head(%a, %ptr) — seed both head-phis, in schema order.
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
@@ -106,8 +106,8 @@ fn build_cond_br_call_two_targets_verify() -> Result<(), IrError> {
 
     // then(%pt: i32) and else(%pe: i32): two typed one-parameter blocks.
     let bwp = IrBuilder::new_for::<i32>(&m);
-    let (then_bb, (pt,)) = bwp.append_block_typed::<(i32,), _>(m.view(f), "then")?;
-    let (else_bb, (pe,)) = bwp.append_block_typed::<(i32,), _>(m.view(f), "else")?;
+    let (then_bb, (pt,)) = bwp.append_block_typed::<(i32,), _, _>(m.view(f), "then")?;
+    let (else_bb, (pe,)) = bwp.append_block_typed::<(i32,), _, _>(m.view(f), "else")?;
 
     // entry: %x = add %a, 1 ; %y = add %a, 2 ;
     //        br (%a == 0) ? then(%x) : else(%y)
@@ -151,8 +151,8 @@ fn build_cond_br_call_distinct_schemas_per_edge() -> Result<(), IrError> {
 
     // then(%pt: i32) is typed `(i32,)`; join() is typed `()` (no head-phis).
     let bwp = IrBuilder::new_for::<i32>(&m);
-    let (then_bb, (pt,)) = bwp.append_block_typed::<(i32,), _>(m.view(f), "then")?;
-    let (join_bb, ()) = bwp.append_block_typed::<(), _>(m.view(f), "join")?;
+    let (then_bb, (pt,)) = bwp.append_block_typed::<(i32,), _, _>(m.view(f), "then")?;
+    let (join_bb, ()) = bwp.append_block_typed::<(), _, _>(m.view(f), "join")?;
 
     // entry: br (%a == 0) ? then(%a) : join()
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);

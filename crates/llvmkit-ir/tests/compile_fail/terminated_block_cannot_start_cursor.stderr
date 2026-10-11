@@ -11,5 +11,5 @@ error[E0308]: mismatched types
 note: associated function defined here
   --> src/iter.rs
    |
-   |     pub fn at_start(block: BasicBlock<'ctx, R, Unterminated, B>) -> Self {
+   |     pub fn at_start(block: BasicBlock<'ctx, R, Unterminated, B, BlockParamsDyn, Mutable>) -> Self {
    |            ^^^^^^^^

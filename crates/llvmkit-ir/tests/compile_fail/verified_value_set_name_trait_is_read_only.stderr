@@ -1,0 +1,407 @@
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:44:35
+   |
+44 |                 SetName::set_name(value, &other, "renamed");
+   |                 ----------------- ^^^^^ this handle was minted read-only
+   |                 |
+   |                 required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `llvmkit_ir::Value<'_, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:45:37
+   |
+45 |                 SetName::clear_name(value, &other);
+   |                 ------------------- ^^^^^ this handle was minted read-only
+   |                 |
+   |                 required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `llvmkit_ir::Value<'_, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:47:39
+   |
+47 |                     SetName::set_name(argument, &other, "renamed");
+   |                     ----------------- ^^^^^^^^ this handle was minted read-only
+   |                     |
+   |                     required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `llvmkit_ir::Argument<'_, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:48:41
+   |
+48 |                     SetName::clear_name(argument, &other);
+   |                     ------------------- ^^^^^^^^ this handle was minted read-only
+   |                     |
+   |                     required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `llvmkit_ir::Argument<'_, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:51:39
+   |
+51 |                     SetName::set_name(structure, &other, "renamed");
+   |                     ----------------- ^^^^^^^^^ this handle was minted read-only
+   |                     |
+   |                     required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `StructValue<'_, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:52:41
+   |
+52 |                     SetName::clear_name(structure, &other);
+   |                     ------------------- ^^^^^^^^^ this handle was minted read-only
+   |                     |
+   |                     required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `StructValue<'_, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:57:39
+   |
+57 |                     SetName::set_name(array, &other, "renamed");
+   |                     ----------------- ^^^^^ this handle was minted read-only
+   |                     |
+   |                     required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `ArrayValue<'_, ElemDyn, ArrLenDyn, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:58:41
+   |
+58 |                     SetName::clear_name(array, &other);
+   |                     ------------------- ^^^^^ this handle was minted read-only
+   |                     |
+   |                     required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `ArrayValue<'_, ElemDyn, ArrLenDyn, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:63:39
+   |
+63 |                     SetName::set_name(vector, &other, "renamed");
+   |                     ----------------- ^^^^^^ this handle was minted read-only
+   |                     |
+   |                     required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `VectorValue<'_, ElemDyn, LenDyn, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:64:41
+   |
+64 |                     SetName::clear_name(vector, &other);
+   |                     ------------------- ^^^^^^ this handle was minted read-only
+   |                     |
+   |                     required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `VectorValue<'_, ElemDyn, LenDyn, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:67:39
+   |
+67 |                     SetName::set_name(int, &other, "renamed");
+   |                     ----------------- ^^^ this handle was minted read-only
+   |                     |
+   |                     required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `IntValue<'_, IntDyn, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:68:41
+   |
+68 |                     SetName::clear_name(int, &other);
+   |                     ------------------- ^^^ this handle was minted read-only
+   |                     |
+   |                     required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `IntValue<'_, IntDyn, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:71:39
+   |
+71 |                     SetName::set_name(float, &other, "renamed");
+   |                     ----------------- ^^^^^ this handle was minted read-only
+   |                     |
+   |                     required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `FloatValue<'_, FloatDyn, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:72:41
+   |
+72 |                     SetName::clear_name(float, &other);
+   |                     ------------------- ^^^^^ this handle was minted read-only
+   |                     |
+   |                     required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `FloatValue<'_, FloatDyn, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:75:39
+   |
+75 |                     SetName::set_name(pointer, &other, "renamed");
+   |                     ----------------- ^^^^^^^ this handle was minted read-only
+   |                     |
+   |                     required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `PointerValue<'_, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:76:41
+   |
+76 |                     SetName::clear_name(pointer, &other);
+   |                     ------------------- ^^^^^^^ this handle was minted read-only
+   |                     |
+   |                     required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `PointerValue<'_, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:79:39
+   |
+79 |                     SetName::set_name(constant, &other, "renamed");
+   |                     ----------------- ^^^^^^^^ this handle was minted read-only
+   |                     |
+   |                     required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `llvmkit_ir::Constant<'_, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:80:41
+   |
+80 |                     SetName::clear_name(constant, &other);
+   |                     ------------------- ^^^^^^^^ this handle was minted read-only
+   |                     |
+   |                     required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `llvmkit_ir::Constant<'_, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:82:43
+   |
+82 |                         SetName::set_name(undef, &other, "renamed");
+   |                         ----------------- ^^^^^ this handle was minted read-only
+   |                         |
+   |                         required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `UndefValue<'_, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:83:45
+   |
+83 |                         SetName::clear_name(undef, &other);
+   |                         ------------------- ^^^^^ this handle was minted read-only
+   |                         |
+   |                         required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `UndefValue<'_, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:88:43
+   |
+88 |                         SetName::set_name(int, &other, "renamed");
+   |                         ----------------- ^^^ this handle was minted read-only
+   |                         |
+   |                         required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `ConstantIntValue<'_, IntDyn, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:89:45
+   |
+89 |                         SetName::clear_name(int, &other);
+   |                         ------------------- ^^^ this handle was minted read-only
+   |                         |
+   |                         required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `ConstantIntValue<'_, IntDyn, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:94:43
+   |
+94 |                         SetName::set_name(float, &other, "renamed");
+   |                         ----------------- ^^^^^ this handle was minted read-only
+   |                         |
+   |                         required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `ConstantFloatValue<'_, FloatDyn, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+
+error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
+  --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:95:45
+   |
+95 |                         SetName::clear_name(float, &other);
+   |                         ------------------- ^^^^^ this handle was minted read-only
+   |                         |
+   |                         required by a bound introduced by this call
+   |
+   = help: the trait `CanMutate` is not implemented for `llvmkit_ir::ReadOnly`
+   = note: mutation needs a handle minted from `&Module<B, Unverified>` — `Module::view` on an unverified module; a `Module<B, Verified>`, a `ModuleView` and a read-only pass context mint `ReadOnly` handles
+help: the trait `CanMutate` is implemented for `Mutable`
+  --> src/capability.rs
+   |
+   | impl CanMutate for Mutable {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `ConstantFloatValue<'_, FloatDyn, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`

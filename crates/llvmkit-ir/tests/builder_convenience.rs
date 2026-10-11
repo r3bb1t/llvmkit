@@ -2,7 +2,9 @@
 //! Each `#[test]` cites its upstream source (Doctrine D11). All three
 //! tests are direct ports of upstream usage sites.
 
-use llvmkit_ir::{IntValue, IrBuilder, IrError, Linkage, PointerValue, module_new};
+use llvmkit_ir::{
+    IntValue, IrBuilder, IrError, Linkage, PointerValue, VectorType, lanes, module_new,
+};
 
 /// Mirrors `unittests/Analysis/VectorUtilsTest.cpp::TEST_F(BasicTest, ...)`
 /// — its `IRB.CreateVectorSplat(5, ScalarC)` use. The upstream call splats
@@ -14,13 +16,13 @@ use llvmkit_ir::{IntValue, IrBuilder, IrError, Linkage, PointerValue, module_new
 fn build_vector_splat_expands_to_insertelement_plus_shuffle() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i8_ty = m.i8_type();
-    let v_ty = m.vector_type(i8_ty, 5);
+    let v_ty = VectorType::of(i8_ty, lanes::<5>());
     let fn_ty = m.function_type(v_ty, [i8_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
     let scalar: IntValue<'_, i8, _> = m.view(f).param(0)?.try_into()?;
-    let splat = b.vector_splat_dyn(5, scalar, "v")?;
+    let splat = b.vector_splat_dyn(lanes::<5>(), scalar, "v")?;
     b.ret(splat.as_erased())?;
     let text = format!("{m}");
     // The two-step expansion that upstream emits, mirrored byte-for-byte:

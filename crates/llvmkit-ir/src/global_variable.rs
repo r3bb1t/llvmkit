@@ -15,17 +15,18 @@
 
 use super::DebugLoc;
 use super::align::MaybeAlign;
+use super::capability::{CanMutate, Capability, CapabilityOf, Mutable, ReadOnly};
 use super::comdat::ComdatRef;
 use super::constant::{Constant, IsConstant};
 use super::derived_types::PointerType;
 use super::error::{IrError, IrResult, ValueCategoryLabel};
 use super::global_value::{DllStorageClass, DsoLocality, Linkage, ThreadLocalMode, Visibility};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
-use super::r#type::{Type, TypeSlot, TypeSlotAccess};
+use super::r#type::{IrType, Type, TypeSlot, TypeSlotAccess};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
-    GlobalFieldKind, HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot,
-    ValueSlotAccess, sealed,
+    GlobalFieldKind, HasDebugLoc, HasName, IsValue, SetName, Typed, Value, ValueKindData,
+    ValueSlot, ValueSlotAccess, sealed,
 };
 use super::value_id::GlobalId;
 use crate::Branded;
@@ -114,7 +115,6 @@ pub struct SanitizerMetadata {
 /// portion of `class GlobalVariable` in `IR/GlobalVariable.h`.
 #[derive(Debug)]
 pub(super) struct GlobalVariableData {
-    pub(super) name: String,
     /// Type of the data the global holds (the *pointee* type). The
     /// outer [`crate::value::ValueData::ty`] is the *pointer* type
     /// (`ptr addrspace(N)`).
@@ -153,19 +153,27 @@ pub(super) struct GlobalVariableData {
 /// (`ptr addrspace(N)`). Use [`Self::value_type`] to obtain the type
 /// of the stored data, and [`Self::initializer`] to read the
 /// initializer when one is present.
+///
+/// `C` is the handle's [`Capability`] (D8): a global viewed through an
+/// unverified module is [`Mutable`]; one viewed through a verified module is
+/// [`ReadOnly`] and has no setters.
 #[derive(Branded)]
-pub struct GlobalVariable<'ctx, B: ModuleBrand> {
+pub struct GlobalVariable<'ctx, B: ModuleBrand, C: Capability = Mutable> {
     id: ValueSlot,
-    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) module: ModuleRef<'ctx, B, C>,
     /// Cached pointer type id (`ptr addrspace(N)`).
     ty: TypeSlot,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
+impl<B: ModuleBrand, C: Capability> CapabilityOf for GlobalVariable<'_, B, C> {
+    type Capability = C;
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GlobalVariable<'ctx, B, C> {
     #[inline]
     pub(super) fn from_parts_unchecked<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
-        M: Into<ModuleRef<'ctx, B>>,
+        M: Into<ModuleRef<'ctx, B, C>>,
     {
         Self {
             id,
@@ -174,10 +182,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         }
     }
 
-    /// Widen to the erased [`Value`] handle.
+    /// Widen to the erased [`Value`] handle, at the same capability.
     #[inline]
-    pub fn as_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
+    }
+
+    /// This global at [`ReadOnly`]. Always sound — reading
+    /// is a subset of mutating.
+    #[inline]
+    pub fn read_only(self) -> GlobalVariable<'ctx, B, crate::ReadOnly> {
+        GlobalVariable {
+            id: self.id,
+            module: self.module.read_only(),
+            ty: self.ty,
+        }
     }
 
     /// Storable, module-tagged [`GlobalId`] for this global (0.0.4),
@@ -193,7 +212,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// this lets them appear in initializers of other globals or as
     /// `ConstantExpr` operands.
     #[inline]
-    pub fn as_constant(self) -> Constant<'ctx, B> {
+    pub fn as_constant(self) -> Constant<'ctx, B, C> {
         Constant::from_parts(Value::from_parts(self.id, self.module, self.ty))
     }
 
@@ -201,7 +220,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// `GlobalValue::getType`: the global's stored value type is separate from
     /// the `ptr addrspace(N)` type used when its address appears as a constant.
     #[inline]
-    pub fn as_global_constant_ptr(self) -> Constant<'ctx, B> {
+    pub fn as_global_constant_ptr(self) -> Constant<'ctx, B, C> {
         let module = self.module.module();
         let ptr_ty = module
             .ptr_type::<B>(self.address_space())
@@ -222,7 +241,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// outside this byte-offset helper. `off == 0` is equivalent to
     /// [`Self::as_constant`] but always prints the gep form; prefer
     /// `as_constant` for the zero case.
-    pub fn as_global_constant_ptr_offset(self, off: i64, addr_space: u32) -> Constant<'ctx, B> {
+    pub fn as_global_constant_ptr_offset(self, off: i64, addr_space: u32) -> Constant<'ctx, B, C> {
         let module = self.module.module();
         let ptr_ty = module
             .ptr_type::<B>(addr_space)
@@ -236,7 +255,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
 
     /// A `ptr`-typed constant pointing `off` bytes into this global, preserving
     /// this global's address space in both the GEP result and pointer operand.
-    pub fn ptr_offset(self, off: i64) -> Constant<'ctx, B> {
+    pub fn ptr_offset(self, off: i64) -> Constant<'ctx, B, C> {
         let module = self.module.module();
         let ptr_ty = module
             .ptr_type::<B>(self.address_space())
@@ -261,10 +280,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// store `real.try_delta_from(anchor)?` in a data global and add it to
     /// `ptrtoint @anchor` at the use site. Both globals must be defined symbols
     /// in the final image.
-    pub fn try_delta_from(
+    pub fn try_delta_from<OtherCapability: Capability>(
         self,
-        other: GlobalVariable<'ctx, B>,
-    ) -> IrResult<ConstantIntValue<'ctx, i64, B>> {
+        other: GlobalVariable<'ctx, B, OtherCapability>,
+    ) -> IrResult<ConstantIntValue<'ctx, i64, B, C>> {
         // Boundary: the caller's other global, admitted against this global's
         // module before its slot is interned into a constant here.
         let other_id = other.slot_in(self.module.id())?;
@@ -273,7 +292,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         let id = module
             .context()
             .intern_constant_symbol_delta(i64_ty, self.id, other_id);
-        Ok(ConstantIntValue::<i64, B>::from_parts_typed(
+        Ok(ConstantIntValue::<i64, B, C>::from_parts_typed(
             Constant::from_parts(Value::from_parts(id, self.module, i64_ty)),
         ))
     }
@@ -281,11 +300,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// An `i64` constant equal to `(self_addr - other_addr) + addend`, printed
     /// as `add (i64 sub (i64 ptrtoint(@real), i64 ptrtoint(@anchor)),
     /// i64 K)` -- the encrypted-delta form.
-    pub fn try_delta_from_plus(
+    pub fn try_delta_from_plus<OtherCapability: Capability>(
         self,
-        other: GlobalVariable<'ctx, B>,
+        other: GlobalVariable<'ctx, B, OtherCapability>,
         addend: i64,
-    ) -> IrResult<ConstantIntValue<'ctx, i64, B>> {
+    ) -> IrResult<ConstantIntValue<'ctx, i64, B, C>> {
         // Boundary: the caller's other global, admitted against this global's
         // module before its slot is interned into a constant here.
         let other_id = other.slot_in(self.module.id())?;
@@ -294,7 +313,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         let id = module
             .context()
             .intern_constant_symbol_delta_plus(i64_ty, self.id, other_id, addend);
-        Ok(ConstantIntValue::<i64, B>::from_parts_typed(
+        Ok(ConstantIntValue::<i64, B, C>::from_parts_typed(
             Constant::from_parts(Value::from_parts(id, self.module, i64_ty)),
         ))
     }
@@ -314,14 +333,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
 
     /// Pointer type (`ptr addrspace(N)`) of `@<name>`.
     #[inline]
-    pub fn ty(self) -> PointerType<'ctx, B> {
+    pub fn ty(self) -> PointerType<'ctx, B, C> {
         PointerType::new(self.ty, self.module)
     }
 
     /// Type of the stored data (the *pointee* type). Mirrors
     /// `GlobalValue::getValueType`.
     #[inline]
-    pub fn value_type(self) -> Type<'ctx, B> {
+    pub fn value_type(self) -> Type<'ctx, B, C> {
         Type::new(self.data().value_type, self.module)
     }
 
@@ -332,10 +351,50 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         self.data().address_space
     }
 
-    /// Symbol name (without the leading `@`).
+    /// Symbol name (without the leading `@`); [`None`] for an unnamed global,
+    /// which the printer numbers. Mirrors `Value::getName`, which answers the
+    /// empty string there.
     #[inline]
-    pub fn name(self) -> &'ctx str {
-        &self.data().name
+    pub fn name(self) -> Option<String> {
+        self.as_erased().name()
+    }
+
+    /// Rename this global through its module's symbol table. Mirrors
+    /// `Value::setName` on a `GlobalVariable`: a name another global value
+    /// holds is uniqued (`name.1`, or `name1` on an NVPTX module).
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidValueName`] for a name containing a NUL byte, which
+    /// `Value::setNameImpl` asserts against; the global keeps its name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this global's module — reachable with
+    /// two modules of one brand, such as two [`Module::dynamic`] values.
+    pub fn set_name<Name>(
+        self,
+        module_token: &'ctx Module<B, Unverified>,
+        name: Name,
+    ) -> IrResult<()>
+    where
+        Name: Into<String>,
+        C: CanMutate,
+    {
+        self.as_erased().set_name(module_token, name)
+    }
+
+    /// Leave this global unnamed. Mirrors `Value::setName("")`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this global's module — reachable with
+    /// two modules of one brand, such as two [`Module::dynamic`] values.
+    pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>)
+    where
+        C: CanMutate,
+    {
+        self.as_erased().clear_name(module_token);
     }
 
     /// `true` if this was declared with `constant` (vs `global`).
@@ -362,7 +421,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
 
     /// Initializer constant, if any. Mirrors
     /// `GlobalVariable::getInitializer`.
-    pub fn initializer(self) -> Option<Constant<'ctx, B>> {
+    pub fn initializer(self) -> Option<Constant<'ctx, B, C>> {
         let id = self.data().initializer.get()?;
         let value_data = self.module.value_data(id);
         Some(Constant::from_parts(Value::from_parts(
@@ -381,9 +440,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// from a module with a *different* brand; two modules that share a brand
     /// (`DynBrand`, or a re-issued named brand) are told apart only by the
     /// module tag, which is checked first.
-    pub fn set_initializer<C>(self, _module: &'ctx Module<B, Unverified>, init: C) -> IrResult<()>
+    pub fn set_initializer<Init>(
+        self,
+        _module: &'ctx Module<B, Unverified>,
+        init: Init,
+    ) -> IrResult<()>
     where
-        C: IsConstant<'ctx, B>,
+        Init: IsConstant<'ctx, B>,
+        C: CanMutate,
     {
         let constant = init.as_constant();
         // Admitted before the type comparison below, which reads the
@@ -402,13 +466,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     }
 
     /// Clear the initializer.
-    pub fn clear_initializer(self, _module: &'ctx Module<B, Unverified>) {
+    pub fn clear_initializer(self, _module: &'ctx Module<B, Unverified>)
+    where
+        C: CanMutate,
+    {
         self.retarget_initializer_use(None);
         self.data().initializer.set(None);
     }
 
     /// Keep the initializer's reverse use edge in step with the cell.
-    fn retarget_initializer_use(self, new: Option<ValueSlot>) {
+    fn retarget_initializer_use(self, new: Option<ValueSlot>)
+    where
+        C: CanMutate,
+    {
         self.module.module().context().retarget_global_field_use(
             self.id,
             GlobalFieldKind::Initializer,
@@ -430,13 +500,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     }
 
     /// Set the DSO locality. Mirrors `GlobalValue::setDSOLocal`.
-    pub fn set_dso_locality(self, _module: &'ctx Module<B, Unverified>, dso: DsoLocality) {
+    pub fn set_dso_locality(self, _module: &'ctx Module<B, Unverified>, dso: DsoLocality)
+    where
+        C: CanMutate,
+    {
         self.data().dso_locality.set(dso);
     }
 
     /// Update the linkage. Mirrors `GlobalValue::setLinkage`.
     #[inline]
-    pub fn set_linkage(self, _module: &'ctx Module<B, Unverified>, linkage: Linkage) {
+    pub fn set_linkage(self, _module: &'ctx Module<B, Unverified>, linkage: Linkage)
+    where
+        C: CanMutate,
+    {
         self.data().linkage.set(linkage);
     }
 
@@ -448,7 +524,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
 
     /// Update visibility. Mirrors `GlobalValue::setVisibility`.
     #[inline]
-    pub fn set_visibility(self, _module: &'ctx Module<B, Unverified>, vis: Visibility) {
+    pub fn set_visibility(self, _module: &'ctx Module<B, Unverified>, vis: Visibility)
+    where
+        C: CanMutate,
+    {
         self.data().visibility.set(vis);
     }
 
@@ -461,7 +540,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// Update DLL storage class. Mirrors
     /// `GlobalValue::setDLLStorageClass`.
     #[inline]
-    pub fn set_dll_storage_class(self, _module: &'ctx Module<B, Unverified>, cls: DllStorageClass) {
+    pub fn set_dll_storage_class(self, _module: &'ctx Module<B, Unverified>, cls: DllStorageClass)
+    where
+        C: CanMutate,
+    {
         self.data().dll_storage_class.set(cls);
     }
 
@@ -474,7 +556,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// Update thread-local mode. Mirrors
     /// `GlobalValue::setThreadLocalMode`.
     #[inline]
-    pub fn set_thread_local_mode(self, _module: &'ctx Module<B, Unverified>, tlm: ThreadLocalMode) {
+    pub fn set_thread_local_mode(self, _module: &'ctx Module<B, Unverified>, tlm: ThreadLocalMode)
+    where
+        C: CanMutate,
+    {
         self.data().thread_local_mode.set(tlm);
     }
 
@@ -487,7 +572,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// Update unnamed-addr marker. Mirrors
     /// `GlobalValue::setUnnamedAddr`.
     #[inline]
-    pub fn set_unnamed_addr(self, _module: &'ctx Module<B, Unverified>, value: UnnamedAddr) {
+    pub fn set_unnamed_addr(self, _module: &'ctx Module<B, Unverified>, value: UnnamedAddr)
+    where
+        C: CanMutate,
+    {
         self.data().unnamed_addr.set(value);
     }
 
@@ -499,7 +587,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
 
     /// Set or clear the alignment. Mirrors `GlobalValue::setAlignment`.
     #[inline]
-    pub fn set_align(self, _module: &'ctx Module<B, Unverified>, align: MaybeAlign) {
+    pub fn set_align(self, _module: &'ctx Module<B, Unverified>, align: MaybeAlign)
+    where
+        C: CanMutate,
+    {
         self.data().align.set(align);
     }
 
@@ -519,12 +610,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     pub fn set_section<S>(self, _module: &'ctx Module<B, Unverified>, section: S)
     where
         S: Into<String>,
+        C: CanMutate,
     {
         *self.data().section.borrow_mut() = Some(section.into());
     }
 
     /// Clear the section.
-    pub fn clear_section(self, _module: &'ctx Module<B, Unverified>) {
+    pub fn clear_section(self, _module: &'ctx Module<B, Unverified>)
+    where
+        C: CanMutate,
+    {
         *self.data().section.borrow_mut() = None;
     }
 
@@ -541,12 +636,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     }
 
     /// Set the code model. Mirrors `GlobalVariable::setCodeModel`.
-    pub fn set_code_model(self, _module: &'ctx Module<B, Unverified>, model: CodeModel) {
+    pub fn set_code_model(self, _module: &'ctx Module<B, Unverified>, model: CodeModel)
+    where
+        C: CanMutate,
+    {
         self.data().code_model.set(Some(model));
     }
 
     /// Clear the code model.
-    pub fn clear_code_model(self, _module: &'ctx Module<B, Unverified>) {
+    pub fn clear_code_model(self, _module: &'ctx Module<B, Unverified>)
+    where
+        C: CanMutate,
+    {
         self.data().code_model.set(None);
     }
 
@@ -564,13 +665,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         self,
         _module: &'ctx Module<B, Unverified>,
         metadata: SanitizerMetadata,
-    ) {
+    ) where
+        C: CanMutate,
+    {
         self.data().sanitizer_metadata.set(Some(metadata));
     }
 
     /// Drop the sanitizer metadata. Mirrors
     /// `GlobalValue::removeSanitizerMetadata`.
-    pub fn clear_sanitizer_metadata(self, _module: &'ctx Module<B, Unverified>) {
+    pub fn clear_sanitizer_metadata(self, _module: &'ctx Module<B, Unverified>)
+    where
+        C: CanMutate,
+    {
         self.data().sanitizer_metadata.set(None);
     }
 
@@ -585,50 +691,74 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     pub fn set_partition<P>(self, _module: &'ctx Module<B, Unverified>, partition: P)
     where
         P: Into<String>,
+        C: CanMutate,
     {
         *self.data().partition.borrow_mut() = Some(partition.into());
     }
 
     /// Clear the partition.
-    pub fn clear_partition(self, _module: &'ctx Module<B, Unverified>) {
+    pub fn clear_partition(self, _module: &'ctx Module<B, Unverified>)
+    where
+        C: CanMutate,
+    {
         *self.data().partition.borrow_mut() = None;
     }
 
     /// Toggle the `externally_initialized` marker. Mirrors
     /// `GlobalVariable::setExternallyInitialized`.
     #[inline]
-    pub fn set_externally_initialized(self, _module: &'ctx Module<B, Unverified>) {
+    pub fn set_externally_initialized(self, _module: &'ctx Module<B, Unverified>)
+    where
+        C: CanMutate,
+    {
         self.data().externally_initialized.set(true);
     }
 
     /// Clearing twin of
     /// [`set_externally_initialized`](Self::set_externally_initialized).
     #[inline]
-    pub fn clear_externally_initialized(self, _module: &'ctx Module<B, Unverified>) {
+    pub fn clear_externally_initialized(self, _module: &'ctx Module<B, Unverified>)
+    where
+        C: CanMutate,
+    {
         self.data().externally_initialized.set(false);
     }
 
-    /// Comdat reference, if attached. Mirrors `GlobalValue::getComdat`.
-    pub fn comdat(self) -> Option<ComdatRef<'ctx, B>> {
+    /// Comdat reference, if attached, at this global's capability. Mirrors
+    /// `GlobalValue::getComdat`.
+    pub fn comdat(self) -> Option<ComdatRef<'ctx, B, C>> {
         let name = self.data().comdat.borrow().clone()?;
-        self.module.module().comdat::<B>(&name)
+        self.module.comdat(&name)
     }
 
     /// Attach a comdat. The comdat must already exist in the owning module
     /// (use [`Module::get_or_insert_comdat`](crate::Module::get_or_insert_comdat)
-    /// to materialise one). The branded [`ComdatRef`] parameter statically
-    /// ties the comdat to the same module as this global.
-    pub fn set_comdat(
+    /// to materialise one). The brand on [`ComdatRef`] keeps out, at compile
+    /// time, a comdat of a module with a *different* brand; two modules that
+    /// share a brand (`DynBrand`, or a re-issued named brand) are told apart
+    /// by the module tag, so a comdat another module minted is refused with
+    /// [`IrError::ForeignComdat`] and the attachment stays as it was. Only the
+    /// comdat's name is read, so a comdat of any capability is accepted.
+    pub fn set_comdat<ComdatCapability: Capability>(
         self,
         _module: &'ctx Module<B, Unverified>,
-        comdat: ComdatRef<'ctx, B>,
-    ) -> IrResult<()> {
-        *self.data().comdat.borrow_mut() = Some(comdat.name().to_owned());
+        comdat: ComdatRef<'ctx, B, ComdatCapability>,
+    ) -> IrResult<()>
+    where
+        C: CanMutate,
+    {
+        // Boundary: the caller's comdat, admitted against this global's module
+        // before its name is stored.
+        let name = comdat.name_in(self.module.id())?;
+        *self.data().comdat.borrow_mut() = Some(name.to_owned());
         Ok(())
     }
 
     /// Clear the attached comdat.
-    pub fn clear_comdat(self, _module: &'ctx Module<B, Unverified>) {
+    pub fn clear_comdat(self, _module: &'ctx Module<B, Unverified>)
+    where
+        C: CanMutate,
+    {
         *self.data().comdat.borrow_mut() = None;
     }
 
@@ -654,14 +784,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         module: &'ctx Module<B, Unverified>,
         kind: MetadataAttachmentKind,
         id: MetadataId<B>,
-    ) -> IrResult<()> {
+    ) -> IrResult<()>
+    where
+        C: CanMutate,
+    {
         let id = id.into_stored(module.id())?;
         self.data().metadata.borrow_mut().insert(kind, id);
         Ok(())
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for GlobalVariable<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> core::fmt::Display for GlobalVariable<'ctx, B, C> {
     /// Print the full definition line `@name = <linkage> global <type>
     /// <init>, ...`, exactly as it appears in module output. Matches the
     /// module-level sibling handles [`GlobalAlias`](crate::GlobalAlias) and
@@ -675,62 +808,74 @@ impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for GlobalVariable<'ctx, B>
     }
 }
 
-impl<'ctx, B: ModuleBrand> sealed::Sealed for GlobalVariable<'ctx, B> {}
-impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for GlobalVariable<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> sealed::Sealed for GlobalVariable<'ctx, B, C> {}
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IsValue<'ctx, B> for GlobalVariable<'ctx, B, C> {
     #[inline]
-    fn as_erased(self) -> Value<'ctx, B> {
+    fn as_erased(self) -> Value<'ctx, B, C> {
         GlobalVariable::as_erased(self)
     }
 }
 crate::value::impl_into_erased_value_for_handle!(GlobalVariable);
-impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for GlobalVariable<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IsConstant<'ctx, B>
+    for GlobalVariable<'ctx, B, C>
+{
     #[inline]
-    fn as_constant(self) -> Constant<'ctx, B> {
+    fn as_constant(self) -> Constant<'ctx, B, C> {
         GlobalVariable::as_constant(self)
     }
 }
-impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for GlobalVariable<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Typed<'ctx, B> for GlobalVariable<'ctx, B, C> {
     #[inline]
-    fn ty(self) -> Type<'ctx, B> {
+    fn ty(self) -> Type<'ctx, B, C> {
         Type::new(self.ty, self.module)
     }
 }
-impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalVariable<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> HasName<'ctx, B> for GlobalVariable<'ctx, B, C> {
     fn name(self) -> Option<String> {
         self.as_erased().name()
     }
-    fn set_name<Name>(self, _module_token: &'ctx Module<B, Unverified>, _name: Name)
+}
+impl<'ctx, B: ModuleBrand + 'ctx, C: CanMutate> SetName<'ctx, B> for GlobalVariable<'ctx, B, C> {
+    #[inline]
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
     where
         Name: Into<String>,
     {
-        // GlobalVariable names are immutable through this interface
-        // -- they participate in the module's name table. Renaming
-        // requires a dedicated path that keeps the table consistent.
+        GlobalVariable::set_name(self, module_token, name)
     }
-    fn clear_name(self, _module_token: &'ctx Module<B, Unverified>) {}
+    #[inline]
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
+        GlobalVariable::clear_name(self, module_token);
+    }
 }
-impl<B: ModuleBrand + 'static> HasDebugLoc for GlobalVariable<'_, B> {
+impl<B: ModuleBrand + 'static, C: Capability> HasDebugLoc for GlobalVariable<'_, B, C> {
     fn debug_loc(self) -> Option<DebugLoc> {
         None
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalVariable<'ctx, B>> for Value<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> From<GlobalVariable<'ctx, B, C>>
+    for Value<'ctx, B, C>
+{
     #[inline]
-    fn from(g: GlobalVariable<'ctx, B>) -> Self {
+    fn from(g: GlobalVariable<'ctx, B, C>) -> Self {
         g.as_erased()
     }
 }
-impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalVariable<'ctx, B>> for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> From<GlobalVariable<'ctx, B, C>>
+    for Constant<'ctx, B, C>
+{
     #[inline]
-    fn from(g: GlobalVariable<'ctx, B>) -> Self {
+    fn from(g: GlobalVariable<'ctx, B, C>) -> Self {
         g.as_constant()
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalVariable<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> TryFrom<Value<'ctx, B, C>>
+    for GlobalVariable<'ctx, B, C>
+{
     type Error = IrError;
-    fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
+    fn try_from(v: Value<'ctx, B, C>) -> IrResult<Self> {
         match &v.data().kind {
             ValueKindData::GlobalVariable(_) => Ok(Self {
                 // Internal: a re-wrap that keeps `v`'s own module.
@@ -764,14 +909,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalVariable<'ct
 pub struct GlobalBuilder<'ctx, B: ModuleBrand> {
     module: ModuleRef<'ctx, B>,
     name: String,
-    /// Kept as the caller's handle, not its slot: `build` admits it through
-    /// the checked door, and only then does its slot enter this module.
-    value_type: Type<'ctx, B>,
+    /// Kept as the caller's handle, not its slot, at `ReadOnly`: a type of
+    /// any capability is accepted, `build` admits it through the checked
+    /// door, and only then does its slot enter this module. Re-minting it at
+    /// this module before admission would skip the foreign-module check.
+    value_type: Type<'ctx, B, ReadOnly>,
     address_space: u32,
     is_constant: bool,
     externally_initialized: bool,
-    /// Kept as the caller's handle for the same reason.
-    initializer: Option<Constant<'ctx, B>>,
+    /// Kept as the caller's handle for the same reason, at `ReadOnly`: an
+    /// initializer of any capability is accepted, and `build` admits it.
+    initializer: Option<Constant<'ctx, B, ReadOnly>>,
     linkage: Linkage,
     dso_locality: DsoLocality,
     visibility: Visibility,
@@ -781,19 +929,23 @@ pub struct GlobalBuilder<'ctx, B: ModuleBrand> {
     align: MaybeAlign,
     section: Option<String>,
     partition: Option<String>,
-    comdat: Option<String>,
+    /// Kept as the caller's handle for the same reason, at `ReadOnly`: a
+    /// comdat of any capability is accepted, and `build` admits it before its
+    /// name is stored.
+    comdat: Option<ComdatRef<'ctx, B, ReadOnly>>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
-    pub(super) fn new<M, N>(module: M, name: N, value_type: Type<'ctx, B>) -> Self
+    pub(super) fn new<M, N, T>(module: M, name: N, value_type: T) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
         N: Into<String>,
+        T: IrType<'ctx, B>,
     {
         Self {
             module: module.into(),
             name: name.into(),
-            value_type,
+            value_type: value_type.as_type().read_only(),
             address_space: 0,
             is_constant: false,
             externally_initialized: false,
@@ -897,11 +1049,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
         self
     }
 
-    /// Attach a comdat. The branded [`ComdatRef`] parameter statically ties the
-    /// comdat to the builder's module.
+    /// Attach a comdat. The brand on [`ComdatRef`] keeps out a comdat of a
+    /// module with a *different* brand at compile time; one minted by another
+    /// module that shares the brand is refused by [`build`](Self::build) with
+    /// [`IrError::ForeignComdat`]. A comdat of any capability is accepted.
     #[must_use]
-    pub fn comdat(mut self, comdat: ComdatRef<'ctx, B>) -> Self {
-        self.comdat = Some(comdat.name().to_owned());
+    pub fn comdat<C: Capability>(mut self, comdat: ComdatRef<'ctx, B, C>) -> Self {
+        self.comdat = Some(comdat.read_only());
         self
     }
 
@@ -921,7 +1075,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
     /// higher-level `Module::add_global` derives the value type from the
     /// initializer, so they always agree by construction).
     pub fn initializer<C: IsConstant<'ctx, B>>(mut self, init: C) -> Self {
-        self.initializer = Some(init.as_constant());
+        self.initializer = Some(init.as_constant().read_only());
         self
     }
 
@@ -930,33 +1084,38 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
     /// Resolve the id back into a borrowing [`GlobalVariable`] with
     /// [`Module::view`](crate::Module::view).
     ///
-    /// Errors with [`IrError::ForeignType`] when the value type, and with
-    /// [`IrError::ForeignValueId`] when the initializer, was minted by another
+    /// Errors with [`IrError::ForeignType`] when the value type, with
+    /// [`IrError::ForeignValueId`] when the initializer, and with
+    /// [`IrError::ForeignComdat`] when the comdat, was minted by another
     /// module sharing this brand; nothing is installed.
     pub fn build(self) -> IrResult<GlobalId<B>> {
         // Each handle's slot names a different type or value — or nothing — in
-        // another module's arena, so both are admitted before anything is
-        // installed.
+        // another module's arena, and a comdat's name a different comdat or
+        // none, so all three are admitted before anything is installed.
         let owner = self.module.id();
         let value_type = self.value_type.slot_in(owner)?;
         let initializer = self
             .initializer
             .map(|constant| constant.slot_in(owner))
             .transpose()?;
+        let comdat = self
+            .comdat
+            .map(|comdat| comdat.name_in(owner).map(str::to_owned))
+            .transpose()?;
         let module = self.module;
-        let (name, data, address_space) = self.into_data(value_type, initializer);
+        let (name, data, address_space) = self.into_data(value_type, initializer, comdat);
         module
-            .module()
-            .install_global_variable::<B>(name, data, address_space)
+            .install_global_variable(name, data, address_space)
             .map(|g| g.id())
     }
 
-    /// Lower the builder to its storage payload, holding the slots `build`
+    /// Lower the builder to its storage payload, holding what `build`
     /// admitted rather than anything read off the handles again.
     fn into_data(
         self,
         value_type: TypeSlot,
         initializer: Option<ValueSlot>,
+        comdat: Option<String>,
     ) -> (String, GlobalVariableData, u32) {
         let GlobalBuilder {
             module: _,
@@ -975,10 +1134,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
             align,
             section,
             partition,
-            comdat,
+            comdat: _,
         } = self;
         let data = GlobalVariableData {
-            name: name.clone(),
             value_type,
             address_space,
             is_constant,

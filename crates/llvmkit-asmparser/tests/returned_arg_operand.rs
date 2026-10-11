@@ -22,7 +22,10 @@ fn parse(source: &str) -> Module<DynBrand, Unverified> {
 }
 
 /// The instruction named `%name` in the module's definitions.
-fn named<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, DynBrand> {
+fn named<'m>(
+    module: &'m Module<DynBrand, Unverified>,
+    name: &str,
+) -> Value<'m, DynBrand, llvmkit_ir::ReadOnly> {
     module
         .as_view()
         .functions()

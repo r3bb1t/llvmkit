@@ -65,7 +65,9 @@ A `ported` negative asserts the parse **fails**, and on almost every `reject`
 row also that the message contains upstream's own `FileCheck` text. A smaller
 subset additionally pins upstream's `<stdin>:LINE:COL:` through a `loc=` option.
 Each of those pins was re-derived from the cited upstream file, not from
-llvmkit's output.
+llvmkit's output: from the fixture's own `CHECK` where it carries a position,
+and otherwise from the `LLParser` routine that raises the message, which a `#`
+line above the manifest row names.
 
 That is a **containment lock, not a text-parity measure**: the harness matches
 with `rendered.contains(pin)`
@@ -74,13 +76,15 @@ that wraps upstream's satisfies the row, and a message *shorter* than upstream's
 is invisible too, since the pin is itself `FileCheck` text and `FileCheck`
 matches substrings. Only the `loc=` rows assert the caret; on the rest the
 anchor is unchecked. Some rows pass while diverging in text —
-`musttail-invalid-1` / `invalid-datalayout-override` under **G17** below, plus
-rows where llvmkit is exactly right and the pin is a truncated `FileCheck`
-fragment. `target-type-properties.ll`'s `zeroinit-error` split was the worked
-example until its wrapper was removed; the row that hid it is unchanged, and
-what now pins that arm is a unit test asserting the `ParseError` variant and
-the column. See the corpus-oracle item in
-`docs/future-work.md`, which carries the derivation.
+`invalid-datalayout-override` under **G17** below, plus rows where llvmkit is
+exactly right and the pin is a truncated `FileCheck` fragment.
+`musttail-invalid-1` was one until its `expected ` wrapper was removed;
+`parser_calls.rs::upstream_musttail_ellipsis_fixtures_report_upstreams_exact_text`
+now compares its text for equality. `target-type-properties.ll`'s
+`zeroinit-error` split was the worked example until its wrapper was removed;
+the row that hid it is unchanged, and what now pins that arm is a unit test
+asserting the `ParseError` variant and the column. See the corpus-oracle item
+in `docs/future-work.md`, which carries the derivation.
 
 **No manifest tallies are written here any more.** They were, in five figures,
 and every one of them was stale within a commit or two of being written — the
@@ -141,7 +145,7 @@ another was deleted outright, so the letters are not a stable namespace.
 | **G9** | Metadata strings and metadata names are required to be UTF-8; LLVM allows arbitrary bytes. |
 | **G10** | `!DIEnumerator` values wider than i128 are rejected; upstream stores an `APInt` of any width. |
 | **G11** | A global variable's trailing `"key" = "value"` attribute list is not parsed. |
-| **G12** | `fpext` (and its siblings) reject a scalable-vector source. |
+| **G12** | *Closed.* `fpext` (and its siblings) rejected a vector source: each cast parsed through a scalar-only typed builder, and the verifier's `fpext` / `fptrunc` arm took scalars only. Every cast now goes through one port of `LLParser::parseCast` and `IrBuilder::cast_erased`, and the verifier's arms follow `Verifier::visitFPExtInst` and its siblings. Kept as a row so a reader meeting the letter in an older commit message finds it. |
 | **G13** | *Closed.* A forward-referenced function whose later definition/ifunc had the same name was rejected instead of resolved, because the callee position minted a typed `Function` at the call site's signature. `resolve_direct_callee` mints `getGlobalVal`'s untyped placeholder now and `claim_function_forward_ref` RAUWs it at the header. Kept as a row so a reader meeting the letter in an older commit message finds it. |
 | **G14** | `-allow-incomplete-ir`'s `dropUnknownMetadataReferences` half is not implemented (recorded in docs/divergences.md). |
 | **G15** | An **unnamed** global (`@""`) does not consume `NumberedVals.getNext()`, so a reference to the number it should have taken is undefined. Probed 2026-08-28 with `target/release/examples/parse_file.exe`: on `@5 = global i8 0` + `@"" = global i8 1`, `store ptr @5` resolves and `store ptr @6` answers `use of undefined value '@6'`. The row used to say "a forward reference to an explicitly numbered global is not resolved", which was wrong twice over — `@6` there is not a forward reference, and numbered forward references resolve. |
@@ -166,13 +170,13 @@ Which fixture sits on which gap:
 - **G9**: `difile-escaped-chars.ll`, `named-metadata.ll`
 - **G10**: `DIEnumeratorBig.ll`
 - **G11**: `globalvariable-attributes.ll`
-- **G12**: `fast-math-flags.ll`
+- **G12**: closed
 - **G13**: closed
 - **G14**: `incomplete-ir-metadata.ll`
 - **G15**: `skip-value-numbers-globals.ll`
 - **G16**: `index-value-order.ll`, `thinlto-vtable-summary.ll`
-- **G17**: `2007-01-16-CrashOnBadCast.ll`, `invalid-disubrange-count-negative.ll`, `invalid-fp80hex.ll`, `invalid-label-call-arg.ll`, `invalid-metadata-function-local-attachments.ll`, `invalid-metadata-function-local-complex-1.ll`, `invalid-metadata-function-local-complex-2.ll`, `invalid-metadata-function-local-complex-3.ll`, `invalid_cast.ll`, `invalid_cast2.ll`, `nofpclass-invalid.ll`, `ptrtoaddr-invalid.ll`
-- **G18**: `attribute-builtin.ll`, `call-invalid-1.ll`, `captures-errors.ll`, `invalid-byval-type3.ll`, `invalid-diexpression-verify.ll`, `invalid-disubrange-count-large.ll`, `invalid-disubrange-count-node.ll`, `invalid-disubrange-lowerBound-max.ll`, `invalid-disubrange-lowerBound-min.ll`, `invalid_cast3.ll`, `ptrtoaddr-invalid-constexpr.ll`, `summary-parsing-error.ll`, `target-type-properties.ll`
+- **G17**: `invalid-disubrange-count-negative.ll`, `invalid-fp80hex.ll`, `invalid-metadata-function-local-attachments.ll`, `invalid-metadata-function-local-complex-1.ll`, `invalid-metadata-function-local-complex-2.ll`, `invalid-metadata-function-local-complex-3.ll`, `nofpclass-invalid.ll`
+- **G18**: `attribute-builtin.ll`, `call-invalid-1.ll`, `captures-errors.ll`, `invalid-byval-type3.ll`, `invalid-diexpression-verify.ll`, `invalid-disubrange-count-large.ll`, `invalid-disubrange-count-node.ll`, `invalid-disubrange-lowerBound-max.ll`, `invalid-disubrange-lowerBound-min.ll`, `ptrtoaddr-invalid-constexpr.ll`, `summary-parsing-error.ll`, `target-type-properties.ll`
 - **G19**: `2010-02-05-FunctionLocalMetadataBecomesNull.ll`, `DICommonBlock.ll`, `DIEnumerator.ll`, `dbg_declare_value.ll`, `debug-label-bitcode.ll`, `disubprogram-targetfuncname.ll`, `drop-debug-info-nonzero-alloca.ll`, `drop-debug-info.ll`, `export-symbol-anonymous-class.ll`, `metadata-use-uselistorder.ll`, `thinlto-vtable-summary2.ll`
 - **G20**: `MultipleReturnValueType.ll`, `anon-functions.ll`
 - **G21**: `thinlto-summary.ll`
@@ -254,15 +258,18 @@ These came out of the measurement and are recorded here rather than buried:
    ok, as it's unreachable!*") and `2004-06-07-VerifierBug.ll`. llvmkit rejects
    both. Gap **G22**.
 7. **A recurring wording bug: a complete upstream message routed through an
-   `expected …` wrapper.** `expected
-   unexpected ellipsis in argument list for musttail call in non-varargs
-   function`, `expected valid datalayout: address space must be a 24-bit
-   integer`, `expected valid mask value for 'nofpclass'`, `expected valid
-   ptrtoaddr: …`, `expected valid trunc: …`, `expected valid alias definition:
-   …`, `expected intrinsic signature mismatch`, `expected unknown intrinsic`.
-   Upstream reaches all of these through `error(...)`, not `tokError("expected
-   …")`. This is the single largest share of **G17** and the cheapest parity
-   work left in the directory.
+   `expected …` wrapper.** `expected valid datalayout: address space must be a
+   24-bit integer`, `expected valid mask value for 'nofpclass'`, `expected valid
+   alias definition: …`, `expected intrinsic signature mismatch`, `expected
+   unknown intrinsic`. Upstream reaches all of these through `error(...)`, not
+   `tokError("expected …")`. This is the single largest share of **G17** and
+   the cheapest parity work left in the directory. The list opened with
+   `expected unexpected ellipsis in argument list for musttail call in
+   non-varargs function` until `LLParser::parseParameterList` was ported once;
+   its two ellipsis refusals are upstream's whole `tokError` sentences now.
+   `expected valid ptrtoaddr: …` and `expected valid trunc: …` went when
+   `LLParser::parseCast` was ported once: every cast instruction asks
+   `CastInst::castIsValid` and reports `invalid cast opcode for cast from …`.
 
 ## A directory-name trap
 
@@ -330,7 +337,7 @@ collision.
 | `2006-12-09-Cast-To-Bool.ll` | ported | 1 pass |
 | `2007-01-02-Undefined-Arg-Type.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `2007-01-05-Cmp-ConstExpr.ll` | ported | 1 pass |
-| `2007-01-16-CrashOnBadCast.ll` | blocked-model | **G17** — reported `expected integer destination type for trunc/zext/sext`, upstream `invalid cast opcode for cast from 'i64' to 'ptr'` |
+| `2007-01-16-CrashOnBadCast.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `2007-01-16-CrashOnBadCast2.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `2007-03-18-InvalidNumberedVar.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `2007-03-19-NegValue.ll` | ported | 1 pass |
@@ -493,7 +500,7 @@ collision.
 | `externally-initialized.ll` | ported | 1 pass |
 | `extractvalue-invalid-idx.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `extractvalue-no-idx.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
-| `fast-math-flags.ll` | blocked-model | **G12** — rejected at 52:3: `expected float-typed source for fpext` |
+| `fast-math-flags.ll` | ported | 1 pass |
 | `flags.ll` | ported | 1 pass |
 | `fp-intrinsics-attr.ll` | ported | 1 pass |
 | `function-operand-uselistorder.ll` | ported | 1 pass |
@@ -622,7 +629,7 @@ collision.
 | `invalid-immarg5.ll` | blocked-model | **G3** — reported `expected unknown intrinsic`, upstream `(no CHECK text)` |
 | `invalid-inline-constraint.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-inttype.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
-| `invalid-label-call-arg.ll` | blocked-model | **G17** — reported `number of input constraints does not match number of parameters`, upstream `invalid type for function argument` |
+| `invalid-label-call-arg.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-label.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-landingpad.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-load-missing-explicit-type.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
@@ -670,9 +677,9 @@ collision.
 | `invalid-uselistorder_bb-not-func.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-uselistorder_bb-numbered.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-vecreduce.ll` | blocked-model | **G1** — reported `expected intrinsic signature mismatch`, upstream `Intrinsic has incorrect return type!` |
-| `invalid_cast.ll` | blocked-model | **G17** — reported `expected valid trunc: invalid operation: trunc/zext/sext changes the vector element count`, upstream `invalid cast opcode for cast from '<4 x i64>' to '<3 x i8>'` |
-| `invalid_cast2.ll` | blocked-model | **G17** — reported `expected valid trunc: invalid operation: trunc/zext/sext changes the vector element count`, upstream `invalid cast opcode for cast from '<4 x i64>' to 'i8'` |
-| `invalid_cast3.ll` | blocked-model | **G18** — llvmkit accepts it; upstream reports `invalid cast opcode for cast from '<4 x ptr>' to '<2 x ptr>'` |
+| `invalid_cast.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
+| `invalid_cast2.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
+| `invalid_cast3.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid_cast4.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invoke-nonzero-program-addrspace.ll` | ported | 1 reject; the `-data-layout=P200` unit runs in `parser_calls.rs::invoke_addrspace_matches_upstream_in_both_program_addrspaces` |
 | `large-comdat.ll` | ported | 1 pass |
@@ -722,7 +729,7 @@ collision.
 | `private-protected-variable.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `ptrauth-const.ll` | ported | 1 pass |
 | `ptrtoaddr-invalid-constexpr.ll` | blocked-model | **G18** — 2/10 parts blocked. llvmkit's own verifier rejects it: invalid operation: PtrToAddr result must be address width |
-| `ptrtoaddr-invalid.ll` | blocked-model | **G17** — 9/9 parts blocked. reported `expected valid ptrtoaddr: invalid operation: PtrToAddr result must be address width`, upstream `assembly parsed, but does not verify as correct!` |
+| `ptrtoaddr-invalid.ll` | ported | 9 split-file parts: 8 rejects (8 with upstream's diagnostic pinned); `dst_not_addr_size.ll`, which parses and fails verification, runs in `parser_types.rs::a_ptrtoaddr_to_a_narrower_integer_parses_and_fails_verification` |
 | `ptrtoaddr.ll` | ported | 1 pass |
 | `range-attribute-invalid-range.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `range-attribute-invalid-type.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |

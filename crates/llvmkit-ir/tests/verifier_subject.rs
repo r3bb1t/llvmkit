@@ -27,8 +27,8 @@
 //! test noticing.
 
 use llvmkit_ir::{
-    IntrinsicDescriptor, IntrinsicId, IrError, Linkage, NamedMetadataName, VerifierSubject,
-    module_new,
+    IntrinsicDescriptor, IntrinsicId, IrError, Linkage, NamedMetadataName, VectorType,
+    VerifierSubject, lanes, module_new,
 };
 
 /// The subject of the first verifier failure `m` reports.
@@ -52,7 +52,7 @@ fn subject_of(error: &IrError) -> &VerifierSubject {
 fn a_global_variables_finding_names_the_global() -> Result<(), IrError> {
     let m = module_new!("subject")?;
     let i32_ty = m.i32_type();
-    let scalable = m.scalable_vector_type(i32_ty.as_type(), 4);
+    let scalable = VectorType::scalable_of(i32_ty, lanes::<4>());
     m.global_builder("s", scalable.as_type()).build()?;
 
     let error = m
@@ -236,7 +236,7 @@ fn no_verifier_failure_stores_a_sigil() -> Result<(), IrError> {
 
     let scalable_global = {
         let m = module_new!("subject")?;
-        let scalable = m.scalable_vector_type(m.i32_type().as_type(), 4);
+        let scalable = VectorType::scalable_of(m.i32_type(), lanes::<4>());
         m.global_builder("s", scalable.as_type()).build()?;
         m.verify_borrowed().expect_err("invalid")
     };

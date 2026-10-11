@@ -9,7 +9,7 @@ help: there is a method `int_phi_dyn` with a similar name, but with different ar
    |
    | /     pub fn int_phi_dyn<Name>(
    | |         &self,
-   | |         ty: IntType<'ctx, IntDyn, B>,
+   | |         ty: IntType<'ctx, IntDyn, B, impl Capability>,
    | |         name: Name,
    | |     ) -> IrResult<PhiInstId<IntDyn, B>>
    | |     where
@@ -27,7 +27,7 @@ help: there is a method `fp_phi_dyn` with a similar name, but with different arg
    |
    | /     pub fn fp_phi_dyn<Name>(
    | |         &self,
-   | |         ty: FloatType<'ctx, FloatDyn, B>,
+   | |         ty: FloatType<'ctx, FloatDyn, B, impl Capability>,
    | |         name: Name,
    | |     ) -> IrResult<FpPhiInstId<FloatDyn, B>>
    | |     where

@@ -277,7 +277,7 @@ fn detached_set_name_updates_carried_name_without_old_parent_binding() -> Result
         .expect("original instruction");
     let detached = detached_inst.detach_from_parent(&m);
     let block = cursor.into_block();
-    detached.to_erased().set_name(&m, "renamed");
+    detached.to_erased().set_name(&m, "renamed")?;
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(block);
     let live =
         b.int_add::<i32, _, _, _>(i32_ty.const_int(3_i32), i32_ty.const_int(4_i32), "tmp")?;

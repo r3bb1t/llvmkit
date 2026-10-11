@@ -19,6 +19,983 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed (breaking) — type constructors refuse what LLVM forbids
+
+LLVM's vector constructors `assert` two rules — `FixedVectorType::get` and
+`ScalableVectorType::get` require a non-zero lane count and an element
+`VectorType::isValidElementType` admits — and an `assert` is compiled out of a
+release build. llvmkit's builder accepted both, so a module built in Rust could
+hold `<4 x void>`, `<2 x [2 x i32]>` or `<0 x i32>` and print text no parser
+reads back. This section covers the vector family; the other constructors
+follow.
+
+- **Breaking: `Module::vector_type` / `Module::scalable_vector_type`, and the
+  same two on `ModuleView`, take `lanes: NonZeroU32` / `min_lanes: NonZeroU32`
+  and return `IrResult`.** They refuse an element from another module with
+  `IrError::ForeignType`, checked first, and an element
+  `VectorType::isValidElementType` refuses with
+  `IrError::InvalidTypeComponent { position: TypePosition::VectorElement, kind }`
+  (`invalid vector element type: array`). Both took the element's slot
+  unchecked.
+- **Breaking: new `IrError::InvalidTypeComponent` variant**, with the new
+  exhaustive `TypePosition` enum naming the component rule (vector, array,
+  struct and pointer elements, a function's return and parameters); its
+  `Display` is `LLParser`'s wording for the rule. `IrError::blame` classes it
+  as a usage error.
+- **Added: `VectorType::of` / `VectorType::scalable_of`**, the routes that
+  cannot fail: they take a sealed `VectorElement` — an integer, float or
+  pointer handle — and a `NonZeroU32`, build in the element's own module, and
+  keep the element marker (`VectorType::of(m.i32_type(), lanes::<4>())` is a
+  `VectorType<'_, i32, LenDyn, _>`). Handing one a `void` or any other
+  non-element is a compile error carrying `VectorElement`'s own message. A
+  target type that declares `CanBeVectorElement`, and any runtime `Type`, goes
+  through `vector_type(ty, lanes)?`.
+- **Added: `lanes::<N>()`**, the lane count as a `NonZeroU32` checked at
+  compile time: `lanes::<0>()` does not compile. `vector_type_n::<E, 0>()`
+  still does not compile, now with `lanes`'s message.
+- **Breaking: `VectorType::min_len` returns `NonZeroU32`.** No vector has zero
+  lanes: the type arena stores the count as a `NonZeroU32`.
+- A `riscv.vector.tuple` with a count of `0` has no layout type: it is
+  unsized, `Type::is_scalable` answers `false` for it, and `DataLayout`
+  answers size `0` and alignment `1`, as for any target type without one. Its
+  layout was `<vscale x 0 x i8>`, which upstream's `getTargetTypeInfo` builds
+  through the asserting `ScalableVectorType::get`.
+- An intrinsic name whose overload suffix spells a vector of an invalid
+  element (`llvm.vector.reduce.add.v4isVoid`) is
+  `IrError::IntrinsicSignatureMismatch`; the demangler built `<4 x void>` and
+  the intrinsic was declared over it. The intrinsic signature decoders check
+  each vector element they build, refusing an invalid one as their usual
+  signature mismatch, and carry each lane count as a `NonZeroU32`.
+- **Breaking: new `IrError::InvalidShuffleMaskLength { len }` variant**, for
+  a `shufflevector` mask whose length is not a vector lane count (empty, or
+  longer than a `u32` holds); `IrError::blame` classes it as a usage error.
+  `IrBuilder::shuffle_vector` and `ConstantFolder::fold_shuffle_vector_dyn`
+  refuse an empty mask with it — each built a `<0 x …>` result type — and
+  a too-long mask with it too, which was `IrError::InvalidOperation`
+  (`shufflevector mask too large`). `constant_fold_shuffle_vector_instruction`
+  answers `None` (no fold) for an empty mask.
+- **Breaking: `IrBuilder::vector_splat_dyn` takes `count: NonZeroU32`**
+  (`lanes::<N>()` spells a literal one), as `IRBuilderBase::CreateVectorSplat`
+  asserts `EC.isNonZero()`; the run-time zero refusal
+  (`IrError::InvalidOperation`) is gone. It refuses a scalar whose type is not
+  a vector element (`IrError::InvalidTypeComponent`); it built
+  `<2 x { i32 }>`.
+- **Breaking: `Type::vector_element_count` returns `Option<NonZeroU32>`.**
+- **Breaking: `VecLen::static_len` and `VectorType::static_len` return
+  `Option<NonZeroU32>`, and `StaticVecLen::STATIC_LEN` is a `NonZeroU32`**,
+  each through `lanes::<N>()`, so `Len<0>`'s count does not compile
+  (trybuild fixture `len_zero_static_len.rs`). The array side (`ArrLen`,
+  `u64`) is unchanged: arrays may be empty.
+- The parser builds vector types and vector constants through the checked
+  constructors after its own checks, so its diagnostics are unchanged; a
+  `getelementptr` constant's vector result is built through `VectorType::of`.
+- Removed `select_pattern.rs::tests::an_empty_float_vector_proves_nothing` and
+  the empty-aggregate guard it pinned in the two float helpers: its input,
+  `<0 x float>`, can no longer be built.
+- Call sites: rust-analyzer `findReferences` on the working tree over
+  `dcde8b6`, less this section's new tests, found 106 calls of
+  `Module::vector_type`, 35 of `Module::scalable_vector_type`, none of either
+  `ModuleView` constructor, and 15 of `VectorType::min_len`; the three
+  trybuild fixtures outside the build that call a vector constructor are
+  listed by
+  `rg -l "\.(vector_type|scalable_vector_type)\([^)]" crates/llvmkit-ir/tests/compile_fail`
+  at `dcde8b6`. Every one was migrated.
+
+| Before | After |
+|---|---|
+| `m.vector_type(ty, 4)` | `m.vector_type(ty, lanes::<4>())?`, or `VectorType::of(handle, lanes::<4>())` for an integer, float or pointer handle |
+| `m.scalable_vector_type(ty, 4)` | `m.scalable_vector_type(ty, lanes::<4>())?`, or `VectorType::scalable_of(handle, lanes::<4>())` |
+| a run-time count `n: u32` | `NonZeroU32::new(n)`, handled where `n` is computed |
+| `v.min_len()` (`u32`) | `v.min_len()` (`NonZeroU32`; `.get()` for the number) |
+
+Tests: `type_components.rs` (`a_typed_vector_keeps_its_element_marker`,
+`an_erased_vector_refuses_an_invalid_element`,
+`a_zero_count_riscv_tuple_has_no_layout`,
+`an_intrinsic_name_cannot_spell_an_invalid_vector`,
+`the_builder_refuses_a_shuffle_with_an_empty_mask`,
+`the_constant_folder_refuses_a_shuffle_with_an_empty_mask`,
+`constant_folding_a_shuffle_with_an_empty_mask_does_not_fold`,
+`a_splat_of_a_non_vector_element_is_refused`),
+`cross_module_handles.rs::the_vector_constructors_reject_an_element_from_another_module`,
+`intrinsics.rs::tests::the_vector_helpers_refuse_an_invalid_element_as_a_mismatch`,
+and the trybuild fixtures `vector_of_void_element.rs`, `lanes_zero.rs` and
+`len_zero_static_len.rs`.
+`type_validity.rs`'s agreement law drops its 28 vector and scalable-vector
+known disagreements.
+
+### Fixed (breaking) — every cast instruction is one port of `LLParser::parseCast`; the verifier's cast checks follow upstream's
+
+Each cast opcode had its own parser routine, with its own guards and its own
+messages (`expected 'to' in ptrtoint`, `expected integer-typed cast source`,
+`expected valid trunc: …`), and most of them built through a scalar-only typed
+builder. Upstream has one routine: `parseTypeAndValue`, `expected 'to' after
+cast value`, `parseType`, then `CastInst::castIsValid`, reported as
+`invalid cast opcode for cast from '…' to '…'` at the source type, then
+`CastInst::Create`. llvmkit's `parse_cast` is that routine, and every cast
+opcode reaches it; the flags (`nuw` / `nsw`, `nneg`, fast-math) are eaten
+before it, by the instruction's own arm, as `parseInstruction` does.
+
+- **Refused now** (accepts-invalid): an instruction cast `castIsValid`
+  refuses that a typed builder accepted, such as `bitcast <4 x ptr> %c to
+  <2 x ptr>` (`test/Assembler/invalid_cast3.ll`).
+- **Accepted now** (rejects-valid): a floating-point, integer-to-float,
+  float-to-integer or pointer cast over vectors, which the scalar-only
+  builders refused (`fpext <3 x float> … to <3 x double>` in
+  `test/Assembler/fast-math-flags.ll`); and a `ptrtoaddr` to an integer
+  narrower than the address, which now parses and fails verification, as
+  upstream's does.
+- Every refused cast reports upstream's `invalid cast opcode for cast from
+  '…' to '…'` at the source type; the invented messages are gone.
+- **Breaking: `IrBuilder::int_cast_erased` and `IntCastFlags` are removed.**
+  `IrBuilder::cast_erased(operation, src, dst_ty, name)` builds any cast on an
+  erased operand, a scalar or a vector; the new `CastOperation` names the
+  opcode and carries the flags that opcode accepts and no others
+  (`CastOperation::Trunc(TruncFlags)`, `Zext(ZextFlags)`, `UiToFp(UiToFpFlags)`,
+  `FpTrunc(FastMathFlags)`, `FpExt(FastMathFlags)`, and the flagless rest).
+- **Breaking: new `IrError::InvalidCast { opcode, src, dst }`**, which
+  `cast_erased` returns where `cast_is_valid` refuses the pair; each cast
+  constructor upstream asserts it. `IrError::blame` classes it as a usage
+  error.
+- The verifier's cast checks follow `Verifier::visitTruncInst` through
+  `visitFPToSIInst`: `trunc` / `zext` / `sext` compare only vector-ness, not
+  element counts (closing the `docs/divergences.md` entry that recorded it);
+  `fptrunc` / `fpext` accept floating-point vectors, measure each side's scalar
+  bits and check vector-ness with upstream's message; `fptoui` / `fptosi` /
+  `uitofp` / `sitofp` check vector-ness first and, between vectors, the element
+  counts, with upstream's messages.
+- Ported fixtures: `test/Assembler/2007-01-16-CrashOnBadCast.ll`,
+  `invalid_cast.ll`, `invalid_cast2.ll`, `invalid_cast3.ll` (each with its
+  location pinned), `fast-math-flags.ll`, and `ptrtoaddr-invalid.ll` (eight
+  parts as corpus rows; `dst_not_addr_size.ll` in
+  `parser_types.rs::a_ptrtoaddr_to_a_narrower_integer_parses_and_fails_verification`).
+  Gap G12 in `docs/fixture-coverage.md` is closed.
+
+| Before | After |
+|---|---|
+| `b.int_cast_erased(CastOpcode::Zext, v, ty, IntCastFlags::new().nneg(), "z")` | `b.cast_erased(CastOperation::Zext(ZextFlags::new().nneg()), v, ty, "z")` |
+| `b.int_cast_erased(CastOpcode::Trunc, v, ty, IntCastFlags::new().nuw(), "t")` | `b.cast_erased(CastOperation::Trunc(TruncFlags::new().nuw()), v, ty, "t")` |
+
+Tests: `verifier.rs::tests::the_integer_casts_compare_vector_ness_not_element_counts`,
+`verifier.rs::tests::the_fp_casts_measure_scalar_bits_and_check_vector_shapes`,
+`parser_types.rs::a_ptrtoaddr_to_a_narrower_integer_parses_and_fails_verification`,
+and the corpus rows above.
+
+### Fixed — `CastInst::castIsValid` compares element counts with their scalability, and is asked, not copied
+
+`cast_is_valid` compared vectors' minimum lane counts alone, and the
+verifier's `bitcast` arm and the constant-expression builder each carried a
+hand-written copy of the rule. Upstream's `Verifier::visitBitCastInst` and its
+`ConstantExpr::get*` cast constructors call `castIsValid`; llvmkit's now call
+`cast_is_valid`.
+
+- **`cast_is_valid` answers `false` where it answered `true`** for a cast
+  between a fixed and a scalable vector of the same minimum count
+  (`bitcast <2 x i32>` to `<vscale x 2 x i32>`, `addrspacecast
+  <vscale x 4 x ptr addrspace(1)>` to `<4 x ptr>`), as `ElementCount`
+  equality includes scalability, and for a pointer bitcast between
+  `<vscale x 1 x ptr>` and `ptr`, which upstream allows only for
+  `ElementCount::getFixed(1)`. The parser now refuses such a
+  constant-expression cast at the cast, with `LLParser`'s
+  `invalid cast opcode for cast from '…' to '…'`; the constant-expression
+  builder refused it later, with its own message.
+- **Refused now** (accepts-invalid): a constant-expression `bitcast` between
+  scalable vectors of unequal size (`<vscale x 2 x i64>` to
+  `<vscale x 2 x i32>`), which the builder's copy accepted because it gave a
+  scalable vector no bit width.
+- **Accepted now** (rejects-valid): a `bitcast` instruction between scalable
+  vectors of equal size (`<vscale x 4 x i16>` to `<vscale x 2 x i32>`), which
+  the verifier's copy refused; and a constant-expression `bitcast` between a
+  vector and `x86_amx` of the same size, which the builder's copy refused.
+- **Breaking: `VerifierRule::BitCastSizeMismatch` is now `InvalidBitCast`**,
+  reported with upstream's `Invalid bitcast` for every `bitcast` `cast_is_valid`
+  refuses; the verifier's three invented `Invalid bitcast (…)` messages are
+  gone.
+- Tests: `medium_builder_cast.rs::cast_is_valid_answers_upstreams_cast_inst_assertions`
+  (the `castIsValid` assertions of `TEST(InstructionsTest, CastInst)`),
+  `verifier_basic.rs::verify_bitcast_asks_cast_is_valid`,
+  `constants_expr.rs::a_constant_bitcast_asks_cast_is_valid` and
+  `parser_types.rs::a_constexpr_cast_between_fixed_and_scalable_vectors_is_rejected`.
+
+### Fixed — a call site's argument list is one port of `LLParser::parseParameterList`; the standalone type parser refuses a bare `void`
+
+`call`, `invoke` and `callbr` each carried an inline copy of the argument loop,
+none of them with the routine's argument-type guard. They now share
+`Parser::parse_parameter_list`, ported arm by arm. What answers differently,
+each as upstream:
+
+- **A call-site argument of an invalid type is refused at its type**
+  (accepts-invalid): `invalid type for function argument`, from
+  `FunctionType::isValidArgumentType`, for a `label`, a function type or an
+  opaque struct, through all three instructions. `call void (...) @f(label
+  %bb)` and its `invoke` / `callbr` twins parsed and printed.
+  `test/Verifier/invalid-label-param.ll` was refused with the right text at the
+  wrong token (the later `declare`), and `test/Assembler/invalid-label-call-arg.ll`
+  reported `number of input constraints does not match number of parameters`;
+  the second is now a corpus row.
+- **`parse_type`, `parse_type_with_slots`, `parse_type_at_beginning` and
+  `parse_type_at_beginning_with_slots` refuse a bare `void`** (accepts-invalid)
+  with `void type only allowed for function results` at the `void`, as
+  `LLParser::parseTypeAtBeginning` reads its type with `AllowVoid` off. They
+  returned the `void` type.
+- **A parameter attribute after a `metadata` argument type is refused**
+  (accepts-invalid): upstream's `metadata` branch reads no attributes, so
+  `call void @f(metadata noundef i32 0)` is `expected metadata operand` at
+  `noundef`. llvmkit read the attributes before branching on `metadata`.
+- A missing `(` is `expected '(' in call` for all three instructions; it was
+  `expected '(' in call argument list`, `… in invoke argument list` and
+  `… in callbr argument list`.
+- A missing comma between arguments is `expected ',' in argument list`, at the
+  token where the comma belongs, including in front of a forwarding `...`; it
+  was `expected ')' to close call argument list` (or its `invoke` / `callbr`
+  wording).
+- An ellipsis outside a musttail call is
+  `unexpected ellipsis in argument list for non-musttail call`, and a musttail
+  `...` in a non-varargs function is
+  `unexpected ellipsis in argument list for musttail call in non-varargs function`.
+  Both carried a leading `expected ` upstream never prints, and are now
+  `ParseError::Message` rather than `ParseError::Expected` — the only variant
+  change in this section. Every other `expected …` diagnostic of the routine
+  is still a `ParseError::Expected`, and the new argument-type refusal is a
+  `ParseError::Message`.
+- An argument after a forwarding `...` is `expected ')' at end of argument
+  list`; it was `expected ')' to close call argument list`.
+- `expected '...' at end of argument list for musttail call in varargs
+  function` is anchored at the `)`, which upstream tests before lexing it; it
+  pointed at the token after the `)`. It stays a `ParseError::Expected`.
+- `parse_parameter_list` takes upstream's `IsMustTailCall` / `InVarArgsFunc`
+  pair as one `CallTail` value (`NotMustTail`, or `MustTail` carrying the
+  enclosing function's variadic bit), so the two cannot be swapped at a call
+  site.
+- Tests: `type_validity.rs::upstream_label_parameter_is_rejected` (now at
+  upstream's anchor) and `::a_bare_void_is_refused_by_the_standalone_type_parser`;
+  in `parser_calls.rs`, the three ellipsis tests (now exact text, anchor and
+  `ParseError` variant),
+  `::upstream_musttail_ellipsis_fixtures_report_upstreams_exact_text`,
+  `::every_caller_reports_a_missing_open_paren_as_in_call`,
+  `::a_missing_comma_between_arguments_is_reported_where_it_belongs`,
+  `::a_forwarding_ellipsis_must_close_the_argument_list`,
+  `::an_invoke_or_callbr_ellipsis_is_a_non_musttail_ellipsis`,
+  `::upstream_label_call_argument_fixture_is_rejected_at_the_argument`,
+  `::every_caller_refuses_an_invalid_argument_type_at_the_type`,
+  `::every_caller_refuses_a_void_argument_before_the_type_guard` (a `void`
+  argument is refused by `parseType`'s `AllowVoid` check, not the guard) and
+  `::a_metadata_argument_takes_no_parameter_attributes`; and `loc=` pins on the
+  corpus rows for `musttail-invalid-1.ll` and `musttail-invalid-2.ll`. The
+  musttail rows matched by containment, which is how `expected unexpected
+  ellipsis …` passed one of them; the exact-text test closes that.
+
+### Added — a constant says which LLVM class it is
+
+- **`Constant::kind()`** answers which of upstream's constant classes a
+  constant is, as an algebraic enum nested the way `Value.def` groups them:
+  `ConstantKind::Data(ConstantDataKind)` (`Undef(Undefined)`, where
+  `Undefined::Poison` is `PoisonValue`, the subclass of `UndefValue`;
+  `AggregateZero`; `Sequential(ConstantSequentialKind)`; `Int` and `Float`
+  carrying their typed handles; `TargetNone`; `PointerNull`; `TokenNone`),
+  `Aggregate(ConstantAggregateKind)`, `GlobalValue`, `BlockAddress`,
+  `Expr(ConstantExprOpcode)`, `DsoLocalEquivalent`, `NoCfi`, `PtrAuth`, and
+  `ForwardReference` for llvmkit's parser placeholder (`docs/divergences.md`
+  entry 144). llvmkit stores every element list in one form, so an array,
+  struct or vector constant is classified by replaying upstream's
+  construction rules — `ConstantArray::getImpl`, `ConstantStruct::get`,
+  `ConstantVector::getImpl`, and `ConstantVector::getSplat` for a scalable
+  vector. `crates/llvmkit-ir/tests/constant_kind.rs` ports
+  `ConstantsTest.cpp`'s `BuildConstantDataArrays` / `BuildConstantDataVectors`
+  (their `getRaw` round trip is blocked and recorded in `docs/future-work.md`)
+  and pins each construction rule.
+
+### Fixed — `Constant::is_constant_data` follows upstream's `ConstantData` class
+
+- It counted an element list as `ConstantData` only when every element was
+  null, so a `ConstantDataVector` / `ConstantDataArray` (`<4 x i32> <i32 0, i32
+  1, i32 2, i32 3>`) and an all-`undef` or all-`poison` list answered `false`
+  where upstream answers `true`. `Value::has_use_list` (`Value::hasUseList`'s
+  port) inherited the wrong answer, and the `AsmWriter`'s use-list ordering
+  walked such a constant's elements where upstream's `orderValue` returns at
+  `isa<ConstantData>`. It is now `matches!(self.kind(), ConstantKind::Data(_))`.
+- It reached `unreachable!` on a `Constant` wrapping a global's own slot —
+  `as_constant` on a global variable, alias or ifunc, or an aliasee, resolver,
+  personality or initializer that names a global — on the premise that a
+  `Constant` only ever wraps a constant-kind slot. A global is now
+  `ConstantKind::GlobalValue`, as upstream's `GlobalValue` is a `Constant`.
+- Neither was covered: `git grep -nE "has_use_list\(|is_constant_data\(" 1109ee0 -- 'crates/*.rs'`
+  matches only definitions and production callers under `crates/llvmkit-ir/src/`.
+  `constant_kind.rs::constant_data_membership_follows_the_class` and
+  `::a_global_widened_to_a_constant_is_a_global_value` fail against the old
+  body (the second by its `unreachable!`).
+
+### Fixed — one port of `Constant::isNullValue`; the undef/poison tests and the compact forms answer by class
+
+- **`token none` and `target(...) none` are null values.** The crate held five
+  copies of `Constant::isNullValue` (`git grep -nE "fn
+  (constant_is_null_value|constant_id_is_null_value|is_null_value|is_zero_initializer_value)\b"
+  feb8505 -- crates/llvmkit-ir/src`), and none had upstream's
+  `ConstantTokenNone` / `ConstantTargetNone` arms. One port remains,
+  `constants.rs::constant_id_is_null_value`; `Constant::is_null_value`, both
+  folders, the verifier and the printer ask through it. What answers
+  differently, each as upstream: `Constant::is_null_value` on either; a list
+  of `target none`s is a `ConstantAggregateZero` to `Constant::kind`; the
+  verifier accepts a `common` global initialised with `target none` (it
+  reported "'common' global must have a zero initializer!"); and the folders'
+  float test, which asked `ApFloat::is_pos_zero`, is now the bitwise
+  comparison with `+0.0` that upstream's `isExactlyValue(+0.0)` makes, so a
+  `ppc_fp128` whose high double is `+0.0` and whose low double is not is no
+  longer null to them (`is_pos_zero` reads the high double only).
+- **The printer prints every all-null element list as `zeroinitializer`,
+  before its `c"…"` arm**, as `writeConstantInternal` asks
+  `isa<ConstantAggregateZero>` before the `ConstantDataArray` string arm.
+  `[2 x i8] [i8 0, i8 0]` — and so a parsed `[N x i8] zeroinitializer` —
+  printed `c"\00\00"`, `[0 x i8]` printed `c""`, and a list of `target none`s
+  printed element by element.
+- **`Constant::is_undef`, `is_poison` and `is_undef_or_poison` answer through
+  `Constant::kind`.** They read the storage, so an all-`undef` or all-`poison`
+  list — the `UndefValue` / `PoisonValue` upstream builds from it — answered
+  `false`, and a whole-value fold walked it lane by lane: `fneg` of `<2 x
+  float> <float poison, float poison>` folded to the list where upstream's
+  `ConstantFoldUnaryInstruction` returns `<2 x float> poison`. The
+  storage-level reads elsewhere in the crate are recorded, unaudited, in
+  `docs/future-work.md`.
+- **`Constant::kind` classifies llvmkit's compact forms as upstream's folds
+  leave them:** a zero-offset `GepOffset` is its base global
+  (`ConstantFoldGetElementPtr`'s `IsNoOp`) and a zero-addend delta is the plain
+  `sub` (`getBinOpIdentity`); they answered `getelementptr` and `add`.
+- `Constant::kind`'s `unreachable!` for an argument, block or instruction
+  slot is now guarded: `tests/constant_handle_mint_drift.rs` pins every
+  crate-private `Constant::from_parts` call to an audited reason the slot is a
+  constant or a global.
+- Tests: `constant_kind.rs::token_none_and_target_none_are_null_values`,
+  `::an_aggregate_zero_list_prints_as_zeroinitializer`,
+  `::a_whole_value_fold_sees_an_all_poison_list_as_poison`,
+  `::a_compact_form_is_classified_as_upstream_folds_it`,
+  `::nested_and_empty_lists_are_classified_through_their_class`, and
+  `globals_basic.rs::common_linkage_target_none_initializer_accepted`; each
+  fails with its fix reverted.
+
+### Fixed — the pointer-strip walks are one port of `stripPointerCastsAndOffsets`
+
+- **`Value::stripPointerCasts` and `stripPointerCastsSameRepresentation`
+  stepped through less than upstream.** llvmkit had four hand-written strip
+  walks; two of them peeled only a `getelementptr` *instruction* with zero
+  indices, never a zero-index constant GEP (an `inrange` constant expression,
+  or llvmkit's compact `getelementptr inbounds (i8, ptr @g, i64 0)`), and
+  neither stepped to a call's `returned` argument. All four are now
+  instantiations of one port of `stripPointerCastsAndOffsets`
+  (`llvm/lib/IR/Value.cpp`), with its arm order, its `Visited` cycle guard and
+  its `PointerStripKind` switch. What answers differently, each as upstream:
+  `eh_personalities::classify_eh_personality` recognises a personality behind
+  a zero-index constant GEP (it answered `Unknown`); `string_length` reads
+  through a `returned` argument to a `select` or `phi` of strings (it answered
+  `None`); `is_known_not_poison`, `is_known_not_undef` and
+  `is_known_not_undef_or_poison` prove a call whose `returned` argument is an
+  alloca, a global or null (they answered `false`). Locked by
+  `pointer_analysis.rs::eh_personality_is_read_through_a_zero_index_constant_getelementptr`,
+  `::string_length_reads_through_a_returned_argument` and
+  `::poison_query_strips_through_a_returned_argument`.
+
+### Fixed — the verifier checks an ifunc's resolver and attachments
+
+- **`Verifier::visitGlobalIFunc` is ported past its linkage check.** An ifunc
+  whose resolver, once pointer casts and aliases are stripped
+  (`Value::stripPointerCastsAndAliases`), is no `Function` ("IFunc must have a
+  Function resolver"), is a declaration or `available_externally` ("IFunc
+  resolver must be a definition"), or does not return a pointer ("IFunc
+  resolver must return a pointer") used to verify; so did an ifunc carrying
+  `!dbg` or `!prof` ("an ifunc may not have a !dbg attachment" / "… !prof
+  attachment"). Each is a verifier failure now, in upstream's order. What
+  locks each: the linkage and the three resolver checks, `test/Verifier/ifunc.ll`
+  and `ifunc-opaque.ll`, vendored whole and verified one ifunc per module,
+  plus the unreduced fixture on its first `CHECK` — llvmkit's verifier stops
+  at its first failure where `llvm::verifyModule` reports each failing entity
+  (`docs/divergences.md`, entry 142); the two attachment checks and their
+  kind-id order, the llvmkit-specific
+  `an_ifunc_may_carry_neither_a_dbg_nor_a_prof_attachment`, since no upstream
+  fixture writes either; the strip's `addrspacecast` and alias steps, the
+  corpus fixture `test/Assembler/ifunc-stripPointerCastsAndAliases.ll`, which
+  must verify; its `getelementptr` step, both exits, on an `inrange` constant
+  expression (`an_ifunc_resolver_is_stripped_through_a_zero_index_getelementptr`)
+  and on llvmkit's compact `getelementptr inbounds (i8, ptr @f, i64 N)`
+  (`an_ifunc_resolver_is_stripped_through_a_compact_zero_offset_getelementptr`);
+  its `bitcast` step's answer on the one shape of constant bitcast that can be
+  a resolver, `bitcast (<1 x ptr> … to ptr)`
+  (`an_ifunc_resolver_behind_a_vector_bitcast_is_no_function`). The last
+  check, "IFunc resolver has incorrect type" (the resolver operand not a `ptr`
+  of the ifunc's address space), is ported but unreachable from what llvmkit
+  builds — the ifunc builder, `GlobalIfunc::set_resolver` and the placeholder
+  replace-all-uses path each keep the two in agreement — so no module of
+  llvmkit's can fail it and no test does. *Breaking:* two new `VerifierRule`
+  variants, `IfuncMetadataAttachment` and `IfuncInvalidResolver`. Not ported:
+  the `visitGlobalValue` call and the attachment loop's `visitMDNode`
+  (`docs/divergences.md`, entry 141).
+- **Fixed: `extern_weak` was accepted as an ifunc and an alias linkage.**
+  `global_ifunc::is_valid_ifunc_linkage` and
+  `global_alias::is_valid_alias_linkage` listed it, where
+  `GlobalIFunc::isValidLinkage` and `GlobalAlias::isValidLinkage` do not —
+  their `isWeakLinkage` is `weak` / `weak_odr` only. Both are ported clause by
+  clause now: an `extern_weak` ifunc fails verification ("IFunc should have
+  … linkage!", `test/Verifier/ifunc.ll`'s `@inval_linkage`), and an
+  `extern_weak` alias is the parse error "invalid linkage type for alias" and
+  is refused by `GlobalAliasBuilder::build` (locked by
+  `extern_weak_is_no_valid_alias_linkage` and
+  `alias_builder_refuses_an_extern_weak_linkage`).
+
+### Changed — pass contexts hand out read-only handles *(breaking)*
+
+- **A bare module reference is `ReadOnly`** (R11, D8). `ModuleRef::from` a
+  `ModuleView` answers `ModuleRef<'ctx, B, ReadOnly>`, where it answered a
+  `Mutable` reference anyone could build: a `Mutable` reference now comes only
+  from an unverified module or a holder of its authority. Inside the crate,
+  `Module<B, Unverified>`, the declaration builders, `FnPatch` / `FnReshape` /
+  `ModRewrite` and `SsaBuilder` take theirs from the module they hold, and
+  `IrBuilder` — which stores only the module's core, because `IrBuilder::at_end`
+  mints one from a `Mutable` block alone — takes its through the one marked
+  door, so `mutable_at_marked_boundary()` has one call site
+  (`rg -c "mutable_at_marked_boundary\(\)" crates/llvmkit-ir/src`, on the
+  working tree over `6c1efac`). The verifier, the `AsmWriter` and the constant
+  validators read at `ReadOnly`.
+- **Breaking: what a `PatchBody` context hands out is `ReadOnly`.**
+  `FnPatch::body_instructions` and `WorklistScope::step` yield
+  `NonTerminator<'m, B, ReadOnly>`, and `FunctionBody::entry_block` and
+  `basic_blocks` — the blocks of `function_mut()` — yield `ReadOnly` blocks,
+  where they yielded `Mutable` ones; `FnPatch::erase` and
+  `replace_all_uses` already take an instruction of either capability, and
+  mutation goes through them or a builder from `builder_at`.
+  `rg -n "laundered until" crates/` finds nothing.
+- **The typed facades and typed values carry the capability.** `params()` on
+  `TypedFunctionValue` / `TypedVarArgsFunctionValue` answers at the facade's
+  capability, as does `TypedCallInst::result`; *breaking*: `FunctionParam`,
+  `FunctionParamList` and `FunctionReturn`'s value GATs, and `IrField::Value`
+  and `StructSchema::Value`, take a capability parameter; `StructSchemaValue`
+  and `TryIntoStructValue` take a trailing `C: Capability`; and the `IrStruct`
+  derive's value types take a trailing capability parameter (default
+  `Mutable`) and admit a value of either capability as an operand.
+- **The authoring entries that only name a function take one of either
+  capability** — `Module::block_address`, `dso_local_equivalent`, `no_cfi`,
+  `get_or_insert_intrinsic_declaration`; `SsaState::for_function`,
+  `SsaBuilder::for_function`, `with_folder_for_function`;
+  `IrBuilder::position_past_allocas`, `append_block_with_params`,
+  `append_block_with_named_params`, `append_block_typed`, `call_builder`,
+  `intrinsic_call`, `intrinsic_call_builder`, the `invoke` family and
+  `callbr_with_config` — and admit it (`IrError::ForeignValueId` for another
+  module's). `color_eh_funclets`, `check_function_phi_coherence`, the asm
+  parser's `AsmParserContext::function_location` and `GlobalRef` read either.
+- **Type operands of either capability are admitted** (R12). Every public
+  builder and module entry that takes a type — the casts, typed loads and
+  phis, `call_erased` and the indirect `invoke` / `callbr`, `struct_gep`,
+  `va_arg`, `landingpad`, `SsaBuilder`'s `declare_*_var_dyn(_poison)` and
+  `declare_pointer_var_in_addrspace(_poison)`,
+  `Module::function_builder`, `add_function_dyn`, `constant_expr(_with_options)`,
+  `set_struct_body(_dyn)`, `inline_asm`, `target_ext_none`, the detached
+  `call` / `invoke` constructors, `cast_is_valid`, `indexed_gep_type`,
+  `indexed_aggregate_type`, `float_value_is_valid_for_type`,
+  `IntrinsicDescriptor::match_signature` — takes it at any capability and
+  checks it belongs to the module (`IrError::ForeignType`);
+  `indexed_gep_type` and `indexed_aggregate_type` answer at the type's
+  capability. *Breaking*: `IrBuilder::append_block_with_params` and
+  `append_block_with_named_params` take parameter types of one capability,
+  either, so an empty slice no longer infers one — spell its element type, or
+  use `FunctionValue::append_basic_block` for a block with no parameters.
+  Three keep a `Mutable` type, each taking the unverified module in the same
+  call: the asm parser's `parse_constant_value` and
+  `parse_constant_value_with_slots`, whose `ParseError` has no variant for
+  another module's type, and `Module::get_or_insert_intrinsic_declaration_by_id`,
+  so that `by_id(id, [])` still infers. Their caller re-mints a `ReadOnly`
+  type with the new **`Module::admit_type`**, which re-mints a type of either
+  capability at the unverified module's `Mutable` and refuses another
+  module's. Derivation: `python
+  .superpowers/sdd/2026-10-04-capability-typestate-handles/count_fixed_capability_type_operands.py`,
+  which reads each `pub fn`'s parameters, generic bounds and `where` clause in
+  `crates/*/src` and flags a type handle whose last generic argument is the
+  brand, `Mutable` or `ReadOnly`, prints 99 on `6c1efac` and those 3 on the
+  working tree this entry was written against.
+- **Breaking: records keep the types they are given at `ReadOnly`.**
+  `Attribute::Type` and `Attribute::Range` hold a `Type<'ctx, B, ReadOnly>`
+  (`Attribute::type_attr` and `range` take a type of either capability);
+  `ConstantExprOptions::source_ty` takes either and `source_type` answers
+  `ReadOnly`; `CallSiteConfig::call_site_type` and the function builder's
+  signature take either and are admitted where they are consumed.
+- **Breaking: the sealed operand lifts answer at the reference's
+  capability.** `IntoIntValue::into_int_value`, `IntoFloatValue`,
+  `IntoPointerValue`, `IntoErasedValue` and `IntoBasicBlockLabel` take a
+  `ModuleRef` of either capability and lift at it, so a lift through a
+  `ReadOnly` reference is a read; the builders pass their `Mutable` one as
+  before. `Worklist::pop` likewise mints at the capability of the reference
+  it is given, and the asm parser's `GlobalRef` takes a trailing
+  `C: Capability = Mutable`.
+- **The constant folders fold at the operands' capability** (D1, D8). The
+  public functions of `constant_fold` and `constant_folding` take constants,
+  types and instruction views of either capability and answer at it;
+  *breaking*: `ConstantOffsetFromGlobal` takes a trailing
+  `C: Capability = Mutable` and its `global()` answers at it, and
+  `IntrinsicInst::descriptor` and `descriptor_for_callee` answer at the call's
+  capability. `GlobalVariable::read_only` lowers a global to `ReadOnly`.
+- `capability_typestate`'s `an_inspect_pass_sees_only_read_only_instruction_views`
+  walks a block view both ways — `instructions()` and `for … in block` — after
+  a mutation check found the second, a separate iterator, unobserved;
+  `a_patch_body_pass_builds_with_a_type_read_through_its_view` pins the type
+  admission, `Module::admit_type` and the `ReadOnly` blocks of
+  `function_mut()`; and `typed_values_keep_the_capability_and_authoring_entries_take_either`
+  appends blocks with `ReadOnly` parameter types.
+
+### Fixed — the `IrStruct` derive's value type is admitted as a call argument and a return value
+
+- A `#[derive(IrStruct)]` value type (`PairValue`) lifted its struct value
+  with `as_erased()` and no module check when it was passed as a call
+  argument or returned, so a value of another module sharing the brand got
+  past the lift. With the old lift put back, a call accepted it and wrote the
+  foreign value into the call's operands, and a `ret` into a `%Pair`-returning
+  function refused it only as `ReturnTypeMismatch { expected: Struct, got:
+  Struct }`, because type equality includes the module. All three lifts now
+  admit at the receiving module (`IrError::ForeignValueId`); as a field, the
+  `insertvalue` the lift feeds already checked again.
+  `cross_module_handles.rs::a_struct_schema_operand_rejects_a_value_from_another_module`
+  covers the three positions, returns into a `%Pair`-returning function so the
+  module is all that is wrong with the foreign value, and accepts a value of
+  the home module in both lifted positions.
+- Writing that test found a printer divergence, now
+  `docs/divergences.md` entry 143: llvmkit prints every named struct in the
+  module's type arena, where upstream's `TypePrinting` prints only the ones a
+  `TypeFinder` walk reaches.
+
+### Changed — the analyses read handles of either capability *(breaking)*
+
+- **The value-tracking family is generic over the capability** (D1, D8). The
+  public functions of `value_tracking`, `known_fp_class`, `select_pattern`,
+  `implied_conditions`, `assumptions`, `speculation`, `pointer_analysis`,
+  `fp_predicate`, `vector_utils` and `demanded_bits`, and `DataLayout`'s type
+  queries, take a value, instruction view, type or function at any
+  capability, where they took `Mutable` handles only — so a verified module's
+  values, a `ModuleView` walk and an `Inspect` pass's `BasicBlockView` walk
+  reach them directly. Derivation, on the working tree this entry was written
+  against: a scratch script read each `pub fn`'s parameter list in those
+  eleven files and flagged any `Value`, `InstructionView`, `Type`,
+  `FunctionValue`, `BasicBlock`, `Use`, `IntType` or `PointerType` spelled
+  without a capability argument; of the 124 that take one, it flagged none,
+  and it flagged both handles of a two-function control file that spelled one
+  without. What an entry hands back keeps the capability of the value it was
+  asked about: `strip_null_test`, `find_scalar_element`, `splat_value`, the
+  object walks, and the result types `SelectPatternMatch`, `ImpliedFpClasses`,
+  `ConstantDataArraySlice` and `BytewiseValue`, which each take a trailing
+  `C: Capability = Mutable`. `fcmp_implies_class` and its `_of_constant` /
+  `_of_class` forms and `fcmp_to_class_test` and its `_of_constant` form take
+  the function at its own capability (`C2`), beside the operands'.
+- **Breaking: `ValueTrackingQuery` and `CondContext` keep their context at
+  `ReadOnly`.** They only read it, so `with_context_instruction` and
+  `CondContext::new` / `affects` accept either capability, and
+  `context_instruction()` and `condition()` answer `ReadOnly`; a query serves
+  values of either capability, and its type names none.
+- **Breaking: `Assumption::assume` and `AssumptionCache::assumptions` mint at
+  the capability of the module reference they are given.**
+- **No laundering door remains.** `AssumptionCache::new`,
+  `is_guaranteed_to_transfer_execution_to_successor` and the `DemandedBits`
+  analysis read the pass context's `ReadOnly` handles directly, and
+  `FunctionView`'s crate-private `function_for_analysis` — which minted the
+  viewed function `Mutable` for them — is gone: `rg -n "laundered until"
+  crates/` finds nothing. The asmparser tests that walk `as_view()` feed that
+  walk to the analyses again, instantiating them at `ReadOnly`, and
+  `capability_typestate`'s
+  `the_value_tracking_analyses_read_values_of_either_capability` runs them on
+  both capabilities and from an `Inspect` pass.
+
+### Changed — a verified module's globals and functions are read-only by type *(breaking)*
+
+- **`GlobalVariable`, `GlobalAlias`, `GlobalIfunc`, `FunctionValue`,
+  `TypedFunctionValue`, `TypedVarArgsFunctionValue`, `ComdatRef`,
+  `IntrinsicDescriptor` and `FunctionBasicBlocks` take a trailing
+  `C: Capability = Mutable`** (D1, D8). Viewed through an unverified `Module`
+  they are `Mutable`; through a `Module<B, Verified>` they are `ReadOnly`.
+  `Module::globals` and `Module::comdat` mint at the capability the module's
+  state grants, as `Module::view` does. What is read off a handle keeps its
+  capability: a global's `initializer`, `value_type`, `ty` and `comdat`, an
+  alias's `aliasee`, an ifunc's `resolver`, a function's `signature`,
+  `return_type`, `param` / `params`, prefix and prologue data, personality and
+  `intrinsic_descriptor` (whose overload types are at the function's
+  capability), and an argument's `parent_function`. `IntrinsicDescriptor::new`
+  builds a descriptor at its overloads' capability. Spellings that omit `C`
+  keep meaning `Mutable`.
+- **Fixed, for the routes that reach a global or function without passing
+  through a block or instruction: a verified module's globals and functions
+  could be changed.** Every setter on these handles asked only for *a*
+  `&Module<B, Unverified>` token, and two modules that share a brand (every
+  `Module::dynamic` is `DynBrand`) type-check against each other's — so
+  `a.view(g).set_linkage(&b, …)` changed a verified `a`. Every mutator now
+  requires `C: CanMutate`, and a handle reached from a verified module through
+  `Module::view`, `Module::globals`, `Module::comdat`, or by navigation off
+  those that does not pass through a block or instruction, is `ReadOnly`, so
+  the call is a compile error carrying `CanMutate`'s own message (locked by
+  `compile_fail/verified_global_cannot_be_mutated.rs`). The same holds for
+  `ComdatRef::set_selection_kind` on a verified module's comdat. The routes
+  through blocks and instructions keep the capability too since the block and
+  instruction family carries it: `entry_block()` / `basic_blocks()`, a
+  block's `parent_function()`, an argument's `parent_function()`, and a
+  call's `classify_callee()` / `callee()` → `FunctionValue::try_from` all
+  stay `ReadOnly` from a verified module (locked by `capability_typestate`'s
+  `a_verified_modules_blocks_and_instructions_are_read_only`, and by
+  `compile_fail/verified_block_is_read_only`,
+  `verified_argument_parent_function_is_not_a_mutable_route` and
+  `verified_call_callee_is_not_a_mutable_route` for the mutators those routes
+  reach). An instruction operand that names a global is llvmkit's interned
+  `ptr @g` wrapper, which `GlobalVariable::try_from` refuses, so no route
+  narrows an operand back to a global at all (`docs/divergences.md`, D3).
+- **Breaking: `FunctionBody::as_function` returns a `ReadOnly` function**, and
+  a `FunctionView` holds one: a function rung's body is mutated through its
+  blocks and the rung's mutator, never through the function's own setters.
+- **Breaking: `FunctionParam::validate_argument` and
+  `FunctionParamList::validate` take `ReadOnly` handles** — validation only
+  reads, so a facade of either capability is validated through them. A
+  hand-written impl spells `Argument<'ctx, B, ReadOnly>` /
+  `FunctionValue<'ctx, R, B, ReadOnly>`.
+- **The `ReadOnly` regressions this change left are lifted** by *pass
+  contexts hand out read-only handles* (above): the typed facades' `params()`,
+  and every read, analysis and authoring entry that took one of these nine
+  types as a `Mutable` operand, now take it at either capability. The list
+  this bullet carried, and the derivation behind it, are in the history of
+  this file.
+- **Operands of any capability are admitted.** `IntoCallee`,
+  `IntoTypedCallee` and `IntoVarArgsCallee` accept a function or facade of
+  either capability, check it belongs to the builder's module
+  (`IrError::ForeignValueId` otherwise) and re-mint it there; `set_comdat` and
+  the global and function builders' `comdat` accept a comdat of either
+  capability, and `GlobalVariable::try_delta_from(_plus)` a global of either.
+- **Fixed: a comdat of another module was attached by name and then lost.**
+  `GlobalVariable::set_comdat`, `FunctionValue::set_comdat` and the global and
+  function builders' `comdat` stored only the comdat's name, so a comdat
+  minted by a same-brand module named nothing in this module's comdat table —
+  `comdat()` answered `None` and the printed module dropped the attachment —
+  or named this module's different comdat of the same name. Each now refuses
+  it with the new **`IrError::ForeignComdat`** (*breaking*: a new variant) and
+  changes nothing; the builders refuse at `build`. `ComdatRef::read_only`
+  lowers a comdat to `ReadOnly`.
+- **`IntrinsicDescriptor::function_type` and `IntrinsicId::function_type`
+  intern at the capability the module's state grants** (*breaking*: the
+  return type is `FunctionType<'ctx, B, S::Capability>`, and
+  `IntrinsicId::function_type` takes its overloads at that capability — the
+  types the module mints, so a verified module's caller passes `ReadOnly`
+  ones). They used to mint a `Mutable` signature from a
+  `Module<B, Verified>`.
+- **Breaking: `Module::add_global_uninitialized`, `add_external_global`,
+  `global_builder`, `alias_builder` and `ifunc_builder` take their value type
+  as any `IrType`** (was `Into<Type>` for the first three and a concrete
+  `Type` for the last two); the builder keeps it at `ReadOnly` and admits it
+  against the module at `build`, as before (`IrError::ForeignType`).
+- **`FunctionValue::read_only`** lowers a function to `ReadOnly`, for
+  comparing a function reached through a read-only route with one reached
+  from the module.
+
+### Changed — blocks and instructions carry their capability *(breaking)*
+
+- **Block and instruction handles take a trailing `C: Capability = Mutable`**
+  (D1, D8) — `BasicBlock` (after `Params`), `BasicBlockLabel`,
+  `InstructionView`, `PlacedInstruction`, `NonTerminator`, the per-opcode
+  views (`AddInst` … `CatchSwitchInst`, `BinaryOp`, `Cmp`, `CallInst`,
+  `TypedCallInst`, `PhiInst`, `FpPhiInst`, `PointerPhiInst`, `OtherPhiInst`;
+  `SwitchInst` takes it after `W`), `IntrinsicInst`, `MemIntrinsic`,
+  `LifetimeIntrinsic`, and the `Callee`, `CastKind`, `PhiKind`,
+  `InstructionKind`, `TerminatorKind` and `Classified` enums. A block or
+  instruction reached from an unverified module is `Mutable`; one reached from
+  a `Module<B, Verified>` — `view` of a block or instruction id, `users()` of
+  one of its values, `InstructionView::try_from` one of its values — or from a
+  pass context's `BasicBlockView` is `ReadOnly`, and what it hands on
+  (`kind()`, operands, incomings, the terminator, a block's instructions)
+  keeps that capability. Spellings that omit `C` keep meaning `Mutable`. The linear
+  `Instruction` lifecycle handle is unchanged and stays `Mutable`.
+- **Fixed: a verified module's instructions could be changed.**
+  `Module<B, Verified>::view` of a block or instruction id, and `users()` of a
+  verified module's value, handed out `Mutable` handles. With a second
+  unverified module of the same brand, `set_metadata` attached that module's
+  node to the verified module's instruction (the token type-checked), and
+  `set_fast_math_flags`, which takes no token, rewrote a verified phi's flags.
+  The mutators on these handles — `set_metadata`, `push_debug_record`,
+  `set_name` / `clear_name`, `remove_incoming`, `set_fast_math_flags`,
+  `set_value_operand`, `set_tail_call_kind`, `set_attributes`,
+  `with_operand_bundles`, `splice_into`, `split_at` / `split_before` and the
+  blocks' `call` builders — now require `C: CanMutate`. What fails if one of
+  those bounds is dropped:
+  - a compile-fail fixture, for the mutators whose bodies need no `Mutable`
+    reference: `compile_fail/verified_instruction_metadata_is_read_only`
+    (`set_metadata`), `compile_fail/verified_phi_fast_math_flags_are_immutable`
+    (the float phi's `set_fast_math_flags`) and
+    `compile_fail/verified_instruction_mutators_are_read_only`
+    (`push_debug_record`, `set_tail_call_kind`, the call, invoke and `callbr`
+    `set_attributes`, `set_value_operand`, and the int and other phis'
+    `set_fast_math_flags`), each called on a verified module's `ReadOnly`
+    handle;
+  - the crate's own build, for the rest — `set_name` / `clear_name`,
+    `remove_incoming`, `with_operand_bundles`, `splice_into`, `split_at` /
+    `split_before`, the `call` builders, and the `SetName` and `CallBase`
+    impls on these handles (each bounded `C: CanMutate`) — whose bodies call
+    `proven_mutable()` or another `CanMutate`-bounded routine. Where the
+    receiver can be `ReadOnly` today, a compile-fail fixture also fails if a
+    bound is dropped and its body routed around it:
+    `compile_fail/verified_block_label_call_is_read_only`
+    (`BasicBlockLabel::call`),
+    `compile_fail/verified_instruction_name_is_read_only`
+    (`InstructionView::set_name` / `clear_name`),
+    `compile_fail/verified_phi_incoming_removal_is_read_only`
+    (`remove_incoming` on `PhiKind` and the four phi handles),
+    `compile_fail/verified_call_operand_bundles_are_read_only`
+    (`with_operand_bundles` on the call, invoke and `callbr` handles),
+    `compile_fail/verified_instruction_set_name_trait_is_read_only`
+    (`SetName::set_name` / `clear_name` on an instruction) and
+    `compile_fail/verified_call_base_trait_is_read_only`
+    (`CallBase::with_operand_bundles` / `set_attributes` on the call, invoke
+    and `callbr` handles), and the `BasicBlock` receivers — a block's
+    `set_name` / `clear_name`, inherent or through `SetName`, `splice_into`,
+    `split_at` / `split_before`, `call`, and a setter on its
+    `parent_function()` — by `compile_fail/verified_block_is_read_only`.
+
+  `capability_typestate`'s
+  `a_verified_modules_blocks_and_instructions_are_read_only` locks the
+  routes that mint these handles `ReadOnly`, not the mutators — including the
+  routes through a function: its `entry_block` / `basic_blocks`, a block's
+  `parent_function`, and a call's `classify_callee` and `callee()`.
+- **Breaking: `FunctionValue::basic_blocks`, `entry_block` and its
+  `IntoIterator` hand out blocks at the function's capability**
+  (`BasicBlock<'ctx, R, Terminated, B, BlockParamsDyn, C>`), and
+  `CallInst::classify_callee` and `BasicBlock::parent_function` keep the
+  call's / block's: `Callee::Direct` holds a `FunctionValue<'ctx, Dyn, B, C>`.
+  A verified module's function, call or block therefore leads only to
+  `ReadOnly` blocks and instructions; spellings that omit `C` keep meaning
+  `Mutable`. Locked by `compile_fail/verified_call_callee_is_not_a_mutable_route`
+  and `verified_block_is_read_only`. `FunctionBody::basic_blocks` /
+  `entry_block` still hand out `Mutable` blocks: a `FunctionBody` comes only
+  from a mutating rung's `function_mut()`.
+- **Breaking: a `BasicBlockView` hands out `ReadOnly` handles** —
+  `instructions()`, `placed_instructions()` and its `IntoIterator` — so the
+  instructions of a walk an `Inspect` pass receives, and what they narrow to,
+  are `ReadOnly`, and so is every route on from them: an operand that is an
+  argument hands out `Argument::parent_function` at the argument's capability,
+  so that function's `entry_block` leads only to `ReadOnly` instructions (locked
+  by `compile_fail/verified_argument_parent_function_is_not_a_mutable_route`).
+  That walk feeds the value-tracking analyses directly: they accept either
+  capability (see *the analyses read handles of either capability*, above). A
+  mutating context's
+  `erase`, `replace_all_uses` and `split_block`, `IrBuilder::position_before`, the
+  `Instruction` insert and move entries, and `BasicBlock::split_at` /
+  `split_before` take handles and witnesses of either capability; the entry
+  carries the authority, and naming an instruction is not mutating it.
+- **Breaking: `User::operand` and `User::operand_use` return at the user's
+  capability** (`User` gains a `CapabilityOf` supertrait), and the call views'
+  `operand_bundles` / `operand_bundle` return `OperandBundleUse` at the call's.
+- **Breaking: `CallBase` is implemented only for call sites that
+  `CanMutate`** — both of its operations mutate.
+  `compile_fail/verified_call_base_trait_is_read_only` calls both through
+  the trait on a verified module's `ReadOnly` call sites.
+- **Breaking: `TypedCallInst::result` exists only on a `Mutable` call.**
+  `FunctionReturn::CallResult` names no capability (for a struct return it is
+  the `IrStruct` derive's own value type); a `ReadOnly` call reads its result
+  through `as_call_inst().return_value()`.
+- **Breaking: `BlockCursor::at_start` and `IrBuilder::position_at_end` take a
+  `Mutable` block**, and the open-terminator surfaces (`add_case`, `add_destination`,
+  `add_catch_clause`, `add_handler`) stay on the `Mutable` handles the builder
+  mints.
+- **Read-only queries accept either capability**: `IntoBasicBlockLabel`
+  re-mints a block or label of either capability at the receiving module; the
+  dominator tree's block, instruction and use queries,
+  `can_ignore_sign_bit_of_zero` / `_nan`,
+  `is_guaranteed_to_transfer_execution_to_successor`, the
+  `OverflowingBinaryOperator` / `PossiblyExactOperator` impls on the
+  per-opcode views, `is_supported_floating_point_type`, and
+  `ShuffleVectorInst::is_valid_operands` /
+  `is_valid_operands_with_constant_mask` (each operand at its own) are
+  generic over it; and a `Value`, block or instruction of either capability
+  prints.
+
+### Changed — global values rename through the module's symbol table *(breaking)*
+
+- **Fixed: renaming a function, global variable, alias or ifunc did
+  nothing.** `HasName::set_name` / `clear_name` on those handles were empty,
+  and `Value::set_name` on one fell through every arm — the call compiled and
+  the name never changed. They now port `Value::setName`'s `GlobalValue` arm:
+  the module has one symbol table for every global value
+  (`Module::ValSymTab`), `createValueName` takes the name or uniques a clash
+  with the module's counter — `name.1`, or `name1` on a module whose target
+  triple is NVPTX (`ValueSymbolTable::makeUniqueName`) — and the old name is
+  freed. `FunctionValue`, `GlobalVariable`, `GlobalAlias` and `GlobalIfunc`
+  gain inherent `set_name` / `clear_name` and implement `SetName` again.
+  Renaming through the `ptr @g` constant renames the global, and that
+  constant's `name()` answers the global's, as upstream's `GlobalValue` is
+  that constant (`docs/divergences.md` D3).
+- **Renaming a function recomputes its intrinsic identity**, as
+  `Function::updateAfterNameChange` does: a name without the `llvm.` prefix
+  clears it, and an intrinsic's name on a function with that intrinsic's
+  signature sets it. A mismatched signature stores none, where upstream keeps
+  the id (`docs/divergences.md`, entry 136).
+- **Breaking: `name()` on `FunctionValue`, `GlobalVariable`, `GlobalAlias`,
+  `GlobalIfunc`, `GlobalVariableView`, `GlobalAliasView`,
+  `GlobalIfuncView`, `FunctionView` and `FunctionBody` returns
+  `Option<String>`**, like every other value handle's: a global's name lives
+  on the value, once, instead of in a second copy the rename would have had
+  to keep in step. `None` is an unnamed global; `.unwrap_or_default()` is
+  upstream's `getName()`.
+- **Fixed: a global variable holding an intrinsic's name made
+  `get_or_insert_intrinsic_declaration*` declare a second global under the
+  same name**, because each kind of global kept its own name map. The
+  declaration is now refused with `IrError::DuplicateFunctionName`; upstream
+  `cast<Function>`s the variable and asserts.
+- Creation still refuses a taken name, and a function still refuses an
+  `llvm.` name, where upstream uniques the one and accepts the other —
+  `docs/divergences.md`, entry 137.
+- **Breaking: `set_name` returns `IrResult<()>`** — on `Value`, on `SetName`,
+  and on every handle's inherent `set_name` — and refuses with the new
+  `IrError::InvalidValueName` variant (breaking: a new `IrError` variant)
+  what `Value::setNameImpl` asserts against, the value keeping its name. Its
+  `InvalidValueNameReason` says which: `ContainsNul` (a NUL byte, which printed
+  as a `\00` escape the lexer will not read back), `VoidValue` (a name for a
+  `void` value, which used to be dropped without a word), and `InlineAsm` /
+  `MetadataAsValue` (values `getSymTab` asserts are not constants, which
+  used to be ignored). `clear_name` stays infallible. Creation does not run
+  these checks yet — `docs/divergences.md`, entry 140.
+- **Breaking: `get_or_insert_intrinsic_declaration*` ports the rest of
+  `getOrInsertIntrinsicDeclarationImpl`.** A function of another type that
+  holds the intrinsic's name is renamed `<name>.invalid` and the intrinsic is
+  declared afresh, where it used to be refused with
+  `IntrinsicSignatureMismatch`; a definition of the intrinsic's type is
+  returned, where it used to be refused. A holder of the right type without
+  the intrinsic's identity is still refused — `docs/divergences.md`, entry 138.
+  Every refusal now comes before the first mutation, so a refused call leaves
+  the module as it was; the `.invalid` arm's rename and declaration run in a
+  step whose signature cannot return an error.
+- **Breaking: `get_or_insert_intrinsic_declaration*` names no argument.** The
+  declaration's arguments used to take TableGen's `ArgName`s (`kind`,
+  `fill_mode`, …), and with the definition arm above that would have renamed a
+  caller's own function's arguments. Upstream names none: `ArgName` is
+  pretty-printer data, still read at each call site.
+- **Fixed: a vector `llvm.scmp` / `llvm.ucmp` could not be declared or
+  parsed.** Building their `Range<RetIndex, -1, 2>` attribute demanded a scalar
+  integer result, so `declare <4 x i8> @llvm.scmp.v4i8.v4i32(<4 x i32>, <4 x i32>)`
+  was refused as an intrinsic signature mismatch. The range is now sized by the
+  element type (`range(i8 -1, 2)`), as `getIntrinsicArgAttributeSet`'s
+  `ArgType->getScalarSizeInBits()` sizes it. The sample-overload sweep, which
+  declared scalar samples only and so never met a vector `scmp`, now also
+  declares again every sample that has a scalar integer or floating-point
+  overload, with those overloads widened to vectors.
+- **Breaking: `FunctionValue::is_intrinsic` mirrors `Function::isIntrinsic`**
+  — whether the name starts with `llvm.` — where it used to answer whether
+  `intrinsic_id()` does. A function named `llvm.` plus a name no intrinsic has
+  is now `true`, as upstream.
+- The unique-name counter wraps past `u32::MAX` to 0, as upstream's
+  `uint32_t` `LastUnique` does, where it used to panic.
+- Fixed before release: an unnamed global or function in a comdat named `""`
+  printed ` comdat($)`, a regression of this section's `Option<String>`
+  names; it prints a bare ` comdat`, as `maybePrintComdat` does.
+- The verifier's demand that an intrinsic declaration carry its generated
+  attributes is recorded as llvmkit's own (`docs/divergences.md`, entry 139):
+  upstream's `Verifier` never consults `Intrinsic::getAttributes`, and the
+  five tests that called it a mirror of `visitFunction` are relabelled (the
+  entry lists them and the search that finds them).
+
+### Changed — value handles carry their capability *(breaking)*
+
+- **Every value handle takes a trailing `C: Capability = Mutable`** —
+  `Value`, `IntValue`, `FloatValue`, `PointerValue`, `ArrayValue`,
+  `StructValue`, `VectorValue`, `Argument`, `Constant`, `ConstantIntValue`,
+  `ConstantFloatValue`, `ConstantPointerNull`, `UndefValue`, `PoisonValue`,
+  `ConstantAggregate`, `InlineAsm`, `TypedPointerValue`, `Use` and
+  `OperandBundleUse` (D1, D8). A value viewed through an unverified `Module`
+  is `Mutable`; through a `Module<B, Verified>` or a `ModuleView`, `ReadOnly`.
+  A constant minted from a type (`const_int`, `const_float`, `const_null`,
+  `undef`, `poison`, ...) carries the type's capability, and a value's `ty()`
+  and `as_erased()` keep its own. Spellings that omit `C` keep meaning
+  `Mutable`.
+- **Renaming needs a mutable handle.** `set_name` and `clear_name` require
+  `C: CanMutate`; on a `ReadOnly` value each is a compile error carrying
+  `CanMutate`'s own message, even beside another module's
+  `&Module<B, Unverified>` token of the same brand — which used to compile
+  and reach a run-time module-id assertion.
+- **Fixed: a verified module's use-list order could be rewritten.**
+  `sort_use_list` and `sort_use_list_by` take no module token, so on a value
+  viewed from a `Module<B, Verified>` they compiled and reordered its uses —
+  the order `users()` walks and the printer's `uselistorder` directives
+  record — after `verify()`. They now require `C: CanMutate`, and a verified
+  module's values are `ReadOnly`.
+- **Breaking: `HasName` is split.** It keeps `name` and is implemented at
+  every capability; `set_name` / `clear_name` move to the new sealed trait
+  **`SetName`** (exported beside `HasName`), implemented for `Mutable` value
+  handles, blocks, instructions and — see the section above — the four
+  kinds of global value. Generic code that renamed through `HasName` bounds
+  on `SetName`.
+- **Breaking: `IsValue`, `Typed` and `IsConstant` read the capability from
+  their `CapabilityOf` supertrait**: `as_erased`, `ty` and `as_constant`
+  return at `Self::Capability`. Generic code that returned
+  `v.as_erased()` as `Value<'ctx, B>` names
+  `Value<'ctx, B, V::Capability>`.
+- **Operands of any capability are admitted.** The operand lifts —
+  `IntoIntValue`, `IntoFloatValue`, `IntoPointerValue`, `IntoErasedValue`,
+  `IntoIrField` and `IntoCallArg` — accept a handle of either capability; the
+  receiving builder checks it belongs to its own module
+  (`IrError::ForeignValueId` otherwise) and re-mints it there. Reading a value
+  as an operand is not mutating it. `FnReshape::insert_phi_dyn` likewise takes
+  its type as any `IrType`, and `verify_inline_asm` any `FunctionType`.
+- **Breaking: `IntoConstantInt::into_constant_int`,
+  `IntoConstantFloat::into_constant_float` and
+  `IntoConstantValue::into_constant` are generic over the capability** they
+  mint at; a hand-written impl spells the new signature.
+- **Breaking: `OperandBundleDef::inputs` yields `ReadOnly` values.** A bundle
+  stores its inputs read-only so it accepts an input of either capability;
+  the call-site builder admits each one.
+- **`Value::read_only` and `Constant::read_only`** lower a handle to
+  `ReadOnly`, for comparing a value reached through a read-only route with
+  one reached from the module.
+
+### Changed — type handles carry their capability *(breaking)*
+
+- **Every type handle takes a trailing `C: Capability = Mutable`** —
+  `Type`, `IntType`, `FloatType`, `PointerType`, `FunctionType`,
+  `ArrayType`, `StructType`, `VectorType`, `VoidType`, `LabelType`,
+  `MetadataType`, `TokenType`, `TargetExtType`, `TypedPointerType`,
+  `SizedType`, and the `AnyTypeEnum` / `BasicTypeEnum` /
+  `BasicMetadataTypeEnum` / `AggregateType` refinements (D1, D8). A
+  type minted from an unverified `Module` is `Mutable`; one minted through a
+  `ModuleView` is `ReadOnly`; navigation (`element`, `return_type`,
+  `params`, `field_type`, conversions between handles) keeps the capability.
+  Spellings that omit `C` keep meaning `Mutable`.
+- **Breaking: `IrType` has an associated `Capability`**, and `as_type`
+  returns `Type<'ctx, B, Self::Capability>`. Generic code that returned
+  `t.as_type()` as `Type<'ctx, B>` names `Type<'ctx, B, T::Capability>`.
+  The refinement enums and `SizedType` now implement `IrType`.
+- **Breaking: type operands of the type constructors are bounded
+  `IrType<'ctx, B>`**, not `Into<Type<'ctx, B>>` — `array_type`,
+  `vector_type`, `struct_type`, `function_type`, `target_ext_type`,
+  `set_struct_body` and their siblings, on both `Module` and `ModuleView` —
+  so they accept a type of either capability. Every type handle implements
+  `IrType`; a caller that passed a non-handle `Into<Type>` value converts it
+  first.
+- **Breaking: `ModuleView`'s type constructors return `ReadOnly` types**,
+  and so do the schema traits that build through a view: `IrField::ir_type`,
+  `FunctionReturn::ir_type`, `FunctionParam::ir_type`,
+  `FunctionParamList::ir_types`, `StructSchema::field_types` and
+  `StructSchema::ir_type` return `Type<'ctx, B, ReadOnly>` (or the
+  `ReadOnly` struct type), and their `matches_ir_type` / `matches_fields`
+  readers are generic over the capability. A hand-written impl spells the
+  new signatures; `#[derive(IrStruct)]` emits them.
+- **`Type::read_only`** lowers a type to `ReadOnly`, for comparing a type
+  minted through a view with one minted from the module: equality is defined
+  within one capability.
+- Not yet: concretely typed operands — the builder's
+  `trunc(v, dst_ty: IntType<…>)`, the module's
+  `add_function_dyn(name, fn_ty, …)` and the like — still take `Mutable`
+  types, so a view-minted type passes only where the bound is `IrType`.
+  (Constants minted from a type now carry its capability — see the value
+  entry above.)
+
+### Added — a module reference carries a capability *(breaking, narrowly)*
+
+- **`Capability`, `Mutable`, `ReadOnly`, `CanMutate`, `CapabilityOf` and
+  `ModuleState`** (new module `capability`) name what a handle may do with the
+  module it reads (D1, D8). `ModuleRef<'ctx, B, C = Mutable>` gains the third
+  parameter, and `ModuleRef::read_only` drops a reference to `ReadOnly`. An
+  unverified module's state maps to `Mutable` and a verified one's to
+  `ReadOnly`; `CanMutate` is implemented by `Mutable` alone, and is the bound
+  a mutator will carry.
+- **`ViewIn::View` takes the capability as a parameter** — `I::View<C>` — so
+  the module an id resolves against, not the id, decides the capability of
+  the handle. `Module::view` / `try_view` return `I::View<S::Capability>`
+  and `ModuleView::view` / `try_view` return `I::View<ReadOnly>`.
+  **Breaking** only for code that names the associated type in a generic
+  bound or return (`I::View` becomes `I::View<C>`); every call of `view`
+  compiles unchanged, because no handle type carries the capability yet and
+  each still resolves to the handle it did before.
+
 ### Fixed — the indirect and inline-asm `invoke` / `callbr` builders check what `call_erased` checks
 
 - **`IrBuilder::indirect_invoke_dyn_with_config` checks its return marker.** It

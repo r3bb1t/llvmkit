@@ -21,7 +21,7 @@ use std::rc::Rc;
 use llvmkit_ir::{
     Analyses, DominatorTreeAnalysis, Dyn, FnCx, FnPatch, FnReport, FunctionId, FunctionPass,
     InstructionView, IrBuilder, IrError, IrResult, Linkage, ModCx, ModReport, Module, ModuleBrand,
-    ModulePass, NoFolder, PatchBody, RewriteModule, Unverified, Verified, function_pass,
+    ModulePass, NoFolder, PatchBody, ReadOnly, RewriteModule, Unverified, Verified, function_pass,
     module_new, module_pass, run_function_pass, run_module_pass,
 };
 
@@ -66,7 +66,7 @@ fn build_ret_i32<'ctx, B: ModuleBrand + 'ctx>(
 fn erase_dead_instructions<'m, 'ctx, B: ModuleBrand + 'ctx>(
     patch: &mut FnPatch<'m, '_, 'ctx, B, ()>,
 ) -> IrResult<()> {
-    let mut dead: Vec<InstructionView<'m, B>> = Vec::new();
+    let mut dead: Vec<InstructionView<'m, B, ReadOnly>> = Vec::new();
     for block in patch.function_mut().basic_blocks() {
         for view in block.instructions() {
             if !view.to_erased().has_uses() && !view.is_terminator() {

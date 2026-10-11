@@ -6,6 +6,7 @@
 //! dead operands are removed.
 
 use super::IrResult;
+use super::capability::Capability;
 use super::instruction::{InstructionKind, InstructionView};
 use super::module::ModuleBrand;
 use super::pass_access::PatchBody;
@@ -45,8 +46,8 @@ impl<B: ModuleBrand> FunctionPass<B> for DcePass {
     }
 }
 
-pub(crate) fn is_trivially_dead<'ctx, B: ModuleBrand + 'ctx>(
-    view: &InstructionView<'ctx, B>,
+pub(crate) fn is_trivially_dead<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    view: &InstructionView<'ctx, B, C>,
 ) -> bool {
     if view.to_erased().has_uses() || view.is_terminator() {
         return false;

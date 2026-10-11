@@ -31,7 +31,7 @@ fn parse(source: &str) -> Module<DynBrand, Unverified> {
 fn named_instruction<'m>(
     module: &'m Module<DynBrand, Unverified>,
     name: &str,
-) -> InstructionView<'m, DynBrand> {
+) -> InstructionView<'m, DynBrand, llvmkit_ir::ReadOnly> {
     module
         .as_view()
         .functions()
@@ -41,7 +41,10 @@ fn named_instruction<'m>(
         .unwrap_or_else(|| panic!("fixture defines %{name}"))
 }
 
-fn named_value<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, DynBrand> {
+fn named_value<'m>(
+    module: &'m Module<DynBrand, Unverified>,
+    name: &str,
+) -> Value<'m, DynBrand, llvmkit_ir::ReadOnly> {
     named_instruction(module, name).to_erased()
 }
 
@@ -122,7 +125,7 @@ define void @f(ptr %p) {
     let view = module.as_view();
     let entry = view
         .functions()
-        .find(|function| function.name() == "f")
+        .find(|function| function.name().as_deref() == Some("f"))
         .expect("fixture defines @f")
         .basic_blocks()
         .next()

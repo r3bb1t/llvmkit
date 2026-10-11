@@ -10,9 +10,9 @@ help: the trait `IntoIntValue<'_, i32, Right>` is not implemented for `ConstantI
       but trait `IntoIntValue<'_, i32, Left>` is implemented for it
   --> src/int_width.rs
    |
-   | / impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, W, B>
-   | |     for ConstantIntValue<'ctx, W, B>
-   | |____________________________________^
+   | / impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx, C: Capability> IntoIntValue<'ctx, W, B>
+   | |     for ConstantIntValue<'ctx, W, B, C>
+   | |_______________________________________^
    = help: for that trait implementation, expected `Left`, found `Right`
    = note: required for `ConstantIntValue<'_, i32, Left>` to implement `IntoCallArg<'_, i32, Right>`
    = note: required for `(ConstantIntValue<'_, i32, Left>,)` to implement `CallArgs<'_, (i32,), Right>`

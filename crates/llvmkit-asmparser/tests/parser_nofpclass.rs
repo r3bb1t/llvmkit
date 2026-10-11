@@ -17,7 +17,7 @@ use llvmkit_asmparser::parser;
 
 pub mod support;
 
-use support::line_and_column;
+use support::{line_and_column, reported_line_and_column};
 
 /// Parse, verify, print, and require the text back byte-identically.
 fn round_trip(source: &str) {
@@ -165,11 +165,9 @@ fn the_nofpclass_paren_diagnostics_are_upstreams_exact_text_and_anchor() {
         let error = parser::parse_dynamic(source).expect_err("upstream runs `not llvm-as` on this");
         assert_eq!(format!("{error}"), message);
 
-        let start = error.loc().start;
-        let offset = usize::try_from(start).unwrap_or(usize::MAX);
         let expected = source.find(token).expect("the fixture spells this token");
         assert_eq!(
-            line_and_column(source.as_bytes(), offset),
+            reported_line_and_column(source.as_bytes(), &error),
             line_and_column(source.as_bytes(), expected),
             "caret should sit on `{token}` for `{message}`"
         );

@@ -34,10 +34,11 @@
 use core::fmt;
 
 use super::ap_int::Signedness;
+use super::capability::Capability;
 use super::constants::ConstantIntValue;
 use super::module::{ModuleBrand, ModuleRef};
-use super::r#type::{TypeSlotAccess, sealed};
-use super::value::{IntValue, IsValue, Value, ValueSlotAccess};
+use super::r#type::sealed;
+use super::value::{IntValue, IsValue, Value};
 
 /// Sealed marker trait implemented by every integer width tag.
 pub trait IntWidth: sealed::Sealed + Copy + 'static + fmt::Debug {
@@ -194,20 +195,22 @@ fn u128_halves(bits: u128) -> (u64, u64) {
 /// cases that require runtime fit checking (narrowing or [`IntDyn`]).
 pub trait IntoConstantInt<'ctx, W: IntWidth, B: ModuleBrand> {
     type Error;
-    fn into_constant_int(
+    /// Mint the constant at `ty`'s capability: a constant read through a
+    /// `ReadOnly` type is `ReadOnly` too.
+    fn into_constant_int<C: Capability>(
         self,
-        ty: IntType<'ctx, W, B>,
-    ) -> Result<ConstantIntValue<'ctx, W, B>, Self::Error>;
+        ty: IntType<'ctx, W, B, C>,
+    ) -> Result<ConstantIntValue<'ctx, W, B, C>, Self::Error>;
 }
 
 // ---- Width-exact infallible cases (Error = Infallible) ----
 
 impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, bool, B> for bool {
     type Error = Infallible;
-    fn into_constant_int(
+    fn into_constant_int<C: Capability>(
         self,
-        ty: IntType<'ctx, bool, B>,
-    ) -> Result<ConstantIntValue<'ctx, bool, B>, Infallible> {
+        ty: IntType<'ctx, bool, B, C>,
+    ) -> Result<ConstantIntValue<'ctx, bool, B, C>, Infallible> {
         Ok(ty
             .const_int_raw(u64::from(self), Signedness::Unsigned)
             .unwrap_or_else(|_| unreachable!("bool fits in i1")))
@@ -218,10 +221,10 @@ macro_rules! impl_into_constant_int_signed_exact {
     ($rust_ty:ty) => {
         impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, $rust_ty, B> for $rust_ty {
             type Error = Infallible;
-            fn into_constant_int(
+            fn into_constant_int<C: Capability>(
                 self,
-                ty: IntType<'ctx, $rust_ty, B>,
-            ) -> Result<ConstantIntValue<'ctx, $rust_ty, B>, Infallible> {
+                ty: IntType<'ctx, $rust_ty, B, C>,
+            ) -> Result<ConstantIntValue<'ctx, $rust_ty, B, C>, Infallible> {
                 let raw = i64::from(self).cast_unsigned();
                 Ok(ty
                     .const_int_raw(raw, Signedness::Signed)
@@ -234,10 +237,10 @@ macro_rules! impl_into_constant_int_unsigned_exact {
     ($rust_ty:ty, $marker:ty) => {
         impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, $marker, B> for $rust_ty {
             type Error = Infallible;
-            fn into_constant_int(
+            fn into_constant_int<C: Capability>(
                 self,
-                ty: IntType<'ctx, $marker, B>,
-            ) -> Result<ConstantIntValue<'ctx, $marker, B>, Infallible> {
+                ty: IntType<'ctx, $marker, B, C>,
+            ) -> Result<ConstantIntValue<'ctx, $marker, B, C>, Infallible> {
                 Ok(ty
                     .const_int_raw(u64::from(self), Signedness::Unsigned)
                     .unwrap_or_else(|_| unreachable!("native unsigned int fits exactly")))
@@ -252,10 +255,10 @@ impl_into_constant_int_signed_exact!(i32);
 // want the bit-pattern interpreted as signed for diagnostics.
 impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, i64, B> for i64 {
     type Error = Infallible;
-    fn into_constant_int(
+    fn into_constant_int<C: Capability>(
         self,
-        ty: IntType<'ctx, i64, B>,
-    ) -> Result<ConstantIntValue<'ctx, i64, B>, Infallible> {
+        ty: IntType<'ctx, i64, B, C>,
+    ) -> Result<ConstantIntValue<'ctx, i64, B, C>, Infallible> {
         let raw = self.cast_unsigned();
         Ok(ty
             .const_int_raw(raw, Signedness::Unsigned)
@@ -270,10 +273,10 @@ impl_into_constant_int_unsigned_exact!(u64, i64);
 // i128/u128 use arbitrary-precision path
 impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, i128, B> for i128 {
     type Error = Infallible;
-    fn into_constant_int(
+    fn into_constant_int<C: Capability>(
         self,
-        ty: IntType<'ctx, i128, B>,
-    ) -> Result<ConstantIntValue<'ctx, i128, B>, Infallible> {
+        ty: IntType<'ctx, i128, B, C>,
+    ) -> Result<ConstantIntValue<'ctx, i128, B, C>, Infallible> {
         let (lo, hi) = u128_halves(self.cast_unsigned());
         Ok(ty
             .const_int_arbitrary_precision(&[lo, hi])
@@ -282,10 +285,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, i128, B> for i128 {
 }
 impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, i128, B> for u128 {
     type Error = Infallible;
-    fn into_constant_int(
+    fn into_constant_int<C: Capability>(
         self,
-        ty: IntType<'ctx, i128, B>,
-    ) -> Result<ConstantIntValue<'ctx, i128, B>, Infallible> {
+        ty: IntType<'ctx, i128, B, C>,
+    ) -> Result<ConstantIntValue<'ctx, i128, B, C>, Infallible> {
         let (lo, hi) = u128_halves(self);
         Ok(ty
             .const_int_arbitrary_precision(&[lo, hi])
@@ -299,8 +302,8 @@ macro_rules! impl_into_constant_int_signed_widen {
     ($rust_ty:ty, $($marker:ty),+) => { $(
         impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, $marker, B> for $rust_ty {
             type Error = Infallible;
-            fn into_constant_int(self, ty: IntType<'ctx, $marker, B>)
-                -> Result<ConstantIntValue<'ctx, $marker, B>, Infallible>
+            fn into_constant_int<C: Capability>(self, ty: IntType<'ctx, $marker, B, C>)
+                -> Result<ConstantIntValue<'ctx, $marker, B, C>, Infallible>
             {
                 let widened = i64::from(self).cast_unsigned();
                 Ok(ty.const_int_raw(widened, Signedness::Signed).unwrap_or_else(|_| {
@@ -314,8 +317,8 @@ macro_rules! impl_into_constant_int_unsigned_widen {
     ($rust_ty:ty, $($marker:ty),+) => { $(
         impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, $marker, B> for $rust_ty {
             type Error = Infallible;
-            fn into_constant_int(self, ty: IntType<'ctx, $marker, B>)
-                -> Result<ConstantIntValue<'ctx, $marker, B>, Infallible>
+            fn into_constant_int<C: Capability>(self, ty: IntType<'ctx, $marker, B, C>)
+                -> Result<ConstantIntValue<'ctx, $marker, B, C>, Infallible>
             {
                 Ok(ty.const_int_raw(u64::from(self), Signedness::Unsigned).unwrap_or_else(|_| {
                     unreachable!("unsigned Rust int fits losslessly when zero-extending to wider W")
@@ -335,8 +338,8 @@ macro_rules! impl_into_constant_int_signed_widen_b128 {
     ($($rust_ty:ty),+) => { $(
         impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, i128, B> for $rust_ty {
             type Error = Infallible;
-            fn into_constant_int(self, ty: IntType<'ctx, i128, B>)
-                -> Result<ConstantIntValue<'ctx, i128, B>, Infallible>
+            fn into_constant_int<C: Capability>(self, ty: IntType<'ctx, i128, B, C>)
+                -> Result<ConstantIntValue<'ctx, i128, B, C>, Infallible>
             {
                 let (lo, hi) = u128_halves(i128::from(self).cast_unsigned());
                 Ok(ty.const_int_arbitrary_precision(&[lo, hi]).unwrap_or_else(|_| {
@@ -350,8 +353,8 @@ macro_rules! impl_into_constant_int_unsigned_widen_b128 {
     ($($rust_ty:ty),+) => { $(
         impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, i128, B> for $rust_ty {
             type Error = Infallible;
-            fn into_constant_int(self, ty: IntType<'ctx, i128, B>)
-                -> Result<ConstantIntValue<'ctx, i128, B>, Infallible>
+            fn into_constant_int<C: Capability>(self, ty: IntType<'ctx, i128, B, C>)
+                -> Result<ConstantIntValue<'ctx, i128, B, C>, Infallible>
             {
                 let (lo, hi) = u128_halves(u128::from(self));
                 Ok(ty.const_int_arbitrary_precision(&[lo, hi]).unwrap_or_else(|_| {
@@ -375,10 +378,10 @@ impl_into_constant_int_unsigned_widen_b128!(u8, u16, u32, u64);
 
 impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> IntoConstantInt<'ctx, Width<N>, B> for bool {
     type Error = Infallible;
-    fn into_constant_int(
+    fn into_constant_int<C: Capability>(
         self,
-        ty: IntType<'ctx, Width<N>, B>,
-    ) -> Result<ConstantIntValue<'ctx, Width<N>, B>, Infallible> {
+        ty: IntType<'ctx, Width<N>, B, C>,
+    ) -> Result<ConstantIntValue<'ctx, Width<N>, B, C>, Infallible> {
         const {
             assert!(N >= 1, "Width<N> requires N >= 1");
         }
@@ -394,10 +397,10 @@ macro_rules! impl_into_constant_int_width_signed {
             for $rust_ty
         {
             type Error = Infallible;
-            fn into_constant_int(
+            fn into_constant_int<C: Capability>(
                 self,
-                ty: IntType<'ctx, Width<N>, B>,
-            ) -> Result<ConstantIntValue<'ctx, Width<N>, B>, Infallible> {
+                ty: IntType<'ctx, Width<N>, B, C>,
+            ) -> Result<ConstantIntValue<'ctx, Width<N>, B, C>, Infallible> {
                 const {
                     assert!(
                         N >= $min_bits,
@@ -424,10 +427,10 @@ macro_rules! impl_into_constant_int_width_unsigned {
             for $rust_ty
         {
             type Error = Infallible;
-            fn into_constant_int(
+            fn into_constant_int<C: Capability>(
                 self,
-                ty: IntType<'ctx, Width<N>, B>,
-            ) -> Result<ConstantIntValue<'ctx, Width<N>, B>, Infallible> {
+                ty: IntType<'ctx, Width<N>, B, C>,
+            ) -> Result<ConstantIntValue<'ctx, Width<N>, B, C>, Infallible> {
                 const {
                     assert!(
                         N >= $min_bits,
@@ -457,10 +460,10 @@ impl_into_constant_int_width_unsigned!(u32, 32);
 // identity (no `from`), and we need to preserve the signed bit pattern.
 impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> IntoConstantInt<'ctx, Width<N>, B> for i64 {
     type Error = Infallible;
-    fn into_constant_int(
+    fn into_constant_int<C: Capability>(
         self,
-        ty: IntType<'ctx, Width<N>, B>,
-    ) -> Result<ConstantIntValue<'ctx, Width<N>, B>, Infallible> {
+        ty: IntType<'ctx, Width<N>, B, C>,
+    ) -> Result<ConstantIntValue<'ctx, Width<N>, B, C>, Infallible> {
         const {
             assert!(N >= 64, "i64 lift to Width<N> requires N >= 64");
         }
@@ -475,10 +478,10 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> IntoConstantInt<'ctx, Width<N>, 
 }
 impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> IntoConstantInt<'ctx, Width<N>, B> for u64 {
     type Error = Infallible;
-    fn into_constant_int(
+    fn into_constant_int<C: Capability>(
         self,
-        ty: IntType<'ctx, Width<N>, B>,
-    ) -> Result<ConstantIntValue<'ctx, Width<N>, B>, Infallible> {
+        ty: IntType<'ctx, Width<N>, B, C>,
+    ) -> Result<ConstantIntValue<'ctx, Width<N>, B, C>, Infallible> {
         const {
             assert!(N >= 64, "u64 lift to Width<N> requires N >= 64");
         }
@@ -490,10 +493,10 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> IntoConstantInt<'ctx, Width<N>, 
 // i128/u128 use the arbitrary-precision path.
 impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> IntoConstantInt<'ctx, Width<N>, B> for i128 {
     type Error = Infallible;
-    fn into_constant_int(
+    fn into_constant_int<C: Capability>(
         self,
-        ty: IntType<'ctx, Width<N>, B>,
-    ) -> Result<ConstantIntValue<'ctx, Width<N>, B>, Infallible> {
+        ty: IntType<'ctx, Width<N>, B, C>,
+    ) -> Result<ConstantIntValue<'ctx, Width<N>, B, C>, Infallible> {
         const {
             assert!(N >= 128, "i128 lift to Width<N> requires N >= 128");
         }
@@ -511,10 +514,10 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> IntoConstantInt<'ctx, Width<N>, 
 }
 impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> IntoConstantInt<'ctx, Width<N>, B> for u128 {
     type Error = Infallible;
-    fn into_constant_int(
+    fn into_constant_int<C: Capability>(
         self,
-        ty: IntType<'ctx, Width<N>, B>,
-    ) -> Result<ConstantIntValue<'ctx, Width<N>, B>, Infallible> {
+        ty: IntType<'ctx, Width<N>, B, C>,
+    ) -> Result<ConstantIntValue<'ctx, Width<N>, B, C>, Infallible> {
         const {
             assert!(N >= 128, "u128 lift to Width<N> requires N >= 128");
         }
@@ -530,7 +533,7 @@ macro_rules! impl_into_constant_int_dyn {
     (signed $($rust_ty:ty),+) => { $(
         impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, IntDyn, B> for $rust_ty {
             type Error = IrError;
-            fn into_constant_int(self, ty: IntType<'ctx, IntDyn, B>) -> IrResult<ConstantIntValue<'ctx, IntDyn, B>> {
+            fn into_constant_int<C: Capability>(self, ty: IntType<'ctx, IntDyn, B, C>) -> IrResult<ConstantIntValue<'ctx, IntDyn, B, C>> {
                 ty.const_int_raw(i64::from(self).cast_unsigned(), Signedness::Signed)
             }
         }
@@ -538,7 +541,7 @@ macro_rules! impl_into_constant_int_dyn {
     (unsigned $($rust_ty:ty),+) => { $(
         impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, IntDyn, B> for $rust_ty {
             type Error = IrError;
-            fn into_constant_int(self, ty: IntType<'ctx, IntDyn, B>) -> IrResult<ConstantIntValue<'ctx, IntDyn, B>> {
+            fn into_constant_int<C: Capability>(self, ty: IntType<'ctx, IntDyn, B, C>) -> IrResult<ConstantIntValue<'ctx, IntDyn, B, C>> {
                 ty.const_int_raw(u64::from(self), Signedness::Unsigned)
             }
         }
@@ -550,20 +553,20 @@ impl_into_constant_int_dyn!(signed i8, i16, i32);
 // SIGNED value (so -1 fits any width; mirrors ConstantInt::getSigned).
 impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, IntDyn, B> for i64 {
     type Error = IrError;
-    fn into_constant_int(
+    fn into_constant_int<C: Capability>(
         self,
-        ty: IntType<'ctx, IntDyn, B>,
-    ) -> IrResult<ConstantIntValue<'ctx, IntDyn, B>> {
+        ty: IntType<'ctx, IntDyn, B, C>,
+    ) -> IrResult<ConstantIntValue<'ctx, IntDyn, B, C>> {
         ty.const_int_raw(self.cast_unsigned(), Signedness::Signed)
     }
 }
 impl_into_constant_int_dyn!(unsigned u8, u16, u32, u64);
 impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, IntDyn, B> for bool {
     type Error = IrError;
-    fn into_constant_int(
+    fn into_constant_int<C: Capability>(
         self,
-        ty: IntType<'ctx, IntDyn, B>,
-    ) -> IrResult<ConstantIntValue<'ctx, IntDyn, B>> {
+        ty: IntType<'ctx, IntDyn, B, C>,
+    ) -> IrResult<ConstantIntValue<'ctx, IntDyn, B, C>> {
         ty.const_int_raw(u64::from(self), Signedness::Unsigned)
     }
 }
@@ -620,11 +623,16 @@ decl_wider_than!(i128: bool, i8, i16, i32, i64);
 /// `module` argument exists so Rust-scalar inputs can route through the
 /// right [`IntType<'ctx, W>`] constructor, and so a handle impl can refuse a
 /// handle another module minted with
-/// [`IrError::ForeignValueId`].
+/// [`IrError::ForeignValueId`]. The value comes back at `module`'s
+/// capability: a builder admits at its `Mutable` reference, and a lift
+/// through a `ReadOnly` one is a read.
 pub trait IntoIntValue<'ctx, W: IntWidth, B: ModuleBrand>:
     Sized + into_int_value_sealed::Sealed
 {
-    fn into_int_value(self, module: ModuleRef<'ctx, B>) -> IrResult<IntValue<'ctx, W, B>>;
+    fn into_int_value<ModuleCapability: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<IntValue<'ctx, W, B, ModuleCapability>>;
 }
 
 /// Seals [`IntoIntValue`] to the identity/lift handles plus the kept
@@ -638,12 +646,12 @@ pub(crate) mod into_int_value_sealed {
     pub trait Sealed {}
 }
 
-impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> into_int_value_sealed::Sealed
-    for IntValue<'ctx, W, B>
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx, C: Capability> into_int_value_sealed::Sealed
+    for IntValue<'ctx, W, B, C>
 {
 }
-impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> into_int_value_sealed::Sealed
-    for ConstantIntValue<'ctx, W, B>
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx, C: Capability> into_int_value_sealed::Sealed
+    for ConstantIntValue<'ctx, W, B, C>
 {
 }
 
@@ -655,26 +663,39 @@ macro_rules! impl_into_int_value_sealed_scalar {
 impl_into_int_value_sealed_scalar!(bool, i8, i16, i32, i64, i128, u8, u16, u32, u64, u128);
 
 // ---- Identity ---------------------------------------------------------
-impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, W, B> for IntValue<'ctx, W, B> {
+//
+// Both lifts accept a handle of any capability: reading a value as an
+// operand is not mutating it. The handle is admitted against `module`
+// (refused if another module minted it) and re-minted at `module`'s
+// capability.
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx, C: Capability> IntoIntValue<'ctx, W, B>
+    for IntValue<'ctx, W, B, C>
+{
     #[inline]
-    fn into_int_value(self, module: ModuleRef<'ctx, B>) -> IrResult<IntValue<'ctx, W, B>> {
+    fn into_int_value<ModuleCapability: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<IntValue<'ctx, W, B, ModuleCapability>> {
         // Boundary: refuse a handle minted by another module.
-        self.slot_in(module.id())?;
-        Ok(self)
+        Ok(IntValue::from_value_unchecked(
+            self.as_erased().admitted_at(module)?,
+        ))
     }
 }
 
 // ---- ConstantIntValue lift -------------------------------------------
-impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, W, B>
-    for ConstantIntValue<'ctx, W, B>
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx, C: Capability> IntoIntValue<'ctx, W, B>
+    for ConstantIntValue<'ctx, W, B, C>
 {
     #[inline]
-    fn into_int_value(self, module: ModuleRef<'ctx, B>) -> IrResult<IntValue<'ctx, W, B>> {
+    fn into_int_value<ModuleCapability: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<IntValue<'ctx, W, B, ModuleCapability>> {
         // Boundary: refuse a handle minted by another module.
-        self.slot_in(module.id())?;
-        Ok(IntValue::<W, B>::from_value_unchecked(IsValue::as_erased(
-            self,
-        )))
+        Ok(IntValue::from_value_unchecked(
+            IsValue::as_erased(self).admitted_at(module)?,
+        ))
     }
 }
 
@@ -688,22 +709,13 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, W, B>
 macro_rules! impl_into_int_value_static {
     ($rust_ty:ty, $marker:ty, $ty_method:ident) => {
         impl<'ctx, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, $marker, B> for $rust_ty {
-            fn into_int_value(
+            fn into_int_value<ModuleCapability: Capability>(
                 self,
-                module: ModuleRef<'ctx, B>,
-            ) -> IrResult<IntValue<'ctx, $marker, B>> {
-                let ty = IntType::<$marker, B>::new(
-                    module
-                        .module()
-                        .$ty_method::<B>()
-                        .as_type()
-                        .slot_trusting_same_module(),
-                    module,
-                );
+                module: ModuleRef<'ctx, B, ModuleCapability>,
+            ) -> IrResult<IntValue<'ctx, $marker, B, ModuleCapability>> {
+                let ty: IntType<'ctx, $marker, B, ModuleCapability> = module.$ty_method();
                 match self.into_constant_int(ty) {
-                    Ok(c) => Ok(IntValue::<$marker, B>::from_value_unchecked(
-                        IsValue::as_erased(c),
-                    )),
+                    Ok(c) => Ok(IntValue::from_value_unchecked(IsValue::as_erased(c))),
                     Err(_) => unreachable!(
                         "IntoConstantInt for static target is infallible per the trait impls"
                     ),
@@ -751,8 +763,10 @@ pub trait StaticIntWidth: IntWidth {
     /// monomorphisation time.
     const STATIC_BITS: u32;
     /// Project the marker into the matching [`IntType`] from the
-    /// caller's module.
-    fn ir_type<'ctx, B: ModuleBrand + 'ctx>(module: ModuleRef<'ctx, B>) -> IntType<'ctx, Self, B>;
+    /// caller's module, at that module reference's capability.
+    fn ir_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        module: ModuleRef<'ctx, B, C>,
+    ) -> IntType<'ctx, Self, B, C>;
 }
 
 macro_rules! impl_static_int_width {
@@ -760,17 +774,10 @@ macro_rules! impl_static_int_width {
         impl StaticIntWidth for $ty {
             const STATIC_BITS: u32 = $bits;
             #[inline]
-            fn ir_type<'ctx, B: ModuleBrand + 'ctx>(
-                module: ModuleRef<'ctx, B>,
-            ) -> IntType<'ctx, Self, B> {
-                IntType::<Self, B>::new(
-                    module
-                        .module()
-                        .$method::<B>()
-                        .as_type()
-                        .slot_trusting_same_module(),
-                    module,
-                )
+            fn ir_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+                module: ModuleRef<'ctx, B, C>,
+            ) -> IntType<'ctx, Self, B, C> {
+                module.$method()
             }
         }
     };
@@ -788,15 +795,10 @@ impl_static_int_width!(i128, i128_type, 128);
 impl<const N: u32> StaticIntWidth for Width<N> {
     const STATIC_BITS: u32 = N;
     #[inline]
-    fn ir_type<'ctx, B: ModuleBrand + 'ctx>(module: ModuleRef<'ctx, B>) -> IntType<'ctx, Self, B> {
-        IntType::<Self, B>::new(
-            module
-                .module()
-                .int_type_n::<N, B>()
-                .as_type()
-                .slot_trusting_same_module(),
-            module,
-        )
+    fn ir_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        module: ModuleRef<'ctx, B, C>,
+    ) -> IntType<'ctx, Self, B, C> {
+        module.int_type_n::<N>()
     }
 }
 

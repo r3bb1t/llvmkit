@@ -39,7 +39,10 @@ fn defined_function<'m>(
 fn compare_operands<'m>(
     module: &'m Module<DynBrand, Unverified>,
     name: &str,
-) -> (Value<'m, DynBrand>, Value<'m, DynBrand>) {
+) -> (
+    Value<'m, DynBrand, llvmkit_ir::ReadOnly>,
+    Value<'m, DynBrand, llvmkit_ir::ReadOnly>,
+) {
     let compare = module
         .as_view()
         .functions()
@@ -55,7 +58,9 @@ fn compare_operands<'m>(
 }
 
 /// The sole argument of the fixture's function *definition*.
-fn only_argument<'m>(module: &'m Module<DynBrand, Unverified>) -> Value<'m, DynBrand> {
+fn only_argument<'m>(
+    module: &'m Module<DynBrand, Unverified>,
+) -> Value<'m, DynBrand, llvmkit_ir::ReadOnly> {
     let definition = module
         .as_view()
         .functions()
@@ -68,6 +73,7 @@ fn only_argument<'m>(module: &'m Module<DynBrand, Unverified>) -> Value<'m, DynB
         .next()
         .expect("fixture's function takes an argument")
         .as_erased()
+        .read_only()
 }
 
 /// Comparing against a NaN never depends on the value: ordered is always false,

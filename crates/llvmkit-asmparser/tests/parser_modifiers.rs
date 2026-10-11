@@ -9,7 +9,7 @@ use llvmkit_ir::module_new;
 
 pub mod support;
 
-use support::line_and_column;
+use support::reported_line_and_column;
 
 fn parse_fixture(module_name: &str, src: &[u8]) -> String {
     let module = Module::dynamic(module_name);
@@ -627,10 +627,8 @@ fn comdat_definition_diagnostics_match_upstream_text_and_anchor() {
     ] {
         let err = parse_err(src.as_bytes());
         assert_eq!(err.to_string(), expected, "message text for `{src}`");
-        let start = err.loc().start;
-        let offset = usize::try_from(start).unwrap_or(usize::MAX);
         assert_eq!(
-            line_and_column(src.as_bytes(), offset),
+            reported_line_and_column(src.as_bytes(), &err),
             expected_loc,
             "caret position for `{expected}`"
         );

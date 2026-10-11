@@ -15,9 +15,10 @@
 //! of the module. Globals store the comdat by name (`Option<String>`)
 //! to avoid arena cross-references.
 
-use super::module::{Module, ModuleBrand, ModuleRef, Unverified};
+use super::capability::{CanMutate, Capability, CapabilityOf, Mutable, ReadOnly};
+use super::module::{Module, ModuleBrand, ModuleId, ModuleRef, Unverified};
 use crate::Branded;
-use crate::error::IrError;
+use crate::error::{IrError, IrResult};
 use core::fmt;
 use core::str::FromStr;
 
@@ -130,14 +131,22 @@ impl ComdatData {
 /// Borrowed handle for a [`ComdatData`]. Mirrors how upstream LLVM
 /// passes `Comdat *` around: cheap, copy-able. Identity is
 /// (module, ComdatId).
+///
+/// `C` is the handle's [`Capability`] (D8): a comdat looked up through an
+/// unverified module is [`Mutable`]; one looked up through a verified module
+/// is [`ReadOnly`], and its selection kind cannot be changed.
 #[derive(Branded)]
 #[branded(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ComdatRef<'ctx, B: ModuleBrand> {
-    pub(crate) module: ModuleRef<'ctx, B>,
+pub struct ComdatRef<'ctx, B: ModuleBrand, C: Capability = Mutable> {
+    pub(crate) module: ModuleRef<'ctx, B, C>,
     pub(crate) id: ComdatId,
 }
 
-impl<'ctx, B: ModuleBrand> ComdatRef<'ctx, B> {
+impl<B: ModuleBrand, C: Capability> CapabilityOf for ComdatRef<'_, B, C> {
+    type Capability = C;
+}
+
+impl<'ctx, B: ModuleBrand, C: Capability> ComdatRef<'ctx, B, C> {
     #[inline]
     pub(crate) fn data(self) -> &'ctx ComdatData {
         self.module.module().comdat_at(self.id)
@@ -147,6 +156,30 @@ impl<'ctx, B: ModuleBrand> ComdatRef<'ctx, B> {
     #[inline]
     pub fn name(self) -> &'ctx str {
         &self.data().name
+    }
+
+    /// This comdat at [`ReadOnly`]. Always sound — reading is a subset of
+    /// mutating.
+    #[inline]
+    pub fn read_only(self) -> ComdatRef<'ctx, B, ReadOnly> {
+        ComdatRef {
+            module: self.module.read_only(),
+            id: self.id,
+        }
+    }
+
+    /// Crate-internal: the checked door. This comdat's name, if `owner`
+    /// minted it; [`IrError::ForeignComdat`] otherwise. A global stores its
+    /// comdat by name, so a name taken from another module's table would
+    /// name nothing in `owner`'s, or a different comdat — the boundary takes
+    /// this door before the name is stored.
+    #[inline]
+    pub(crate) fn name_in(self, owner: ModuleId) -> IrResult<&'ctx str> {
+        if self.module.id() == owner {
+            Ok(self.name())
+        } else {
+            Err(IrError::ForeignComdat)
+        }
     }
 
     // No public `id()`. `ComdatId` is a bare `u32` index carrying neither a
@@ -165,17 +198,19 @@ impl<'ctx, B: ModuleBrand> ComdatRef<'ctx, B> {
     /// Update the selection kind. Mirrors `Comdat::setSelectionKind`.
     ///
     /// Takes the `Unverified` module token, like every other mutator in the
-    /// crate, so `verify(self)` really does consume mutation capability. The
-    /// selection kind is printed (`$name = comdat <kind>`), so without the
-    /// token a [`Module<B, Verified>`](crate::Module)'s IR could be changed
-    /// after verification — `Module::comdat` is state-generic, so a
-    /// verified module does hand out a `ComdatRef`.
-    pub fn set_selection_kind(self, _module_token: &Module<B, Unverified>, kind: SelectionKind) {
+    /// crate, and needs a handle that [`CanMutate`]. The selection kind is
+    /// printed (`$name = comdat <kind>`), and `Module::comdat` is
+    /// state-generic, so a verified module does hand out a `ComdatRef` — a
+    /// [`ReadOnly`] one, which has no setter.
+    pub fn set_selection_kind(self, _module_token: &Module<B, Unverified>, kind: SelectionKind)
+    where
+        C: CanMutate,
+    {
         self.data().selection_kind.set(kind);
     }
 }
 
-impl<B: ModuleBrand> fmt::Debug for ComdatRef<'_, B> {
+impl<B: ModuleBrand, C: Capability> fmt::Debug for ComdatRef<'_, B, C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ComdatRef")
             .field("name", &self.name())

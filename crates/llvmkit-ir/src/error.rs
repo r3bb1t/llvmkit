@@ -18,7 +18,7 @@
 
 use core::fmt;
 
-use crate::instr_types::OperandBundleTag;
+use crate::instr_types::{CastOpcode, OperandBundleTag};
 
 /// Whether a failure indicates a bug in llvmkit.
 ///
@@ -129,6 +129,51 @@ impl fmt::Display for TypeKindLabel {
     }
 }
 
+/// Where a component type sits in the type being built — the position an
+/// [`IrError::InvalidTypeComponent`] names.
+///
+/// Each position is one of LLVM's component rules, and its `Display` is the
+/// wording `LLParser` uses when the rule rejects a parsed type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TypePosition {
+    /// A vector's element: `VectorType::isValidElementType`.
+    VectorElement,
+    /// An array's element: `ArrayType::isValidElementType`.
+    ArrayElement,
+    /// A struct's element: `StructType::isValidElementType`.
+    StructElement {
+        /// The element's position in the body.
+        index: usize,
+    },
+    /// A typed pointer's pointee: `TypedPointerType::isValidElementType`
+    /// (the same body as `PointerType::isValidElementType`).
+    PointerElement,
+    /// A function type's result: `FunctionType::isValidReturnType`.
+    FunctionReturn,
+    /// A function type's parameter: `FunctionType::isValidArgumentType`.
+    FunctionParameter {
+        /// The parameter's position.
+        index: usize,
+    },
+}
+
+impl fmt::Display for TypePosition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TypePosition::VectorElement => f.write_str("invalid vector element type"),
+            TypePosition::ArrayElement => f.write_str("invalid array element type"),
+            TypePosition::StructElement { index } => {
+                write!(f, "invalid element type for struct (element {index})")
+            }
+            TypePosition::PointerElement => f.write_str("pointer to this type is invalid"),
+            TypePosition::FunctionReturn => f.write_str("invalid function return type"),
+            TypePosition::FunctionParameter { index } => {
+                write!(f, "invalid type for function argument (parameter {index})")
+            }
+        }
+    }
+}
+
 /// A type's kind together with its printed form, captured where a diagnostic
 /// is raised.
 ///
@@ -226,6 +271,41 @@ impl fmt::Display for ValueCategoryLabel {
             ValueCategoryLabel::InlineAsm => "inline-asm",
         };
         f.write_str(s)
+    }
+}
+
+/// Why [`IrError::InvalidValueName`] refused a name: which assertion of
+/// `Value::setNameImpl` (`lib/IR/Value.cpp`) the request breaks, in the order
+/// upstream checks them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InvalidValueNameReason {
+    /// The name contains a NUL byte: `assert(!NameRef.contains(0) && "Null
+    /// bytes are not allowed in names")`. Printed, such a name is a quoted
+    /// `"\00"` escape that `LLLexer` refuses to read back.
+    ContainsNul,
+    /// The value's type is `void`: `assert(!getType()->isVoidTy() && "Cannot
+    /// assign a name to void values!")`.
+    VoidValue,
+    /// The value is an inline-assembly value, which no symbol table holds:
+    /// `getSymTab` reaches its last arm and asserts `isa<Constant>(V) &&
+    /// "Unknown value type!"` — `InlineAsm` is a `Value`, not a `Constant`.
+    InlineAsm,
+    /// The value is metadata wrapped as a value, which no symbol table holds:
+    /// the same `getSymTab` assertion — `MetadataAsValue` is a `Value`, not a
+    /// `Constant`.
+    MetadataAsValue,
+}
+
+impl fmt::Display for InvalidValueNameReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            InvalidValueNameReason::ContainsNul => "null bytes are not allowed in names",
+            InvalidValueNameReason::VoidValue => "cannot assign a name to void values",
+            InvalidValueNameReason::InlineAsm => "cannot assign a name to an inline-asm value",
+            InvalidValueNameReason::MetadataAsValue => {
+                "cannot assign a name to a metadata-as-value value"
+            }
+        })
     }
 }
 
@@ -541,9 +621,11 @@ pub enum VerifierRule {
     /// `Verifier::visitLoadInst` / `visitStoreInst` ("Non-atomic load/store
     /// cannot have SynchronizationScope specified").
     NonAtomicWithSyncScope,
-    /// `bitcast` source and destination bit widths differ.
-    /// Mirrors `Verifier::visitBitCastInst`.
-    BitCastSizeMismatch,
+    /// A `bitcast` that `CastInst::castIsValid` refuses: differing bit
+    /// widths, a pointer cast to a non-pointer, differing address spaces, or
+    /// differing element counts. Mirrors `Verifier::visitBitCastInst`
+    /// ("Invalid bitcast").
+    InvalidBitCast,
     /// Cast opcode source/destination kind constraint failed
     /// (e.g. `zext` from a non-integer, `fptrunc` to an integer).
     /// Mirrors `Verifier::visit{Trunc,ZExt,SExt,FpTrunc,FpExt,FpToUI,
@@ -632,6 +714,17 @@ pub enum VerifierRule {
     /// (`if (IsAlias && ...)`), so `@i = appending ifunc ...` parses and is
     /// caught later.
     IfuncInvalidLinkage,
+    /// `ifunc` carries a `!dbg` or `!prof` attachment. Mirrors the
+    /// attachment loop of `Verifier::visitGlobalIFunc` ("an ifunc may not have
+    /// a !dbg attachment", "an ifunc may not have a !prof attachment").
+    IfuncMetadataAttachment,
+    /// `ifunc` resolver is not a `Function` once pointer casts and aliases
+    /// are stripped, is not a definition, does not return a pointer, or is not
+    /// a pointer in the ifunc's address space. Mirrors the resolver checks of
+    /// `Verifier::visitGlobalIFunc` ("IFunc must have a Function resolver",
+    /// "IFunc resolver must be a definition", "IFunc resolver must return a
+    /// pointer", "IFunc resolver has incorrect type").
+    IfuncInvalidResolver,
     /// `!range` attached to an instruction kind other than load/call/invoke.
     /// Mirrors `Verifier::visitInstruction`.
     RangeMetadataInvalidAttachment,
@@ -837,7 +930,7 @@ impl fmt::Display for VerifierRule {
             Self::NonAtomicWithSyncScope => {
                 "non-atomic load/store cannot have a non-default syncscope"
             }
-            Self::BitCastSizeMismatch => "bitcast source and destination have differing bit widths",
+            Self::InvalidBitCast => "invalid bitcast",
             Self::CastTypeMismatch => "cast source/destination kind constraint failed",
             Self::CastWidthMismatch => "cast width relationship is invalid",
             Self::SelfReference => "only PHI nodes may reference their own value",
@@ -877,6 +970,10 @@ impl fmt::Display for VerifierRule {
             Self::GlobalScalableType => "globals cannot contain scalable types",
             Self::IfuncInvalidLinkage => {
                 "IFunc should have private, internal, linkonce, weak, linkonce_odr, weak_odr, or external linkage!"
+            }
+            Self::IfuncMetadataAttachment => "ifunc carries a !dbg or !prof attachment",
+            Self::IfuncInvalidResolver => {
+                "ifunc resolver is not a defined function returning a pointer in the ifunc's address space"
             }
             Self::RangeMetadataInvalidAttachment => {
                 "range metadata is only valid on loads, calls, and invokes"
@@ -1298,6 +1395,52 @@ pub enum IrError {
         kind: TypeKindLabel,
     },
 
+    /// A type constructor was given a component type LLVM forbids in that
+    /// position — `<4 x void>`, `[2 x label]`, `{ token }`, `label ()`.
+    ///
+    /// Upstream's constructors `assert` these rules (`FixedVectorType::get`,
+    /// `ArrayType::get`, `FunctionType::FunctionType`, `PointerType::get`), and
+    /// an `assert` is compiled out of a release build; `StructType::get`
+    /// checks nothing, though `LLParser` refuses the same elements. The
+    /// message is `LLParser`'s wording for the position, then the kind.
+    #[error("{position}: {kind}")]
+    InvalidTypeComponent {
+        /// Where the component sits.
+        position: TypePosition,
+        /// The kind of the refused component type.
+        kind: TypeKindLabel,
+    },
+
+    /// A `shufflevector` mask whose length is not a vector lane count: empty,
+    /// or longer than a `u32` holds.
+    ///
+    /// A shuffle's result has one lane per mask element, and upstream builds
+    /// that type as `VectorType::get(…, Mask.size(), …)` (the
+    /// `ShuffleVectorInst` constructor, `ConstantExpr::getShuffleVector`),
+    /// which asserts a non-zero `unsigned` count; llvmkit has no zero-lane
+    /// vector to build.
+    #[error("shufflevector mask of {len} elements is not a vector lane count")]
+    InvalidShuffleMaskLength {
+        /// The mask's length.
+        len: usize,
+    },
+
+    /// A cast whose operand and result types `CastInst::castIsValid` refuses
+    /// for its opcode — a `trunc` that widens, a `bitcast` between sizes, a
+    /// vector cast that changes the element count. Each cast class's
+    /// constructor (`TruncInst::TruncInst`, `BitCastInst::BitCastInst`, …,
+    /// `lib/IR/Instructions.cpp`) asserts it; `LLParser::parseCast` reports
+    /// it as `invalid cast opcode for cast from '…' to '…'`.
+    #[error("invalid {} cast from {src} to {dst}", .opcode.keyword())]
+    InvalidCast {
+        /// The cast's opcode.
+        opcode: CastOpcode,
+        /// The kind of the operand's type.
+        src: TypeKindLabel,
+        /// The kind of the result type.
+        dst: TypeKindLabel,
+    },
+
     /// A known-bits query was given a value whose type is neither an integer
     /// nor a pointer, nor a vector of either — so it has no bit pattern to
     /// reason about.
@@ -1425,6 +1568,18 @@ pub enum IrError {
     DuplicateGlobalName {
         /// The global-scope name that is already bound at module scope.
         name: String,
+    },
+
+    /// [`Value::set_name`](crate::Value::set_name) was handed a name for a
+    /// value `Value::setNameImpl` asserts no name may be given to, or a name
+    /// it asserts no value may carry. llvmkit refuses where upstream asserts,
+    /// and the value keeps the name it had.
+    #[error("{reason}: {name:?}")]
+    InvalidValueName {
+        /// The name the caller asked for.
+        name: String,
+        /// Which of `setNameImpl`'s assertions the request breaks.
+        reason: InvalidValueNameReason,
     },
 
     /// [`GlobalAliasBuilder::build`](crate::GlobalAliasBuilder::build) found
@@ -1774,6 +1929,23 @@ pub enum IrError {
     #[error("named metadata id belongs to a different Module")]
     ForeignNamedMetadataId,
 
+    /// A [`ComdatRef`](crate::ComdatRef) minted by one
+    /// [`Module`](crate::Module) was attached to a global variable or function
+    /// of another. A global stores its comdat by name, and that name names
+    /// nothing in this module's comdat table — so the attachment would vanish
+    /// from the printed module — or names a different comdat that happens to
+    /// share it.
+    ///
+    /// The comdat twin of [`ForeignValueId`](Self::ForeignValueId): two modules
+    /// sharing a brand (`DynBrand`, or a re-issued named brand) accept each
+    /// other's `ComdatRef` handles without a type error, and the module tag is
+    /// what refuses them. Raised by
+    /// [`GlobalVariable::set_comdat`](crate::GlobalVariable::set_comdat),
+    /// [`FunctionValue::set_comdat`](crate::FunctionValue::set_comdat) and the
+    /// `build` of the global and function builders.
+    #[error("comdat belongs to a different Module")]
+    ForeignComdat,
+
     /// [`crate::SsaState::for_function`] was given a function that
     /// already has a body. The layer must observe every CFG edge from
     /// birth (Braun's algorithm needs to see every `br` as it is
@@ -1947,6 +2119,9 @@ impl IrError {
             | Self::ArrayLengthMismatch { .. }
             | Self::AddressSpaceMismatch { .. }
             | Self::UnsizedType { .. }
+            | Self::InvalidTypeComponent { .. }
+            | Self::InvalidShuffleMaskLength { .. }
+            | Self::InvalidCast { .. }
             | Self::NotIntOrPointerType { .. }
             | Self::ValueCategoryMismatch { .. }
             | Self::ReturnTypeMismatch { .. }
@@ -1970,10 +2145,12 @@ impl IrError {
             | Self::MissingVarArgsSignature
             | Self::PhiArgArityMismatch { .. } => Blame::UsageError,
 
-            // A name the caller chose is taken, reserved, or unknown, or its
-            // signature does not match the intrinsic it names.
+            // A name the caller chose is taken, reserved, unknown or one
+            // `setNameImpl` asserts against, or its signature does not match
+            // the intrinsic it names.
             Self::DuplicateFunctionName { .. }
             | Self::DuplicateGlobalName { .. }
+            | Self::InvalidValueName { .. }
             | Self::UnknownIntrinsic { .. }
             | Self::ReservedIntrinsicName { .. }
             | Self::IntrinsicSignatureMismatch { .. } => Blame::UsageError,
@@ -2035,7 +2212,8 @@ impl IrError {
             Self::ForeignValueId
             | Self::ForeignType
             | Self::ForeignMetadataId
-            | Self::ForeignNamedMetadataId => Blame::UsageError,
+            | Self::ForeignNamedMetadataId
+            | Self::ForeignComdat => Blame::UsageError,
 
             Self::Brand(error) => error.blame(),
             Self::DataLayout(error) => error.blame(),

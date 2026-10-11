@@ -517,6 +517,65 @@ fn an_invalid_constexpr_cast_opcode_is_rejected() {
     );
 }
 
+/// Ports the `dst_not_addr_size.ll` part of
+/// `test/Assembler/ptrtoaddr-invalid.ll`: a `ptrtoaddr` to an integer narrower
+/// than the address parses — `LLParser::parseCast` asks
+/// `CastInst::castIsValid`, whose `PtrToAddr` arm checks only pointer to
+/// integer and the element counts — and fails verification with
+/// `Verifier::visitPtrToAddrInst`'s `PtrToAddr result must be address width`.
+/// The container's other eight parts are parse errors and run as corpus rows.
+///
+/// Upstream reports the message twice, once per function; llvmkit's verifier
+/// stops at its first failure (`docs/divergences.md`, entry 142), so it is
+/// asserted once.
+#[test]
+fn a_ptrtoaddr_to_a_narrower_integer_parses_and_fails_verification() {
+    let container = include_str!(
+        "fixtures/upstream/assembler-corpus/split-file-containers/ptrtoaddr-invalid.ll"
+    );
+    let (_, part) = container
+        .split_once(";--- dst_not_addr_size.ll")
+        .expect("the container holds the part");
+    let module = llvmkit_asmparser::parse_dynamic(part)
+        .expect("castIsValid accepts a ptrtoaddr to any integer width");
+    let err = module
+        .verify_borrowed()
+        .expect_err("Verifier::visitPtrToAddrInst refuses a result narrower than the address");
+    assert!(
+        err.to_string()
+            .contains("PtrToAddr result must be address width"),
+        "{err}"
+    );
+}
+
+/// A constant-expression cast between a fixed and a scalable vector of the
+/// same minimum lane count is refused with `LLParser`'s `invalid cast opcode`
+/// diagnostic: `CastInst::castIsValid` compares `ElementCount`s, whose
+/// equality includes scalability.
+///
+/// llvmkit-specific regression (D10, D11): llvmkit's `cast_is_valid` compared
+/// the minimum counts alone, so this cast passed the parser's check and was
+/// refused later, by the constant-expression builder, with llvmkit's own
+/// message. No upstream fixture has a scalable constant-expression cast:
+/// `rg -n --no-ignore "(addrspacecast|bitcast|ptrtoint|inttoptr|trunc) \(<vscale x" llvm/test/Assembler llvm/test/Verifier`
+/// finds nothing in the vendored `llvmorg-22.1.4` tree.
+#[test]
+fn a_constexpr_cast_between_fixed_and_scalable_vectors_is_rejected() {
+    let module = Module::dynamic("fixed-scalable-cast");
+    let err = Parser::new(
+        b"@g = global <4 x ptr> addrspacecast (<vscale x 4 x ptr addrspace(1)> zeroinitializer to <4 x ptr>)\n"
+            .as_slice(),
+        &module,
+    )
+    .expect("parse constructor")
+    .parse_module()
+    .expect_err("a fixed and a scalable vector are different shapes");
+    assert_eq!(
+        err.to_string(),
+        "invalid cast opcode for cast from '<vscale x 4 x ptr addrspace(1)>' to '<4 x ptr>'"
+    );
+}
+
 // ── convertValIDToValue message family ────────────────────────────────────
 
 /// The guard at the very top of `LLParser::convertValIDToValue`, before any

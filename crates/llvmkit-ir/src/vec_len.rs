@@ -7,12 +7,15 @@
 //! [`Len<M>`], so mixing them at a builder call site is a compile error
 //! rather than a runtime shape mismatch.
 //!
-//! Lane counts are `u32` (mirroring `VectorType::getNumElements`'s
-//! `ElementCount` count, which is a 32-bit unsigned quantity). The
-//! sibling [`array_len`](crate::array_len) marker uses `u64` because
-//! `ArrayType` lengths are 64-bit; the two families are deliberately
-//! kept distinct so a single trait is not asked to be both `u32` and
-//! `u64`.
+//! Lane counts are [`NonZeroU32`] (mirroring `VectorType::getNumElements`'s
+//! `ElementCount` count, a 32-bit unsigned quantity that
+//! `FixedVectorType::get` asserts is not zero). A `Len<0>` can be named,
+//! but asking it for its count does not compile: both [`VecLen::static_len`]
+//! and [`StaticVecLen::STATIC_LEN`] go through
+//! [`lanes`](crate::lanes). The sibling [`array_len`](crate::array_len)
+//! marker uses `u64` because `ArrayType` lengths are 64-bit and may be zero;
+//! the two families are deliberately kept distinct so a single trait is not
+//! asked to be both.
 //!
 //! Parsed `.ll` whose lane count is not statically known lands in
 //! [`LenDyn`] until the consumer narrows it.
@@ -21,6 +24,9 @@
 //! an extension point.
 
 use core::fmt;
+use core::num::NonZeroU32;
+
+use crate::type_components::lanes;
 
 /// Sealed marker trait implemented by every fixed-vector lane-count tag.
 ///
@@ -28,7 +34,7 @@ use core::fmt;
 pub trait VecLen: sealed::Sealed + Copy + 'static + fmt::Debug {
     /// Static lane count if known at compile time, else `None` (used by
     /// [`LenDyn`]). Analog of [`IntWidth::static_bits`](crate::IntWidth::static_bits).
-    fn static_len() -> Option<u32>;
+    fn static_len() -> Option<NonZeroU32>;
 }
 
 /// Const-generic marker for a statically known lane count. Analog of
@@ -37,8 +43,8 @@ pub trait VecLen: sealed::Sealed + Copy + 'static + fmt::Debug {
 pub struct Len<const N: u32>;
 impl<const N: u32> VecLen for Len<N> {
     #[inline]
-    fn static_len() -> Option<u32> {
-        Some(N)
+    fn static_len() -> Option<NonZeroU32> {
+        Some(lanes::<N>())
     }
 }
 
@@ -55,7 +61,7 @@ impl<const N: u32> VecLen for Len<N> {
 pub struct LenDyn;
 impl VecLen for LenDyn {
     #[inline]
-    fn static_len() -> Option<u32> {
+    fn static_len() -> Option<NonZeroU32> {
         None
     }
 }
@@ -70,10 +76,11 @@ pub trait StaticVecLen: VecLen {
     /// `const { ... }` assertions to enforce shape-equality at
     /// monomorphisation time. Analog of
     /// [`StaticIntWidth::STATIC_BITS`](crate::StaticIntWidth::STATIC_BITS).
-    const STATIC_LEN: u32;
+    /// `Len<0>`'s does not compile ([`lanes`](crate::lanes)'s message).
+    const STATIC_LEN: NonZeroU32;
 }
 impl<const N: u32> StaticVecLen for Len<N> {
-    const STATIC_LEN: u32 = N;
+    const STATIC_LEN: NonZeroU32 = lanes::<N>();
 }
 
 mod sealed {
@@ -88,7 +95,7 @@ mod tests {
 
     #[test]
     fn len_reports_static_lane_count() {
-        assert_eq!(Len::<4>::static_len(), Some(4));
+        assert_eq!(Len::<4>::static_len().map(NonZeroU32::get), Some(4));
     }
 
     #[test]
@@ -98,6 +105,6 @@ mod tests {
 
     #[test]
     fn static_vec_len_exposes_const() {
-        assert_eq!(<Len<4> as StaticVecLen>::STATIC_LEN, 4);
+        assert_eq!(<Len<4> as StaticVecLen>::STATIC_LEN.get(), 4);
     }
 }

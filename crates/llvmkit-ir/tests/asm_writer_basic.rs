@@ -153,7 +153,7 @@ fn set_name_reinserts_and_frees_old_binding() -> Result<(), IrError> {
 
     let first = b.int_add::<i32, _, _, _>(arg, 1_i32, "tmp")?;
     let second = b.int_add::<i32, _, _, _>(first, 1_i32, "other")?;
-    b.view(second).set_name(&m, "tmp");
+    b.view(second).set_name(&m, "tmp")?;
     let third = b.int_add::<i32, _, _, _>(second, first, "other")?;
     b.ret(third)?;
 

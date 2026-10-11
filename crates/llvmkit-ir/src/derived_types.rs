@@ -28,7 +28,9 @@
 use crate::Branded;
 use core::fmt;
 use core::iter::FusedIterator;
+use core::num::NonZeroU32;
 
+use super::capability::{Capability, CapabilityOf, Mutable};
 use super::error::{IrError, IrResult, TypeKindLabel};
 use super::module::{ModuleBrand, ModuleRef};
 use super::r#type::{Type, TypeData, TypeKind, TypeSlot, TypeSlotAccess};
@@ -54,48 +56,59 @@ macro_rules! decl_type_handle {
     ) => {
         $(#[$attr])*
         #[derive(Branded)]
-        pub struct $name<'ctx, B: ModuleBrand> {
+        pub struct $name<'ctx, B: ModuleBrand, C: Capability = Mutable> {
             id: TypeSlot,
-            pub(super) module: ModuleRef<'ctx, B>,
+            pub(super) module: ModuleRef<'ctx, B, C>,
         }
 
-        impl<'ctx, B: ModuleBrand> $name<'ctx, B> {
+        impl<B: ModuleBrand, C: Capability> CapabilityOf for $name<'_, B, C> {
+            type Capability = C;
+        }
+
+        impl<'ctx, B: ModuleBrand, C: Capability> $name<'ctx, B, C> {
             #[inline]
             pub(super) fn new<M>(id: TypeSlot, module: M) -> Self
             where
-                M: Into<ModuleRef<'ctx, B>>,
+                M: Into<ModuleRef<'ctx, B, C>>,
             {
                 Self { id, module: module.into() }
             }
 
             /// Widen to the erased [`Type`] handle.
             #[inline]
-            pub fn as_type(self) -> Type<'ctx, B> {
+            pub fn as_type(self) -> Type<'ctx, B, C> {
                 Type::new(self.id, self.module)
             }
-        }
 
-        impl<'ctx, B: ModuleBrand> sealed::Sealed for $name<'ctx, B> {}
-        impl<'ctx, B: ModuleBrand> IrType<'ctx, B> for $name<'ctx, B> {
+            /// Drop to [`ReadOnly`](crate::ReadOnly). Always sound: reading
+            /// is a subset of mutating.
             #[inline]
-            fn as_type(self) -> Type<'ctx, B> { self.as_type() }
-        }
-        impl<'ctx, B: ModuleBrand> fmt::Display for $name<'ctx, B> {
-            #[inline]
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                <Type<'ctx, B> as fmt::Display>::fmt(&self.as_type(), f)
+            pub fn read_only(self) -> $name<'ctx, B, crate::ReadOnly> {
+                $name { id: self.id, module: self.module.read_only() }
             }
         }
 
-        impl<'ctx, B: ModuleBrand> From<$name<'ctx, B>> for Type<'ctx, B> {
+        impl<'ctx, B: ModuleBrand, C: Capability> sealed::Sealed for $name<'ctx, B, C> {}
+        impl<'ctx, B: ModuleBrand, C: Capability> IrType<'ctx, B> for $name<'ctx, B, C> {
             #[inline]
-            fn from(t: $name<'ctx, B>) -> Self { t.as_type() }
+            fn as_type(self) -> Type<'ctx, B, C> { self.as_type() }
+        }
+        impl<'ctx, B: ModuleBrand, C: Capability> fmt::Display for $name<'ctx, B, C> {
+            #[inline]
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                <Type<'ctx, B, C> as fmt::Display>::fmt(&self.as_type(), f)
+            }
         }
 
-        impl<'ctx, B: ModuleBrand> TryFrom<Type<'ctx, B>> for $name<'ctx, B> {
+        impl<'ctx, B: ModuleBrand, C: Capability> From<$name<'ctx, B, C>> for Type<'ctx, B, C> {
+            #[inline]
+            fn from(t: $name<'ctx, B, C>) -> Self { t.as_type() }
+        }
+
+        impl<'ctx, B: ModuleBrand, C: Capability> TryFrom<Type<'ctx, B, C>> for $name<'ctx, B, C> {
             type Error = IrError;
             #[inline]
-            fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
+            fn try_from(t: Type<'ctx, B, C>) -> IrResult<Self> {
                 let pred: fn(&TypeData) -> bool = $pred;
                 if pred(t.data()) {
                     Ok(Self { id: t.slot_trusting_same_module(), module: t.module })
@@ -139,9 +152,9 @@ decl_type_handle!(
 /// mismatch at compile time. Runtime-checked defaults keep existing call
 /// sites working. Array lengths are `u64` (mirroring
 /// `ArrayType::getNumElements`).
-pub struct ArrayType<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand> {
+pub struct ArrayType<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand, C: Capability = Mutable> {
     id: TypeSlot,
-    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) module: ModuleRef<'ctx, B, C>,
     pub(super) _e: PhantomData<E>,
     pub(super) _l: PhantomData<L>,
 }
@@ -149,37 +162,58 @@ pub struct ArrayType<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand> {
 // Manual derives — a `derive` would require `E: Trait` / `L: Trait` on the
 // impls; the manual versions avoid leaking those bounds to consumers
 // (`PhantomData<E>` / `PhantomData<L>` are trivially `Copy`/`Eq`/`Hash`).
-impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand> Clone for ArrayType<'ctx, E, L, B> {
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand, C: Capability> Clone
+    for ArrayType<'ctx, E, L, B, C>
+{
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand> Copy for ArrayType<'ctx, E, L, B> {}
-impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand> PartialEq for ArrayType<'ctx, E, L, B> {
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand, C: Capability> Copy
+    for ArrayType<'ctx, E, L, B, C>
+{
+}
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand, C: Capability> PartialEq
+    for ArrayType<'ctx, E, L, B, C>
+{
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module
     }
 }
-impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand> Eq for ArrayType<'ctx, E, L, B> {}
-impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand> Hash for ArrayType<'ctx, E, L, B> {
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand, C: Capability> Eq
+    for ArrayType<'ctx, E, L, B, C>
+{
+}
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand, C: Capability> Hash
+    for ArrayType<'ctx, E, L, B, C>
+{
     fn hash<H: Hasher>(&self, h: &mut H) {
         self.id.hash(h);
         self.module.hash(h);
     }
 }
-impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand> fmt::Debug for ArrayType<'ctx, E, L, B> {
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand, C: Capability> fmt::Debug
+    for ArrayType<'ctx, E, L, B, C>
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ArrayType").field("id", &self.id).finish()
     }
 }
+impl<E: VecElem, L: ArrayLen, B: ModuleBrand, C: Capability> CapabilityOf
+    for ArrayType<'_, E, L, B, C>
+{
+    type Capability = C;
+}
 
-impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayType<'ctx, E, L, B> {
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx, C: Capability>
+    ArrayType<'ctx, E, L, B, C>
+{
     #[inline]
     pub(super) fn new<M>(id: TypeSlot, module: M) -> Self
     where
-        M: Into<ModuleRef<'ctx, B>>,
+        M: Into<ModuleRef<'ctx, B, C>>,
     {
         Self {
             id,
@@ -191,14 +225,14 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayType<'ctx, E, L,
 
     /// Widen to the erased [`Type`] handle.
     #[inline]
-    pub fn as_type(self) -> Type<'ctx, B> {
+    pub fn as_type(self) -> Type<'ctx, B, C> {
         Type::new(self.id, self.module)
     }
 
     /// Erase both markers, producing the fully dynamic handle. Preserves the
     /// runtime element type / element count but loses the static guarantees.
     #[inline]
-    pub fn as_dyn(self) -> ArrayType<'ctx, ElemDyn, ArrLenDyn, B> {
+    pub fn as_dyn(self) -> ArrayType<'ctx, ElemDyn, ArrLenDyn, B, C> {
         ArrayType {
             id: self.id,
             module: self.module,
@@ -208,38 +242,43 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayType<'ctx, E, L,
     }
 }
 
-impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand> sealed::Sealed for ArrayType<'ctx, E, L, B> {}
-impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> IrType<'ctx, B>
-    for ArrayType<'ctx, E, L, B>
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand, C: Capability> sealed::Sealed
+    for ArrayType<'ctx, E, L, B, C>
+{
+}
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx, C: Capability> IrType<'ctx, B>
+    for ArrayType<'ctx, E, L, B, C>
 {
     #[inline]
-    fn as_type(self) -> Type<'ctx, B> {
+    fn as_type(self) -> Type<'ctx, B, C> {
         self.as_type()
     }
 }
-impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> fmt::Display
-    for ArrayType<'ctx, E, L, B>
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx, C: Capability> fmt::Display
+    for ArrayType<'ctx, E, L, B, C>
 {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        <Type<'ctx, B> as fmt::Display>::fmt(&self.as_type(), f)
+        <Type<'ctx, B, C> as fmt::Display>::fmt(&self.as_type(), f)
     }
 }
-impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> From<ArrayType<'ctx, E, L, B>>
-    for Type<'ctx, B>
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx, C: Capability>
+    From<ArrayType<'ctx, E, L, B, C>> for Type<'ctx, B, C>
 {
     #[inline]
-    fn from(t: ArrayType<'ctx, E, L, B>) -> Self {
+    fn from(t: ArrayType<'ctx, E, L, B, C>) -> Self {
         t.as_type()
     }
 }
 // Only the fully-erased form has a `TryFrom<Type>` (mirrors
 // `IntType<IntDyn>`): a typed handle would need to check the runtime shape,
 // which the length narrowing on `ArrayValue` handles instead.
-impl<'ctx, B: ModuleBrand> TryFrom<Type<'ctx, B>> for ArrayType<'ctx, ElemDyn, ArrLenDyn, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> TryFrom<Type<'ctx, B, C>>
+    for ArrayType<'ctx, ElemDyn, ArrLenDyn, B, C>
+{
     type Error = IrError;
     #[inline]
-    fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
+    fn try_from(t: Type<'ctx, B, C>) -> IrResult<Self> {
         if matches!(t.data(), TypeData::Array { .. }) {
             Ok(Self {
                 id: t.slot_trusting_same_module(),
@@ -270,42 +309,63 @@ impl<'ctx, B: ModuleBrand> TryFrom<Type<'ctx, B>> for ArrayType<'ctx, ElemDyn, A
 /// consumes the opaque handle and produces a `StructType<'ctx,
 /// BodySet>`. The runtime-checked default keeps existing parsed-IR /
 /// literal-struct call sites working without churn.
-pub struct StructType<'ctx, Body: StructBodyState, B: ModuleBrand> {
+pub struct StructType<'ctx, Body: StructBodyState, B: ModuleBrand, C: Capability = Mutable> {
     id: TypeSlot,
-    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) module: ModuleRef<'ctx, B, C>,
     pub(super) _b: core::marker::PhantomData<Body>,
 }
 
-impl<'ctx, Body: StructBodyState, B: ModuleBrand> Clone for StructType<'ctx, Body, B> {
+impl<'ctx, Body: StructBodyState, B: ModuleBrand, C: Capability> Clone
+    for StructType<'ctx, Body, B, C>
+{
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<'ctx, Body: StructBodyState, B: ModuleBrand> Copy for StructType<'ctx, Body, B> {}
-impl<'ctx, Body: StructBodyState, B: ModuleBrand> PartialEq for StructType<'ctx, Body, B> {
+impl<'ctx, Body: StructBodyState, B: ModuleBrand, C: Capability> Copy
+    for StructType<'ctx, Body, B, C>
+{
+}
+impl<'ctx, Body: StructBodyState, B: ModuleBrand, C: Capability> PartialEq
+    for StructType<'ctx, Body, B, C>
+{
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module
     }
 }
-impl<'ctx, Body: StructBodyState, B: ModuleBrand> Eq for StructType<'ctx, Body, B> {}
-impl<'ctx, Body: StructBodyState, B: ModuleBrand> core::hash::Hash for StructType<'ctx, Body, B> {
+impl<'ctx, Body: StructBodyState, B: ModuleBrand, C: Capability> Eq
+    for StructType<'ctx, Body, B, C>
+{
+}
+impl<'ctx, Body: StructBodyState, B: ModuleBrand, C: Capability> core::hash::Hash
+    for StructType<'ctx, Body, B, C>
+{
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.id.hash(h);
         self.module.hash(h);
     }
 }
-impl<'ctx, Body: StructBodyState, B: ModuleBrand> core::fmt::Debug for StructType<'ctx, Body, B> {
+impl<'ctx, Body: StructBodyState, B: ModuleBrand, C: Capability> core::fmt::Debug
+    for StructType<'ctx, Body, B, C>
+{
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("StructType").field("id", &self.id).finish()
     }
 }
+impl<Body: StructBodyState, B: ModuleBrand, C: Capability> CapabilityOf
+    for StructType<'_, Body, B, C>
+{
+    type Capability = C;
+}
 
-impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx> StructType<'ctx, Body, B> {
+impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx, C: Capability>
+    StructType<'ctx, Body, B, C>
+{
     #[inline]
     pub(super) fn new<M>(id: TypeSlot, module: M) -> Self
     where
-        M: Into<ModuleRef<'ctx, B>>,
+        M: Into<ModuleRef<'ctx, B, C>>,
     {
         Self {
             id,
@@ -314,10 +374,20 @@ impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx> StructType<'ctx, Body, 
         }
     }
 
+    /// Crate-internal: this struct type admitted at `module` and re-minted at
+    /// its capability. See `Type::admitted_at`.
+    #[inline]
+    pub(crate) fn admitted_at<C2: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, C2>,
+    ) -> IrResult<StructType<'ctx, Body, B, C2>> {
+        Ok(StructType::new(self.slot_in(module.id())?, module))
+    }
+
     /// Re-tag the body-state marker. Crate-internal: only
     /// [`crate::Module::set_struct_body`] flips the public marker.
     #[inline]
-    pub(super) fn retag<Body2: StructBodyState>(self) -> StructType<'ctx, Body2, B> {
+    pub(super) fn retag<Body2: StructBodyState>(self) -> StructType<'ctx, Body2, B, C> {
         StructType {
             id: self.id,
             module: self.module,
@@ -327,46 +397,51 @@ impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx> StructType<'ctx, Body, 
 
     /// Erase the body-state marker.
     #[inline]
-    pub fn as_dyn(self) -> StructType<'ctx, StructBodyDyn, B> {
+    pub fn as_dyn(self) -> StructType<'ctx, StructBodyDyn, B, C> {
         self.retag::<StructBodyDyn>()
     }
 
     /// Widen to the erased [`Type`] handle.
     #[inline]
-    pub fn as_type(self) -> Type<'ctx, B> {
+    pub fn as_type(self) -> Type<'ctx, B, C> {
         Type::new(self.id, self.module)
     }
 }
 
-impl<'ctx, Body: StructBodyState, B: ModuleBrand> sealed::Sealed for StructType<'ctx, Body, B> {}
-impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx> IrType<'ctx, B>
-    for StructType<'ctx, Body, B>
+impl<'ctx, Body: StructBodyState, B: ModuleBrand, C: Capability> sealed::Sealed
+    for StructType<'ctx, Body, B, C>
+{
+}
+impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx, C: Capability> IrType<'ctx, B>
+    for StructType<'ctx, Body, B, C>
 {
     #[inline]
-    fn as_type(self) -> Type<'ctx, B> {
+    fn as_type(self) -> Type<'ctx, B, C> {
         self.as_type()
     }
 }
-impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx> fmt::Display
-    for StructType<'ctx, Body, B>
+impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx, C: Capability> fmt::Display
+    for StructType<'ctx, Body, B, C>
 {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        <Type<'ctx, B> as fmt::Display>::fmt(&self.as_type(), f)
+        <Type<'ctx, B, C> as fmt::Display>::fmt(&self.as_type(), f)
     }
 }
-impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx> From<StructType<'ctx, Body, B>>
-    for Type<'ctx, B>
+impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx, C: Capability>
+    From<StructType<'ctx, Body, B, C>> for Type<'ctx, B, C>
 {
     #[inline]
-    fn from(t: StructType<'ctx, Body, B>) -> Self {
+    fn from(t: StructType<'ctx, Body, B, C>) -> Self {
         t.as_type()
     }
 }
-impl<'ctx, B: ModuleBrand> TryFrom<Type<'ctx, B>> for StructType<'ctx, StructBodyDyn, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> TryFrom<Type<'ctx, B, C>>
+    for StructType<'ctx, StructBodyDyn, B, C>
+{
     type Error = IrError;
     #[inline]
-    fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
+    fn try_from(t: Type<'ctx, B, C>) -> IrResult<Self> {
         if matches!(t.data(), TypeData::Struct(_)) {
             Ok(Self {
                 id: t.slot_trusting_same_module(),
@@ -395,9 +470,9 @@ impl<'ctx, B: ModuleBrand> TryFrom<Type<'ctx, B>> for StructType<'ctx, StructBod
 /// parsed IR lands in; `VectorType<'ctx, i32, Len<4>>` is a statically
 /// typed `<4 x i32>`, and builder call sites can reject a shape mismatch at
 /// compile time. Runtime-checked defaults keep existing call sites working.
-pub struct VectorType<'ctx, E: VecElem, L: VecLen, B: ModuleBrand> {
+pub struct VectorType<'ctx, E: VecElem, L: VecLen, B: ModuleBrand, C: Capability = Mutable> {
     id: TypeSlot,
-    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) module: ModuleRef<'ctx, B, C>,
     pub(super) _e: PhantomData<E>,
     pub(super) _l: PhantomData<L>,
 }
@@ -405,37 +480,58 @@ pub struct VectorType<'ctx, E: VecElem, L: VecLen, B: ModuleBrand> {
 // Manual derives — a `derive` would require `E: Trait` / `L: Trait` on the
 // impls; the manual versions avoid leaking those bounds to consumers
 // (`PhantomData<E>` / `PhantomData<L>` are trivially `Copy`/`Eq`/`Hash`).
-impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand> Clone for VectorType<'ctx, E, L, B> {
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand, C: Capability> Clone
+    for VectorType<'ctx, E, L, B, C>
+{
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand> Copy for VectorType<'ctx, E, L, B> {}
-impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand> PartialEq for VectorType<'ctx, E, L, B> {
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand, C: Capability> Copy
+    for VectorType<'ctx, E, L, B, C>
+{
+}
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand, C: Capability> PartialEq
+    for VectorType<'ctx, E, L, B, C>
+{
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module
     }
 }
-impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand> Eq for VectorType<'ctx, E, L, B> {}
-impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand> Hash for VectorType<'ctx, E, L, B> {
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand, C: Capability> Eq
+    for VectorType<'ctx, E, L, B, C>
+{
+}
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand, C: Capability> Hash
+    for VectorType<'ctx, E, L, B, C>
+{
     fn hash<H: Hasher>(&self, h: &mut H) {
         self.id.hash(h);
         self.module.hash(h);
     }
 }
-impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand> fmt::Debug for VectorType<'ctx, E, L, B> {
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand, C: Capability> fmt::Debug
+    for VectorType<'ctx, E, L, B, C>
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("VectorType").field("id", &self.id).finish()
     }
 }
+impl<E: VecElem, L: VecLen, B: ModuleBrand, C: Capability> CapabilityOf
+    for VectorType<'_, E, L, B, C>
+{
+    type Capability = C;
+}
 
-impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, B> {
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, C: Capability>
+    VectorType<'ctx, E, L, B, C>
+{
     #[inline]
     pub(super) fn new<M>(id: TypeSlot, module: M) -> Self
     where
-        M: Into<ModuleRef<'ctx, B>>,
+        M: Into<ModuleRef<'ctx, B, C>>,
     {
         Self {
             id,
@@ -447,14 +543,14 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, 
 
     /// Widen to the erased [`Type`] handle.
     #[inline]
-    pub fn as_type(self) -> Type<'ctx, B> {
+    pub fn as_type(self) -> Type<'ctx, B, C> {
         Type::new(self.id, self.module)
     }
 
     /// Erase both markers, producing the fully dynamic handle. Preserves the
     /// runtime element type / lane count but loses the static guarantees.
     #[inline]
-    pub fn as_dyn(self) -> VectorType<'ctx, ElemDyn, LenDyn, B> {
+    pub fn as_dyn(self) -> VectorType<'ctx, ElemDyn, LenDyn, B, C> {
         VectorType {
             id: self.id,
             module: self.module,
@@ -464,38 +560,43 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, 
     }
 }
 
-impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand> sealed::Sealed for VectorType<'ctx, E, L, B> {}
-impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> IrType<'ctx, B>
-    for VectorType<'ctx, E, L, B>
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand, C: Capability> sealed::Sealed
+    for VectorType<'ctx, E, L, B, C>
+{
+}
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, C: Capability> IrType<'ctx, B>
+    for VectorType<'ctx, E, L, B, C>
 {
     #[inline]
-    fn as_type(self) -> Type<'ctx, B> {
+    fn as_type(self) -> Type<'ctx, B, C> {
         self.as_type()
     }
 }
-impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> fmt::Display
-    for VectorType<'ctx, E, L, B>
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, C: Capability> fmt::Display
+    for VectorType<'ctx, E, L, B, C>
 {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        <Type<'ctx, B> as fmt::Display>::fmt(&self.as_type(), f)
+        <Type<'ctx, B, C> as fmt::Display>::fmt(&self.as_type(), f)
     }
 }
-impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> From<VectorType<'ctx, E, L, B>>
-    for Type<'ctx, B>
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, C: Capability>
+    From<VectorType<'ctx, E, L, B, C>> for Type<'ctx, B, C>
 {
     #[inline]
-    fn from(t: VectorType<'ctx, E, L, B>) -> Self {
+    fn from(t: VectorType<'ctx, E, L, B, C>) -> Self {
         t.as_type()
     }
 }
 // Only the fully-erased form has a `TryFrom<Type>` (mirrors
 // `IntType<IntDyn>`): a typed handle would need to check the runtime shape,
 // which the length narrowing on `VectorValue` handles instead.
-impl<'ctx, B: ModuleBrand> TryFrom<Type<'ctx, B>> for VectorType<'ctx, ElemDyn, LenDyn, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> TryFrom<Type<'ctx, B, C>>
+    for VectorType<'ctx, ElemDyn, LenDyn, B, C>
+{
     type Error = IrError;
     #[inline]
-    fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
+    fn try_from(t: Type<'ctx, B, C>) -> IrResult<Self> {
         if matches!(
             t.data(),
             TypeData::FixedVector { .. } | TypeData::ScalableVector { .. }
@@ -519,6 +620,30 @@ decl_type_handle!(
     FunctionType, Function,
     predicate |d| matches!(d, TypeData::Function { .. })
 );
+
+impl<'ctx, B: ModuleBrand, C: Capability> FunctionType<'ctx, B, C> {
+    /// Crate-internal: this signature admitted at `module` and re-minted at
+    /// its capability. See `Type::admitted_at`.
+    #[inline]
+    pub(crate) fn admitted_at<C2: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, C2>,
+    ) -> IrResult<FunctionType<'ctx, B, C2>> {
+        Ok(FunctionType::new(self.slot_in(module.id())?, module))
+    }
+}
+
+impl<'ctx, B: ModuleBrand, C: Capability> PointerType<'ctx, B, C> {
+    /// Crate-internal: this pointer type admitted at `module` and re-minted
+    /// at its capability. See `Type::admitted_at`.
+    #[inline]
+    pub(crate) fn admitted_at<C2: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, C2>,
+    ) -> IrResult<PointerType<'ctx, B, C2>> {
+        Ok(PointerType::new(self.slot_in(module.id())?, module))
+    }
+}
 decl_type_handle!(
     /// `label`. Mirrors `Type::getLabelTy`.
     LabelType, Label,
@@ -556,36 +681,36 @@ decl_type_handle!(
 ///
 /// Use [`IntType<'ctx, IntDyn>`](IntDyn) when the width
 /// is only known at runtime (parsed `.ll`).
-pub struct IntType<'ctx, W: IntWidth, B: ModuleBrand> {
+pub struct IntType<'ctx, W: IntWidth, B: ModuleBrand, C: Capability = Mutable> {
     id: TypeSlot,
-    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) module: ModuleRef<'ctx, B, C>,
     pub(super) _w: PhantomData<W>,
 }
 
 // Manual derives "" `derive` would require `W: Trait` on the impls; manual
 // versions avoid leaking that bound to consumers (`PhantomData<W>` is
 // trivially `Copy`/`Eq`/`Hash` regardless).
-impl<'ctx, W: IntWidth, B: ModuleBrand> Clone for IntType<'ctx, W, B> {
+impl<'ctx, W: IntWidth, B: ModuleBrand, C: Capability> Clone for IntType<'ctx, W, B, C> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<'ctx, W: IntWidth, B: ModuleBrand> Copy for IntType<'ctx, W, B> {}
-impl<'ctx, W: IntWidth, B: ModuleBrand> PartialEq for IntType<'ctx, W, B> {
+impl<'ctx, W: IntWidth, B: ModuleBrand, C: Capability> Copy for IntType<'ctx, W, B, C> {}
+impl<'ctx, W: IntWidth, B: ModuleBrand, C: Capability> PartialEq for IntType<'ctx, W, B, C> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module
     }
 }
-impl<'ctx, W: IntWidth, B: ModuleBrand> Eq for IntType<'ctx, W, B> {}
-impl<'ctx, W: IntWidth, B: ModuleBrand> Hash for IntType<'ctx, W, B> {
+impl<'ctx, W: IntWidth, B: ModuleBrand, C: Capability> Eq for IntType<'ctx, W, B, C> {}
+impl<'ctx, W: IntWidth, B: ModuleBrand, C: Capability> Hash for IntType<'ctx, W, B, C> {
     fn hash<H: Hasher>(&self, h: &mut H) {
         self.id.hash(h);
         self.module.hash(h);
     }
 }
-impl<'ctx, W: IntWidth, B: ModuleBrand> fmt::Debug for IntType<'ctx, W, B> {
+impl<'ctx, W: IntWidth, B: ModuleBrand, C: Capability> fmt::Debug for IntType<'ctx, W, B, C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("IntType")
             .field("id", &self.id)
@@ -593,12 +718,15 @@ impl<'ctx, W: IntWidth, B: ModuleBrand> fmt::Debug for IntType<'ctx, W, B> {
             .finish()
     }
 }
+impl<W: IntWidth, B: ModuleBrand, C: Capability> CapabilityOf for IntType<'_, W, B, C> {
+    type Capability = C;
+}
 
-impl<'ctx, W: IntWidth, B: ModuleBrand> IntType<'ctx, W, B> {
+impl<'ctx, W: IntWidth, B: ModuleBrand, C: Capability> IntType<'ctx, W, B, C> {
     #[inline]
     pub(super) fn new<M>(id: TypeSlot, module: M) -> Self
     where
-        M: Into<ModuleRef<'ctx, B>>,
+        M: Into<ModuleRef<'ctx, B, C>>,
     {
         Self {
             id,
@@ -609,8 +737,18 @@ impl<'ctx, W: IntWidth, B: ModuleBrand> IntType<'ctx, W, B> {
 
     /// Widen to the erased [`Type`] handle.
     #[inline]
-    pub fn as_type(self) -> Type<'ctx, B> {
+    pub fn as_type(self) -> Type<'ctx, B, C> {
         Type::new(self.id, self.module)
+    }
+
+    /// Crate-internal: this type admitted at `module` and re-minted at its
+    /// capability. See `Type::admitted_at`.
+    #[inline]
+    pub(crate) fn admitted_at<C2: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, C2>,
+    ) -> IrResult<IntType<'ctx, W, B, C2>> {
+        Ok(IntType::new(self.slot_in(module.id())?, module))
     }
 
     /// Bit width of this integer type. For static widths this is
@@ -627,7 +765,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand> IntType<'ctx, W, B> {
     /// Erase the width marker, producing an [`IntDyn`]-tagged handle that
     /// preserves the runtime width but loses the static guarantee.
     #[inline]
-    pub fn as_dyn(self) -> IntType<'ctx, IntDyn, B> {
+    pub fn as_dyn(self) -> IntType<'ctx, IntDyn, B, C> {
         IntType {
             id: self.id,
             module: self.module,
@@ -636,33 +774,37 @@ impl<'ctx, W: IntWidth, B: ModuleBrand> IntType<'ctx, W, B> {
     }
 }
 
-impl<'ctx, W: IntWidth, B: ModuleBrand> sealed::Sealed for IntType<'ctx, W, B> {}
-impl<'ctx, W: IntWidth, B: ModuleBrand> IrType<'ctx, B> for IntType<'ctx, W, B> {
+impl<'ctx, W: IntWidth, B: ModuleBrand, C: Capability> sealed::Sealed for IntType<'ctx, W, B, C> {}
+impl<'ctx, W: IntWidth, B: ModuleBrand, C: Capability> IrType<'ctx, B> for IntType<'ctx, W, B, C> {
     #[inline]
-    fn as_type(self) -> Type<'ctx, B> {
+    fn as_type(self) -> Type<'ctx, B, C> {
         self.as_type()
     }
 }
-impl<'ctx, W: IntWidth, B: ModuleBrand> fmt::Display for IntType<'ctx, W, B> {
+impl<'ctx, W: IntWidth, B: ModuleBrand, C: Capability> fmt::Display for IntType<'ctx, W, B, C> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        <Type<'ctx, B> as fmt::Display>::fmt(&self.as_type(), f)
+        <Type<'ctx, B, C> as fmt::Display>::fmt(&self.as_type(), f)
     }
 }
 
-impl<'ctx, W: IntWidth, B: ModuleBrand> From<IntType<'ctx, W, B>> for Type<'ctx, B> {
+impl<'ctx, W: IntWidth, B: ModuleBrand, C: Capability> From<IntType<'ctx, W, B, C>>
+    for Type<'ctx, B, C>
+{
     #[inline]
-    fn from(t: IntType<'ctx, W, B>) -> Self {
+    fn from(t: IntType<'ctx, W, B, C>) -> Self {
         t.as_type()
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Type<'ctx, B>> for IntType<'ctx, IntDyn, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> TryFrom<Type<'ctx, B, C>>
+    for IntType<'ctx, IntDyn, B, C>
+{
     type Error = IrError;
     #[inline]
-    fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
+    fn try_from(t: Type<'ctx, B, C>) -> IrResult<Self> {
         if matches!(t.data(), TypeData::Integer { .. }) {
-            Ok(Self::new(t.slot_trusting_same_module(), t.module()))
+            Ok(Self::new(t.slot_trusting_same_module(), t.module))
         } else {
             Err(IrError::TypeMismatch {
                 expected: TypeKindLabel::Integer,
@@ -676,12 +818,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Type<'ctx, B>> for IntType<'ctx, IntDy
 /// `W::static_bits()`.
 macro_rules! impl_int_type_static_try_from {
     ($marker:ident, $bits:expr) => {
-        impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Type<'ctx, B>> for IntType<'ctx, $marker, B> {
+        impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> TryFrom<Type<'ctx, B, C>>
+            for IntType<'ctx, $marker, B, C>
+        {
             type Error = IrError;
-            fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
+            fn try_from(t: Type<'ctx, B, C>) -> IrResult<Self> {
                 match t.data() {
                     TypeData::Integer { bits } if *bits == $bits => {
-                        Ok(Self::new(t.slot_trusting_same_module(), t.module()))
+                        Ok(Self::new(t.slot_trusting_same_module(), t.module))
                     }
                     TypeData::Integer { bits } => Err(IrError::OperandWidthMismatch {
                         lhs: $bits,
@@ -694,11 +838,11 @@ macro_rules! impl_int_type_static_try_from {
                 }
             }
         }
-        impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<IntType<'ctx, IntDyn, B>>
-            for IntType<'ctx, $marker, B>
+        impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> TryFrom<IntType<'ctx, IntDyn, B, C>>
+            for IntType<'ctx, $marker, B, C>
         {
             type Error = IrError;
-            fn try_from(t: IntType<'ctx, IntDyn, B>) -> IrResult<Self> {
+            fn try_from(t: IntType<'ctx, IntDyn, B, C>) -> IrResult<Self> {
                 let bits = t.bit_width();
                 if bits == $bits {
                     Ok(Self::new(t.id, t.module))
@@ -722,9 +866,11 @@ impl_int_type_static_try_from!(i128, 128);
 /// Static -> `Dyn` widening (always succeeds).
 macro_rules! impl_int_type_static_to_dyn {
     ($marker:ident) => {
-        impl<'ctx, B: ModuleBrand> From<IntType<'ctx, $marker, B>> for IntType<'ctx, IntDyn, B> {
+        impl<'ctx, B: ModuleBrand, C: Capability> From<IntType<'ctx, $marker, B, C>>
+            for IntType<'ctx, IntDyn, B, C>
+        {
             #[inline]
-            fn from(t: IntType<'ctx, $marker, B>) -> Self {
+            fn from(t: IntType<'ctx, $marker, B, C>) -> Self {
                 t.as_dyn()
             }
         }
@@ -747,33 +893,33 @@ impl_int_type_static_to_dyn!(i128);
 /// The `K: FloatKind` marker encodes which kind at the type level.
 /// Use [`FloatDyn`] when the kind is only known
 /// at runtime.
-pub struct FloatType<'ctx, K: FloatKind, B: ModuleBrand> {
+pub struct FloatType<'ctx, K: FloatKind, B: ModuleBrand, C: Capability = Mutable> {
     id: TypeSlot,
-    pub(super) module: ModuleRef<'ctx, B>,
+    pub(super) module: ModuleRef<'ctx, B, C>,
     pub(super) _k: PhantomData<K>,
 }
 
-impl<'ctx, K: FloatKind, B: ModuleBrand> Clone for FloatType<'ctx, K, B> {
+impl<'ctx, K: FloatKind, B: ModuleBrand, C: Capability> Clone for FloatType<'ctx, K, B, C> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<'ctx, K: FloatKind, B: ModuleBrand> Copy for FloatType<'ctx, K, B> {}
-impl<'ctx, K: FloatKind, B: ModuleBrand> PartialEq for FloatType<'ctx, K, B> {
+impl<'ctx, K: FloatKind, B: ModuleBrand, C: Capability> Copy for FloatType<'ctx, K, B, C> {}
+impl<'ctx, K: FloatKind, B: ModuleBrand, C: Capability> PartialEq for FloatType<'ctx, K, B, C> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module
     }
 }
-impl<'ctx, K: FloatKind, B: ModuleBrand> Eq for FloatType<'ctx, K, B> {}
-impl<'ctx, K: FloatKind, B: ModuleBrand> Hash for FloatType<'ctx, K, B> {
+impl<'ctx, K: FloatKind, B: ModuleBrand, C: Capability> Eq for FloatType<'ctx, K, B, C> {}
+impl<'ctx, K: FloatKind, B: ModuleBrand, C: Capability> Hash for FloatType<'ctx, K, B, C> {
     fn hash<H: Hasher>(&self, h: &mut H) {
         self.id.hash(h);
         self.module.hash(h);
     }
 }
-impl<'ctx, K: FloatKind, B: ModuleBrand> fmt::Debug for FloatType<'ctx, K, B> {
+impl<'ctx, K: FloatKind, B: ModuleBrand, C: Capability> fmt::Debug for FloatType<'ctx, K, B, C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FloatType")
             .field("id", &self.id)
@@ -781,12 +927,15 @@ impl<'ctx, K: FloatKind, B: ModuleBrand> fmt::Debug for FloatType<'ctx, K, B> {
             .finish()
     }
 }
+impl<K: FloatKind, B: ModuleBrand, C: Capability> CapabilityOf for FloatType<'_, K, B, C> {
+    type Capability = C;
+}
 
-impl<'ctx, K: FloatKind, B: ModuleBrand> FloatType<'ctx, K, B> {
+impl<'ctx, K: FloatKind, B: ModuleBrand, C: Capability> FloatType<'ctx, K, B, C> {
     #[inline]
     pub(super) fn new<M>(id: TypeSlot, module: M) -> Self
     where
-        M: Into<ModuleRef<'ctx, B>>,
+        M: Into<ModuleRef<'ctx, B, C>>,
     {
         Self {
             id,
@@ -797,13 +946,23 @@ impl<'ctx, K: FloatKind, B: ModuleBrand> FloatType<'ctx, K, B> {
 
     /// Widen to the erased [`Type`] handle.
     #[inline]
-    pub fn as_type(self) -> Type<'ctx, B> {
+    pub fn as_type(self) -> Type<'ctx, B, C> {
         Type::new(self.id, self.module)
+    }
+
+    /// Crate-internal: this type admitted at `module` and re-minted at its
+    /// capability. See `Type::admitted_at`.
+    #[inline]
+    pub(crate) fn admitted_at<C2: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, C2>,
+    ) -> IrResult<FloatType<'ctx, K, B, C2>> {
+        Ok(FloatType::new(self.slot_in(module.id())?, module))
     }
 
     /// Erase the kind marker, producing a [`FloatDyn`]-tagged handle.
     #[inline]
-    pub fn as_dyn(self) -> FloatType<'ctx, FloatDyn, B> {
+    pub fn as_dyn(self) -> FloatType<'ctx, FloatDyn, B, C> {
         FloatType {
             id: self.id,
             module: self.module,
@@ -812,29 +971,38 @@ impl<'ctx, K: FloatKind, B: ModuleBrand> FloatType<'ctx, K, B> {
     }
 }
 
-impl<'ctx, K: FloatKind, B: ModuleBrand> sealed::Sealed for FloatType<'ctx, K, B> {}
-impl<'ctx, K: FloatKind, B: ModuleBrand> IrType<'ctx, B> for FloatType<'ctx, K, B> {
+impl<'ctx, K: FloatKind, B: ModuleBrand, C: Capability> sealed::Sealed
+    for FloatType<'ctx, K, B, C>
+{
+}
+impl<'ctx, K: FloatKind, B: ModuleBrand, C: Capability> IrType<'ctx, B>
+    for FloatType<'ctx, K, B, C>
+{
     #[inline]
-    fn as_type(self) -> Type<'ctx, B> {
+    fn as_type(self) -> Type<'ctx, B, C> {
         self.as_type()
     }
 }
-impl<'ctx, K: FloatKind, B: ModuleBrand> fmt::Display for FloatType<'ctx, K, B> {
+impl<'ctx, K: FloatKind, B: ModuleBrand, C: Capability> fmt::Display for FloatType<'ctx, K, B, C> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        <Type<'ctx, B> as fmt::Display>::fmt(&self.as_type(), f)
+        <Type<'ctx, B, C> as fmt::Display>::fmt(&self.as_type(), f)
     }
 }
-impl<'ctx, K: FloatKind, B: ModuleBrand> From<FloatType<'ctx, K, B>> for Type<'ctx, B> {
+impl<'ctx, K: FloatKind, B: ModuleBrand, C: Capability> From<FloatType<'ctx, K, B, C>>
+    for Type<'ctx, B, C>
+{
     #[inline]
-    fn from(t: FloatType<'ctx, K, B>) -> Self {
+    fn from(t: FloatType<'ctx, K, B, C>) -> Self {
         t.as_type()
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Type<'ctx, B>> for FloatType<'ctx, FloatDyn, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> TryFrom<Type<'ctx, B, C>>
+    for FloatType<'ctx, FloatDyn, B, C>
+{
     type Error = IrError;
-    fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
+    fn try_from(t: Type<'ctx, B, C>) -> IrResult<Self> {
         if matches!(
             t.data(),
             TypeData::Half
@@ -845,7 +1013,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Type<'ctx, B>> for FloatType<'ctx, Flo
                 | TypeData::Fp128
                 | TypeData::PpcFp128
         ) {
-            Ok(Self::new(t.slot_trusting_same_module(), t.module()))
+            Ok(Self::new(t.slot_trusting_same_module(), t.module))
         } else {
             Err(IrError::TypeMismatch {
                 expected: TypeKindLabel::Float,
@@ -858,11 +1026,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Type<'ctx, B>> for FloatType<'ctx, Flo
 /// Static narrowing for FloatType.
 macro_rules! impl_float_type_static_try_from {
     ($marker:ident, $variant:ident, $label:ident) => {
-        impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Type<'ctx, B>> for FloatType<'ctx, $marker, B> {
+        impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> TryFrom<Type<'ctx, B, C>>
+            for FloatType<'ctx, $marker, B, C>
+        {
             type Error = IrError;
-            fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
+            fn try_from(t: Type<'ctx, B, C>) -> IrResult<Self> {
                 match t.data() {
-                    TypeData::$variant => Ok(Self::new(t.slot_trusting_same_module(), t.module())),
+                    TypeData::$variant => Ok(Self::new(t.slot_trusting_same_module(), t.module)),
                     _ => Err(IrError::TypeMismatch {
                         expected: TypeKindLabel::$label,
                         got: t.kind_label(),
@@ -870,12 +1040,12 @@ macro_rules! impl_float_type_static_try_from {
                 }
             }
         }
-        impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<FloatType<'ctx, FloatDyn, B>>
-            for FloatType<'ctx, $marker, B>
+        impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> TryFrom<FloatType<'ctx, FloatDyn, B, C>>
+            for FloatType<'ctx, $marker, B, C>
         {
             type Error = IrError;
-            fn try_from(t: FloatType<'ctx, FloatDyn, B>) -> IrResult<Self> {
-                <Self as TryFrom<Type<'ctx, B>>>::try_from(t.as_type())
+            fn try_from(t: FloatType<'ctx, FloatDyn, B, C>) -> IrResult<Self> {
+                <Self as TryFrom<Type<'ctx, B, C>>>::try_from(t.as_type())
             }
         }
     };
@@ -890,11 +1060,11 @@ impl_float_type_static_try_from!(PpcFp128, PpcFp128, PpcFp128);
 
 macro_rules! impl_float_type_static_to_dyn {
     ($marker:ident) => {
-        impl<'ctx, B: ModuleBrand> From<FloatType<'ctx, $marker, B>>
-            for FloatType<'ctx, FloatDyn, B>
+        impl<'ctx, B: ModuleBrand, C: Capability> From<FloatType<'ctx, $marker, B, C>>
+            for FloatType<'ctx, FloatDyn, B, C>
         {
             #[inline]
-            fn from(t: FloatType<'ctx, $marker, B>) -> Self {
+            fn from(t: FloatType<'ctx, $marker, B, C>) -> Self {
                 t.as_dyn()
             }
         }
@@ -912,7 +1082,7 @@ impl_float_type_static_to_dyn!(PpcFp128);
 // PointerType — address-space accessor
 // --------------------------------------------------------------------------
 
-impl<'ctx, B: ModuleBrand> PointerType<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> PointerType<'ctx, B, C> {
     /// Address space; `0` is the default flat space.
     #[inline]
     pub fn address_space(self) -> u32 {
@@ -927,9 +1097,11 @@ impl<'ctx, B: ModuleBrand> PointerType<'ctx, B> {
 // ArrayType — element + length accessors
 // --------------------------------------------------------------------------
 
-impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayType<'ctx, E, L, B> {
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx, C: Capability>
+    ArrayType<'ctx, E, L, B, C>
+{
     #[inline]
-    pub fn element(self) -> Type<'ctx, B> {
+    pub fn element(self) -> Type<'ctx, B, C> {
         let (elem, _) = self
             .module
             .type_data(self.id)
@@ -965,9 +1137,11 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayType<'ctx, E, L,
 // VectorType — element + length / scalability accessors
 // --------------------------------------------------------------------------
 
-impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, B> {
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, C: Capability>
+    VectorType<'ctx, E, L, B, C>
+{
     #[inline]
-    pub fn element(self) -> Type<'ctx, B> {
+    pub fn element(self) -> Type<'ctx, B, C> {
         let (elem, _, _) = self
             .module
             .type_data(self.id)
@@ -977,9 +1151,10 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, 
     }
     /// Length: for fixed vectors, the exact lane count. For scalable
     /// vectors, the *minimum* lane count (the runtime value is a positive
-    /// multiple of this).
+    /// multiple of this). Never zero — a vector has at least one lane
+    /// (`FixedVectorType::get` and `ScalableVectorType::get` assert it).
     #[inline]
-    pub fn min_len(self) -> u32 {
+    pub fn min_len(self) -> NonZeroU32 {
         let (_, n, _) = self
             .module
             .type_data(self.id)
@@ -999,9 +1174,10 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, 
     /// Statically known lane count, if the length marker `L` pins one.
     /// `Some(N)` for `L = Len<N>`, `None` for the erased [`LenDyn`]. This is
     /// the type-level view; [`min_len`](Self::min_len) reads the runtime
-    /// lane count from the arena regardless of `L`.
+    /// lane count from the arena regardless of `L`. Never zero, like
+    /// [`min_len`](Self::min_len).
     #[inline]
-    pub fn static_len(self) -> Option<u32> {
+    pub fn static_len(self) -> Option<NonZeroU32> {
         L::static_len()
     }
 }
@@ -1010,9 +1186,9 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, 
 // FunctionType — return / params / varargs
 // --------------------------------------------------------------------------
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionType<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> FunctionType<'ctx, B, C> {
     #[inline]
-    pub fn return_type(self) -> Type<'ctx, B> {
+    pub fn return_type(self) -> Type<'ctx, B, C> {
         let (ret, _, _) = self
             .module
             .type_data(self.id)
@@ -1023,7 +1199,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionType<'ctx, B> {
     /// Iterator over parameter types in declaration order.
     pub fn params(
         self,
-    ) -> impl ExactSizeIterator<Item = Type<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    ) -> impl ExactSizeIterator<Item = Type<'ctx, B, C>> + DoubleEndedIterator + FusedIterator + 'ctx
     {
         let (_, params, _) = self
             .module
@@ -1048,7 +1224,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionType<'ctx, B> {
 // StructType — name / packed / opacity / fields
 // --------------------------------------------------------------------------
 
-impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx> StructType<'ctx, Body, B> {
+impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx, C: Capability>
+    StructType<'ctx, Body, B, C>
+{
     /// Name of an identified (named) struct, or `None` for literal
     /// structs.
     pub fn name(self) -> Option<&'ctx str> {
@@ -1119,7 +1297,7 @@ impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx> StructType<'ctx, Body, 
             .is_some_and(|body| crate::r#type::contains_homogeneous_types(&body.elements))
     }
     /// Field type at `index`, or `None` if out of bounds (or opaque).
-    pub fn field_type(self, index: usize) -> Option<Type<'ctx, B>> {
+    pub fn field_type(self, index: usize) -> Option<Type<'ctx, B, C>> {
         let s = self
             .module
             .type_data(self.id)
@@ -1146,7 +1324,7 @@ pub enum TargetExtProperty {
     IsTokenLike,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> TargetExtType<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> TargetExtType<'ctx, B, C> {
     /// Arity constraints for the target extension types that declare them.
     /// Port of `TargetExtType::checkParams` (`llvm/lib/IR/Type.cpp`), whose
     /// messages this reproduces verbatim.
@@ -1186,7 +1364,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TargetExtType<'ctx, B> {
     }
     pub fn type_params(
         self,
-    ) -> impl ExactSizeIterator<Item = Type<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    ) -> impl ExactSizeIterator<Item = Type<'ctx, B, C>> + DoubleEndedIterator + FusedIterator + 'ctx
     {
         let t = self
             .module
@@ -1259,25 +1437,37 @@ impl<'ctx, B: ModuleBrand + 'ctx> TargetExtType<'ctx, B> {
 
 /// Exhaustive enum over every type kind.
 #[derive(Branded)]
-pub enum AnyTypeEnum<'ctx, B: ModuleBrand> {
-    Void(VoidType<'ctx, B>),
-    Int(IntType<'ctx, IntDyn, B>),
-    Float(FloatType<'ctx, FloatDyn, B>),
-    Pointer(PointerType<'ctx, B>),
-    Array(ArrayType<'ctx, ElemDyn, ArrLenDyn, B>),
-    Struct(StructType<'ctx, StructBodyDyn, B>),
-    Vector(VectorType<'ctx, ElemDyn, LenDyn, B>),
-    Function(FunctionType<'ctx, B>),
-    Label(LabelType<'ctx, B>),
-    Metadata(MetadataType<'ctx, B>),
-    Token(TokenType<'ctx, B>),
-    X86Amx(Type<'ctx, B>),
-    WasmExnRef(Type<'ctx, B>),
-    TargetExt(TargetExtType<'ctx, B>),
+pub enum AnyTypeEnum<'ctx, B: ModuleBrand, C: Capability = Mutable> {
+    Void(VoidType<'ctx, B, C>),
+    Int(IntType<'ctx, IntDyn, B, C>),
+    Float(FloatType<'ctx, FloatDyn, B, C>),
+    Pointer(PointerType<'ctx, B, C>),
+    Array(ArrayType<'ctx, ElemDyn, ArrLenDyn, B, C>),
+    Struct(StructType<'ctx, StructBodyDyn, B, C>),
+    Vector(VectorType<'ctx, ElemDyn, LenDyn, B, C>),
+    Function(FunctionType<'ctx, B, C>),
+    Label(LabelType<'ctx, B, C>),
+    Metadata(MetadataType<'ctx, B, C>),
+    Token(TokenType<'ctx, B, C>),
+    X86Amx(Type<'ctx, B, C>),
+    WasmExnRef(Type<'ctx, B, C>),
+    TargetExt(TargetExtType<'ctx, B, C>),
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> AnyTypeEnum<'ctx, B> {
-    pub fn as_type(self) -> Type<'ctx, B> {
+impl<B: ModuleBrand, C: Capability> CapabilityOf for AnyTypeEnum<'_, B, C> {
+    type Capability = C;
+}
+
+impl<'ctx, B: ModuleBrand, C: Capability> sealed::Sealed for AnyTypeEnum<'ctx, B, C> {}
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IrType<'ctx, B> for AnyTypeEnum<'ctx, B, C> {
+    #[inline]
+    fn as_type(self) -> Type<'ctx, B, C> {
+        self.as_type()
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> AnyTypeEnum<'ctx, B, C> {
+    pub fn as_type(self) -> Type<'ctx, B, C> {
         match self {
             Self::Void(t) => t.as_type(),
             Self::Int(t) => t.as_type(),
@@ -1296,9 +1486,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> AnyTypeEnum<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> From<Type<'ctx, B>> for AnyTypeEnum<'ctx, B> {
-    fn from(t: Type<'ctx, B>) -> Self {
-        let m = t.module();
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> From<Type<'ctx, B, C>>
+    for AnyTypeEnum<'ctx, B, C>
+{
+    fn from(t: Type<'ctx, B, C>) -> Self {
+        let m = t.module;
         match t.kind() {
             TypeKind::Void => Self::Void(VoidType::new(t.slot_trusting_same_module(), m)),
             TypeKind::Integer { .. } => Self::Int(IntType::new(t.slot_trusting_same_module(), m)),
@@ -1337,7 +1529,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> From<Type<'ctx, B>> for AnyTypeEnum<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for AnyTypeEnum<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> fmt::Display for AnyTypeEnum<'ctx, B, C> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.as_type().fmt(f)
@@ -1354,25 +1546,37 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for AnyTypeEnum<'ctx, B> {
 /// sized: methods that require sizedness can take it directly without
 /// runtime checks.
 #[derive(Branded)]
-pub struct SizedType<'ctx, B: ModuleBrand>(pub(super) Type<'ctx, B>);
+pub struct SizedType<'ctx, B: ModuleBrand, C: Capability = Mutable>(pub(super) Type<'ctx, B, C>);
 
-impl<'ctx, B: ModuleBrand> SizedType<'ctx, B> {
+impl<B: ModuleBrand, C: Capability> CapabilityOf for SizedType<'_, B, C> {
+    type Capability = C;
+}
+
+impl<'ctx, B: ModuleBrand, C: Capability> SizedType<'ctx, B, C> {
     #[inline]
-    pub fn as_type(self) -> Type<'ctx, B> {
+    pub fn as_type(self) -> Type<'ctx, B, C> {
         self.0
     }
 }
 
-impl<'ctx, B: ModuleBrand> From<SizedType<'ctx, B>> for Type<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> sealed::Sealed for SizedType<'ctx, B, C> {}
+impl<'ctx, B: ModuleBrand, C: Capability> IrType<'ctx, B> for SizedType<'ctx, B, C> {
     #[inline]
-    fn from(s: SizedType<'ctx, B>) -> Self {
+    fn as_type(self) -> Type<'ctx, B, C> {
+        self.0
+    }
+}
+
+impl<'ctx, B: ModuleBrand, C: Capability> From<SizedType<'ctx, B, C>> for Type<'ctx, B, C> {
+    #[inline]
+    fn from(s: SizedType<'ctx, B, C>) -> Self {
         s.0
     }
 }
 
-impl<'ctx, B: ModuleBrand> TryFrom<Type<'ctx, B>> for SizedType<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> TryFrom<Type<'ctx, B, C>> for SizedType<'ctx, B, C> {
     type Error = IrError;
-    fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
+    fn try_from(t: Type<'ctx, B, C>) -> IrResult<Self> {
         if t.is_sized() {
             Ok(Self(t))
         } else {
@@ -1383,7 +1587,7 @@ impl<'ctx, B: ModuleBrand> TryFrom<Type<'ctx, B>> for SizedType<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand> fmt::Display for SizedType<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> fmt::Display for SizedType<'ctx, B, C> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -1393,17 +1597,29 @@ impl<'ctx, B: ModuleBrand> fmt::Display for SizedType<'ctx, B> {
 /// First-class types that may carry an SSA value: integer / float /
 /// pointer / array / struct / vector. Mirrors LLVM's "basic" type group.
 #[derive(Branded)]
-pub enum BasicTypeEnum<'ctx, B: ModuleBrand> {
-    Int(IntType<'ctx, IntDyn, B>),
-    Float(FloatType<'ctx, FloatDyn, B>),
-    Pointer(PointerType<'ctx, B>),
-    Array(ArrayType<'ctx, ElemDyn, ArrLenDyn, B>),
-    Struct(StructType<'ctx, StructBodyDyn, B>),
-    Vector(VectorType<'ctx, ElemDyn, LenDyn, B>),
+pub enum BasicTypeEnum<'ctx, B: ModuleBrand, C: Capability = Mutable> {
+    Int(IntType<'ctx, IntDyn, B, C>),
+    Float(FloatType<'ctx, FloatDyn, B, C>),
+    Pointer(PointerType<'ctx, B, C>),
+    Array(ArrayType<'ctx, ElemDyn, ArrLenDyn, B, C>),
+    Struct(StructType<'ctx, StructBodyDyn, B, C>),
+    Vector(VectorType<'ctx, ElemDyn, LenDyn, B, C>),
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> BasicTypeEnum<'ctx, B> {
-    pub fn as_type(self) -> Type<'ctx, B> {
+impl<B: ModuleBrand, C: Capability> CapabilityOf for BasicTypeEnum<'_, B, C> {
+    type Capability = C;
+}
+
+impl<'ctx, B: ModuleBrand, C: Capability> sealed::Sealed for BasicTypeEnum<'ctx, B, C> {}
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IrType<'ctx, B> for BasicTypeEnum<'ctx, B, C> {
+    #[inline]
+    fn as_type(self) -> Type<'ctx, B, C> {
+        self.as_type()
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> BasicTypeEnum<'ctx, B, C> {
+    pub fn as_type(self) -> Type<'ctx, B, C> {
         match self {
             Self::Int(t) => t.as_type(),
             Self::Float(t) => t.as_type(),
@@ -1415,17 +1631,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicTypeEnum<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> From<BasicTypeEnum<'ctx, B>> for Type<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> From<BasicTypeEnum<'ctx, B, C>>
+    for Type<'ctx, B, C>
+{
     #[inline]
-    fn from(b: BasicTypeEnum<'ctx, B>) -> Self {
+    fn from(b: BasicTypeEnum<'ctx, B, C>) -> Self {
         b.as_type()
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Type<'ctx, B>> for BasicTypeEnum<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> TryFrom<Type<'ctx, B, C>>
+    for BasicTypeEnum<'ctx, B, C>
+{
     type Error = IrError;
-    fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
-        let m = t.module();
+    fn try_from(t: Type<'ctx, B, C>) -> IrResult<Self> {
+        let m = t.module;
         Ok(match t.kind() {
             TypeKind::Integer { .. } => Self::Int(IntType::new(t.slot_trusting_same_module(), m)),
             TypeKind::Half
@@ -1453,7 +1673,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Type<'ctx, B>> for BasicTypeEnum<'ctx,
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for BasicTypeEnum<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> fmt::Display for BasicTypeEnum<'ctx, B, C> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.as_type().fmt(f)
@@ -1463,18 +1683,32 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for BasicTypeEnum<'ctx, B> {
 /// Basic + metadata. Used for the typing of variadic intrinsics whose
 /// arguments may include `metadata` slots (e.g. `@llvm.dbg.value`).
 #[derive(Branded)]
-pub enum BasicMetadataTypeEnum<'ctx, B: ModuleBrand> {
-    Int(IntType<'ctx, IntDyn, B>),
-    Float(FloatType<'ctx, FloatDyn, B>),
-    Pointer(PointerType<'ctx, B>),
-    Array(ArrayType<'ctx, ElemDyn, ArrLenDyn, B>),
-    Struct(StructType<'ctx, StructBodyDyn, B>),
-    Vector(VectorType<'ctx, ElemDyn, LenDyn, B>),
-    Metadata(MetadataType<'ctx, B>),
+pub enum BasicMetadataTypeEnum<'ctx, B: ModuleBrand, C: Capability = Mutable> {
+    Int(IntType<'ctx, IntDyn, B, C>),
+    Float(FloatType<'ctx, FloatDyn, B, C>),
+    Pointer(PointerType<'ctx, B, C>),
+    Array(ArrayType<'ctx, ElemDyn, ArrLenDyn, B, C>),
+    Struct(StructType<'ctx, StructBodyDyn, B, C>),
+    Vector(VectorType<'ctx, ElemDyn, LenDyn, B, C>),
+    Metadata(MetadataType<'ctx, B, C>),
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> BasicMetadataTypeEnum<'ctx, B> {
-    pub fn as_type(self) -> Type<'ctx, B> {
+impl<B: ModuleBrand, C: Capability> CapabilityOf for BasicMetadataTypeEnum<'_, B, C> {
+    type Capability = C;
+}
+
+impl<'ctx, B: ModuleBrand, C: Capability> sealed::Sealed for BasicMetadataTypeEnum<'ctx, B, C> {}
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IrType<'ctx, B>
+    for BasicMetadataTypeEnum<'ctx, B, C>
+{
+    #[inline]
+    fn as_type(self) -> Type<'ctx, B, C> {
+        self.as_type()
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> BasicMetadataTypeEnum<'ctx, B, C> {
+    pub fn as_type(self) -> Type<'ctx, B, C> {
         match self {
             Self::Int(t) => t.as_type(),
             Self::Float(t) => t.as_type(),
@@ -1487,8 +1721,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicMetadataTypeEnum<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> From<BasicTypeEnum<'ctx, B>> for BasicMetadataTypeEnum<'ctx, B> {
-    fn from(b: BasicTypeEnum<'ctx, B>) -> Self {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> From<BasicTypeEnum<'ctx, B, C>>
+    for BasicMetadataTypeEnum<'ctx, B, C>
+{
+    fn from(b: BasicTypeEnum<'ctx, B, C>) -> Self {
         match b {
             BasicTypeEnum::Int(t) => Self::Int(t),
             BasicTypeEnum::Float(t) => Self::Float(t),
@@ -1500,27 +1736,33 @@ impl<'ctx, B: ModuleBrand + 'ctx> From<BasicTypeEnum<'ctx, B>> for BasicMetadata
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Type<'ctx, B>> for BasicMetadataTypeEnum<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> TryFrom<Type<'ctx, B, C>>
+    for BasicMetadataTypeEnum<'ctx, B, C>
+{
     type Error = IrError;
-    fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
+    fn try_from(t: Type<'ctx, B, C>) -> IrResult<Self> {
         if t.is_metadata() {
             return Ok(Self::Metadata(MetadataType::new(
                 t.slot_trusting_same_module(),
-                t.module(),
+                t.module,
             )));
         }
         BasicTypeEnum::try_from(t).map(Self::from)
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> From<BasicMetadataTypeEnum<'ctx, B>> for Type<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> From<BasicMetadataTypeEnum<'ctx, B, C>>
+    for Type<'ctx, B, C>
+{
     #[inline]
-    fn from(b: BasicMetadataTypeEnum<'ctx, B>) -> Self {
+    fn from(b: BasicMetadataTypeEnum<'ctx, B, C>) -> Self {
         b.as_type()
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for BasicMetadataTypeEnum<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> fmt::Display
+    for BasicMetadataTypeEnum<'ctx, B, C>
+{
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.as_type().fmt(f)
@@ -1531,13 +1773,25 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for BasicMetadataTypeEnum<'ctx, B
 /// so `extractvalue` / `insertvalue` cannot accept a vector source
 /// (matches `Type.h` + LangRef).
 #[derive(Branded)]
-pub enum AggregateType<'ctx, B: ModuleBrand> {
-    Array(ArrayType<'ctx, ElemDyn, ArrLenDyn, B>),
-    Struct(StructType<'ctx, StructBodyDyn, B>),
+pub enum AggregateType<'ctx, B: ModuleBrand, C: Capability = Mutable> {
+    Array(ArrayType<'ctx, ElemDyn, ArrLenDyn, B, C>),
+    Struct(StructType<'ctx, StructBodyDyn, B, C>),
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> AggregateType<'ctx, B> {
-    pub fn as_type(self) -> Type<'ctx, B> {
+impl<B: ModuleBrand, C: Capability> CapabilityOf for AggregateType<'_, B, C> {
+    type Capability = C;
+}
+
+impl<'ctx, B: ModuleBrand, C: Capability> sealed::Sealed for AggregateType<'ctx, B, C> {}
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IrType<'ctx, B> for AggregateType<'ctx, B, C> {
+    #[inline]
+    fn as_type(self) -> Type<'ctx, B, C> {
+        self.as_type()
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> AggregateType<'ctx, B, C> {
+    pub fn as_type(self) -> Type<'ctx, B, C> {
         match self {
             Self::Array(t) => t.as_type(),
             Self::Struct(t) => t.as_type(),
@@ -1545,17 +1799,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> AggregateType<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> From<AggregateType<'ctx, B>> for Type<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> From<AggregateType<'ctx, B, C>>
+    for Type<'ctx, B, C>
+{
     #[inline]
-    fn from(a: AggregateType<'ctx, B>) -> Self {
+    fn from(a: AggregateType<'ctx, B, C>) -> Self {
         a.as_type()
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Type<'ctx, B>> for AggregateType<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> TryFrom<Type<'ctx, B, C>>
+    for AggregateType<'ctx, B, C>
+{
     type Error = IrError;
-    fn try_from(t: Type<'ctx, B>) -> IrResult<Self> {
-        let m = t.module();
+    fn try_from(t: Type<'ctx, B, C>) -> IrResult<Self> {
+        let m = t.module;
         match t.kind() {
             TypeKind::Array => Ok(Self::Array(ArrayType::new(
                 t.slot_trusting_same_module(),
@@ -1573,7 +1831,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Type<'ctx, B>> for AggregateType<'ctx,
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for AggregateType<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> fmt::Display for AggregateType<'ctx, B, C> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.as_type().fmt(f)

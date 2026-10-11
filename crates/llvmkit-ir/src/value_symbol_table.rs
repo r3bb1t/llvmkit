@@ -1,21 +1,22 @@
-//! Per-function name → value lookup. Mirrors the public face of
+//! Name → value lookup. Mirrors the public face of
 //! `llvm/include/llvm/IR/ValueSymbolTable.h`.
 //!
 //! Storage shape is a flat `HashMap<String, ValueSlot>`. The upstream C++ class
 //! layers a `StringMap` on top of `Value::ValueName` slots to amortise renames;
 //! llvmkit keeps the simpler flat map while mirroring LLVM's `createValueName`,
-//! `removeValueName`, and local `LastUnique` suffix behavior.
+//! `removeValueName`, `lookup`, and `LastUnique` suffix behavior. The name a
+//! value ends up with lives on its `ValueData::name`, which stands for the
+//! `ValueName` upstream keeps on the value.
 //!
-//! The map is only ever consulted via the owning [`FunctionValue`]; it has no
-//! module-level analog yet (Module-scope name lookup will land with the
-//! global-value layer).
-//!
-//! [`FunctionValue`]: crate::function::FunctionValue
+//! Two kinds of table exist, as upstream: one per function for its locals
+//! (`Function::getValueSymbolTable`), and one per module for every global
+//! value — functions, global variables, aliases and ifuncs alike
+//! (`Module::getValueSymbolTable`).
 
 use core::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use crate::value::ValueSlot;
+use crate::value::{ValueData, ValueSlot};
 
 /// Flat name → value-id table. Wrapped in `RefCell` so the same
 /// `&'ctx Function<'ctx>` borrow can read and write it.
@@ -44,9 +45,9 @@ impl ValueSymbolTable {
         }
 
         loop {
-            let next_unique = self.last_unique.get().checked_add(1).unwrap_or_else(|| {
-                unreachable!("ValueSymbolTable unique-name counter exceeded u32::MAX")
-            });
+            // `S << ++LastUnique;` on a `uint32_t`, which wraps to 0 past
+            // `UINT32_MAX` and keeps searching.
+            let next_unique = self.last_unique.get().wrapping_add(1);
             self.last_unique.set(next_unique);
 
             let mut candidate = requested.to_owned();
@@ -59,6 +60,31 @@ impl ValueSymbolTable {
                 return candidate;
             }
         }
+    }
+
+    /// The value named `name`, if any. Mirrors `ValueSymbolTable::lookup`;
+    /// llvmkit's tables carry no `MaxNameSize`, so there is no truncation to
+    /// mirror.
+    pub(crate) fn lookup(&self, name: &str) -> Option<ValueSlot> {
+        self.by_name.borrow().get(name).copied()
+    }
+
+    /// Rename `value` (slot `id`) through this table and store the name it
+    /// ends up with: `Value::setNameImpl`'s symbol-table arm, with the
+    /// `ValueName` it keeps on the value spelled as [`ValueData::name`]. The
+    /// one routine both kinds of table run — a function's for its locals, the
+    /// module's for its global values; `append_dot` is
+    /// `ValueSymbolTable::makeUniqueName`'s choice, which the caller knows.
+    pub(crate) fn set_value_name(
+        &self,
+        value: &ValueData,
+        id: ValueSlot,
+        requested: Option<&str>,
+        append_dot: bool,
+    ) {
+        let current = value.name.borrow().clone();
+        let final_name = self.rename_value(current.as_deref(), requested, id, append_dot);
+        *value.name.borrow_mut() = final_name;
     }
 
     pub(crate) fn remove_value_name(&self, name: &str, id: ValueSlot) {
@@ -96,5 +122,40 @@ impl ValueSymbolTable {
                 None
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ValueSymbolTable;
+    use crate::value::ValueSlot;
+
+    /// The uniquing counter wraps past `u32::MAX` instead of stopping.
+    /// `ValueSymbolTable::makeUniqueName` writes `++LastUnique`, and
+    /// `LastUnique` is a `uint32_t` (`llvm/include/llvm/IR/ValueSymbolTable.h`),
+    /// so the increment after `UINT32_MAX` is 0 and the search goes on. No
+    /// upstream unit test drives the counter that far; the expected names are
+    /// derived from that routine. Positive control: below the limit the
+    /// counter steps by one.
+    #[test]
+    fn the_unique_name_counter_wraps_like_upstreams_uint32_t() {
+        let table = ValueSymbolTable::new();
+        assert_eq!(
+            table.create_value_name("a", ValueSlot::from_index(0), true),
+            "a"
+        );
+
+        table.last_unique.set(41);
+        assert_eq!(
+            table.create_value_name("a", ValueSlot::from_index(1), true),
+            "a.42"
+        );
+
+        table.last_unique.set(u32::MAX);
+        assert_eq!(
+            table.create_value_name("a", ValueSlot::from_index(2), true),
+            "a.0"
+        );
+        assert_eq!(table.last_unique.get(), 0);
     }
 }

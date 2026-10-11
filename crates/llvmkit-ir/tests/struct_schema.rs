@@ -1,15 +1,16 @@
 use llvmkit_ir::{
-    Constant, Dyn, IntValue, IntoIrField, IrBuilder, IrError, IrField, Linkage, Module,
-    ModuleBrand, ModuleView, StructFields, StructSchema, StructSchemaValue, StructValue, Type,
-    ValidatedStructValue, Value, module_new,
+    Capability, Constant, Dyn, IntValue, IntoIrField, IrBuilder, IrError, IrField, Linkage, Module,
+    ModuleBrand, ModuleView, Mutable, ReadOnly, StructFields, StructSchema, StructSchemaValue,
+    StructValue, Type, ValidatedStructValue, Value, module_new,
 };
 use llvmkit_macros::Branded;
 
 struct Point;
 
+/// A hand-written schema value, capability-generic as the trait requires.
 #[derive(Branded)]
-struct PointValue<'ctx, B: ModuleBrand> {
-    raw: StructValue<'ctx, B>,
+struct PointValue<'ctx, B: ModuleBrand, C: Capability = Mutable> {
+    raw: StructValue<'ctx, B, C>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> PointValue<'ctx, B> {
@@ -42,12 +43,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointValue<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> StructSchemaValue<'ctx, Point, B> for PointValue<'ctx, B> {
-    fn as_struct_value(self) -> StructValue<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> StructSchemaValue<'ctx, Point, B, C>
+    for PointValue<'ctx, B, C>
+{
+    fn as_struct_value(self) -> StructValue<'ctx, B, C> {
         self.raw
     }
 
-    fn from_struct_value(raw: StructValue<'ctx, B>, _validated: &ValidatedStructValue<'_>) -> Self {
+    fn from_struct_value(
+        raw: StructValue<'ctx, B, C>,
+        _validated: &ValidatedStructValue<'_>,
+    ) -> Self {
         Self { raw }
     }
 }
@@ -62,12 +68,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoIrField<'ctx, Point, B> for PointValue<'ct
 }
 
 impl StructSchema for Point {
-    type Value<'ctx, B: ModuleBrand + 'ctx> = PointValue<'ctx, B>;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = PointValue<'ctx, B, C>;
     type FieldParams = (i32, i32);
 
     const NAME: &'static str = "Point";
 
-    fn field_types<'ctx, B>(module: ModuleView<'ctx, B>) -> Result<Vec<Type<'ctx, B>>, IrError>
+    fn field_types<'ctx, B>(
+        module: ModuleView<'ctx, B>,
+    ) -> Result<Vec<Type<'ctx, B, ReadOnly>>, IrError>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -77,7 +85,7 @@ impl StructSchema for Point {
         ])
     }
 
-    fn matches_fields<'ctx, B>(fields: &[Type<'ctx, B>]) -> bool
+    fn matches_fields<'ctx, B, C: Capability>(fields: &[Type<'ctx, B, C>]) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
@@ -89,30 +97,37 @@ impl StructSchema for Point {
 
 struct BadPoint;
 
-impl<'ctx, B: ModuleBrand + 'ctx> StructSchemaValue<'ctx, BadPoint, B> for PointValue<'ctx, B> {
-    fn as_struct_value(self) -> StructValue<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> StructSchemaValue<'ctx, BadPoint, B, C>
+    for PointValue<'ctx, B, C>
+{
+    fn as_struct_value(self) -> StructValue<'ctx, B, C> {
         self.raw
     }
 
-    fn from_struct_value(raw: StructValue<'ctx, B>, _validated: &ValidatedStructValue<'_>) -> Self {
+    fn from_struct_value(
+        raw: StructValue<'ctx, B, C>,
+        _validated: &ValidatedStructValue<'_>,
+    ) -> Self {
         Self { raw }
     }
 }
 
 impl StructSchema for BadPoint {
-    type Value<'ctx, B: ModuleBrand + 'ctx> = PointValue<'ctx, B>;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = PointValue<'ctx, B, C>;
     type FieldParams = (i64,);
 
     const NAME: &'static str = "Point";
 
-    fn field_types<'ctx, B>(module: ModuleView<'ctx, B>) -> Result<Vec<Type<'ctx, B>>, IrError>
+    fn field_types<'ctx, B>(
+        module: ModuleView<'ctx, B>,
+    ) -> Result<Vec<Type<'ctx, B, ReadOnly>>, IrError>
     where
         B: ModuleBrand + 'ctx,
     {
         Ok(vec![<i64 as IrField>::ir_type(module)?])
     }
 
-    fn matches_fields<'ctx, B>(fields: &[Type<'ctx, B>]) -> bool
+    fn matches_fields<'ctx, B, C: Capability>(fields: &[Type<'ctx, B, C>]) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
@@ -122,25 +137,30 @@ impl StructSchema for BadPoint {
 
 struct RecursiveNode;
 
-impl<'ctx, B: ModuleBrand + 'ctx> StructSchemaValue<'ctx, RecursiveNode, B>
-    for PointValue<'ctx, B>
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> StructSchemaValue<'ctx, RecursiveNode, B, C>
+    for PointValue<'ctx, B, C>
 {
-    fn as_struct_value(self) -> StructValue<'ctx, B> {
+    fn as_struct_value(self) -> StructValue<'ctx, B, C> {
         self.raw
     }
 
-    fn from_struct_value(raw: StructValue<'ctx, B>, _validated: &ValidatedStructValue<'_>) -> Self {
+    fn from_struct_value(
+        raw: StructValue<'ctx, B, C>,
+        _validated: &ValidatedStructValue<'_>,
+    ) -> Self {
         Self { raw }
     }
 }
 
 impl StructSchema for RecursiveNode {
-    type Value<'ctx, B: ModuleBrand + 'ctx> = PointValue<'ctx, B>;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = PointValue<'ctx, B, C>;
     type FieldParams = (RecursiveNode,);
 
     const NAME: &'static str = "RecursiveNode";
 
-    fn field_types<'ctx, B>(module: ModuleView<'ctx, B>) -> Result<Vec<Type<'ctx, B>>, IrError>
+    fn field_types<'ctx, B>(
+        module: ModuleView<'ctx, B>,
+    ) -> Result<Vec<Type<'ctx, B, ReadOnly>>, IrError>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -149,7 +169,7 @@ impl StructSchema for RecursiveNode {
         ])
     }
 
-    fn matches_fields<'ctx, B>(fields: &[Type<'ctx, B>]) -> bool
+    fn matches_fields<'ctx, B, C: Capability>(fields: &[Type<'ctx, B, C>]) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
@@ -159,30 +179,37 @@ impl StructSchema for RecursiveNode {
 
 struct EmptyName;
 
-impl<'ctx, B: ModuleBrand + 'ctx> StructSchemaValue<'ctx, EmptyName, B> for PointValue<'ctx, B> {
-    fn as_struct_value(self) -> StructValue<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> StructSchemaValue<'ctx, EmptyName, B, C>
+    for PointValue<'ctx, B, C>
+{
+    fn as_struct_value(self) -> StructValue<'ctx, B, C> {
         self.raw
     }
 
-    fn from_struct_value(raw: StructValue<'ctx, B>, _validated: &ValidatedStructValue<'_>) -> Self {
+    fn from_struct_value(
+        raw: StructValue<'ctx, B, C>,
+        _validated: &ValidatedStructValue<'_>,
+    ) -> Self {
         Self { raw }
     }
 }
 
 impl StructSchema for EmptyName {
-    type Value<'ctx, B: ModuleBrand + 'ctx> = PointValue<'ctx, B>;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = PointValue<'ctx, B, C>;
     type FieldParams = (i32,);
 
     const NAME: &'static str = "";
 
-    fn field_types<'ctx, B>(module: ModuleView<'ctx, B>) -> Result<Vec<Type<'ctx, B>>, IrError>
+    fn field_types<'ctx, B>(
+        module: ModuleView<'ctx, B>,
+    ) -> Result<Vec<Type<'ctx, B, ReadOnly>>, IrError>
     where
         B: ModuleBrand + 'ctx,
     {
         Ok(vec![<i32 as IrField>::ir_type(module)?])
     }
 
-    fn matches_fields<'ctx, B>(fields: &[Type<'ctx, B>]) -> bool
+    fn matches_fields<'ctx, B, C: Capability>(fields: &[Type<'ctx, B, C>]) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
@@ -193,8 +220,8 @@ impl StructSchema for EmptyName {
 struct Rect;
 
 #[derive(Branded)]
-struct RectValue<'ctx, B: ModuleBrand> {
-    raw: StructValue<'ctx, B>,
+struct RectValue<'ctx, B: ModuleBrand, C: Capability = Mutable> {
+    raw: StructValue<'ctx, B, C>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> RectValue<'ctx, B> {
@@ -221,12 +248,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> RectValue<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> StructSchemaValue<'ctx, Rect, B> for RectValue<'ctx, B> {
-    fn as_struct_value(self) -> StructValue<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> StructSchemaValue<'ctx, Rect, B, C>
+    for RectValue<'ctx, B, C>
+{
+    fn as_struct_value(self) -> StructValue<'ctx, B, C> {
         self.raw
     }
 
-    fn from_struct_value(raw: StructValue<'ctx, B>, _validated: &ValidatedStructValue<'_>) -> Self {
+    fn from_struct_value(
+        raw: StructValue<'ctx, B, C>,
+        _validated: &ValidatedStructValue<'_>,
+    ) -> Self {
         Self { raw }
     }
 }
@@ -241,12 +273,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoIrField<'ctx, Rect, B> for RectValue<'ctx,
 }
 
 impl StructSchema for Rect {
-    type Value<'ctx, B: ModuleBrand + 'ctx> = RectValue<'ctx, B>;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = RectValue<'ctx, B, C>;
     type FieldParams = (Point, Point);
 
     const NAME: &'static str = "Rect";
 
-    fn field_types<'ctx, B>(module: ModuleView<'ctx, B>) -> Result<Vec<Type<'ctx, B>>, IrError>
+    fn field_types<'ctx, B>(
+        module: ModuleView<'ctx, B>,
+    ) -> Result<Vec<Type<'ctx, B, ReadOnly>>, IrError>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -256,7 +290,7 @@ impl StructSchema for Rect {
         ])
     }
 
-    fn matches_fields<'ctx, B>(fields: &[Type<'ctx, B>]) -> bool
+    fn matches_fields<'ctx, B, C: Capability>(fields: &[Type<'ctx, B, C>]) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
@@ -268,7 +302,7 @@ impl StructSchema for Rect {
 
 fn poison_point<'ctx, B: ModuleBrand + 'ctx>(
     module: &'ctx Module<B>,
-) -> Result<Constant<'ctx, B>, IrError> {
+) -> Result<Constant<'ctx, B, ReadOnly>, IrError> {
     Ok(<Point as StructSchema>::ir_type(module.as_view())?
         .as_type()
         .poison()
@@ -343,7 +377,7 @@ fn struct_schema_params_are_branded_wrappers() -> Result<(), IrError> {
     let (point,) = m.view(f).params();
     let _: PointValue<'_, _> = point;
     assert_eq!(
-        point.as_struct_value().ty().as_type(),
+        point.as_struct_value().ty().as_type().read_only(),
         <Point as StructSchema>::ir_type(m.as_view())?.as_type()
     );
     Ok(())
@@ -359,7 +393,7 @@ fn struct_schema_try_value_from_ir_wraps_raw_struct() -> Result<(), IrError> {
     let f = m.add_function_dyn("raw_take_point", fn_ty, Linkage::External)?;
     let point = Point::try_value_from_ir(m.view(f).param(0)?)?;
     assert_eq!(
-        point.as_struct_value().ty().as_type(),
+        point.as_struct_value().ty().as_type().read_only(),
         <Point as StructSchema>::ir_type(m.as_view())?.as_type()
     );
     Ok(())

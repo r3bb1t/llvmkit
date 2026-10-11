@@ -9,9 +9,92 @@
 //! for the typestate-driven coverage that has no C++ analogue.
 
 use llvmkit_ir::{
-    Constant, ConstantIntValue, Dyn, IntDyn, IntType, IntValue, IrBuilder, IrError, Linkage,
-    TruncFlags, UiToFpFlags, ZextFlags, module_new,
+    CastOpcode, Constant, ConstantIntValue, Dyn, IntDyn, IntType, IntValue, IrBuilder, IrError,
+    Linkage, TruncFlags, UiToFpFlags, VectorType, ZextFlags, cast_is_valid, lanes, module_new,
 };
+
+/// Ports the `CastInst::castIsValid` assertions of
+/// `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, CastInst)`, in
+/// upstream's order, with upstream's types and expected answers. Upstream
+/// calls the `castIsValid(Instruction::CastOps, const Value *, Type *)`
+/// overload on `Constant::getNullValue(SrcTy)`, which asks
+/// `castIsValid(op, S->getType(), DstTy)`; [`cast_is_valid`] is that type
+/// form, so the source type is passed directly. The test's other checks
+/// (`isBitCastable`, `getCastOpcode`, `CreatePointerCast`, …) are not part of
+/// this port.
+///
+/// They pin that a fixed and a scalable vector of the same minimum count are
+/// different shapes (`ElementCount` equality includes scalability), including
+/// for a bitcast between equally sized vectors (`TypeSize` equality does too).
+#[test]
+fn cast_is_valid_answers_upstreams_cast_inst_assertions() {
+    let m = module_new!("cast-is-valid").expect("fresh module");
+    let i16_ty = m.i16_type();
+    let i32_ty = m.i32_type();
+    let i64_ty = m.i64_type();
+    let ptr_ty = m.ptr_type(0);
+    let ptr_as1_ty = m.ptr_type(1);
+
+    let v2_int32 = VectorType::of(i32_ty, lanes::<2>()).as_type();
+    let v2_int64 = VectorType::of(i64_ty, lanes::<2>()).as_type();
+    let v4_int16 = VectorType::of(i16_ty, lanes::<4>()).as_type();
+    let v1_int16 = VectorType::of(i16_ty, lanes::<1>()).as_type();
+
+    let vscale_v2_int32 = VectorType::scalable_of(i32_ty, lanes::<2>()).as_type();
+    let vscale_v2_int64 = VectorType::scalable_of(i64_ty, lanes::<2>()).as_type();
+    let vscale_v4_int16 = VectorType::scalable_of(i16_ty, lanes::<4>()).as_type();
+    let vscale_v1_int16 = VectorType::scalable_of(i16_ty, lanes::<1>()).as_type();
+
+    let v4_ptr_as1 = VectorType::of(ptr_as1_ty, lanes::<4>()).as_type();
+    let vscale_v4_ptr_as1 = VectorType::scalable_of(ptr_as1_ty, lanes::<4>()).as_type();
+
+    let v2_ptr = VectorType::of(ptr_ty, lanes::<2>()).as_type();
+    let v4_ptr = VectorType::of(ptr_ty, lanes::<4>()).as_type();
+    let vscale_v2_ptr = VectorType::scalable_of(ptr_ty, lanes::<2>()).as_type();
+    let vscale_v4_ptr = VectorType::scalable_of(ptr_ty, lanes::<4>()).as_type();
+
+    use CastOpcode::{AddrSpaceCast, BitCast};
+    let cases = [
+        (BitCast, v4_ptr, v2_ptr, false),
+        (BitCast, v2_ptr, v4_ptr, false),
+        (AddrSpaceCast, v4_ptr_as1, v2_ptr, false),
+        (AddrSpaceCast, v2_ptr, v4_ptr_as1, false),
+        // Address space cast of fixed/scalable vectors of pointers to
+        // scalable/fixed vector of pointers.
+        (AddrSpaceCast, vscale_v4_ptr_as1, v4_ptr, false),
+        (AddrSpaceCast, v4_ptr, vscale_v4_ptr_as1, false),
+        // Address space cast of scalable vectors of pointers to scalable
+        // vector of pointers.
+        (AddrSpaceCast, vscale_v4_ptr_as1, vscale_v2_ptr, false),
+        (AddrSpaceCast, vscale_v2_ptr, vscale_v4_ptr_as1, false),
+        (AddrSpaceCast, vscale_v4_ptr, vscale_v4_ptr_as1, true),
+        // Same number of lanes, different address space.
+        (AddrSpaceCast, vscale_v4_ptr_as1, vscale_v4_ptr, true),
+        // Same number of lanes, same address space.
+        (AddrSpaceCast, vscale_v4_ptr, vscale_v4_ptr, false),
+        // Bit casting fixed/scalable vector to scalable/fixed vectors.
+        (BitCast, v2_int32, vscale_v2_int32, false),
+        (BitCast, v2_int64, vscale_v2_int64, false),
+        (BitCast, v4_int16, vscale_v4_int16, false),
+        (BitCast, vscale_v2_int32, v2_int32, false),
+        (BitCast, vscale_v2_int64, v2_int64, false),
+        (BitCast, vscale_v4_int16, v4_int16, false),
+        // Bit casting scalable vectors to scalable vectors.
+        (BitCast, vscale_v4_int16, vscale_v2_int32, true),
+        (BitCast, vscale_v2_int32, vscale_v4_int16, true),
+        (BitCast, vscale_v2_int64, vscale_v2_int32, false),
+        (BitCast, vscale_v2_int32, vscale_v2_int64, false),
+        // Bitcasting to/from <vscale x 1 x Ty>
+        (BitCast, vscale_v1_int16, v1_int16, false),
+        (BitCast, v1_int16, vscale_v1_int16, false),
+    ];
+    let wrong: Vec<String> = cases
+        .iter()
+        .filter(|(op, src, dst, expected)| cast_is_valid(*op, *src, *dst) != *expected)
+        .map(|(op, src, dst, expected)| format!("{op:?} {src} -> {dst}: expected {expected}"))
+        .collect();
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
 
 /// Mirrors `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, CastInst)`
 /// (`Trunc` portion: i64 -> i32 narrowing produces a `trunc` instruction).

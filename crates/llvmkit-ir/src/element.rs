@@ -23,13 +23,18 @@
 //! arrays, vectors of pointers) are future work and deliberately absent
 //! from the marker set.
 //!
-//! This module replaces the earlier unwired `vector_element` /
-//! `sized_element` scaffolds, whose element-type-as-*type-handle* markers
-//! (`VectorElement` / `SizedElement`) never got a const-generic consumer.
+//! This module replaces two earlier, deleted scaffold modules
+//! (`vector_element.rs` / `sized_element.rs`), whose element-type-as-*type-
+//! handle* markers never got a const-generic consumer. They are unrelated to
+//! today's [`VectorElement`](crate::VectorElement), the sealed bound on
+//! [`VectorType::of`](crate::VectorType::of), which says which *type handles*
+//! may be a vector's element; the markers here say which element a typed
+//! vector or array *carries*.
 //!
 //! The base trait is **sealed** — the set of leaf element markers is closed,
 //! not an extension point.
 
+use crate::capability::Capability;
 use crate::float_kind::{Bfloat, Fp128, Half, PpcFp128, StaticFloatKind, X86Fp80};
 use crate::int_width::StaticIntWidth;
 use crate::module::{ModuleBrand, ModuleRef};
@@ -95,8 +100,8 @@ pub trait StaticVecElem<'ctx, B: ModuleBrand>: VecElem {
     type Value: IsValue<'ctx, B> + IntoErasedValue<'ctx, B> + Copy;
 
     /// Project the marker into the matching erased element [`Type`] from the
-    /// caller's module.
-    fn element_ir_type(module: ModuleRef<'ctx, B>) -> Type<'ctx, B>;
+    /// caller's module, at that module reference's capability.
+    fn element_ir_type<C: Capability>(module: ModuleRef<'ctx, B, C>) -> Type<'ctx, B, C>;
 
     /// Wrap a [`Value`] known-by-construction to have this element type into
     /// the typed scalar handle. Unchecked — the [`WrapWitness`] gates this to
@@ -115,7 +120,7 @@ macro_rules! impl_vec_elem_int {
         impl<'ctx, B: ModuleBrand + 'ctx> StaticVecElem<'ctx, B> for $ty {
             type Value = IntValue<'ctx, $ty, B>;
             #[inline]
-            fn element_ir_type(module: ModuleRef<'ctx, B>) -> Type<'ctx, B> {
+            fn element_ir_type<C: Capability>(module: ModuleRef<'ctx, B, C>) -> Type<'ctx, B, C> {
                 <$ty as StaticIntWidth>::ir_type(module).as_type()
             }
             #[inline]
@@ -135,7 +140,7 @@ macro_rules! impl_vec_elem_float {
         impl<'ctx, B: ModuleBrand + 'ctx> StaticVecElem<'ctx, B> for $ty {
             type Value = FloatValue<'ctx, $ty, B>;
             #[inline]
-            fn element_ir_type(module: ModuleRef<'ctx, B>) -> Type<'ctx, B> {
+            fn element_ir_type<C: Capability>(module: ModuleRef<'ctx, B, C>) -> Type<'ctx, B, C> {
                 <$ty as StaticFloatKind>::ir_type(module).as_type()
             }
             #[inline]
@@ -158,7 +163,7 @@ mod tests {
     #[test]
     fn static_vec_elem_projects_scalar_element_types() {
         let m = crate::module_new!("element-marker").expect("fresh module");
-        let module = m.module_ref();
+        let module = m.capability_ref();
         assert_eq!(
             <i32 as StaticVecElem<'_, _>>::element_ir_type(module),
             m.i32_type().as_type(),

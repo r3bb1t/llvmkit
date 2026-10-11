@@ -27,12 +27,15 @@
 
 use core::fmt;
 use core::iter::FusedIterator;
+use core::num::NonZeroU32;
 use core::str::FromStr;
 
 use crate::align::{Align, MaybeAlign};
+use crate::capability::Capability;
 use crate::error::DataLayoutError;
 use crate::module::{ModuleBrand, ModuleCore};
 use crate::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
+use crate::type_components::lanes;
 
 // --------------------------------------------------------------------------
 // Sub-records
@@ -597,45 +600,54 @@ impl DataLayout {
     /// Bit-size of `ty` when held as an SSA value. Mirrors
     /// `DataLayout::getTypeSizeInBits` (the inline definition in
     /// `DataLayout.h`).
-    pub fn type_size_in_bits<B: ModuleBrand>(&self, ty: Type<'_, B>) -> u64 {
+    pub fn type_size_in_bits<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> u64 {
         self.type_size_in_bits_inner(ty.module().core_ref(), ty.slot_trusting_same_module())
     }
 
     /// Mirrors `DataLayout::getTypeStoreSize`. Bytes.
-    pub fn type_store_size<B: ModuleBrand>(&self, ty: Type<'_, B>) -> u64 {
+    pub fn type_store_size<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> u64 {
         let bits = self.type_size_in_bits(ty);
         align_to_power_of_two(bits, 8) / 8
     }
 
     /// Mirrors `DataLayout::getTypeStoreSizeInBits`.
-    pub fn type_store_size_in_bits<B: ModuleBrand>(&self, ty: Type<'_, B>) -> u64 {
+    pub fn type_store_size_in_bits<B: ModuleBrand, C: Capability>(
+        &self,
+        ty: Type<'_, B, C>,
+    ) -> u64 {
         let bits = self.type_size_in_bits(ty);
         align_to_power_of_two(bits, 8)
     }
 
     /// Mirrors `DataLayout::typeSizeEqualsStoreSize`.
-    pub fn type_size_equals_store_size<B: ModuleBrand>(&self, ty: Type<'_, B>) -> bool {
+    pub fn type_size_equals_store_size<B: ModuleBrand, C: Capability>(
+        &self,
+        ty: Type<'_, B, C>,
+    ) -> bool {
         self.type_size_in_bits(ty) == self.type_store_size_in_bits(ty)
     }
 
     /// Mirrors `DataLayout::getTypeAllocSize`. Bytes including
     /// trailing alignment padding.
-    pub fn type_alloc_size<B: ModuleBrand>(&self, ty: Type<'_, B>) -> u64 {
+    pub fn type_alloc_size<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> u64 {
         self.type_alloc_size_inner(ty.module().core_ref(), ty.slot_trusting_same_module())
     }
 
     /// Mirrors `DataLayout::getTypeAllocSizeInBits`.
-    pub fn type_alloc_size_in_bits<B: ModuleBrand>(&self, ty: Type<'_, B>) -> u64 {
+    pub fn type_alloc_size_in_bits<B: ModuleBrand, C: Capability>(
+        &self,
+        ty: Type<'_, B, C>,
+    ) -> u64 {
         self.type_alloc_size(ty).saturating_mul(8)
     }
 
     /// Mirrors `DataLayout::getABITypeAlign`.
-    pub fn abi_type_align<B: ModuleBrand>(&self, ty: Type<'_, B>) -> Align {
+    pub fn abi_type_align<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> Align {
         self.alignment(ty.module().core_ref(), ty.slot_trusting_same_module(), true)
     }
 
     /// Mirrors `DataLayout::getPrefTypeAlign`.
-    pub fn pref_type_align<B: ModuleBrand>(&self, ty: Type<'_, B>) -> Align {
+    pub fn pref_type_align<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> Align {
         self.alignment(
             ty.module().core_ref(),
             ty.slot_trusting_same_module(),
@@ -645,10 +657,10 @@ impl DataLayout {
 
     /// Mirrors `DataLayout::getValueOrABITypeAlignment`. If
     /// `alignment` is set, returns it; otherwise the ABI alignment.
-    pub fn value_or_abi_type_align<B: ModuleBrand>(
+    pub fn value_or_abi_type_align<B: ModuleBrand, C: Capability>(
         &self,
         alignment: MaybeAlign,
-        ty: Type<'_, B>,
+        ty: Type<'_, B, C>,
     ) -> Align {
         alignment.align().unwrap_or_else(|| self.abi_type_align(ty))
     }
@@ -696,11 +708,11 @@ impl DataLayout {
             TypeData::X86Fp80 => 80,
             TypeData::X86Amx => 8192,
             TypeData::FixedVector { elem, n } => {
-                u64::from(*n).saturating_mul(self.type_size_in_bits_inner(module, *elem))
+                u64::from(n.get()).saturating_mul(self.type_size_in_bits_inner(module, *elem))
             }
             TypeData::ScalableVector { elem, min } => {
                 // Mirrors upstream: getKnownMinValue path.
-                u64::from(*min).saturating_mul(self.type_size_in_bits_inner(module, *elem))
+                u64::from(min.get()).saturating_mul(self.type_size_in_bits_inner(module, *elem))
             }
             TypeData::TargetExt(_) => match target_ext_layout_type(module, id) {
                 Some(layout) => self.type_size_in_bits_inner(module, layout),
@@ -884,7 +896,10 @@ impl DataLayout {
 
     /// Compute (without caching) the layout of an aggregate struct.
     /// Mirrors `StructLayout::StructLayout` in `DataLayout.cpp`.
-    pub fn struct_layout<B: ModuleBrand>(&self, ty: Type<'_, B>) -> StructLayoutInfo {
+    pub fn struct_layout<B: ModuleBrand, C: Capability>(
+        &self,
+        ty: Type<'_, B, C>,
+    ) -> StructLayoutInfo {
         self.struct_layout_inner(ty.module().core_ref(), ty.slot_trusting_same_module())
     }
 
@@ -1532,8 +1547,10 @@ fn parse_addr_space_and_name(s: &str) -> Result<(u32, String), DataLayoutError> 
 
 /// Mirrors `getTargetTypeInfo(...).LayoutType` in `lib/IR/Type.cpp`.
 /// Returns the type id of the in-memory layout type for the given
-/// target-extension type, or `None` for unknown / void-equivalent
-/// extensions. The full upstream table covers SPIR-V, AArch64
+/// target-extension type. `None` for a type that is not a target extension
+/// type, and for a `riscv.vector.tuple` whose layout would be a zero-lane
+/// vector; an extension upstream's table does not name gets its `void`
+/// default, as upstream does. The full upstream table covers SPIR-V, AArch64
 /// (`aarch64.svcount`), RISC-V (`riscv.vector.tuple`), DirectX
 /// (`dx.*`), AMDGPU (`amdgcn.named.barrier`), and the test
 /// extension (`llvm.test.vectorelement`).
@@ -1577,7 +1594,7 @@ pub(crate) fn target_ext_layout_type(module: &ModuleCore, id: TypeSlot) -> Optio
     }
     // AArch64 svcount: <vscale x 16 x i1>.
     if name == "aarch64.svcount" {
-        return Some(ctx.scalable_vector_type(ctx.int_type(1), 16));
+        return Some(ctx.scalable_vector_type(ctx.int_type(1), lanes::<16>()));
     }
     // RISC-V vector tuple. Layout = <vscale x N x i8> where N is
     // computed from the tuple's first scalable-vector type parameter.
@@ -1587,9 +1604,13 @@ pub(crate) fn target_ext_layout_type(module: &ModuleCore, id: TypeSlot) -> Optio
     {
         // Upstream uses `RISCV::RVVBytesPerBlock` (== 8) as the floor.
         const RVV_BYTES_PER_BLOCK: u32 = 8;
-        let lanes = core::cmp::max(*min, RVV_BYTES_PER_BLOCK);
+        let lanes = core::cmp::max(min.get(), RVV_BYTES_PER_BLOCK);
         let count_factor = ext.int_params.first().copied().unwrap_or(0);
-        let total = lanes.saturating_mul(count_factor);
+        // Upstream's `getTargetTypeInfo` passes this product to
+        // `ScalableVectorType::get`, which asserts `MinNumElts > 0`; llvmkit
+        // has no zero-lane vector, so a zero-count tuple has no layout type
+        // and is unsized (`Type::isSizedDerivedType` asks the layout type).
+        let total = NonZeroU32::new(lanes.saturating_mul(count_factor))?;
         return Some(ctx.scalable_vector_type(ctx.int_type(8), total));
     }
     // DirectX padding.
@@ -1603,7 +1624,7 @@ pub(crate) fn target_ext_layout_type(module: &ModuleCore, id: TypeSlot) -> Optio
     }
     // AMDGPU named.barrier: <4 x i32>.
     if name == "amdgcn.named.barrier" {
-        return Some(ctx.fixed_vector_type(ctx.int_type(32), 4));
+        return Some(ctx.fixed_vector_type(ctx.int_type(32), lanes::<4>()));
     }
     // Vector-element test extension: i32.
     if name == "llvm.test.vectorelement" {

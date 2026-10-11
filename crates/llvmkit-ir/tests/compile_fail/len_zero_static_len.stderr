@@ -1,0 +1,30 @@
+error[E0080]: evaluation panicked: a vector needs at least one lane: `FixedVectorType::get` and `ScalableVectorType::get` assert `NumElts > 0`
+ --> $RUST/core/src/panic.rs
+  |
+  = note: evaluation of `llvmkit_ir::lanes::<0>::{constant#0}` failed here
+  |
+ ::: src/type_components.rs
+  |
+  |               None => panic!(
+  |  _____________________-
+  | |                 "a vector needs at least one lane: `FixedVectorType::get` and \
+  | |                  `ScalableVectorType::get` assert `NumElts > 0`"
+  | |             ),
+  | |_____________- in this macro invocation
+
+note: erroneous constant encountered
+ --> src/type_components.rs
+  |
+  | /     const {
+  | |         match NonZeroU32::new(N) {
+  | |             Some(lanes) => lanes,
+  | |             None => panic!(
+... |
+  | |     }
+  | |_____^
+
+note: erroneous constant encountered
+ --> tests/compile_fail/len_zero_static_len.rs:9:13
+  |
+9 |     let _ = <Len<0> as StaticVecLen>::STATIC_LEN;
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

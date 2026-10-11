@@ -8,7 +8,9 @@ use core::iter::FusedIterator;
 use std::collections::HashMap;
 
 use super::basic_block::{BasicBlock, IntoBasicBlockLabel};
+use super::block_params::{BlockParams, BlockParamsDyn};
 use super::block_state::{BlockTerminationState, Unterminated};
+use super::capability::{Capability, ReadOnly};
 use super::function::FunctionValue;
 use super::instr_types::{BranchInstData, BranchKind};
 use super::instruction::{InstructionKindData, InstructionView};
@@ -54,7 +56,9 @@ impl<B: ModuleBrand> BasicBlockEdge<B> {
 #[derive(Branded)]
 #[branded(Debug, Clone)]
 pub struct FunctionCfg<'ctx, B: ModuleBrand + 'ctx> {
-    function: FunctionValue<'ctx, Dyn, B>,
+    /// The function the snapshot was taken of, kept at [`ReadOnly`]: a CFG
+    /// only reads it.
+    function: FunctionValue<'ctx, Dyn, B, ReadOnly>,
     successors: HashMap<ValueSlot, Vec<ValueSlot>>,
     predecessors: HashMap<ValueSlot, Vec<ValueSlot>>,
     edges: Vec<BasicBlockEdge<B>>,
@@ -62,9 +66,10 @@ pub struct FunctionCfg<'ctx, B: ModuleBrand + 'ctx> {
 
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
     /// Build a fresh CFG snapshot from the function's current terminators.
-    pub fn new(function: FunctionValue<'ctx, Dyn, B>) -> Self {
+    /// A function of either capability: building the snapshot only reads it.
+    pub fn new<C: Capability>(function: FunctionValue<'ctx, Dyn, B, C>) -> Self {
         let module = function.module();
-        let module_ref: ModuleRef<'ctx, B> = module.into();
+        let module_ref = function.module;
         let label_ty = module.label_type().as_type().slot_trusting_same_module();
         let mut successors = HashMap::new();
         let mut predecessors: HashMap<ValueSlot, Vec<ValueSlot>> = HashMap::new();
@@ -77,8 +82,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
             for succ_id in &succ_ids {
                 edges.push(BasicBlockEdge::new(
                     block.id(),
-                    BasicBlock::<Dyn, Unterminated, B>::from_parts(*succ_id, module_ref, label_ty)
-                        .id(),
+                    BasicBlock::<Dyn, Unterminated, B, BlockParamsDyn, C>::from_parts(
+                        *succ_id, module_ref, label_ty,
+                    )
+                    .id(),
                 ));
             }
             successors.insert(block_id, succ_ids);
@@ -93,7 +100,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
         }
 
         Self {
-            function,
+            function: function.read_only(),
             successors,
             predecessors,
             edges,
@@ -176,7 +183,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
         R: ReturnMarker,
         Block: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let module: ModuleRef<'ctx, B> = self.function.module().into();
+        // The snapshot's own reference, at `ReadOnly`: resolving a block only
+        // reads.
+        let module = self.function.module;
         let tag = module.id();
         let slots: &'cfg [ValueSlot] = block
             .into_basic_block_label(module)
@@ -220,8 +229,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionCfg<'ctx, B> {
 /// every upstream consumer of `predecessors(BB)` sees, `AsmWriter`'s
 /// `; preds = …` comment and the dominator-tree builder alike. It lives here
 /// rather than in `asm_writer.rs` because [`FunctionCfg`] answers from it too.
-pub(super) fn block_predecessors<'ctx, B: ModuleBrand + 'ctx>(
-    block: Value<'ctx, B>,
+pub(super) fn block_predecessors<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    block: Value<'ctx, B, C>,
 ) -> Vec<ValueSlot> {
     let context = block.module().context();
     block
@@ -252,8 +261,8 @@ pub(super) fn block_predecessors<'ctx, B: ModuleBrand + 'ctx>(
 /// from one predecessor — a `switch` with two cases into it, or
 /// `br i1 %c, label %b, label %b` — has no single predecessor. Counting
 /// distinct predecessor blocks instead is `BasicBlock::getUniquePredecessor`.
-pub(super) fn single_predecessor<'ctx, B: ModuleBrand + 'ctx>(
-    block: Value<'ctx, B>,
+pub(super) fn single_predecessor<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    block: Value<'ctx, B, C>,
 ) -> Option<ValueSlot> {
     match block_predecessors(block).as_slice() {
         [only] => Some(*only),
@@ -261,13 +270,15 @@ pub(super) fn single_predecessor<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-pub(super) fn block_successors<'ctx, R, S, B>(
-    block: &BasicBlock<'ctx, R, S, B>,
+pub(super) fn block_successors<'ctx, R, S, B, Params, C>(
+    block: &BasicBlock<'ctx, R, S, B, Params, C>,
 ) -> Vec<BlockId<Dyn, B>>
 where
     R: ReturnMarker,
     S: BlockTerminationState,
     B: ModuleBrand + 'ctx,
+    Params: BlockParams,
+    C: Capability,
 {
     let tag = block.module_ref().id();
     successor_ids(&block.as_dyn())
@@ -276,11 +287,15 @@ where
         .collect()
 }
 
-pub(super) fn successor_ids<'ctx, R, S, B>(block: &BasicBlock<'ctx, R, S, B>) -> Vec<ValueSlot>
+pub(super) fn successor_ids<'ctx, R, S, B, Params, C>(
+    block: &BasicBlock<'ctx, R, S, B, Params, C>,
+) -> Vec<ValueSlot>
 where
     R: ReturnMarker,
     S: BlockTerminationState,
     B: ModuleBrand + 'ctx,
+    Params: BlockParams,
+    C: Capability,
 {
     let Some(term) = block.terminator() else {
         return Vec::new();
@@ -288,8 +303,8 @@ where
     instruction_successor_ids(&term)
 }
 
-pub(super) fn instruction_successor_ids<'ctx, B: ModuleBrand + 'ctx>(
-    inst: &InstructionView<'ctx, B>,
+pub(super) fn instruction_successor_ids<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    inst: &InstructionView<'ctx, B, C>,
 ) -> Vec<ValueSlot> {
     match &inst.to_erased().data().kind {
         ValueKindData::Instruction(data) => kind_successor_ids(&data.kind),

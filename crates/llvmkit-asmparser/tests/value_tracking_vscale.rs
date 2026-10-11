@@ -68,7 +68,7 @@ fn range(module: &Module<DynBrand, Unverified>, name: &str, bit_width: u32) -> C
     let id = module
         .as_view()
         .functions()
-        .find(|f| f.name() == name)
+        .find(|f| f.name().as_deref() == Some(name))
         .unwrap_or_else(|| panic!("fixture defines @{name}"))
         .id();
     get_vscale_range(module.view(id), bit_width).expect("the fixture's ranges are all well-formed")
@@ -131,7 +131,7 @@ fn known_bits_of_a_vscale_call_read_the_range() {
     let f = module
         .as_view()
         .functions()
-        .find(|f| f.name() == "bounded")
+        .find(|f| f.name().as_deref() == Some("bounded"))
         .expect("fixture defines @bounded");
     let call = f
         .basic_blocks()
@@ -157,7 +157,7 @@ fn a_vscale_call_is_a_power_of_two_exactly_when_the_attribute_is_present() {
         let f = module
             .as_view()
             .functions()
-            .find(|f| f.name() == name)
+            .find(|f| f.name().as_deref() == Some(name))
             .unwrap_or_else(|| panic!("fixture defines @{name}"));
         let call = f
             .basic_blocks()

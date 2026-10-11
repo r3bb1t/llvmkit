@@ -21,10 +21,12 @@ use super::folder::IrBuilderFolder;
 use super::{
     BinaryIntrinsic, BinaryOpcode, CastOpcode, CmpPredicate, Constant, ConstantExprFlags,
     ConstantExprOpcode, ConstantExprOptions, FastMathFlags, FloatType, GepNoWrapFlags, IntType,
-    IrError, IrResult, ModuleBrand, ModuleRef, ModuleView, ShuffleMaskElem, Type, TypeData,
-    UnaryOpcode, Value,
+    IrError, IrResult, ModuleBrand, ModuleRef, ShuffleMaskElem, Type, TypeData, UnaryOpcode, Value,
 };
+use core::num::NonZeroU32;
+
 use crate::cmp_predicate::{FloatPredicate, IntPredicate};
+use crate::derived_types::VectorType;
 use crate::float_kind::FloatKind;
 use crate::instr_types::{ExactFlags, OverflowFlags};
 use crate::int_width::IntWidth;
@@ -158,7 +160,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
             return Ok(Some(folded.as_erased()));
         }
         let result_ty = gep_result_type(ptr.ty(), &index_constants)?;
-        let module = ptr.as_erased().module().core_ref();
+        let module = ptr.module;
         module
             .constant_expr_with_options(
                 result_ty,
@@ -245,9 +247,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
             return Ok(None);
         };
         vector
-            .as_erased()
-            .module()
-            .core_ref()
+            .module
             .constant_expr(
                 result_ty,
                 ConstantExprOpcode::ExtractElement,
@@ -290,9 +290,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
             return Ok(Some(folded.as_erased()));
         }
         vector
-            .as_erased()
-            .module()
-            .core_ref()
+            .module
             .constant_expr(
                 vector.ty(),
                 ConstantExprOpcode::InsertElement,
@@ -325,7 +323,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         {
             return Ok(Some(folded.as_erased()));
         }
-        let module: ModuleRef<'ctx, B> = lhs.as_erased().module().into();
+        let module = lhs.module;
         let Some(result_ty) = shuffle_result_type(lhs.ty(), mask)? else {
             return Ok(None);
         };
@@ -338,7 +336,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
                 .is_some_and(|(_, _, scalable)| scalable),
         )?;
         module
-            .module()
             .constant_expr(
                 result_ty,
                 ConstantExprOpcode::ShuffleVector,
@@ -645,9 +642,7 @@ fn fold_cast<'ctx, B: ModuleBrand + 'ctx>(
                 .map(|folded| folded.map(Constant::as_erased));
         };
         return value
-            .as_erased()
-            .module()
-            .core_ref()
+            .module
             .constant_expr(
                 dest_ty,
                 expr_opcode,
@@ -686,9 +681,7 @@ fn fold_binary_constants<'ctx, B: ModuleBrand + 'ctx>(
             return Ok(None);
         };
         return lhs
-            .as_erased()
-            .module()
-            .core_ref()
+            .module
             .constant_expr(
                 lhs.ty(),
                 expr_opcode,
@@ -811,29 +804,22 @@ fn ptr_or_ptr_vector_address_space<B: ModuleBrand>(ty: Type<'_, B>) -> Option<u3
             Some(*addr_space)
         }
         TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
-            ptr_or_ptr_vector_address_space(Type::new(*elem, ty.module()))
+            ptr_or_ptr_vector_address_space(Type::new(*elem, ty.module))
         }
         _ => None,
     }
 }
 
 fn lane_shape_matches<B: ModuleBrand>(lhs: Type<'_, B>, rhs: Type<'_, B>) -> bool {
-    vector_shape(lhs) == vector_shape(rhs)
+    lhs.data().element_count() == rhs.data().element_count()
 }
 
 fn pointer_bitcast_shape_matches<B: ModuleBrand>(lhs: Type<'_, B>, rhs: Type<'_, B>) -> bool {
-    match (vector_shape(lhs), vector_shape(rhs)) {
+    match (lhs.data().element_count(), rhs.data().element_count()) {
         (None, None) => true,
         (Some(lhs_shape), Some(rhs_shape)) => lhs_shape == rhs_shape,
-        (None, Some((1, false))) | (Some((1, false)), None) => true,
-        _ => false,
+        (None, Some(count)) | (Some(count), None) => !count.scalable && count.min.get() == 1,
     }
-}
-
-fn vector_shape<B: ModuleBrand>(ty: Type<'_, B>) -> Option<(u32, bool)> {
-    ty.data()
-        .as_vector()
-        .map(|(_, lanes, scalable)| (lanes, scalable))
 }
 
 fn invalid_pointer_cast<T>() -> IrResult<T> {
@@ -844,7 +830,7 @@ fn invalid_pointer_cast<T>() -> IrResult<T> {
 
 fn vector_element_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<Type<'ctx, B>> {
     let (elem, _, _) = ty.data().as_vector()?;
-    Some(Type::new(elem, ty.module()))
+    Some(Type::new(elem, ty.module))
 }
 
 fn shuffle_result_type<'ctx, B: ModuleBrand + 'ctx>(
@@ -854,18 +840,33 @@ fn shuffle_result_type<'ctx, B: ModuleBrand + 'ctx>(
     let Some((elem, _, scalable)) = lhs_ty.data().as_vector() else {
         return Ok(None);
     };
-    let lanes = u32::try_from(mask.len()).map_err(|_| IrError::InvalidOperation {
-        message: "shufflevector mask too large",
-    })?;
-    let elem_ty = Type::new(elem, lhs_ty.module());
+    let lanes = shuffle_mask_lanes(mask)?;
+    let module = lhs_ty.module;
+    let elem_ty = Type::new(elem, module);
     Ok(Some(if scalable {
-        lhs_ty
-            .module()
-            .scalable_vector_type(elem_ty, lanes)
-            .as_type()
+        module.scalable_vector_type(elem_ty, lanes)?.as_type()
     } else {
-        lhs_ty.module().vector_type(elem_ty, lanes).as_type()
+        module.vector_type(elem_ty, lanes)?.as_type()
     }))
+}
+
+/// A shuffle mask's length as the result's lane count — the one copy, which
+/// [`IrBuilder::shuffle_vector`] calls too. Upstream builds the result as
+/// `VectorType::get(…, Mask.size(), …)`, which asserts a non-zero `unsigned`
+/// count, and llvmkit has no zero-lane type to build, so a length that is not
+/// a lane count is [`IrError::InvalidShuffleMaskLength`].
+///
+/// Refused: a zero length, and a length above `u32::MAX`. The second needs a
+/// mask of more than `u32::MAX` elements, so no test exercises it; the arm
+/// exists because `mask.len()` is a `usize` and the lane count a `u32`.
+///
+/// [`IrBuilder::shuffle_vector`]: crate::IrBuilder::shuffle_vector
+pub(super) fn shuffle_mask_lanes(mask: &[ShuffleMaskElem]) -> IrResult<NonZeroU32> {
+    let len = mask.len();
+    u32::try_from(len)
+        .ok()
+        .and_then(NonZeroU32::new)
+        .ok_or(IrError::InvalidShuffleMaskLength { len })
 }
 
 fn shuffle_mask_constant<'ctx, B: ModuleBrand + 'ctx>(
@@ -873,14 +874,7 @@ fn shuffle_mask_constant<'ctx, B: ModuleBrand + 'ctx>(
     mask: &[ShuffleMaskElem],
     scalable: bool,
 ) -> IrResult<Constant<'ctx, B>> {
-    let i32_ty = IntType::<i32, B>::new(
-        module
-            .module()
-            .i32_type::<B>()
-            .as_type()
-            .slot_trusting_same_module(),
-        module,
-    );
+    let i32_ty = module.i32_type();
     let mut elements = Vec::with_capacity(mask.len());
     for element in mask {
         match *element {
@@ -895,14 +889,13 @@ fn shuffle_mask_constant<'ctx, B: ModuleBrand + 'ctx>(
             }
         }
     }
-    let lanes = u32::try_from(mask.len()).map_err(|_| IrError::InvalidOperation {
-        message: "shufflevector mask too large",
-    })?;
+    let lanes = shuffle_mask_lanes(mask)?;
     (if scalable {
-        ModuleView::<B>::new(module.module()).scalable_vector_type(i32_ty.as_type(), lanes)
+        VectorType::scalable_of(i32_ty, lanes)
     } else {
-        ModuleView::<B>::new(module.module()).vector_type(i32_ty.as_type(), lanes)
+        VectorType::of(i32_ty, lanes)
     })
+    .as_dyn()
     .const_vector(elements)
     .map(|constant| constant.as_constant())
 }

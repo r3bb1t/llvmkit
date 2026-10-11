@@ -1004,9 +1004,14 @@ counterpart of `IntBinOpFlags`, and the parser branches on
 **The verifier had the same scalar assumption and it was the harder half.**
 Its integer-cast arm read widths through an integer-only accessor, so vector
 casts parsed and then failed verification. It now compares
-`getScalarSizeInBits` and checks the vector shapes separately — which is what
-`CastInst::castIsValid` actually says — and the old scalar-only helper is gone
-rather than left behind.
+`getScalarSizeInBits` and checks the vector shapes separately, and the old
+scalar-only helper is gone rather than left behind. Its shape check compared
+element counts, which is `CastInst::castIsValid`'s rule, not the verifier's;
+since 2026-10-11 it compares only `isVectorTy()`, as upstream's
+`Verifier::visitTruncInst` / `visitZExtInst` / `visitSExtInst` do. The same
+day `int_cast_erased` and `IntCastFlags` were replaced by
+`IrBuilder::cast_erased` over a `CastOperation`, the one erased cast builder
+`LLParser::parseCast`'s port calls for every cast opcode.
 
 Two upstream cases returned to the `stripNullTest` port as a result; nothing in
 the analysis changed, because `strip_null_test` was already splat-aware.
@@ -1847,6 +1852,51 @@ already carry uses that the move must not disturb. No upstream test that
 llvmkit ports needs it yet; it wants its own port, test-first, rather than a
 rider on the bundle copy.
 
+## `ConstantDataSequential` has no raw-data surface (found 2026-10-10, capability plan Task 6.1)
+
+`unittests/IR/ConstantsTest.cpp`'s `BuildConstantDataArrays` and
+`BuildConstantDataVectors` round-trip each sequential constant through
+`ConstantDataArray::getRaw(CDA->getRawDataValues(), CDA->getNumElements(),
+CDA->getElementType())` and assert the result is the same uniqued constant.
+llvmkit has neither half: no accessor for a sequential constant's packed bytes
+and no constructor from them (`git grep -nE "raw_data|get_raw" feb8505 --
+crates/llvmkit-ir/src` finds nothing). `crates/llvmkit-ir/tests/constant_kind.rs` ports
+the class assertions of both tests and names the round trip as their blocked
+half. Closing it means a `getRawDataValues` / `getRaw` pair on the
+`ConstantDataKind::Sequential` constants, after which the two tests take their
+second assertion back.
+
+## Storage-level `isa<UndefValue>` / `isa<PoisonValue>` reads outside `Constant` (found 2026-10-10, capability plan Task 6.1 review)
+
+Upstream canonicalises an all-`undef` or all-`poison` element list to one
+`UndefValue` / `PoisonValue` when it builds it (`ConstantArray::getImpl`,
+`ConstantStruct::get`, `ConstantVector::getImpl`). llvmkit keeps the list, so
+a routine that ports `isa<UndefValue>(C)` by matching `ConstantData::Undef` /
+`ConstantData::Poison` on the storage answers `false` for such a list where
+upstream answers `true`. `Constant::is_undef`, `is_poison` and
+`is_undef_or_poison` now answer through `Constant::kind`, and the review that
+moved them found the folders' whole-value `isa<PoisonValue>` reads wrong
+(`constant_kind.rs::a_whole_value_fold_sees_an_all_poison_list_as_poison`).
+The other storage-level matches are unaudited. `rg -n
+"ConstantData::(Undef|Poison)\b" crates/llvmkit-ir/src` lists them; outside
+`constant.rs`, the interning in `llvm_context.rs` and the printer's `undef` /
+`poison` arms in `asm_writer.rs`, they sit in `constant_fold.rs`
+(`is_not_poison_for_select`), `constant_folding.rs`
+(`constant_to_store_bytes`, `is_guaranteed_not_to_be_undef_or_poison`),
+`constants.rs` (`constant_with_replaced_operand`,
+`valid_shufflevector_mask_constant`), `known_fp_class.rs`
+(`constant_fp_class`), `pointer_analysis.rs` (`is_bytewise_value`),
+`value_tracking.rs` (`compute_constant_known_bits`,
+`constant_is_well_defined`, `leaf_constant_known_bits`,
+`splat_or_scalar_constant`, `zero_int_constant`), `vector_utils.rs`
+(`constant_mask_lanes_satisfy`, `is_splat_value_at_depth`) and `verifier.rs`
+(`verify_constant_tree`, `verify_must_tail_call`). One is checked:
+`constants.rs::constant_id_is_undef_or_poison` reads only the scalar lanes of
+a shuffle mask, where storage and class agree. Some matches are exhaustive
+arms or element reads rather than `isa` ports. Each needs reading against the
+upstream routine it ports, and a test where its answer is wrong, before it
+moves to `Constant::kind`.
+
 ## Ergonomics backlog (from the core audit)
 
 - `Display` for the 39 typed instruction handles (`LoadInst`, `CallInst`, …;
@@ -2120,21 +2170,23 @@ rider on the bundle copy.
   only).
 - Address-space-typed pointers (`PointerValue` currently erases address
   space; audit item from infra report).
-- **Infallible statically-sized aggregate constants.**
-  `ArrayType<E, ArrLen<N>>::const_array([C; N])` /
-  `VectorType<E, Len<N>>::const_vector([C; N])` could drop the `IrResult`
-  entirely — the length is known at compile time and the elements would be
-  materialized at the type-level element `E` — but this needs typed
-  `ArrayType<E, ArrLen<N>>` / `VectorType<E, Len<N>>` **type constructors**
-  first: today every `const_array`/`const_vector` caller builds an *erased*
-  `ArrayType<ElemDyn, ArrLenDyn>` / `VectorType<ElemDyn, LenDyn>` via
-  `m.array_type(...)` / `m.vector_type(...)`, so an infallible static
-  constructor would be dead code (no statically-typed receiver exists to call
-  it on). The fallible `const_array`/`const_struct`/`const_vector` now accept
-  `impl IntoConstantValue` elements (literals work), but stay `IrResult` — the
-  element-vs-container type check still guards the erased receivers. Bundle the
-  infallible variants with a typed aggregate-**type**-constructor slice; the
-  same applies to a `StructSchema`-keyed tuple-struct constant.
+- **Infallible statically-sized aggregate constants** — open, and not
+  blocked for literal elements. The statically typed receivers exist:
+  `Module::vector_type_n::<E, N>()` / `array_type_n::<E, N>()` return
+  `VectorType<E, Len<N>>` / `ArrayType<E, ArrLen<N>>`. A constructor on them
+  taking `[E; N]` Rust scalar literals (the markers that are Rust scalars:
+  `bool`, `i8` … `i128`, `f32`, `f64`) could drop the `IrResult`: the length
+  is static, the element type is `E`'s, and a literal belongs to no module.
+  Handle elements stay fallible for two reasons. `IntoConstantValue::into_constant`
+  admits a handle against the receiver's module, and two `DynBrand` modules
+  share a brand, so another module's constant type-checks and is refused only
+  at run time (`IrError::ForeignValueId`). And `StaticVecElem` projects a
+  value handle (`E::Value`), not a constant one
+  (`git grep -n "type Constant" 0fe68a5 -- crates/llvmkit-ir/src/element.rs`
+  finds nothing), so a handle list cannot be typed as constants of `E`
+  without a new projection. The fallible `const_array` / `const_struct` /
+  `const_vector` already accept `impl IntoConstantValue` elements. The same
+  question applies to a `StructSchema`-keyed tuple-struct constant.
 
 ## Session follow-ups
 
@@ -2709,9 +2761,12 @@ match struct element type` while `LLParser::convertValIDToValue` prints
 fixture's own `RUN` line is a divergence exactly as being weaker is, so neither
 of those is work — the pin is what would change if a strict tier ever covered
 them. Genuine defects the sweep has surfaced so far are recorded where they
-belong: `zeroinit-error` in [`divergences.md`](divergences.md),
-`musttail-invalid-1` and `invalid-datalayout-override` under **G17** in
+belong: `zeroinit-error` in [`divergences.md`](divergences.md), and
+`invalid-datalayout-override` under **G17** in
 [`fixture-coverage.md`](fixture-coverage.md), with the fix stated there.
+`musttail-invalid-1`, once listed beside it, is fixed, and
+`parser_calls.rs::upstream_musttail_ellipsis_fixtures_report_upstreams_exact_text`
+holds its text to equality.
 
 **The work, in three tiers.** Not one switch: the oracle has to come from each
 fixture's own `FileCheck` line, not from a house preference.

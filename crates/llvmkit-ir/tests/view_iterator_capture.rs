@@ -25,7 +25,7 @@
 
 use llvmkit_ir::{
     Dyn, InstructionKind, InstructionView, IntValue, IrBuilder, IrError, Linkage, ModuleBrand,
-    NoFolder, Value, module_new,
+    NoFolder, ReadOnly, Value, module_new,
 };
 
 /// Build `@f` with two blocks and a phi, so there is something to walk:
@@ -81,7 +81,7 @@ fn instructions_flat_map_across_blocks_compiles_and_is_ordered() -> Result<(), I
 
     // The composition under test. Binding it proves the iterator outlives the
     // `block` it came from — with the borrow captured this would not compile.
-    let walk: Vec<InstructionView<'_, _>> = f
+    let walk: Vec<InstructionView<'_, _, ReadOnly>> = f
         .basic_blocks()
         .flat_map(|block| block.instructions())
         .collect();
@@ -98,7 +98,7 @@ fn instructions_flat_map_across_blocks_compiles_and_is_ordered() -> Result<(), I
     assert_eq!(named, expected_named, "program order across blocks");
 
     // Block-by-block order must agree with the flattened order.
-    let nested: Vec<InstructionView<'_, _>> = {
+    let nested: Vec<InstructionView<'_, _, ReadOnly>> = {
         let mut collected = Vec::new();
         for block in f.basic_blocks() {
             for instruction in block.instructions() {
@@ -203,7 +203,7 @@ fn phi_incomings_iterator_outlives_its_phi_handle() -> Result<(), IrError> {
     let f = m.as_view().functions().next().expect("@f exists");
     let join = f.basic_blocks().nth(1).expect("join block");
 
-    let pairs: Vec<(Value<'_, _>, _)> = join
+    let pairs: Vec<(Value<'_, _, ReadOnly>, _)> = join
         .instructions()
         .filter_map(|instruction| match instruction.kind()? {
             InstructionKind::Phi(phi) => Some(phi),

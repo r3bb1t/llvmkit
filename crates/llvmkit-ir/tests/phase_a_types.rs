@@ -12,7 +12,8 @@
 
 use llvmkit_ir::{
     AggregateType, AnyTypeEnum, BasicTypeEnum, DynBrand, IntDyn, IntType, IrError, IrType,
-    MAX_INT_BITS, MIN_INT_BITS, SizedType, Type, TypeKind, TypeKindLabel, module_new,
+    MAX_INT_BITS, MIN_INT_BITS, SizedType, Type, TypeKind, TypeKindLabel, VectorType, lanes,
+    module_new,
 };
 
 /// llvmkit-specific: primitive type interning has no dedicated upstream `TEST`;
@@ -84,12 +85,12 @@ fn array_and_vector_intern() {
     assert_eq!(a1.element(), i32.as_type());
     assert_eq!(a1.len(), 8);
 
-    let v_fixed = m.vector_type(i32, 4);
-    let v_scalable = m.scalable_vector_type(i32, 4);
+    let v_fixed = VectorType::of(i32, lanes::<4>());
+    let v_scalable = VectorType::scalable_of(i32, lanes::<4>());
     assert_ne!(v_fixed.as_type(), v_scalable.as_type());
     assert!(!v_fixed.is_scalable());
     assert!(v_scalable.is_scalable());
-    assert_eq!(v_fixed.min_len(), 4);
+    assert_eq!(v_fixed.min_len().get(), 4);
 }
 
 /// llvmkit-specific: `FunctionType` uniquing has no dedicated upstream `TEST`;
@@ -305,7 +306,7 @@ fn aggregate_excludes_vector() {
     let m = module_new!("t").expect("fresh module");
     let i32 = m.i32_type();
     let arr = m.array_type(i32, 4);
-    let vec = m.vector_type(i32, 4);
+    let vec = VectorType::of(i32, lanes::<4>());
     let lit = m.struct_type([i32.as_type()]);
 
     assert!(AggregateType::try_from(arr.as_type()).is_ok());
@@ -375,7 +376,9 @@ fn ir_type_trait_unifies_handles() {
     fn name<T>(_: T) -> &'static str {
         std::any::type_name::<T>()
     }
-    fn _accepts_any<'ctx, B: llvmkit_ir::ModuleBrand, T: IrType<'ctx, B>>(t: T) -> Type<'ctx, B> {
+    fn _accepts_any<'ctx, B: llvmkit_ir::ModuleBrand, T: IrType<'ctx, B>>(
+        t: T,
+    ) -> Type<'ctx, B, T::Capability> {
         t.as_type()
     }
 

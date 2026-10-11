@@ -7,7 +7,7 @@
 //! companion trybuild fixture in `tests/compile_fail/`
 //! (`set_struct_body_twice.rs`) locks the compile-fail story.
 
-use llvmkit_ir::{IrError, module_new};
+use llvmkit_ir::{IrError, VectorType, lanes, module_new};
 
 /// Port of `unittests/IR/TypesTest.cpp::TEST(TypesTest, StructType)`
 /// (the name-management sub-tests). Upstream's `setName` API is not
@@ -99,7 +99,7 @@ fn self_referential_struct_body_is_rejected() -> Result<(), IrError> {
 fn struct_sizedness_follows_the_scalable_vector_rule() -> Result<(), IrError> {
     let m = module_new!("t")?;
     let i32_ty = m.i32_type().as_type();
-    let scalable = m.scalable_vector_type(m.i32_type(), 2).as_type();
+    let scalable = VectorType::scalable_of(m.i32_type(), lanes::<2>()).as_type();
 
     let mixed = m.set_struct_body(m.opaque_struct("mixed")?, [scalable, i32_ty], false)?;
     assert!(!mixed.as_type().is_sized());

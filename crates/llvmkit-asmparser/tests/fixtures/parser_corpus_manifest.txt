@@ -12,7 +12,10 @@
 #   status=xfail-verify llvmkit gap: parses, but does not verify.
 #   error=<text>        `reject` only. Upstream's FileCheck diagnostic text; the
 #                       rendered message must contain it, FileCheck's own rule.
-#   loc=<line>:<col>    `reject` only. Upstream's `<stdin>:LINE:COL:` pin.
+#   loc=<line>:<col>    `reject` only. Upstream's `<stdin>:LINE:COL:` pin, or,
+#                       where the fixture's CHECK pins only the text, the token
+#                       the raising LLParser routine reports at -- such a row
+#                       has a `#` line above it naming that routine.
 #   expect=<fixture>    golden print to compare against.
 #
 # The two xfail statuses have no rows: `grep 'status=xfail' ` over this file
@@ -98,6 +101,8 @@ upstream/assembler-corpus/2006-09-28-CrashOnInvalid.ll | test/Assembler/2006-09-
 upstream/assembler-corpus/2006-12-09-Cast-To-Bool.ll | test/Assembler/2006-12-09-Cast-To-Bool.ll | status=pass
 upstream/assembler-corpus/2007-01-02-Undefined-Arg-Type.ll | test/Assembler/2007-01-02-Undefined-Arg-Type.ll | status=reject | error=invalid type for function argument
 upstream/assembler-corpus/2007-01-05-Cmp-ConstExpr.ll | test/Assembler/2007-01-05-Cmp-ConstExpr.ll | status=pass
+# LLParser::parseCast reports at parseTypeAndValue's Loc: the source type.
+upstream/assembler-corpus/2007-01-16-CrashOnBadCast.ll | test/Assembler/2007-01-16-CrashOnBadCast.ll | status=reject | error=invalid cast opcode for cast from 'i64' to 'ptr' | loc=7:21
 upstream/assembler-corpus/2007-01-16-CrashOnBadCast2.ll | test/Assembler/2007-01-16-CrashOnBadCast2.ll | status=reject | error=invalid cast opcode for cast from 'i64' to 'ptr'
 upstream/assembler-corpus/2007-03-18-InvalidNumberedVar.ll | test/Assembler/2007-03-18-InvalidNumberedVar.ll | status=reject | error='%0' defined with type 'i1'
 upstream/assembler-corpus/2007-03-19-NegValue.ll | test/Assembler/2007-03-19-NegValue.ll | status=pass
@@ -249,6 +254,7 @@ upstream/assembler-corpus/dso_local_equivalent.ll | test/Assembler/dso_local_equ
 upstream/assembler-corpus/externally-initialized.ll | test/Assembler/externally-initialized.ll | status=pass
 upstream/assembler-corpus/extractvalue-invalid-idx.ll | test/Assembler/extractvalue-invalid-idx.ll | status=reject | error=invalid indices for extractvalue
 upstream/assembler-corpus/extractvalue-no-idx.ll | test/Assembler/extractvalue-no-idx.ll | status=reject | error=expected index
+upstream/assembler-corpus/fast-math-flags.ll | test/Assembler/fast-math-flags.ll | status=pass
 upstream/assembler-corpus/flags.ll | test/Assembler/flags.ll | status=pass
 upstream/assembler-corpus/fp-intrinsics-attr.ll | test/Assembler/fp-intrinsics-attr.ll | status=pass
 upstream/assembler-corpus/function-operand-uselistorder.ll | test/Assembler/function-operand-uselistorder.ll | status=pass
@@ -384,6 +390,8 @@ upstream/assembler-corpus/invalid-immarg2.ll | test/Assembler/invalid-immarg2.ll
 upstream/assembler-corpus/invalid-immarg3.ll | test/Assembler/invalid-immarg3.ll | status=reject | error=this attribute does not apply to return values
 upstream/assembler-corpus/invalid-inline-constraint.ll | test/Assembler/invalid-inline-constraint.ll | status=reject | error=failed to parse constraints
 upstream/assembler-corpus/invalid-inttype.ll | test/Assembler/invalid-inttype.ll | status=reject | error=bitwidth for integer type out of range | loc=5:21
+# The CHECK pins only the text; loc= is LLParser::parseParameterList's ArgLoc.
+upstream/assembler-corpus/invalid-label-call-arg.ll | test/Assembler/invalid-label-call-arg.ll | status=reject | error=invalid type for function argument | loc=6:24
 upstream/assembler-corpus/invalid-label.ll | test/Assembler/invalid-label.ll | status=reject | error=invalid type for function argument
 upstream/assembler-corpus/invalid-landingpad.ll | test/Assembler/invalid-landingpad.ll | status=reject | error='filter' clause has an invalid type | loc=6:24
 upstream/assembler-corpus/invalid-load-missing-explicit-type.ll | test/Assembler/invalid-load-missing-explicit-type.ll | status=reject | loc=4:17 | error=expected comma after load's type
@@ -426,6 +434,12 @@ upstream/assembler-corpus/invalid-uselistorder_bb-missing-func.ll | test/Assembl
 upstream/assembler-corpus/invalid-uselistorder_bb-not-bb.ll | test/Assembler/invalid-uselistorder_bb-not-bb.ll | status=reject | error=expected basic block in uselistorder_bb
 upstream/assembler-corpus/invalid-uselistorder_bb-not-func.ll | test/Assembler/invalid-uselistorder_bb-not-func.ll | status=reject | error=expected function name in uselistorder_bb
 upstream/assembler-corpus/invalid-uselistorder_bb-numbered.ll | test/Assembler/invalid-uselistorder_bb-numbered.ll | status=reject | error=invalid numeric label in uselistorder_bb
+# LLParser::parseCast reports at parseTypeAndValue's Loc: the source type.
+upstream/assembler-corpus/invalid_cast.ll | test/Assembler/invalid_cast.ll | status=reject | error=invalid cast opcode for cast from '<4 x i64>' to '<3 x i8>' | loc=6:14
+# LLParser::parseCast reports at parseTypeAndValue's Loc: the source type.
+upstream/assembler-corpus/invalid_cast2.ll | test/Assembler/invalid_cast2.ll | status=reject | error=invalid cast opcode for cast from '<4 x i64>' to 'i8' | loc=6:14
+# LLParser::parseCast reports at parseTypeAndValue's Loc: the source type.
+upstream/assembler-corpus/invalid_cast3.ll | test/Assembler/invalid_cast3.ll | status=reject | error=invalid cast opcode for cast from '<4 x ptr>' to '<2 x ptr>' | loc=5:17
 upstream/assembler-corpus/invalid_cast4.ll | test/Assembler/invalid_cast4.ll | status=reject | error=invalid cast opcode for cast from 'i64' to 'i64'
 upstream/assembler-corpus/invoke-nonzero-program-addrspace.ll | test/Assembler/invoke-nonzero-program-addrspace.ll | status=reject | loc=11:22 | error='%fnptr200' defined with type 'ptr addrspace(200)' but expected 'ptr'
 upstream/assembler-corpus/large-comdat.ll | test/Assembler/large-comdat.ll | status=pass
@@ -451,8 +465,10 @@ upstream/assembler-corpus/multi-summary-disassemble.ll | test/Assembler/multi-su
 upstream/assembler-corpus/mustprogress-parse-error-0.ll | test/Assembler/mustprogress-parse-error-0.ll | status=reject | error=this attribute does not apply to parameters | loc=4:35
 upstream/assembler-corpus/mustprogress-parse-error-1.ll | test/Assembler/mustprogress-parse-error-1.ll | status=reject | error=this attribute does not apply to return values | loc=4:8
 upstream/assembler-corpus/mustprogress-parse-error-2.ll | test/Assembler/mustprogress-parse-error-2.ll | status=reject | error=expected '{' in function body | loc=4:51
-upstream/assembler-corpus/musttail-invalid-1.ll | test/Assembler/musttail-invalid-1.ll | status=reject | error=unexpected ellipsis in argument list for musttail call in non-varargs function
-upstream/assembler-corpus/musttail-invalid-2.ll | test/Assembler/musttail-invalid-2.ll | status=reject | error=expected '...' at end of argument list for musttail call in varargs function
+# The two CHECKs pin only the text; each loc= is the token LLParser::parseParameterList's
+# tokError reports at: the `...`, then the `)` it tests before lexing it.
+upstream/assembler-corpus/musttail-invalid-1.ll | test/Assembler/musttail-invalid-1.ll | status=reject | error=unexpected ellipsis in argument list for musttail call in non-varargs function | loc=11:52
+upstream/assembler-corpus/musttail-invalid-2.ll | test/Assembler/musttail-invalid-2.ll | status=reject | error=expected '...' at end of argument list for musttail call in varargs function | loc=10:50
 upstream/assembler-corpus/musttail.ll | test/Assembler/musttail.ll | status=pass
 upstream/assembler-corpus/mutually-recursive-types.ll | test/Assembler/mutually-recursive-types.ll | status=reject | error=identified structure type 'rt3' is recursive
 upstream/assembler-corpus/no-mdstring-upgrades.ll | test/Assembler/no-mdstring-upgrades.ll | status=pass
@@ -492,6 +508,14 @@ upstream/assembler-corpus/ptrtoaddr-invalid-constexpr/src_not_ptr_vec.ll | test/
 upstream/assembler-corpus/ptrtoaddr-invalid-constexpr/src_vec_dst_no_vec.ll | test/Assembler/ptrtoaddr-invalid-constexpr.ll split-file part src_vec_dst_no_vec.ll | status=reject | error=invalid cast opcode for cast from '<2 x ptr>' to 'i64' | loc=8:17
 upstream/assembler-corpus/ptrtoaddr-invalid-constexpr/vec_dst_fewer_elems.ll | test/Assembler/ptrtoaddr-invalid-constexpr.ll split-file part vec_dst_fewer_elems.ll | status=reject | error=invalid cast opcode for cast from '<4 x ptr>' to '<2 x i64>' | loc=43:23
 upstream/assembler-corpus/ptrtoaddr-invalid-constexpr/vec_src_fewer_elems.ll | test/Assembler/ptrtoaddr-invalid-constexpr.ll split-file part vec_src_fewer_elems.ll | status=reject | error=invalid cast opcode for cast from '<2 x ptr>' to '<4 x i64>' | loc=38:23
+upstream/assembler-corpus/ptrtoaddr-invalid/dst_not_int.ll | test/Assembler/ptrtoaddr-invalid.ll split-file part dst_not_int.ll | status=reject | error=invalid cast opcode for cast from 'ptr' to 'float' | loc=25:21
+upstream/assembler-corpus/ptrtoaddr-invalid/dst_not_int_vec.ll | test/Assembler/ptrtoaddr-invalid.ll split-file part dst_not_int_vec.ll | status=reject | error=invalid cast opcode for cast from '<2 x ptr>' to '<2 x float>' | loc=33:21
+upstream/assembler-corpus/ptrtoaddr-invalid/src_no_vec_dst_vec.ll | test/Assembler/ptrtoaddr-invalid.ll split-file part src_no_vec_dst_vec.ll | status=reject | error=invalid cast opcode for cast from 'ptr' to '<2 x i64>' | loc=17:21
+upstream/assembler-corpus/ptrtoaddr-invalid/src_not_ptr.ll | test/Assembler/ptrtoaddr-invalid.ll split-file part src_not_ptr.ll | status=reject | error=invalid cast opcode for cast from 'i32' to 'i64' | loc=41:21
+upstream/assembler-corpus/ptrtoaddr-invalid/src_not_ptr_vec.ll | test/Assembler/ptrtoaddr-invalid.ll split-file part src_not_ptr_vec.ll | status=reject | error=invalid cast opcode for cast from '<2 x i32>' to '<2 x i64>' | loc=49:21
+upstream/assembler-corpus/ptrtoaddr-invalid/src_vec_dst_no_vec.ll | test/Assembler/ptrtoaddr-invalid.ll split-file part src_vec_dst_no_vec.ll | status=reject | error=invalid cast opcode for cast from '<2 x ptr>' to 'i64' | loc=9:21
+upstream/assembler-corpus/ptrtoaddr-invalid/vec_dst_fewer_elems.ll | test/Assembler/ptrtoaddr-invalid.ll split-file part vec_dst_fewer_elems.ll | status=reject | error=invalid cast opcode for cast from '<4 x ptr>' to '<2 x i64>' | loc=65:21
+upstream/assembler-corpus/ptrtoaddr-invalid/vec_src_fewer_elems.ll | test/Assembler/ptrtoaddr-invalid.ll split-file part vec_src_fewer_elems.ll | status=reject | error=invalid cast opcode for cast from '<2 x ptr>' to '<4 x i64>' | loc=57:21
 upstream/assembler-corpus/ptrtoaddr.ll | test/Assembler/ptrtoaddr.ll | status=pass
 upstream/assembler-corpus/range-attribute-invalid-range.ll | test/Assembler/range-attribute-invalid-range.ll | status=reject | error=the range represent the empty set but limits aren't 0!
 upstream/assembler-corpus/range-attribute-invalid-type.ll | test/Assembler/range-attribute-invalid-type.ll | status=reject | error=the range must have integer type!

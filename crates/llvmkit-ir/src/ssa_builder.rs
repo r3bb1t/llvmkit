@@ -54,6 +54,7 @@
 //! &mut state)` and dropped again between steps.
 
 use crate::Branded;
+use crate::capability::Capability;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
@@ -494,9 +495,9 @@ impl<B: ModuleBrand> SsaState<B> {
     /// birth, so grafting onto a partially-built function is rejected.
     /// This is the *only* place that check runs: re-minting a builder
     /// over an in-progress state must obviously not re-trip it.
-    pub fn for_function<'ctx, R: ReturnMarker>(
+    pub fn for_function<'ctx, R: ReturnMarker, C: Capability>(
         module: &'ctx Module<B, Unverified>,
-        function: FunctionValue<'ctx, R, B>,
+        function: FunctionValue<'ctx, R, B, C>,
     ) -> IrResult<Self>
     where
         B: 'ctx,
@@ -618,9 +619,9 @@ impl<'s, 'ctx, B: ModuleBrand + 'ctx, R: ReturnMarker> SsaBuilder<'s, 'ctx, B, C
     /// [`IrError::SsaForeignFunction`]; a `function` of a module other than
     /// `module` is [`IrError::ForeignValueId`]. The builder starts unpositioned;
     /// call [`switch_to_block`](Self::switch_to_block) before emitting.
-    pub fn for_function(
+    pub fn for_function<C: Capability>(
         module: &'ctx Module<B, Unverified>,
-        function: FunctionValue<'ctx, R, B>,
+        function: FunctionValue<'ctx, R, B, C>,
         state: &'s mut SsaState<B>,
     ) -> IrResult<Self> {
         Self::with_folder_for_function(module, function, state, ConstantFolder)
@@ -635,16 +636,17 @@ where
 {
     /// [`for_function`](SsaBuilder::for_function) with a caller-supplied
     /// folder.
-    pub fn with_folder_for_function(
+    pub fn with_folder_for_function<C: Capability>(
         module: &'ctx Module<B, Unverified>,
-        function: FunctionValue<'ctx, R, B>,
+        function: FunctionValue<'ctx, R, B, C>,
         state: &'s mut SsaState<B>,
         folder: F,
     ) -> IrResult<Self> {
-        // Boundary: the caller's function must belong to `module`; then it
-        // must be the state's own function, compared by id so the module tag
-        // takes part.
-        function.slot_in(module.id())?;
+        // Boundary: the caller's function must belong to `module` — admitted
+        // there and re-minted at the module's `Mutable` reference, so a
+        // function of either capability names it — then it must be the
+        // state's own function, compared by id so the module tag takes part.
+        let function = function.admitted_at(module.capability_ref())?;
         if state.function != function.as_dyn().id() {
             return Err(IrError::SsaForeignFunction);
         }
@@ -730,7 +732,7 @@ where
     /// [`super::int_width::IntDyn`] carries no static width.
     pub fn declare_int_var_dyn<Name: Into<String>>(
         &mut self,
-        ty: IntType<'ctx, super::int_width::IntDyn, B>,
+        ty: IntType<'ctx, super::int_width::IntDyn, B, impl Capability>,
         name: Name,
     ) -> IntVariable<super::int_width::IntDyn, B> {
         // `ty` may belong to another module; this infallible entry cannot
@@ -748,7 +750,7 @@ where
     /// Poison twin of [`Self::declare_int_var_dyn`].
     pub fn declare_int_var_dyn_poison<Name: Into<String>>(
         &mut self,
-        ty: IntType<'ctx, super::int_width::IntDyn, B>,
+        ty: IntType<'ctx, super::int_width::IntDyn, B, impl Capability>,
         name: Name,
     ) -> IntVariable<super::int_width::IntDyn, B> {
         // `ty` may belong to another module; this infallible entry cannot
@@ -782,7 +784,7 @@ where
     /// [`super::float_kind::FloatDyn`] carries no static kind.
     pub fn declare_float_var_dyn<Name: Into<String>>(
         &mut self,
-        ty: FloatType<'ctx, super::float_kind::FloatDyn, B>,
+        ty: FloatType<'ctx, super::float_kind::FloatDyn, B, impl Capability>,
         name: Name,
     ) -> FloatVariable<super::float_kind::FloatDyn, B> {
         // `ty` may belong to another module; this infallible entry cannot
@@ -800,7 +802,7 @@ where
     /// Poison twin of [`Self::declare_float_var_dyn`].
     pub fn declare_float_var_dyn_poison<Name: Into<String>>(
         &mut self,
-        ty: FloatType<'ctx, super::float_kind::FloatDyn, B>,
+        ty: FloatType<'ctx, super::float_kind::FloatDyn, B, impl Capability>,
         name: Name,
     ) -> FloatVariable<super::float_kind::FloatDyn, B> {
         // `ty` may belong to another module; this infallible entry cannot
@@ -837,7 +839,7 @@ where
     /// space.
     pub fn declare_pointer_var_in_addrspace<Name: Into<String>>(
         &mut self,
-        ty: PointerType<'ctx, B>,
+        ty: PointerType<'ctx, B, impl Capability>,
         name: Name,
     ) -> PointerVariable<B> {
         // `ty` may belong to another module; this infallible entry cannot
@@ -855,7 +857,7 @@ where
     /// Poison twin of [`Self::declare_pointer_var_in_addrspace`].
     pub fn declare_pointer_var_in_addrspace_poison<Name: Into<String>>(
         &mut self,
-        ty: PointerType<'ctx, B>,
+        ty: PointerType<'ctx, B, impl Capability>,
         name: Name,
     ) -> PointerVariable<B> {
         // `ty` may belong to another module; this infallible entry cannot
@@ -898,9 +900,12 @@ where
         }
     }
 
+    /// The session's module at [`Mutable`](crate::Mutable): an `SsaBuilder`
+    /// holds the `&Module<B, Unverified>` it was minted from, so its own
+    /// reference carries that module's authority.
     #[inline]
     fn module_ref(&self) -> ModuleRef<'ctx, B> {
-        ModuleRef::new(self.module.core_ref())
+        self.module.capability_ref()
     }
 
     /// The SSA layer's boundary for a caller's block: it must come from this

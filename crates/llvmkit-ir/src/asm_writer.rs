@@ -25,7 +25,9 @@ use std::collections::HashMap;
 use super::atomic_ordering::AtomicOrdering;
 use super::attributes::{AttrKind, AttributeStorage, AttributeStored};
 use super::basic_block::BasicBlock;
+use super::block_params::BlockParamsDyn;
 use super::block_state::{BlockTerminationState, Terminated};
+use super::capability::{Capability, ReadOnly};
 use super::comdat::ComdatRef;
 use super::constant::{
     Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode,
@@ -107,7 +109,9 @@ impl SlotTracker {
     /// Build a slot tracker for a single function. Arguments come
     /// first, then each basic block (header counts as a value), then
     /// every instruction in program order.
-    pub(super) fn for_function<B: ModuleBrand>(f: FunctionValue<'_, Dyn, B>) -> Self {
+    pub(super) fn for_function<B: ModuleBrand, C: Capability>(
+        f: FunctionValue<'_, Dyn, B, C>,
+    ) -> Self {
         let mut local = HashMap::new();
         let mut blocks = HashMap::new();
         let mut next: u32 = 0;
@@ -150,7 +154,10 @@ impl SlotTracker {
 /// Mirrors how `Verifier::CheckFailed` renders a `Value` — through
 /// `WriteAsOperand`, which asks the module's `SlotTracker` for the number and
 /// so always names something the reader can find in the printed IR.
-pub(super) fn slot_label<B: ModuleBrand>(f: FunctionValue<'_, Dyn, B>, id: ValueSlot) -> String {
+pub(super) fn slot_label<B: ModuleBrand, C: Capability>(
+    f: FunctionValue<'_, Dyn, B, C>,
+    id: ValueSlot,
+) -> String {
     let module = f.module();
     if let Some(name) = module.context().value_data(id).name.borrow().as_ref() {
         return name.clone();
@@ -170,7 +177,10 @@ pub(super) fn slot_label<B: ModuleBrand>(f: FunctionValue<'_, Dyn, B>, id: Value
 /// slot, so the owning function is recovered from the block itself. A block
 /// with no parent has no `SlotTracker` to ask and gets upstream's `<badref>`,
 /// the same answer `slot_label` gives a value its function cannot number.
-pub(super) fn block_slot_label<B: ModuleBrand>(module: ModuleRef<'_, B>, id: ValueSlot) -> String {
+pub(super) fn block_slot_label<B: ModuleBrand, C: Capability>(
+    module: ModuleRef<'_, B, C>,
+    id: ValueSlot,
+) -> String {
     if let Some(name) = module.value_data(id).name.borrow().as_ref() {
         return name.clone();
     }
@@ -181,14 +191,14 @@ pub(super) fn block_slot_label<B: ModuleBrand>(module: ModuleRef<'_, B>, id: Val
         return BAD_REF.to_owned();
     };
     slot_label(
-        FunctionValue::<'_, Dyn, B>::from_parts_unchecked(parent_id, module),
+        FunctionValue::<'_, Dyn, B, C>::from_parts_unchecked(parent_id, module),
         id,
     )
 }
 
 /// `true` if `inst` produces a result that gets a textual name (or
 /// slot). Terminators and stores don't.
-fn produces_named_result(inst: &InstructionView<'_, impl ModuleBrand>) -> bool {
+fn produces_named_result(inst: &InstructionView<'_, impl ModuleBrand, impl Capability>) -> bool {
     match inst_kind_data(inst) {
         InstructionKindData::Add(_)
         | InstructionKindData::Sub(_)
@@ -246,8 +256,8 @@ fn produces_named_result(inst: &InstructionView<'_, impl ModuleBrand>) -> bool {
     }
 }
 
-fn inst_kind_data<'ctx, B: ModuleBrand + 'ctx>(
-    inst: &InstructionView<'ctx, B>,
+fn inst_kind_data<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    inst: &InstructionView<'ctx, B, C>,
 ) -> &'ctx InstructionKindData {
     match &inst.as_erased().data().kind {
         ValueKindData::Instruction(i) => &i.kind,
@@ -261,9 +271,9 @@ fn inst_kind_data<'ctx, B: ModuleBrand + 'ctx>(
 
 /// Print a value as an operand: `<type> <ref>`, where `<ref>` is
 /// `%name`, `@name`, `%slot`, or a constant literal.
-pub(super) fn fmt_operand<'ctx, B: ModuleBrand + 'ctx>(
+pub(super) fn fmt_operand<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    v: Value<'ctx, B>,
+    v: Value<'ctx, B, C>,
     slots: Option<&SlotTracker>,
 ) -> fmt::Result {
     write!(f, "{} ", v.ty())?;
@@ -272,9 +282,9 @@ pub(super) fn fmt_operand<'ctx, B: ModuleBrand + 'ctx>(
 
 /// Print just the SSA reference part: `%name` / `@name` / `%slot` /
 /// constant body.
-pub(super) fn fmt_operand_ref<'ctx, B: ModuleBrand + 'ctx>(
+pub(super) fn fmt_operand_ref<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    v: Value<'ctx, B>,
+    v: Value<'ctx, B, C>,
     slots: Option<&SlotTracker>,
 ) -> fmt::Result {
     let data = v.data();
@@ -389,7 +399,7 @@ fn is_global_value(kind: &ValueKindData) -> bool {
 /// `isa<ConstantData>` — asked of a slot rather than of a handle.
 fn slot_is_constant_data(m: &ModuleCore, value: ValueSlot) -> bool {
     let ty = m.context().value_data(value).ty;
-    Constant::try_from(Value::<DynBrand>::from_parts(value, m, ty))
+    Constant::try_from(Value::<DynBrand, ReadOnly>::from_parts(value, m, ty))
         .is_ok_and(Constant::is_constant_data)
 }
 
@@ -682,7 +692,7 @@ fn fmt_use_list_order(
         // too. It is kept because the shape is upstream's and because the
         // *parser* half (`parseUseListOrderBB`) is reachable from
         // hand-written `.ll`.
-        let block = BasicBlock::<Dyn, Terminated, DynBrand>::from_parts(
+        let block = BasicBlock::<Dyn, Terminated, DynBrand, BlockParamsDyn, ReadOnly>::from_parts(
             directive.value,
             ModuleView::new(m),
             data.ty,
@@ -690,7 +700,7 @@ fn fmt_use_list_order(
         let Some(parent_slot) = block_parent_function(m, directive.value) else {
             unreachable!("a block reached through orderModule always has a parent function")
         };
-        let parent = FunctionValue::<Dyn, DynBrand>::from_parts_unchecked(parent_slot, m);
+        let parent = FunctionValue::<Dyn, DynBrand, ReadOnly>::from_parts_unchecked(parent_slot, m);
         f.write_str("_bb ")?;
         fmt_operand_ref(f, parent.as_erased(), None)?;
         f.write_str(", ")?;
@@ -700,7 +710,7 @@ fn fmt_use_list_order(
         f.write_str(" ")?;
         fmt_operand(
             f,
-            Value::<DynBrand>::from_parts(directive.value, m, data.ty),
+            Value::<DynBrand, ReadOnly>::from_parts(directive.value, m, data.ty),
             slots,
         )?;
     }
@@ -760,9 +770,9 @@ fn fmt_inline_asm(f: &mut fmt::Formatter<'_>, d: &InlineAsmData) -> fmt::Result 
 // Constant printing
 // --------------------------------------------------------------------------
 
-pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx>(
+pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    host: Value<'ctx, B>,
+    host: Value<'ctx, B, C>,
     c: &ConstantData,
 ) -> fmt::Result {
     match c {
@@ -781,13 +791,16 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx>(
         ConstantData::Aggregate(elems) => fmt_aggregate_constant(f, host, elems),
         ConstantData::BlockAddress { function, block } => {
             let module = host.module.module();
-            let fval = Value::<B>::from_parts(
+            let fval = Value::<B, ReadOnly>::from_parts(
                 *function,
                 module,
                 module.context().value_data(*function).ty,
             );
-            let bval =
-                Value::<B>::from_parts(*block, module, module.context().value_data(*block).ty);
+            let bval = Value::<B, ReadOnly>::from_parts(
+                *block,
+                module,
+                module.context().value_data(*block).ty,
+            );
             f.write_str("blockaddress(")?;
             fmt_operand_ref(f, fval, None)?;
             f.write_str(", ")?;
@@ -797,7 +810,7 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx>(
             // no function tracker at all. Upstream reaches the same numbering
             // through `SlotTracker::incorporateFunction`.
             let block_slots = bval.name().is_none().then(|| {
-                FunctionValue::<Dyn, B>::try_from(fval)
+                FunctionValue::<Dyn, B, ReadOnly>::try_from(fval)
                     .ok()
                     .map(SlotTracker::for_function)
             });
@@ -806,7 +819,7 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx>(
         }
         ConstantData::DsoLocalEquivalent { function } => {
             let module = host.module.module();
-            let fval = Value::<B>::from_parts(
+            let fval = Value::<B, ReadOnly>::from_parts(
                 *function,
                 module,
                 module.context().value_data(*function).ty,
@@ -816,7 +829,7 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx>(
         }
         ConstantData::NoCfi { function } => {
             let module = host.module.module();
-            let fval = Value::<B>::from_parts(
+            let fval = Value::<B, ReadOnly>::from_parts(
                 *function,
                 module,
                 module.context().value_data(*function).ty,
@@ -859,7 +872,7 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx>(
                     f.write_str(", ")?;
                 }
                 let data = module.context().value_data(*id);
-                let value = Value::<B>::from_parts(*id, module, data.ty);
+                let value = Value::<B, ReadOnly>::from_parts(*id, module, data.ty);
                 fmt_operand(f, value, None)?;
             }
             f.write_str(")")
@@ -869,8 +882,11 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx>(
             // Mirrors `writeConstantInternal` printing each ConstantExpr
             // operand with its true type.
             let module = host.module.module();
-            let base =
-                Value::<B>::from_parts(*base_id, module, module.context().value_data(*base_id).ty);
+            let base = Value::<B, ReadOnly>::from_parts(
+                *base_id,
+                module,
+                module.context().value_data(*base_id).ty,
+            );
             write!(
                 f,
                 "getelementptr inbounds (i8, {} ",
@@ -881,8 +897,16 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx>(
         }
         ConstantData::SymbolDelta { hi_id, lo_id } => {
             let module = host.module.module();
-            let hi = Value::<B>::from_parts(*hi_id, module, module.context().value_data(*hi_id).ty);
-            let lo = Value::<B>::from_parts(*lo_id, module, module.context().value_data(*lo_id).ty);
+            let hi = Value::<B, ReadOnly>::from_parts(
+                *hi_id,
+                module,
+                module.context().value_data(*hi_id).ty,
+            );
+            let lo = Value::<B, ReadOnly>::from_parts(
+                *lo_id,
+                module,
+                module.context().value_data(*lo_id).ty,
+            );
             write!(f, "sub (i64 ptrtoint ({} ", constant_ptr_operand_type(hi))?;
             fmt_operand_ref(f, hi, None)?;
             write!(
@@ -899,8 +923,16 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx>(
             addend,
         } => {
             let module = host.module.module();
-            let hi = Value::<B>::from_parts(*hi_id, module, module.context().value_data(*hi_id).ty);
-            let lo = Value::<B>::from_parts(*lo_id, module, module.context().value_data(*lo_id).ty);
+            let hi = Value::<B, ReadOnly>::from_parts(
+                *hi_id,
+                module,
+                module.context().value_data(*hi_id).ty,
+            );
+            let lo = Value::<B, ReadOnly>::from_parts(
+                *lo_id,
+                module,
+                module.context().value_data(*lo_id).ty,
+            );
             write!(
                 f,
                 "add (i64 sub (i64 ptrtoint ({} ",
@@ -939,9 +971,9 @@ fn fmt_apint_signed(f: &mut fmt::Formatter<'_>, words: &[u64], bit_width: u32) -
     write!(f, "{}", ApInt::from_words(bit_width, words))
 }
 
-fn fmt_constant_expr<'ctx, B: ModuleBrand + 'ctx>(
+fn fmt_constant_expr<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    host: Value<'ctx, B>,
+    host: Value<'ctx, B, C>,
     expr: &ConstantExprData,
 ) -> fmt::Result {
     let module = host.module();
@@ -1102,17 +1134,19 @@ fn maybe_print_call_addr_space<B: ModuleBrand>(
     print_address_space(f, call_addr_space, " ", "", force_print_addr_space)
 }
 
-fn constant_ptr_operand_type<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Type<'ctx, B> {
+fn constant_ptr_operand_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Type<'ctx, B, C> {
     match &value.data().kind {
-        ValueKindData::Function(_) => value.module().ptr_type(0).as_type(),
+        ValueKindData::Function(_) => value.module.ptr_type(0).as_type(),
         ValueKindData::GlobalAlias(_) | ValueKindData::GlobalIfunc(_) => value.ty(),
         _ => value.ty(),
     }
 }
 
-fn fmt_int_constant<B: ModuleBrand>(
+fn fmt_int_constant<B: ModuleBrand, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    ty: Type<'_, B>,
+    ty: Type<'_, B, C>,
     words: &[u64],
 ) -> fmt::Result {
     let bits = match ty.data() {
@@ -1250,9 +1284,9 @@ fn write_hex_prefixed_upper(f: &mut fmt::Formatter<'_>, value: u64) -> fmt::Resu
     write!(f, "0x{value:0digits$X}")
 }
 
-fn fmt_float_constant<B: ModuleBrand>(
+fn fmt_float_constant<B: ModuleBrand, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    ty: Type<'_, B>,
+    ty: Type<'_, B, C>,
     bits: u128,
 ) -> fmt::Result {
     match ty.data() {
@@ -1349,9 +1383,9 @@ fn fmt_llvm_name_without_prefix<W: fmt::Write>(f: &mut W, name: &str) -> fmt::Re
     f.write_str("\"")
 }
 
-fn fmt_global_value_ref<'ctx, B: ModuleBrand + 'ctx>(
+fn fmt_global_value_ref<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    v: Value<'ctx, B>,
+    v: Value<'ctx, B, C>,
 ) -> fmt::Result {
     match v.name() {
         Some(name) => fmt_llvm_name(f, "@", &name),
@@ -1405,9 +1439,9 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
 /// `ConstantInt`, return the underlying byte sequence; else `None`.
 /// Mirrors `ConstantDataArray::isString` (in C++ this is a runtime
 /// downcast plus a per-element check).
-fn collect_byte_string<B: ModuleBrand>(
+fn collect_byte_string<B: ModuleBrand, C: Capability>(
     module: &ModuleCore,
-    ty: Type<'_, B>,
+    ty: Type<'_, B, C>,
     elem_ids: &[ValueSlot],
 ) -> Option<Vec<u8>> {
     match ty.data() {
@@ -1432,19 +1466,6 @@ fn collect_byte_string<B: ModuleBrand>(
             _ => None,
         },
         _ => None,
-    }
-}
-
-fn is_zero_initializer_value(module: &ModuleCore, id: ValueSlot) -> bool {
-    let data = module.context().value_data(id);
-    match &data.kind {
-        ValueKindData::Constant(ConstantData::Int(words)) => words.iter().all(|word| *word == 0),
-        ValueKindData::Constant(ConstantData::Float(bits)) => *bits == 0,
-        ValueKindData::Constant(ConstantData::PointerNull) => true,
-        ValueKindData::Constant(ConstantData::Aggregate(elements)) => elements
-            .iter()
-            .all(|element| is_zero_initializer_value(module, *element)),
-        _ => false,
     }
 }
 
@@ -1480,7 +1501,11 @@ fn is_int_or_fp_splat_value(module: &ModuleCore, id: ValueSlot) -> bool {
 /// know the difference. `VectorType::const_vector` requires a scalable
 /// constant's lanes to agree, so every scalable aggregate that reaches here
 /// takes this arm and the element-list fallback below is fixed-width only.
-fn prints_as_splat<B: ModuleBrand>(module: &ModuleCore, ty: Type<'_, B>, splat: ValueSlot) -> bool {
+fn prints_as_splat<B: ModuleBrand, C: Capability>(
+    module: &ModuleCore,
+    ty: Type<'_, B, C>,
+    splat: ValueSlot,
+) -> bool {
     match ty.data() {
         TypeData::FixedVector { .. } => is_int_or_fp_splat_value(module, splat),
         TypeData::ScalableVector { .. } => true,
@@ -1488,26 +1513,27 @@ fn prints_as_splat<B: ModuleBrand>(module: &ModuleCore, ty: Type<'_, B>, splat: 
     }
 }
 
-fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx>(
+fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    host: Value<'ctx, B>,
+    host: Value<'ctx, B, C>,
     elem_ids: &[ValueSlot],
 ) -> fmt::Result {
     let module = host.module();
     let ty = host.ty();
+    // `isa<ConstantAggregateZero>(CV)`, asked before the `ConstantDataArray`
+    // string arm as `writeConstantInternal` asks it. An element list is one
+    // exactly when every element is null, the empty list included — the
+    // canonicalisation `Constant::kind` replays.
+    if elem_ids
+        .iter()
+        .all(|id| crate::constants::constant_id_is_null_value(module.core_ref(), *id))
+    {
+        return f.write_str("zeroinitializer");
+    }
     if let Some(bytes) = collect_byte_string(module.core_ref(), ty, elem_ids) {
         f.write_str("c\"")?;
         print_escaped_string(f, &bytes)?;
         return f.write_str("\"");
-    }
-    if elem_ids.is_empty() {
-        return f.write_str("zeroinitializer");
-    }
-    if elem_ids
-        .iter()
-        .all(|id| is_zero_initializer_value(module.core_ref(), *id))
-    {
-        return f.write_str("zeroinitializer");
     }
     if let Some(splat) = aggregate_splat_id(elem_ids)
         && prints_as_splat(module.core_ref(), ty, splat)
@@ -1556,7 +1582,7 @@ fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx>(
 
 pub(super) fn fmt_instruction(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     slots: &SlotTracker,
 ) -> fmt::Result {
     f.write_str("  ")?;
@@ -1651,7 +1677,7 @@ pub(super) fn fmt_instruction(
 fn fmt_binop(
     f: &mut fmt::Formatter<'_>,
     opcode: &str,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     b: &BinaryOpData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -1687,7 +1713,7 @@ fn fmt_binop(
 
 fn fmt_cast(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     c: &CastOpData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -1722,7 +1748,7 @@ fn fmt_cast(
 
 fn fmt_fneg(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     u: &FnegInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -1742,7 +1768,7 @@ fn fmt_fneg(
 
 fn fmt_freeze(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     u: &FreezeInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -1757,7 +1783,7 @@ fn fmt_freeze(
 
 fn fmt_va_arg(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     u: &VaArgInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -1773,7 +1799,7 @@ fn fmt_va_arg(
 
 fn fmt_extract_value(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &ExtractValueInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -1795,7 +1821,7 @@ fn fmt_extract_value(
 
 fn fmt_insert_value(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &InsertValueInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -1821,7 +1847,7 @@ fn fmt_insert_value(
 
 fn fmt_extract_element(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &ExtractElementInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -1845,7 +1871,7 @@ fn fmt_extract_element(
 
 fn fmt_insert_element(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &InsertElementInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -1873,7 +1899,7 @@ fn fmt_insert_element(
 
 fn fmt_shuffle_vector(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &ShuffleVectorInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -1896,9 +1922,9 @@ fn fmt_shuffle_vector(
     print_shuffle_mask(f, inst.ty(), &d.mask)
 }
 
-fn print_shuffle_mask<B: ModuleBrand>(
+fn print_shuffle_mask<B: ModuleBrand, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    result_ty: Type<'_, B>,
+    result_ty: Type<'_, B, C>,
     mask: &[ShuffleMaskElem],
 ) -> fmt::Result {
     // Mirrors `printShuffleMask` in `lib/IR/AsmWriter.cpp`.
@@ -1958,7 +1984,7 @@ fn fmt_fence(f: &mut fmt::Formatter<'_>, d: &FenceInstData) -> fmt::Result {
 
 fn fmt_cmpxchg(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &AtomicCmpXchgInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2001,7 +2027,7 @@ fn fmt_cmpxchg(
 
 fn fmt_atomicrmw(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &AtomicRmwInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2033,7 +2059,7 @@ fn fmt_atomicrmw(
 
 fn fmt_ret(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     r: &ReturnOpData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2051,7 +2077,7 @@ fn fmt_ret(
 
 fn fmt_icmp(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     c: &CmpInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2071,7 +2097,7 @@ fn fmt_icmp(
 }
 fn fmt_fcmp(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     c: &FcmpInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2093,7 +2119,7 @@ fn fmt_fcmp(
 }
 fn fmt_alloca(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     a: &AllocaInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2135,7 +2161,7 @@ fn fmt_alloca(
 
 fn fmt_load(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     l: &LoadInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2165,7 +2191,7 @@ fn fmt_load(
 
 fn fmt_store(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     s: &StoreInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2199,7 +2225,7 @@ fn fmt_store(
 
 fn fmt_gep(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     g: &GepInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2228,7 +2254,7 @@ fn fmt_gep(
 
 fn fmt_call(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     c: &CallInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2316,7 +2342,7 @@ fn fmt_call(
             .as_erased()
             .local_parent_function_id()
             .is_some_and(|fn_id| {
-                FunctionValue::<Dyn, _>::from_parts_unchecked(fn_id, module)
+                FunctionValue::<Dyn, _, ReadOnly>::from_parts_unchecked(fn_id, module)
                     .signature()
                     .is_var_arg()
             });
@@ -2335,10 +2361,10 @@ fn fmt_call(
     fmt_operand_bundles(f, &c.operand_bundles, module.core_ref(), slots)
 }
 
-fn fmt_intrinsic_pretty_arg_comment<B: ModuleBrand>(
+fn fmt_intrinsic_pretty_arg_comment<B: ModuleBrand, C: Capability>(
     f: &mut fmt::Formatter<'_>,
     pretty: Option<PrettyPrintArg>,
-    value: Value<'_, B>,
+    value: Value<'_, B, C>,
 ) -> fmt::Result {
     let Some(pretty) = pretty else {
         return Ok(());
@@ -2349,9 +2375,9 @@ fn fmt_intrinsic_pretty_arg_comment<B: ModuleBrand>(
     write!(f, "/* {comment} */ ")
 }
 
-fn intrinsic_pretty_arg_comment<B: ModuleBrand>(
+fn intrinsic_pretty_arg_comment<B: ModuleBrand, C: Capability>(
     pretty: PrettyPrintArg,
-    value: Value<'_, B>,
+    value: Value<'_, B, C>,
 ) -> Option<String> {
     let rendered_value = intrinsic_pretty_arg_value(pretty.printer, value)?;
     if pretty.name.is_empty() {
@@ -2360,9 +2386,9 @@ fn intrinsic_pretty_arg_comment<B: ModuleBrand>(
     Some(format!("{}={rendered_value}", pretty.name))
 }
 
-fn intrinsic_pretty_arg_value<B: ModuleBrand>(
+fn intrinsic_pretty_arg_value<B: ModuleBrand, C: Capability>(
     printer: &str,
-    value: Value<'_, B>,
+    value: Value<'_, B, C>,
 ) -> Option<String> {
     let zext = constant_int_zext_u128(value)?;
     let text = match printer {
@@ -2437,7 +2463,7 @@ fn lookup_pretty_arg_name(value: u128, names: &[&str]) -> Option<String> {
     names.get(index).map(|name| (*name).to_owned())
 }
 
-fn constant_int_zext_u128<B: ModuleBrand>(value: Value<'_, B>) -> Option<u128> {
+fn constant_int_zext_u128<B: ModuleBrand, C: Capability>(value: Value<'_, B, C>) -> Option<u128> {
     let TypeData::Integer { bits } = value.ty().data() else {
         return None;
     };
@@ -2510,7 +2536,7 @@ fn fmt_operand_bundles(
             }
             // `writeAsOperandInternal(Out, Input, WriterCtx, /*PrintType=*/true)`
             let data = module.context().value_data(id);
-            let value = Value::<DynBrand>::from_parts(id, module, data.ty);
+            let value = Value::<DynBrand, ReadOnly>::from_parts(id, module, data.ty);
             fmt_operand(f, value, Some(slots))?;
         }
         // `Out << ')'`
@@ -2522,7 +2548,7 @@ fn fmt_operand_bundles(
 
 fn fmt_landingpad(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &LandingPadInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2561,7 +2587,7 @@ fn fmt_landingpad(
 
 fn fmt_resume(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &ResumeInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2577,7 +2603,7 @@ fn fmt_resume(
 
 fn fmt_funclet_pad(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     keyword: &str,
     parent_pad: &core::cell::Cell<Option<ValueSlot>>,
     args: &[core::cell::Cell<ValueSlot>],
@@ -2613,7 +2639,7 @@ fn fmt_funclet_pad(
 
 fn fmt_catchret(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &CatchReturnInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2633,7 +2659,7 @@ fn fmt_catchret(
 
 fn fmt_cleanupret(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &CleanupReturnInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2658,7 +2684,7 @@ fn fmt_cleanupret(
 
 fn fmt_catchswitch(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &CatchSwitchInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2700,7 +2726,7 @@ fn fmt_catchswitch(
 
 fn fmt_invoke(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &InvokeInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2779,7 +2805,7 @@ fn fmt_invoke(
 
 fn fmt_callbr(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &CallBrInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2863,7 +2889,7 @@ fn fmt_callbr(
 
 fn fmt_phi(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     p: &PhiData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2895,7 +2921,7 @@ fn fmt_phi(
 
 fn fmt_switch(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &SwitchInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2934,7 +2960,7 @@ fn fmt_switch(
 
 fn fmt_indirectbr(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     d: &IndirectBrInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -2962,7 +2988,7 @@ fn fmt_indirectbr(
 
 fn fmt_br(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     b: &BranchInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
@@ -3113,7 +3139,7 @@ fn fmt_debug_metadata_operand(
             let data = module.context().value_data(slot);
             fmt_operand(
                 f,
-                Value::<DynBrand>::from_parts(slot, module, data.ty),
+                Value::<DynBrand, ReadOnly>::from_parts(slot, module, data.ty),
                 Some(slots),
             )
         }
@@ -3243,7 +3269,7 @@ fn pad_to_column(f: &mut fmt::Formatter<'_>, new_column: usize, column: usize) -
 /// where an entry block inside a function does not.
 pub(super) fn fmt_basic_block<S: BlockTerminationState>(
     f: &mut fmt::Formatter<'_>,
-    bb: BasicBlock<'_, Dyn, S, impl ModuleBrand>,
+    bb: BasicBlock<'_, Dyn, S, impl ModuleBrand, BlockParamsDyn, impl Capability>,
     slots: &SlotTracker,
     is_entry_block: bool,
 ) -> fmt::Result {
@@ -3320,9 +3346,9 @@ pub(super) fn fmt_basic_block<S: BlockTerminationState>(
     Ok(())
 }
 
-pub(super) fn fmt_function<B: ModuleBrand>(
+pub(super) fn fmt_function<B: ModuleBrand, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    func: FunctionValue<'_, Dyn, B>,
+    func: FunctionValue<'_, Dyn, B, C>,
 ) -> fmt::Result {
     fmt_function_with_use_lists(f, func, None)
 }
@@ -3330,9 +3356,9 @@ pub(super) fn fmt_function<B: ModuleBrand>(
 /// `AssemblyWriter::printFunction`. `use_lists` carries the directives
 /// `predictUseListOrder` filed under this function, present only when the
 /// caller asked to preserve use-list order.
-fn fmt_function_with_use_lists<B: ModuleBrand>(
+fn fmt_function_with_use_lists<B: ModuleBrand, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    func: FunctionValue<'_, Dyn, B>,
+    func: FunctionValue<'_, Dyn, B, C>,
     use_lists: Option<&Vec<UseListOrderDirective>>,
 ) -> fmt::Result {
     let slots = SlotTracker::for_function(func);
@@ -3457,7 +3483,9 @@ fn fmt_function_with_use_lists<B: ModuleBrand>(
     }
     if let Some(c) = func.comdat() {
         f.write_str(" comdat")?;
-        if c.name() != func.name() {
+        // `maybePrintComdat`: `if (GO.getName() == C->getName()) return;`,
+        // where an unnamed object's `getName()` is `""`.
+        if c.name() != func.name().unwrap_or_default() {
             f.write_str("(")?;
             fmt_llvm_name(f, "$", c.name())?;
             f.write_str(")")?;
@@ -3537,7 +3565,7 @@ fn fmt_struct_body(f: &mut fmt::Formatter<'_>, body: &StructBody, m: &ModuleCore
             f.write_str(", ")?;
         }
         first = false;
-        write!(f, "{}", Type::<DynBrand>::new(*e, m))?;
+        write!(f, "{}", Type::<DynBrand, ReadOnly>::new(*e, m))?;
     }
     if body.packed {
         f.write_str(" }>")
@@ -3641,7 +3669,7 @@ pub(super) fn fmt_module_with_options(
     // comdat no global object references is never printed at all, which is
     // why an `llvm-as | llvm-dis` round trip loses one. An alias and an ifunc
     // are `GlobalValue`s but not `GlobalObject`s, so neither is walked.
-    let mut comdats: Vec<ComdatRef<'_, DynBrand>> = Vec::new();
+    let mut comdats: Vec<ComdatRef<'_, DynBrand, ReadOnly>> = Vec::new();
     for c in m
         .iter_functions::<DynBrand>()
         .filter_map(FunctionValue::comdat)
@@ -3899,7 +3927,7 @@ fn fmt_metadata_node(
                 if position != 0 {
                     f.write_str(", ")?;
                 }
-                let value = Value::<DynBrand>::from_parts(
+                let value = Value::<DynBrand, ReadOnly>::from_parts(
                     argument.slot_trusting_same_module(),
                     module,
                     module
@@ -3915,7 +3943,7 @@ fn fmt_metadata_node(
         MetadataKind::Constant(id) => {
             let slot = id.slot_trusting_same_module();
             let data = module.context().value_data(slot);
-            let value = Value::<DynBrand>::from_parts(slot, module, data.ty);
+            let value = Value::<DynBrand, ReadOnly>::from_parts(slot, module, data.ty);
             fmt_operand(f, value, value_slots)
         }
     }
@@ -4168,16 +4196,16 @@ fn metadata_slot_map(nodes: &[MetadataKind<StoredBrand>]) -> Vec<Option<usize>> 
     slots
 }
 
-fn fmt_comdat(f: &mut fmt::Formatter<'_>, c: ComdatRef<'_, DynBrand>) -> fmt::Result {
+fn fmt_comdat(f: &mut fmt::Formatter<'_>, c: ComdatRef<'_, DynBrand, ReadOnly>) -> fmt::Result {
     // `$<name> = comdat <kind>\n`. Mirrors
     // `Comdat::print` in `lib/IR/AsmWriter.cpp`.
     fmt_llvm_name(f, "$", c.name())?;
     writeln!(f, " = comdat {}", c.selection_kind())
 }
 
-pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
+pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    g: GlobalVariable<'ctx, B>,
+    g: GlobalVariable<'ctx, B, C>,
 ) -> fmt::Result {
     // Mirrors `AssemblyWriter::printGlobal` in
     // `lib/IR/AsmWriter.cpp`.
@@ -4277,7 +4305,9 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
     }
     if let Some(c) = g.comdat() {
         f.write_str(", comdat")?;
-        if c.name() != g.name() {
+        // `maybePrintComdat`: `if (GO.getName() == C->getName()) return;`,
+        // where an unnamed object's `getName()` is `""`.
+        if c.name() != g.name().unwrap_or_default() {
             f.write_str("(")?;
             fmt_llvm_name(f, "$", c.name())?;
             f.write_str(")")?;
@@ -4320,9 +4350,9 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
 /// as one, so they answer to the same rule. `blockaddress`,
 /// `dso_local_equivalent`, `no_cfi` and `ptrauth` are separate `Constant`
 /// subclasses upstream, not `ConstantExpr`s, and keep their type.
-fn fmt_aliasee<'ctx, B: ModuleBrand + 'ctx>(
+fn fmt_aliasee<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    aliasee: Value<'ctx, B>,
+    aliasee: Value<'ctx, B, C>,
 ) -> fmt::Result {
     let is_constant_expr = matches!(
         &aliasee.data().kind,
@@ -4340,9 +4370,9 @@ fn fmt_aliasee<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
+pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    a: GlobalAlias<'ctx, B>,
+    a: GlobalAlias<'ctx, B, C>,
 ) -> fmt::Result {
     fmt_global_value_ref(f, a.as_erased())?;
     f.write_str(" = ")?;
@@ -4397,9 +4427,9 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
     f.write_str("\n")
 }
 
-pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx>(
+pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     f: &mut fmt::Formatter<'_>,
-    i: GlobalIfunc<'ctx, B>,
+    i: GlobalIfunc<'ctx, B, C>,
 ) -> fmt::Result {
     fmt_global_value_ref(f, i.as_erased())?;
     f.write_str(" = ")?;
@@ -4444,7 +4474,7 @@ pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx>(
 
 fn fmt_select(
     f: &mut fmt::Formatter<'_>,
-    inst: &InstructionView<'_, impl ModuleBrand>,
+    inst: &InstructionView<'_, impl ModuleBrand, impl Capability>,
     s: &SelectInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {

@@ -9,21 +9,30 @@ use crate::Branded;
 use crate::attributes::{
     AttrIndex, AttrKind, Attribute, AttributeStorage, CaptureInfo, MemoryEffects,
 };
+use crate::capability::{Capability, CapabilityOf, ModuleState, Mutable};
 use crate::derived_types::FunctionType;
 use crate::error::{IrError, IrResult};
 use crate::module::{Module, ModuleBrand, ModuleId, ModuleRef};
 use crate::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
+use crate::type_components::lanes;
 use crate::value::{Value, ValueKindData};
 use std::borrow::Cow;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct IntrinsicId(NonZeroU32);
 
+/// An intrinsic's identity together with its overload types. `C` is the
+/// [`Capability`] of those type handles (D8), so a descriptor read off a
+/// [`ReadOnly`](crate::ReadOnly) function is itself `ReadOnly`.
 #[derive(Branded)]
 #[branded(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct IntrinsicDescriptor<'ctx, B: ModuleBrand> {
+pub struct IntrinsicDescriptor<'ctx, B: ModuleBrand, C: Capability = Mutable> {
     id: IntrinsicId,
-    overloads: Box<[Type<'ctx, B>]>,
+    overloads: Box<[Type<'ctx, B, C>]>,
+}
+
+impl<B: ModuleBrand, C: Capability> CapabilityOf for IntrinsicDescriptor<'_, B, C> {
+    type Capability = C;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -244,17 +253,20 @@ pub fn resolve_intrinsic_name(name: &str) -> IntrinsicNameResolution {
     IntrinsicId::resolve_name(name)
 }
 
-pub fn descriptor_for_callee<'ctx, B>(
-    callee: Value<'ctx, B>,
-) -> Option<IntrinsicDescriptor<'ctx, B>>
+pub fn descriptor_for_callee<'ctx, B, C>(
+    callee: Value<'ctx, B, C>,
+) -> Option<IntrinsicDescriptor<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
+    C: crate::capability::Capability,
 {
     let ValueKindData::Function(function) = &callee.data().kind else {
         return None;
     };
-    let module = ModuleRef::<B>::new(callee.module().core_ref());
-    if let Some(data) = &function.intrinsic {
+    // The overload types are minted on the callee's own reference, at its
+    // capability (R12).
+    let module = callee.module;
+    if let Some(data) = function.intrinsic.borrow().as_ref() {
         let overloads = data
             .overloads
             .iter()
@@ -262,15 +274,19 @@ where
             .collect::<Box<[_]>>();
         return IntrinsicDescriptor::new(data.id, overloads).ok();
     }
-    let id = IntrinsicId::lookup(&function.name)?;
-    let descriptor = descriptor_for_name(module, id, &function.name).ok()?;
+    let name = callee.name().unwrap_or_default();
+    let id = IntrinsicId::lookup(&name)?;
+    let descriptor = descriptor_for_name(module, id, &name).ok()?;
     let expected = descriptor.function_type_ref(module).ok()?;
     (expected.as_type().slot_trusting_same_module() == function.signature).then_some(descriptor)
 }
 
-pub(crate) fn semantic_for_callee<'ctx, B>(callee: Value<'ctx, B>) -> Option<IntrinsicSemantic>
+pub(crate) fn semantic_for_callee<'ctx, B, C>(
+    callee: Value<'ctx, B, C>,
+) -> Option<IntrinsicSemantic>
 where
     B: ModuleBrand + 'ctx,
+    C: crate::capability::Capability,
 {
     let descriptor = descriptor_for_callee(callee)?;
     descriptor.id.semantic_kind()
@@ -536,7 +552,10 @@ impl IntrinsicId {
         }
     }
 
-    /// The intrinsic's function type in `module` for `overloads`.
+    /// The intrinsic's function type in `module` for `overloads`, at the
+    /// capability `module`'s state grants (D8): `Mutable` while unverified,
+    /// `ReadOnly` once verified. The overloads are at that capability too —
+    /// what the module mints, so `&[]` needs no annotation.
     ///
     /// # Errors
     ///
@@ -546,15 +565,17 @@ impl IntrinsicId {
     pub fn function_type<'ctx, B, S>(
         self,
         module: &'ctx Module<B, S>,
-        overloads: &[Type<'ctx, B>],
-    ) -> IrResult<FunctionType<'ctx, B>>
+        overloads: &[Type<'ctx, B, S::Capability>],
+    ) -> IrResult<FunctionType<'ctx, B, S::Capability>>
     where
         B: ModuleBrand + 'ctx,
+        S: ModuleState,
     {
         // Boundary: the caller's overload types, admitted against `module`
         // before the descriptor validates them or a signature is interned.
         admit_overload_types(overloads, module.id())?;
-        IntrinsicDescriptor::new(self, overloads.to_vec())?.function_type_ref(module.module_ref())
+        IntrinsicDescriptor::new(self, overloads.to_vec())?
+            .function_type_ref(module.capability_ref())
     }
 
     /// The descriptor whose generated signature is `fn_ty` in `module`.
@@ -563,18 +584,20 @@ impl IntrinsicId {
     ///
     /// [`IrError::ForeignType`] if `fn_ty` belongs to another module, before
     /// anything is read or interned; otherwise the mismatch error of the
-    /// signature match.
-    pub fn match_signature<'ctx, B>(
+    /// signature match. `fn_ty` may be of either capability; the descriptor is
+    /// at `module`'s.
+    pub fn match_signature<'ctx, B, C: Capability>(
         self,
-        module: ModuleRef<'ctx, B>,
-        fn_ty: FunctionType<'ctx, B>,
-    ) -> IrResult<IntrinsicDescriptor<'ctx, B>>
+        module: ModuleRef<'ctx, B, C>,
+        fn_ty: FunctionType<'ctx, B, impl Capability>,
+    ) -> IrResult<IntrinsicDescriptor<'ctx, B, C>>
     where
         B: ModuleBrand + 'ctx,
     {
         // Boundary: the caller's function type, admitted against `module`
-        // before its parts are matched and the expected signature is interned.
-        fn_ty.slot_in(module.id())?;
+        // and re-minted at its capability before its parts are matched and
+        // the expected signature is interned.
+        let fn_ty = fn_ty.admitted_at(module)?;
         let overloads = match_intrinsic_signature(self, module, fn_ty)?;
         IntrinsicDescriptor::new(self, overloads)
     }
@@ -590,9 +613,20 @@ impl IntrinsicId {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> IntrinsicDescriptor<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IntrinsicDescriptor<'ctx, B, C> {
+    /// Drop to [`ReadOnly`](crate::ReadOnly): the same intrinsic over the same
+    /// overload types, read-only. Always sound: reading is a subset of
+    /// mutating.
+    pub fn read_only(&self) -> IntrinsicDescriptor<'ctx, B, crate::ReadOnly> {
+        IntrinsicDescriptor {
+            id: self.id,
+            overloads: self.overloads.iter().map(|ty| ty.read_only()).collect(),
+        }
+    }
+
     /// A descriptor for `id` with `overloads`, validated by building its
-    /// signature in the overloads' module.
+    /// signature in the overloads' module. The descriptor keeps the
+    /// overloads' capability.
     ///
     /// # Errors
     ///
@@ -602,7 +636,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntrinsicDescriptor<'ctx, B> {
     /// not fit the intrinsic.
     pub fn new<Overloads>(id: IntrinsicId, overloads: Overloads) -> IrResult<Self>
     where
-        Overloads: Into<Box<[Type<'ctx, B>]>>,
+        Overloads: Into<Box<[Type<'ctx, B, C>]>>,
     {
         let overloads = overloads.into();
         // Boundary: the signature below is interned in the first overload's
@@ -631,7 +665,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntrinsicDescriptor<'ctx, B> {
         self.id
     }
 
-    pub fn overloads(&self) -> &[Type<'ctx, B>] {
+    pub fn overloads(&self) -> &[Type<'ctx, B, C>] {
         &self.overloads
     }
 
@@ -663,18 +697,26 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntrinsicDescriptor<'ctx, B> {
         Ok(name)
     }
 
-    /// This descriptor's function type in `module`.
+    /// This descriptor's function type in `module`, at the capability
+    /// `module`'s state grants (D8): `Mutable` while unverified, `ReadOnly`
+    /// once verified.
     ///
     /// # Errors
     ///
     /// [`IrError::ForeignType`] if an overload type belongs to another module,
     /// before anything is interned; [`IrError::IntrinsicSignatureMismatch`] if
     /// the generated signature cannot be built.
-    pub fn function_type<S>(&self, module: &'ctx Module<B, S>) -> IrResult<FunctionType<'ctx, B>> {
+    pub fn function_type<S>(
+        &self,
+        module: &'ctx Module<B, S>,
+    ) -> IrResult<FunctionType<'ctx, B, S::Capability>>
+    where
+        S: ModuleState,
+    {
         // Boundary: the descriptor's overload types, admitted against
         // `module` before a signature is interned from them.
         self.admit_overloads(module.id())?;
-        self.function_type_ref(module.module_ref())
+        self.function_type_ref(module.capability_ref())
     }
 
     /// The checked door for a descriptor's overload types: each admitted
@@ -685,21 +727,41 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntrinsicDescriptor<'ctx, B> {
         admit_overload_types(&self.overloads, owner)
     }
 
-    pub(crate) fn function_type_ref(
+    /// This descriptor's function type in `module`, at `module`'s
+    /// capability.
+    pub(crate) fn function_type_ref<ModuleCapability: Capability>(
         &self,
-        module: ModuleRef<'ctx, B>,
-    ) -> IrResult<FunctionType<'ctx, B>> {
+        module: ModuleRef<'ctx, B, ModuleCapability>,
+    ) -> IrResult<FunctionType<'ctx, B, ModuleCapability>> {
         let descriptors =
             iit_descriptors(self.id.record()).map_err(|_| intrinsic_mismatch_for_id(self.id))?;
-        generated_function_type_from_descriptors(module, &descriptors, &self.overloads)
+        // Internal: every caller admitted the overloads against `module` or
+        // holds a descriptor minted there — `IntrinsicId::function_type`,
+        // `Self::function_type` and the module's intrinsic declaration admit
+        // them first (the call builder's descriptor went through the last);
+        // `descriptor_for_callee` built its descriptor in the callee's own
+        // module, and the verifier's `check_intrinsic_call` asks with the one
+        // `descriptor_for_callee` gave it; and
+        // `ModuleCore::intrinsic_descriptor_from_signature` built
+        // its descriptor with `descriptor_for_name` on the same module
+        // reference it passes here. Each is re-minted at `module`'s
+        // capability.
+        let overloads: Box<[Type<'ctx, B, ModuleCapability>]> = self
+            .overloads
+            .iter()
+            .map(|ty| Type::new(ty.slot_trusting_same_module(), module))
+            .collect();
+        generated_function_type_from_descriptors(module, &descriptors, &overloads)
             .map_err(|_| intrinsic_mismatch_for_id(self.id))
     }
 
     pub(crate) fn to_function_data(&self) -> IntrinsicFunctionData {
         IntrinsicFunctionData {
             id: self.id,
-            // Internal: the one caller, `get_or_insert_intrinsic_declaration`,
-            // admitted every overload against the declaring module first.
+            // Internal: both callers hold overloads of the declaring module —
+            // `get_or_insert_intrinsic_declaration` admitted every one first,
+            // and `FunctionValue::update_after_name_change` minted its
+            // descriptor from the function's own module and signature.
             overloads: self
                 .overloads
                 .iter()
@@ -708,27 +770,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntrinsicDescriptor<'ctx, B> {
         }
     }
 
-    pub fn declaration_attributes(
+    pub fn declaration_attributes<FnTypeCapability: Capability>(
         &self,
-        fn_ty: FunctionType<'ctx, B>,
+        fn_ty: FunctionType<'ctx, B, FnTypeCapability>,
     ) -> IrResult<AttributeStorage> {
         let record = self.id.record();
         let mut storage = AttributeStorage::new();
         add_function_attrs::<B>(&mut storage, record);
         for indexed in record.arg_attrs {
-            add_indexed_attr::<B>(&mut storage, *indexed, fn_ty)
+            add_indexed_attr(&mut storage, *indexed, fn_ty)
                 .map_err(|_| intrinsic_mismatch_for_id(self.id))?;
         }
         Ok(storage)
-    }
-
-    pub(crate) fn argument_names(&self) -> impl Iterator<Item = (u32, &'static str)> + '_ {
-        self.id
-            .record()
-            .pretty_print
-            .iter()
-            .filter(|arg| !arg.name.is_empty())
-            .map(|arg| (arg.arg_index, arg.name))
     }
 
     pub(crate) fn pretty_print_arg(&self, arg_index: usize) -> Option<PrettyPrintArg> {
@@ -790,10 +843,10 @@ fn add_function_attr_if<B: ModuleBrand>(
     }
 }
 
-fn add_indexed_attr<B: ModuleBrand>(
+fn add_indexed_attr<B: ModuleBrand, C: Capability>(
     storage: &mut AttributeStorage,
     indexed: IntrinsicIndexedAttr,
-    fn_ty: FunctionType<'_, B>,
+    fn_ty: FunctionType<'_, B, C>,
 ) -> IrResult<()> {
     let index = attribute_index(indexed.index);
     let attr = match indexed.attr {
@@ -816,7 +869,10 @@ fn add_indexed_attr<B: ModuleBrand>(
             Attribute::<B>::Int(AttrKind::Dereferenceable, bytes)
         }
         IntrinsicArgAttr::Range { lower, upper } => {
-            let ty = type_for_attribute_index(fn_ty, indexed.index)?;
+            // `getIntrinsicArgAttributeSet` sizes the range by
+            // `ArgType->getScalarSizeInBits()`, so a vector argument's range
+            // is over its element type (`range(i8 -1, 2)` on `<4 x i8>`).
+            let ty = type_for_attribute_index(fn_ty, indexed.index)?.scalar_type();
             let TypeData::Integer { bits } = ty.data() else {
                 return Err(intrinsic_mismatch());
             };
@@ -837,10 +893,10 @@ fn attribute_index(index: u32) -> AttrIndex {
     }
 }
 
-fn type_for_attribute_index<'ctx, B: ModuleBrand + 'ctx>(
-    fn_ty: FunctionType<'ctx, B>,
+fn type_for_attribute_index<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    fn_ty: FunctionType<'ctx, B, C>,
     index: u32,
-) -> IrResult<Type<'ctx, B>> {
+) -> IrResult<Type<'ctx, B, C>> {
     if index == 0 {
         return Ok(fn_ty.return_type());
     }
@@ -860,8 +916,8 @@ fn ap_int_from_i64(bits: u32, value: i64) -> IrResult<crate::ApInt> {
     )
 }
 
-fn append_mangled_type<'ctx, B: ModuleBrand + 'ctx>(
-    ty: Type<'ctx, B>,
+fn append_mangled_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
     out: &mut String,
 ) -> IrResult<()> {
     match ty.data() {
@@ -958,8 +1014,8 @@ fn append_mangled_type<'ctx, B: ModuleBrand + 'ctx>(
 /// Each overload type admitted against `owner` through the checked door
 /// ([`IrError::ForeignType`]): the one loop behind every intrinsic entry that
 /// interns a caller's overloads into a module (D5).
-fn admit_overload_types<'ctx, B: ModuleBrand + 'ctx>(
-    overloads: &[Type<'ctx, B>],
+fn admit_overload_types<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    overloads: &[Type<'ctx, B, C>],
     owner: ModuleId,
 ) -> IrResult<()> {
     for overload in overloads {
@@ -968,11 +1024,11 @@ fn admit_overload_types<'ctx, B: ModuleBrand + 'ctx>(
     Ok(())
 }
 
-pub(crate) fn match_intrinsic_signature<'ctx, B: ModuleBrand + 'ctx>(
+pub(crate) fn match_intrinsic_signature<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     id: IntrinsicId,
-    module: ModuleRef<'ctx, B>,
-    fn_ty: FunctionType<'ctx, B>,
-) -> IrResult<Box<[Type<'ctx, B>]>> {
+    module: ModuleRef<'ctx, B, C>,
+    fn_ty: FunctionType<'ctx, B, C>,
+) -> IrResult<Box<[Type<'ctx, B, C>]>> {
     let descriptors = iit_descriptors(id.record())?;
     let mut cursor = descriptors.as_slice();
     let mut overloads = vec![None; overload_slot_count(&descriptors)];
@@ -1011,11 +1067,11 @@ pub(crate) fn match_intrinsic_signature<'ctx, B: ModuleBrand + 'ctx>(
     Ok(resolved.into_boxed_slice())
 }
 
-fn match_fixed_type<'ctx, B: ModuleBrand + 'ctx>(
-    module: ModuleRef<'ctx, B>,
+fn match_fixed_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
     descriptors: &mut &[IitDescriptor],
-    overloads: &mut [Option<Type<'ctx, B>>],
-    actual: Type<'ctx, B>,
+    overloads: &mut [Option<Type<'ctx, B, C>>],
+    actual: Type<'ctx, B, C>,
 ) -> IrResult<()> {
     let Some((&descriptor, rest)) = descriptors.split_first() else {
         return Err(intrinsic_mismatch());
@@ -1023,9 +1079,10 @@ fn match_fixed_type<'ctx, B: ModuleBrand + 'ctx>(
     *descriptors = rest;
     match descriptor {
         IitDescriptor::Void | IitDescriptor::VarArg => require_type(actual, void_type(module)),
-        IitDescriptor::Mmx => {
-            require_type(actual, fixed_vector_type(module, int_type(module, 64), 1))
-        }
+        IitDescriptor::Mmx => require_type(
+            actual,
+            fixed_vector_type(module, int_type(module, 64), lanes::<1>())?,
+        ),
         IitDescriptor::Amx => require_type(
             actual,
             Type::new(module.module().context().x86_amx(), module),
@@ -1131,10 +1188,10 @@ fn match_fixed_type<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn match_overload_slot<'ctx, B: ModuleBrand + 'ctx>(
-    overloads: &mut [Option<Type<'ctx, B>>],
+fn match_overload_slot<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    overloads: &mut [Option<Type<'ctx, B, C>>],
     index: usize,
-    actual: Type<'ctx, B>,
+    actual: Type<'ctx, B, C>,
 ) -> IrResult<()> {
     let Some(slot) = overloads.get_mut(index) else {
         return Err(intrinsic_mismatch());
@@ -1147,11 +1204,11 @@ fn match_overload_slot<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn match_vector_of_any_ptrs_to_ref<'ctx, B: ModuleBrand + 'ctx>(
-    overloads: &[Option<Type<'ctx, B>>],
+fn match_vector_of_any_ptrs_to_ref<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    overloads: &[Option<Type<'ctx, B, C>>],
     overload: usize,
     reference: usize,
-    actual: Type<'ctx, B>,
+    actual: Type<'ctx, B, C>,
 ) -> IrResult<()> {
     require_pointer_vector(actual)?;
     let Some(Some(reference_ty)) = overloads.get(reference).copied() else {
@@ -1167,9 +1224,9 @@ fn match_vector_of_any_ptrs_to_ref<'ctx, B: ModuleBrand + 'ctx>(
     Ok(())
 }
 
-fn validate_intrinsic_overload_constraints<'ctx, B: ModuleBrand + 'ctx>(
+fn validate_intrinsic_overload_constraints<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     descriptors: &[IitDescriptor],
-    overloads: &[Type<'ctx, B>],
+    overloads: &[Type<'ctx, B, C>],
 ) -> IrResult<()> {
     for descriptor in descriptors {
         if let IitDescriptor::VecOfAnyPtrsToElt {
@@ -1190,7 +1247,9 @@ fn validate_intrinsic_overload_constraints<'ctx, B: ModuleBrand + 'ctx>(
     Ok(())
 }
 
-fn require_pointer_vector<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> IrResult<()> {
+fn require_pointer_vector<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
+) -> IrResult<()> {
     let elem = match ty.data() {
         TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => *elem,
         _ => return Err(intrinsic_mismatch()),
@@ -1201,9 +1260,9 @@ fn require_pointer_vector<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> IrR
     }
 }
 
-fn require_same_vector_width<'ctx, B: ModuleBrand + 'ctx>(
-    actual: Type<'ctx, B>,
-    reference: Type<'ctx, B>,
+fn require_same_vector_width<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    actual: Type<'ctx, B, C>,
+    reference: Type<'ctx, B, C>,
 ) -> IrResult<()> {
     match (actual.data(), reference.data()) {
         (
@@ -1227,12 +1286,12 @@ fn require_same_vector_width<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn match_same_vec_width_argument<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
+fn match_same_vec_width_argument<'ctx, B, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
     descriptors: &mut &[IitDescriptor],
-    overloads: &mut [Option<Type<'ctx, B>>],
+    overloads: &mut [Option<Type<'ctx, B, C>>],
     index: usize,
-    actual: Type<'ctx, B>,
+    actual: Type<'ctx, B, C>,
 ) -> IrResult<()>
 where
     B: ModuleBrand + 'ctx,
@@ -1293,16 +1352,16 @@ fn skip_fixed_type_descriptor(descriptors: &mut &[IitDescriptor]) -> IrResult<()
     }
 }
 
-fn match_transformed_overload<'ctx, B, F>(
-    module: ModuleRef<'ctx, B>,
-    overloads: &mut [Option<Type<'ctx, B>>],
+fn match_transformed_overload<'ctx, B, C: Capability, F>(
+    module: ModuleRef<'ctx, B, C>,
+    overloads: &mut [Option<Type<'ctx, B, C>>],
     index: usize,
-    actual: Type<'ctx, B>,
+    actual: Type<'ctx, B, C>,
     transform: F,
 ) -> IrResult<()>
 where
     B: ModuleBrand + 'ctx,
-    F: FnOnce(ModuleRef<'ctx, B>, Type<'ctx, B>) -> IrResult<Type<'ctx, B>>,
+    F: FnOnce(ModuleRef<'ctx, B, C>, Type<'ctx, B, C>) -> IrResult<Type<'ctx, B, C>>,
 {
     let Some(Some(source)) = overloads.get(index).copied() else {
         return Ok(());
@@ -1310,9 +1369,9 @@ where
     require_type(actual, transform(module, source)?)
 }
 
-fn require_type<'ctx, B: ModuleBrand + 'ctx>(
-    actual: Type<'ctx, B>,
-    expected: Type<'ctx, B>,
+fn require_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    actual: Type<'ctx, B, C>,
+    expected: Type<'ctx, B, C>,
 ) -> IrResult<()> {
     if actual == expected {
         Ok(())
@@ -1434,41 +1493,48 @@ fn intrinsic_id_for_relative_index(
     IntrinsicId::from_raw(raw)
 }
 
-fn void_type<'ctx, B>(module: ModuleRef<'ctx, B>) -> Type<'ctx, B>
+fn void_type<'ctx, B, C>(module: ModuleRef<'ctx, B, C>) -> Type<'ctx, B, C>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
     Type::new(module.module().context().void(), module)
 }
 
-fn metadata_type<'ctx, B>(module: ModuleRef<'ctx, B>) -> Type<'ctx, B>
+fn metadata_type<'ctx, B, C>(module: ModuleRef<'ctx, B, C>) -> Type<'ctx, B, C>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
     Type::new(module.module().context().metadata(), module)
 }
 
-fn int_type<'ctx, B>(module: ModuleRef<'ctx, B>, bits: u32) -> Type<'ctx, B>
+fn int_type<'ctx, B, C>(module: ModuleRef<'ctx, B, C>, bits: u32) -> Type<'ctx, B, C>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
     Type::new(module.module().context().int_type(bits), module)
 }
 
-fn ptr_type<'ctx, B>(module: ModuleRef<'ctx, B>, addr_space: u32) -> Type<'ctx, B>
+fn ptr_type<'ctx, B, C>(module: ModuleRef<'ctx, B, C>, addr_space: u32) -> Type<'ctx, B, C>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
     Type::new(module.module().context().ptr_type(addr_space), module)
 }
 
-pub(crate) fn descriptor_for_name<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
+/// The descriptor `name` spells for `id`, its overload types demangled into
+/// `module` at `module`'s capability.
+pub(crate) fn descriptor_for_name<'ctx, B, C>(
+    module: ModuleRef<'ctx, B, C>,
     id: IntrinsicId,
     name: &str,
-) -> IrResult<IntrinsicDescriptor<'ctx, B>>
+) -> IrResult<IntrinsicDescriptor<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
     if IntrinsicId::lookup(name) != Some(id) {
         return Err(intrinsic_mismatch_for_id(id));
@@ -1479,7 +1545,7 @@ where
         if name != record.base_name {
             return Err(intrinsic_mismatch_for_id(id));
         }
-        return IntrinsicDescriptor::new(id, Vec::<Type<'ctx, B>>::new());
+        return IntrinsicDescriptor::new(id, Vec::<Type<'ctx, B, C>>::new());
     }
 
     let suffix = name
@@ -1495,13 +1561,14 @@ where
     IntrinsicDescriptor::new(id, overloads)
 }
 
-fn generated_function_type_from_descriptors<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
+fn generated_function_type_from_descriptors<'ctx, B, C>(
+    module: ModuleRef<'ctx, B, C>,
     descriptors: &[IitDescriptor],
-    overloads: &[Type<'ctx, B>],
-) -> IrResult<FunctionType<'ctx, B>>
+    overloads: &[Type<'ctx, B, C>],
+) -> IrResult<FunctionType<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
     let mut descriptors = descriptors;
     let ret = decode_fixed_type(module, &mut descriptors, overloads)?;
@@ -1553,10 +1620,10 @@ fn overload_slot_count(descriptors: &[IitDescriptor]) -> usize {
         .map_or(0, |index| index + 1)
 }
 
-fn parse_mangled_overload_types<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
+fn parse_mangled_overload_types<'ctx, B, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
     suffix: &str,
-) -> IrResult<Vec<Type<'ctx, B>>>
+) -> IrResult<Vec<Type<'ctx, B, C>>>
 where
     B: ModuleBrand + 'ctx,
 {
@@ -1576,10 +1643,10 @@ where
     }
 }
 
-fn parse_mangled_type_prefix<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
+fn parse_mangled_type_prefix<'ctx, B, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
     text: &str,
-) -> IrResult<(Type<'ctx, B>, usize)>
+) -> IrResult<(Type<'ctx, B, C>, usize)>
 where
     B: ModuleBrand + 'ctx,
 {
@@ -1633,17 +1700,23 @@ where
     if let Some((addr_space, consumed)) = parse_prefixed_u32(text, "p", true) {
         return Ok((ptr_type(module, addr_space), consumed));
     }
-    if let Some((lanes, consumed)) = parse_prefixed_u32(text, "nxv", false) {
+    // `getMangledTypeStr` spells a vector `"v" + utostr(EC.getKnownMinValue())`
+    // (with `"nx"` before it when scalable) from a vector that exists, so no
+    // upstream name spells zero lanes. `parse_prefixed_lanes` reads no zero
+    // count, so `v0…` falls through to the mismatch any other spelling no type
+    // mangles to reaches; an element no vector may hold is refused by the
+    // constructor below, as `VectorType::get` asserts.
+    if let Some((min, consumed)) = parse_prefixed_lanes(text, "nxv") {
         let (elem, elem_consumed) = parse_mangled_type_prefix(module, &text[consumed..])?;
         return Ok((
-            scalable_vector_type(module, elem, lanes),
+            scalable_vector_type(module, elem, min)?,
             consumed + elem_consumed,
         ));
     }
-    if let Some((lanes, consumed)) = parse_prefixed_u32(text, "v", false) {
+    if let Some((lane_count, consumed)) = parse_prefixed_lanes(text, "v") {
         let (elem, elem_consumed) = parse_mangled_type_prefix(module, &text[consumed..])?;
         return Ok((
-            fixed_vector_type(module, elem, lanes),
+            fixed_vector_type(module, elem, lane_count)?,
             consumed + elem_consumed,
         ));
     }
@@ -1654,10 +1727,10 @@ where
     Err(intrinsic_mismatch())
 }
 
-fn parse_target_ext_type_prefix<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
+fn parse_target_ext_type_prefix<'ctx, B, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
     text: &str,
-) -> IrResult<Option<(Type<'ctx, B>, usize)>>
+) -> IrResult<Option<(Type<'ctx, B, C>, usize)>>
 where
     B: ModuleBrand + 'ctx,
 {
@@ -1676,10 +1749,10 @@ where
     Ok(None)
 }
 
-fn parse_target_ext_type_body<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
+fn parse_target_ext_type_body<'ctx, B, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
     body: &str,
-) -> IrResult<Option<Type<'ctx, B>>>
+) -> IrResult<Option<Type<'ctx, B, C>>>
 where
     B: ModuleBrand + 'ctx,
 {
@@ -1722,10 +1795,10 @@ where
     Ok(Some(target_ext_type(module, name, type_params, int_params)))
 }
 
-fn parse_function_type_prefix<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
+fn parse_function_type_prefix<'ctx, B, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
     text: &str,
-) -> IrResult<Option<(Type<'ctx, B>, usize)>>
+) -> IrResult<Option<(Type<'ctx, B, C>, usize)>>
 where
     B: ModuleBrand + 'ctx,
 {
@@ -1758,10 +1831,10 @@ where
     Ok(None)
 }
 
-fn parse_struct_type_prefix<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
+fn parse_struct_type_prefix<'ctx, B, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
     text: &str,
-) -> IrResult<Option<(Type<'ctx, B>, usize)>>
+) -> IrResult<Option<(Type<'ctx, B, C>, usize)>>
 where
     B: ModuleBrand + 'ctx,
 {
@@ -1785,10 +1858,10 @@ where
     Ok(None)
 }
 
-fn parse_literal_struct_type_prefix<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
+fn parse_literal_struct_type_prefix<'ctx, B, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
     text: &str,
-) -> IrResult<Option<(Type<'ctx, B>, usize)>>
+) -> IrResult<Option<(Type<'ctx, B, C>, usize)>>
 where
     B: ModuleBrand + 'ctx,
 {
@@ -1821,10 +1894,10 @@ where
     Ok(None)
 }
 
-fn parse_mangled_type_sequence<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
+fn parse_mangled_type_sequence<'ctx, B, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
     mut text: &str,
-) -> IrResult<Option<Vec<Type<'ctx, B>>>>
+) -> IrResult<Option<Vec<Type<'ctx, B, C>>>>
 where
     B: ModuleBrand + 'ctx,
 {
@@ -1857,6 +1930,13 @@ fn parse_prefixed_u32(text: &str, prefix: &str, allow_zero: bool) -> Option<(u32
         return None;
     }
     Some((value, prefix.len() + len))
+}
+
+/// A vector's lane count after `prefix`, as [`parse_prefixed_u32`] reads it
+/// with zero refused — so the count is a [`NonZeroU32`].
+fn parse_prefixed_lanes(text: &str, prefix: &str) -> Option<(NonZeroU32, usize)> {
+    let (count, consumed) = parse_prefixed_u32(text, prefix, false)?;
+    Some((NonZeroU32::new(count)?, consumed))
 }
 
 fn parse_prefixed_u64(text: &str, prefix: &str, allow_zero: bool) -> Option<(u64, usize)> {
@@ -1910,16 +1990,33 @@ enum IitDescriptor {
     PpcQuad,
     Aarch64Svcount,
     Integer(u32),
-    Vector { width: u32, scalable: bool },
+    /// `IITDescriptor::getVector(Width, IsScalable)`. `DecodeIITType` writes
+    /// each width as a literal (`IIT_V1` … `IIT_V4096`), never zero, so the
+    /// width is a [`NonZeroU32`] spelled with [`lanes`].
+    Vector {
+        width: NonZeroU32,
+        scalable: bool,
+    },
     Pointer(u32),
-    Struct { elements: usize },
-    Argument { index: usize, kind: IitArgKind },
+    Struct {
+        elements: usize,
+    },
+    Argument {
+        index: usize,
+        kind: IitArgKind,
+    },
     ExtendArgument(usize),
     TruncArgument(usize),
-    OneNthEltsVecArgument { divisor: u32, argument: usize },
+    OneNthEltsVecArgument {
+        divisor: u32,
+        argument: usize,
+    },
     SameVecWidthArgument(usize),
     VecElementArgument(usize),
-    VecOfAnyPtrsToElt { overload: usize, reference: usize },
+    VecOfAnyPtrsToElt {
+        overload: usize,
+        reference: usize,
+    },
     Subdivide2Argument(usize),
     Subdivide4Argument(usize),
     VecOfBitcastsToInt(usize),
@@ -1971,17 +2068,17 @@ fn decode_iit_type(
         6 => out.push(IitDescriptor::Half),
         7 => out.push(IitDescriptor::Float),
         8 => out.push(IitDescriptor::Double),
-        9 => decode_iit_vector(entries, pos, info, out, 2, scalable)?,
-        10 => decode_iit_vector(entries, pos, info, out, 4, scalable)?,
-        11 => decode_iit_vector(entries, pos, info, out, 8, scalable)?,
-        12 => decode_iit_vector(entries, pos, info, out, 16, scalable)?,
-        13 => decode_iit_vector(entries, pos, info, out, 32, scalable)?,
+        9 => decode_iit_vector(entries, pos, info, out, lanes::<2>(), scalable)?,
+        10 => decode_iit_vector(entries, pos, info, out, lanes::<4>(), scalable)?,
+        11 => decode_iit_vector(entries, pos, info, out, lanes::<8>(), scalable)?,
+        12 => decode_iit_vector(entries, pos, info, out, lanes::<16>(), scalable)?,
+        13 => decode_iit_vector(entries, pos, info, out, lanes::<32>(), scalable)?,
         14 => out.push(IitDescriptor::Pointer(0)),
         15 => {
             let (index, kind) = decode_argument_info(next_iit_usize_or_zero(entries, pos))?;
             out.push(IitDescriptor::Argument { index, kind });
         }
-        16 => decode_iit_vector(entries, pos, info, out, 64, scalable)?,
+        16 => decode_iit_vector(entries, pos, info, out, lanes::<64>(), scalable)?,
         17 => out.push(IitDescriptor::Mmx),
         18 => out.push(IitDescriptor::Token),
         19 => out.push(IitDescriptor::Metadata),
@@ -2002,7 +2099,7 @@ fn decode_iit_type(
         24 => out.push(IitDescriptor::Pointer(u32::from(next_iit_byte(
             entries, pos,
         )?))),
-        25 => decode_iit_vector(entries, pos, info, out, 1, scalable)?,
+        25 => decode_iit_vector(entries, pos, info, out, lanes::<1>(), scalable)?,
         26 => out.push(IitDescriptor::VarArg),
         27 => {
             let argument = next_iit_usize_or_zero(entries, pos);
@@ -2017,8 +2114,8 @@ fn decode_iit_type(
             reference: next_iit_usize_or_zero(entries, pos),
         }),
         30 => out.push(IitDescriptor::Integer(128)),
-        31 => decode_iit_vector(entries, pos, info, out, 512, scalable)?,
-        32 => decode_iit_vector(entries, pos, info, out, 1024, scalable)?,
+        31 => decode_iit_vector(entries, pos, info, out, lanes::<512>(), scalable)?,
+        32 => decode_iit_vector(entries, pos, info, out, lanes::<1024>(), scalable)?,
         33 => out.push(IitDescriptor::Quad),
         34 => out.push(IitDescriptor::VecElementArgument(decode_argument_index(
             next_iit_usize_or_zero(entries, pos),
@@ -2033,21 +2130,21 @@ fn decode_iit_type(
         38 => out.push(IitDescriptor::VecOfBitcastsToInt(decode_argument_index(
             next_iit_usize_or_zero(entries, pos),
         )?)),
-        39 => decode_iit_vector(entries, pos, info, out, 128, scalable)?,
+        39 => decode_iit_vector(entries, pos, info, out, lanes::<128>(), scalable)?,
         40 => out.push(IitDescriptor::Bfloat),
-        41 => decode_iit_vector(entries, pos, info, out, 256, scalable)?,
+        41 => decode_iit_vector(entries, pos, info, out, lanes::<256>(), scalable)?,
         42 => out.push(IitDescriptor::Amx),
         43 => out.push(IitDescriptor::PpcQuad),
-        44 => decode_iit_vector(entries, pos, info, out, 3, scalable)?,
+        44 => decode_iit_vector(entries, pos, info, out, lanes::<3>(), scalable)?,
         45 => out.push(IitDescriptor::Pointer(10)),
         46 => out.push(IitDescriptor::Pointer(20)),
         47 => out.push(IitDescriptor::Integer(2)),
         48 => out.push(IitDescriptor::Integer(4)),
         49 => out.push(IitDescriptor::Aarch64Svcount),
-        50 => decode_iit_vector(entries, pos, info, out, 6, scalable)?,
-        51 => decode_iit_vector(entries, pos, info, out, 10, scalable)?,
-        52 => decode_iit_vector(entries, pos, info, out, 2048, scalable)?,
-        53 => decode_iit_vector(entries, pos, info, out, 4096, scalable)?,
+        50 => decode_iit_vector(entries, pos, info, out, lanes::<6>(), scalable)?,
+        51 => decode_iit_vector(entries, pos, info, out, lanes::<10>(), scalable)?,
+        52 => decode_iit_vector(entries, pos, info, out, lanes::<2048>(), scalable)?,
+        53 => decode_iit_vector(entries, pos, info, out, lanes::<4096>(), scalable)?,
         code if code == generated::IIT_WASM_EXNREF => out.push(IitDescriptor::ExnRef),
         _ => return Err(intrinsic_mismatch()),
     }
@@ -2059,7 +2156,7 @@ fn decode_iit_vector(
     pos: &mut usize,
     info: u8,
     out: &mut Vec<IitDescriptor>,
-    width: u32,
+    width: NonZeroU32,
     scalable: bool,
 ) -> IrResult<()> {
     out.push(IitDescriptor::Vector { width, scalable });
@@ -2084,13 +2181,14 @@ fn next_iit_usize_or_zero(entries: &[u8], pos: &mut usize) -> usize {
     usize::from(next_iit_byte_or_zero(entries, pos))
 }
 
-fn decode_fixed_type<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
+fn decode_fixed_type<'ctx, B, C>(
+    module: ModuleRef<'ctx, B, C>,
     descriptors: &mut &[IitDescriptor],
-    overloads: &[Type<'ctx, B>],
-) -> IrResult<Type<'ctx, B>>
+    overloads: &[Type<'ctx, B, C>],
+) -> IrResult<Type<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
     let Some((&descriptor, rest)) = descriptors.split_first() else {
         return Err(intrinsic_mismatch());
@@ -2099,7 +2197,7 @@ where
 
     match descriptor {
         IitDescriptor::Void | IitDescriptor::VarArg => Ok(void_type(module)),
-        IitDescriptor::Mmx => Ok(fixed_vector_type(module, int_type(module, 64), 1)),
+        IitDescriptor::Mmx => fixed_vector_type(module, int_type(module, 64), lanes::<1>()),
         IitDescriptor::Amx => Ok(Type::new(module.module().context().x86_amx(), module)),
         IitDescriptor::ExnRef => Ok(Type::new(module.module().context().wasm_exnref(), module)),
         IitDescriptor::Token => Ok(Type::new(module.module().context().token(), module)),
@@ -2116,9 +2214,9 @@ where
         IitDescriptor::Vector { width, scalable } => {
             let elem = decode_fixed_type(module, descriptors, overloads)?;
             if scalable {
-                Ok(scalable_vector_type(module, elem, width))
+                scalable_vector_type(module, elem, width)
             } else {
-                Ok(fixed_vector_type(module, elem, width))
+                fixed_vector_type(module, elem, width)
             }
         }
         IitDescriptor::Struct { elements } => {
@@ -2182,9 +2280,10 @@ where
     }
 }
 
-fn validate_overload_kind<'ctx, B>(ty: Type<'ctx, B>, kind: IitArgKind) -> IrResult<()>
+fn validate_overload_kind<'ctx, B, C>(ty: Type<'ctx, B, C>, kind: IitArgKind) -> IrResult<()>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
     let ok = match kind {
         IitArgKind::Any | IitArgKind::MatchType => true,
@@ -2200,15 +2299,16 @@ where
     }
 }
 
-fn fn_type_with_var_arg<'ctx, B, I>(
-    module: ModuleRef<'ctx, B>,
-    ret: Type<'ctx, B>,
+fn fn_type_with_var_arg<'ctx, B, C, I>(
+    module: ModuleRef<'ctx, B, C>,
+    ret: Type<'ctx, B, C>,
     params: I,
     is_var_arg: bool,
-) -> IrResult<FunctionType<'ctx, B>>
+) -> IrResult<FunctionType<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
-    I: IntoIterator<Item = Type<'ctx, B>>,
+    C: Capability,
+    I: IntoIterator<Item = Type<'ctx, B, C>>,
 {
     let param_ids: Vec<_> = params
         .into_iter()
@@ -2222,24 +2322,36 @@ where
     Ok(FunctionType::new(id, module))
 }
 
-fn scalable_vector_type<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
-    elem: Type<'ctx, B>,
-    min: u32,
-) -> Type<'ctx, B>
+/// `ScalableVectorType::get`, for the decoders and matchers here: its
+/// `MinNumElts > 0` assert is `min`'s type, and its `isValidElementType`
+/// assert is checked and refused as a mismatch, for the reasons
+/// [`fixed_vector_type`] gives.
+fn scalable_vector_type<'ctx, B, C>(
+    module: ModuleRef<'ctx, B, C>,
+    elem: Type<'ctx, B, C>,
+    min: NonZeroU32,
+) -> IrResult<Type<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
-    Type::new(
+    if !elem.is_valid_vector_element() {
+        return Err(intrinsic_mismatch());
+    }
+    Ok(Type::new(
         module
             .module()
             .context()
             .scalable_vector_type(elem.slot_trusting_same_module(), min),
         module,
-    )
+    ))
 }
 
-fn array_type<'ctx, B>(module: ModuleRef<'ctx, B>, elem: Type<'ctx, B>, n: u64) -> Type<'ctx, B>
+fn array_type<'ctx, B, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
+    elem: Type<'ctx, B, C>,
+    n: u64,
+) -> Type<'ctx, B, C>
 where
     B: ModuleBrand + 'ctx,
 {
@@ -2252,15 +2364,16 @@ where
     )
 }
 
-fn target_ext_type<'ctx, B, Types, Ints>(
-    module: ModuleRef<'ctx, B>,
+fn target_ext_type<'ctx, B, C, Types, Ints>(
+    module: ModuleRef<'ctx, B, C>,
     name: &str,
     type_params: Types,
     int_params: Ints,
-) -> Type<'ctx, B>
+) -> Type<'ctx, B, C>
 where
     B: ModuleBrand + 'ctx,
-    Types: IntoIterator<Item = Type<'ctx, B>>,
+    C: Capability,
+    Types: IntoIterator<Item = Type<'ctx, B, C>>,
     Ints: IntoIterator<Item = u32>,
 {
     let type_ids: Box<[_]> = type_params
@@ -2277,12 +2390,13 @@ where
     )
 }
 
-fn extend_integer_type<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
-    ty: Type<'ctx, B>,
-) -> IrResult<Type<'ctx, B>>
+fn extend_integer_type<'ctx, B, C>(
+    module: ModuleRef<'ctx, B, C>,
+    ty: Type<'ctx, B, C>,
+) -> IrResult<Type<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
     match ty.data() {
         TypeData::Integer { bits } => bits
@@ -2291,74 +2405,65 @@ where
             .ok_or_else(intrinsic_mismatch),
         TypeData::FixedVector { elem, n } => {
             let elem_ty = Type::new(*elem, module);
-            Ok(fixed_vector_type(
-                module,
-                extend_integer_type(module, elem_ty)?,
-                *n,
-            ))
+            fixed_vector_type(module, extend_integer_type(module, elem_ty)?, *n)
         }
         TypeData::ScalableVector { elem, min } => {
             let elem_ty = Type::new(*elem, module);
-            Ok(scalable_vector_type(
-                module,
-                extend_integer_type(module, elem_ty)?,
-                *min,
-            ))
+            scalable_vector_type(module, extend_integer_type(module, elem_ty)?, *min)
         }
         _ => Err(intrinsic_mismatch()),
     }
 }
 
-fn trunc_argument_type<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
-    ty: Type<'ctx, B>,
-) -> IrResult<Type<'ctx, B>>
+fn trunc_argument_type<'ctx, B, C>(
+    module: ModuleRef<'ctx, B, C>,
+    ty: Type<'ctx, B, C>,
+) -> IrResult<Type<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
     match ty.data() {
         TypeData::Integer { bits } if bits % 2 == 0 => Ok(int_type(module, bits / 2)),
         TypeData::FixedVector { elem, n } => {
             let elem_ty = Type::new(*elem, module);
-            Ok(fixed_vector_type(
-                module,
-                truncated_vector_element_type(module, elem_ty)?,
-                *n,
-            ))
+            fixed_vector_type(module, truncated_vector_element_type(module, elem_ty)?, *n)
         }
         TypeData::ScalableVector { elem, min } => {
             let elem_ty = Type::new(*elem, module);
-            Ok(scalable_vector_type(
+            scalable_vector_type(
                 module,
                 truncated_vector_element_type(module, elem_ty)?,
                 *min,
-            ))
+            )
         }
         _ => Err(intrinsic_mismatch()),
     }
 }
 
-fn same_vector_width_type<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
-    reference: Type<'ctx, B>,
-    elem: Type<'ctx, B>,
-) -> IrResult<Type<'ctx, B>>
+fn same_vector_width_type<'ctx, B, C>(
+    module: ModuleRef<'ctx, B, C>,
+    reference: Type<'ctx, B, C>,
+    elem: Type<'ctx, B, C>,
+) -> IrResult<Type<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
     match reference.data() {
-        TypeData::FixedVector { n, .. } => Ok(fixed_vector_type(module, elem, *n)),
-        TypeData::ScalableVector { min, .. } => Ok(scalable_vector_type(module, elem, *min)),
+        TypeData::FixedVector { n, .. } => fixed_vector_type(module, elem, *n),
+        TypeData::ScalableVector { min, .. } => scalable_vector_type(module, elem, *min),
         _ => Ok(elem),
     }
 }
 
-fn vector_element_or_self<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
-    ty: Type<'ctx, B>,
-) -> IrResult<Type<'ctx, B>>
+fn vector_element_or_self<'ctx, B, C>(
+    module: ModuleRef<'ctx, B, C>,
+    ty: Type<'ctx, B, C>,
+) -> IrResult<Type<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
     match ty.data() {
         TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
@@ -2368,9 +2473,13 @@ where
     }
 }
 
-fn primitive_size_in_bits<'ctx, B>(module: ModuleRef<'ctx, B>, ty: Type<'ctx, B>) -> Option<u32>
+fn primitive_size_in_bits<'ctx, B, C>(
+    module: ModuleRef<'ctx, B, C>,
+    ty: Type<'ctx, B, C>,
+) -> Option<u32>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
     match ty.data() {
         TypeData::Integer { bits } => Some(*bits),
@@ -2381,18 +2490,19 @@ where
         TypeData::PpcFp128 | TypeData::Fp128 => Some(128),
         TypeData::X86Amx => Some(8192),
         TypeData::FixedVector { elem, n } | TypeData::ScalableVector { elem, min: n } => {
-            primitive_size_in_bits(module, Type::new(*elem, module))?.checked_mul(*n)
+            primitive_size_in_bits(module, Type::new(*elem, module))?.checked_mul(n.get())
         }
         _ => None,
     }
 }
 
-fn integer_type_matching_primitive_size<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
-    ty: Type<'ctx, B>,
-) -> IrResult<Type<'ctx, B>>
+fn integer_type_matching_primitive_size<'ctx, B, C>(
+    module: ModuleRef<'ctx, B, C>,
+    ty: Type<'ctx, B, C>,
+) -> IrResult<Type<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
     let Some(bits) = primitive_size_in_bits(module, ty) else {
         return Err(intrinsic_mismatch());
@@ -2403,66 +2513,73 @@ where
     Ok(int_type(module, bits))
 }
 
-fn vector_of_bitcasts_to_int<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
-    ty: Type<'ctx, B>,
-) -> IrResult<Type<'ctx, B>>
+fn vector_of_bitcasts_to_int<'ctx, B, C>(
+    module: ModuleRef<'ctx, B, C>,
+    ty: Type<'ctx, B, C>,
+) -> IrResult<Type<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
     match ty.data() {
         TypeData::FixedVector { elem, n } => {
             let elem_ty = Type::new(*elem, module);
-            Ok(fixed_vector_type(
+            fixed_vector_type(
                 module,
                 integer_type_matching_primitive_size(module, elem_ty)?,
                 *n,
-            ))
+            )
         }
         TypeData::ScalableVector { elem, min } => {
             let elem_ty = Type::new(*elem, module);
-            Ok(scalable_vector_type(
+            scalable_vector_type(
                 module,
                 integer_type_matching_primitive_size(module, elem_ty)?,
                 *min,
-            ))
+            )
         }
         _ => Err(intrinsic_mismatch()),
     }
 }
 
-fn one_nth_vector_type<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
-    ty: Type<'ctx, B>,
+fn one_nth_vector_type<'ctx, B, C>(
+    module: ModuleRef<'ctx, B, C>,
+    ty: Type<'ctx, B, C>,
     divisor: u32,
-) -> IrResult<Type<'ctx, B>>
+) -> IrResult<Type<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
     if divisor == 0 {
         return Err(intrinsic_mismatch());
     }
+    // `VectorType::getOneNthElementsVectorType` asserts
+    // `isKnownMultipleOf(Denominator)` and passes `divideCoefficientBy`'s
+    // quotient to `VectorType::get`, which asserts it is not zero. A non-zero
+    // multiple of a non-zero divisor has a non-zero quotient, so the
+    // `NonZeroU32::new` below never answers `None`; the routine's mismatch is
+    // what it would report if it did.
     match ty.data() {
-        TypeData::FixedVector { elem, n } if n % divisor == 0 => Ok(fixed_vector_type(
-            module,
-            Type::new(*elem, module),
-            n / divisor,
-        )),
-        TypeData::ScalableVector { elem, min } if min % divisor == 0 => Ok(scalable_vector_type(
-            module,
-            Type::new(*elem, module),
-            min / divisor,
-        )),
+        TypeData::FixedVector { elem, n } if n.get() % divisor == 0 => {
+            let quotient = NonZeroU32::new(n.get() / divisor).ok_or_else(intrinsic_mismatch)?;
+            fixed_vector_type(module, Type::new(*elem, module), quotient)
+        }
+        TypeData::ScalableVector { elem, min } if min.get() % divisor == 0 => {
+            let quotient = NonZeroU32::new(min.get() / divisor).ok_or_else(intrinsic_mismatch)?;
+            scalable_vector_type(module, Type::new(*elem, module), quotient)
+        }
         _ => Err(intrinsic_mismatch()),
     }
 }
 
-fn truncated_vector_element_type<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
-    elem: Type<'ctx, B>,
-) -> IrResult<Type<'ctx, B>>
+fn truncated_vector_element_type<'ctx, B, C>(
+    module: ModuleRef<'ctx, B, C>,
+    elem: Type<'ctx, B, C>,
+) -> IrResult<Type<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
     match elem.data() {
         TypeData::Double => Ok(Type::new(module.module().context().float(), module)),
@@ -2484,27 +2601,32 @@ where
     }
 }
 
-fn subdivide_vector_type<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
-    ty: Type<'ctx, B>,
+fn subdivide_vector_type<'ctx, B, C>(
+    module: ModuleRef<'ctx, B, C>,
+    ty: Type<'ctx, B, C>,
     subdivisions: u32,
-) -> IrResult<Type<'ctx, B>>
+) -> IrResult<Type<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
-    let (mut elem, mut lanes, scalable) = match ty.data() {
+    let (mut elem, mut lane_count, scalable) = match ty.data() {
         TypeData::FixedVector { elem, n } => (Type::new(*elem, module), *n, false),
         TypeData::ScalableVector { elem, min } => (Type::new(*elem, module), *min, true),
         _ => return Err(intrinsic_mismatch()),
     };
     for _ in 0..subdivisions {
-        lanes = lanes.checked_mul(2).ok_or_else(intrinsic_mismatch)?;
+        // `VectorType::getDoubleElementsVectorType` asserts the doubled count
+        // fits in `unsigned`; doubling a non-zero count stays non-zero.
+        lane_count = lane_count
+            .checked_mul(lanes::<2>())
+            .ok_or_else(intrinsic_mismatch)?;
         elem = truncated_vector_element_type(module, elem)?;
     }
     if scalable {
-        Ok(scalable_vector_type(module, elem, lanes))
+        scalable_vector_type(module, elem, lane_count)
     } else {
-        Ok(fixed_vector_type(module, elem, lanes))
+        fixed_vector_type(module, elem, lane_count)
     }
 }
 
@@ -2514,29 +2636,41 @@ fn intrinsic_mismatch() -> IrError {
     }
 }
 
-fn fixed_vector_type<'ctx, B>(
-    module: ModuleRef<'ctx, B>,
-    elem: Type<'ctx, B>,
-    lanes: u32,
-) -> Type<'ctx, B>
+/// `FixedVectorType::get`, for the decoders and matchers here. Its
+/// `NumElts > 0` assert is `lanes`'s type. Its `isValidElementType` assert —
+/// `VectorType::isValidElementType` — is checked, because an element can
+/// arrive from an overload type or a demangled name, and a failure is this
+/// file's [`intrinsic_mismatch`]: every route here (by name, through
+/// `IntrinsicDescriptor::new`'s IIT decode, through the signature matcher) is
+/// asking whether a signature fits the intrinsic, and an overload that would
+/// need an invalid vector does not fit — upstream can only assert there.
+fn fixed_vector_type<'ctx, B, C>(
+    module: ModuleRef<'ctx, B, C>,
+    elem: Type<'ctx, B, C>,
+    lanes: NonZeroU32,
+) -> IrResult<Type<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
+    if !elem.is_valid_vector_element() {
+        return Err(intrinsic_mismatch());
+    }
     let id = module
         .module()
         .context()
         .fixed_vector_type(elem.slot_trusting_same_module(), lanes);
-    Type::new(id, module)
+    Ok(Type::new(id, module))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn sample_type<'ctx, B>(
-        module: ModuleRef<'ctx, B>,
+    fn sample_type<'ctx, B, C: Capability>(
+        module: ModuleRef<'ctx, B, C>,
         sample: &IntrinsicSampleType,
-    ) -> Type<'ctx, B>
+    ) -> Type<'ctx, B, C>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -2553,8 +2687,40 @@ mod tests {
                 other => panic!("unsupported generated sample float `{other}`"),
             },
             IntrinsicSampleType::Pointer(addr_space) => ptr_type(module, *addr_space),
-            IntrinsicSampleType::FixedVector { lanes, element } => {
-                fixed_vector_type(module, sample_type(module, element), *lanes)
+            IntrinsicSampleType::FixedVector {
+                lanes: count,
+                element,
+            } => {
+                let count = NonZeroU32::new(*count).expect("a generated sample vector has lanes");
+                fixed_vector_type(module, sample_type(module, element), count)
+                    .expect("a generated sample vector's element is a vector element")
+            }
+        }
+    }
+
+    /// `sample`, widened to `<4 x T>` where the overload slot it was drawn
+    /// for admits a vector. A scalar integer or floating-point sample comes
+    /// only from an `llvm_any_ty`, `llvm_anyint_ty` or `llvm_anyfloat_ty` slot
+    /// (`sample_for_overload_slot` in `llvmkit-tablegen`), and
+    /// `matchIntrinsicType` (`llvm/lib/IR/Intrinsics.cpp`) admits a vector for
+    /// each: `AK_Any` matches anything, `AK_AnyInteger` asks
+    /// `isIntOrIntVectorTy`, `AK_AnyFloat` asks `isFPOrFPVectorTy`. A pointer
+    /// sample stays scalar — `AK_AnyPointer` asks `isa<PointerType>` — and a
+    /// vector sample is already one.
+    fn widened_sample_type<'ctx, B, C: Capability>(
+        module: ModuleRef<'ctx, B, C>,
+        sample: &IntrinsicSampleType,
+    ) -> Type<'ctx, B, C>
+    where
+        B: ModuleBrand + 'ctx,
+    {
+        match sample {
+            IntrinsicSampleType::Int(_) | IntrinsicSampleType::Float(_) => {
+                fixed_vector_type(module, sample_type(module, sample), lanes::<4>())
+                    .expect("an integer or float sample is a vector element")
+            }
+            IntrinsicSampleType::Pointer(_) | IntrinsicSampleType::FixedVector { .. } => {
+                sample_type(module, sample)
             }
         }
     }
@@ -2564,15 +2730,42 @@ mod tests {
         &entries[..preview_len]
     }
 
+    /// The decoders' vector helpers refuse an element
+    /// `VectorType::isValidElementType` refuses — the assert in
+    /// `FixedVectorType::get` / `ScalableVectorType::get`
+    /// (`llvm/lib/IR/Type.cpp`) — as this file's signature mismatch, the error
+    /// its other refusals are, not as `IrError::InvalidTypeComponent`. `i32` is
+    /// the positive control.
+    ///
+    /// llvmkit-specific (D10): upstream asserts.
+    #[test]
+    fn the_vector_helpers_refuse_an_invalid_element_as_a_mismatch() -> IrResult<()> {
+        let module = crate::module_new!("intrinsic-vector-helpers")?;
+        let module_ref = module.capability_ref();
+        let void = void_type(module_ref);
+        assert_eq!(
+            fixed_vector_type(module_ref, void, lanes::<4>()),
+            Err(intrinsic_mismatch())
+        );
+        assert_eq!(
+            scalable_vector_type(module_ref, void, lanes::<4>()),
+            Err(intrinsic_mismatch())
+        );
+        let i32_ty = module.i32_type().as_type();
+        fixed_vector_type(module_ref, i32_ty, lanes::<4>())?;
+        scalable_vector_type(module_ref, i32_ty, lanes::<4>())?;
+        Ok(())
+    }
+
     /// Mirrors `llvm/lib/IR/Intrinsics.cpp::matchIntrinsicType`:
     /// `IITDescriptor::VecElementArgument` compares against the element type
     /// for vector overloads and rejects scalar overloads.
     #[test]
     fn vec_element_argument_requires_vector_overload() -> IrResult<()> {
         let module = crate::module_new!("intrinsic-vec-element")?;
-        let module_ref = module.module_ref();
+        let module_ref = module.capability_ref();
         let i32_ty = module.i32_type().as_type();
-        let vector_ty = fixed_vector_type(module_ref, i32_ty, 4);
+        let vector_ty = fixed_vector_type(module_ref, i32_ty, lanes::<4>())?;
 
         assert_eq!(vector_element_or_self(module_ref, vector_ty)?, i32_ty);
         assert!(vector_element_or_self(module_ref, i32_ty).is_err());
@@ -2584,8 +2777,8 @@ mod tests {
     #[test]
     fn subdivide_argument_halves_element_width_and_doubles_lanes() -> IrResult<()> {
         let module = crate::module_new!("intrinsic-subdivide")?;
-        let module_ref = module.module_ref();
-        let vector_ty = fixed_vector_type(module_ref, module.i64_type().as_type(), 4);
+        let module_ref = module.capability_ref();
+        let vector_ty = fixed_vector_type(module_ref, module.i64_type().as_type(), lanes::<4>())?;
         let subdivided_once = subdivide_vector_type(module_ref, vector_ty, 1)?;
         let subdivided_twice = subdivide_vector_type(module_ref, vector_ty, 2)?;
 
@@ -2600,8 +2793,8 @@ mod tests {
     #[test]
     fn subdivide_argument_matcher_uses_llvm_subdivision_counts() -> IrResult<()> {
         let module = crate::module_new!("intrinsic-subdivide-match")?;
-        let module_ref = module.module_ref();
-        let vector_ty = fixed_vector_type(module_ref, module.i64_type().as_type(), 4);
+        let module_ref = module.capability_ref();
+        let vector_ty = fixed_vector_type(module_ref, module.i64_type().as_type(), lanes::<4>())?;
         let mut overloads = vec![Some(vector_ty)];
 
         let subdivide2 = [IitDescriptor::Subdivide2Argument(0)];
@@ -2610,7 +2803,7 @@ mod tests {
             module_ref,
             &mut subdivide2_descriptors,
             &mut overloads,
-            fixed_vector_type(module_ref, module.i32_type().as_type(), 8),
+            fixed_vector_type(module_ref, module.i32_type().as_type(), lanes::<8>())?,
         )?;
 
         let subdivide4 = [IitDescriptor::Subdivide4Argument(0)];
@@ -2619,7 +2812,7 @@ mod tests {
             module_ref,
             &mut subdivide4_descriptors,
             &mut overloads,
-            fixed_vector_type(module_ref, module.i16_type().as_type(), 16),
+            fixed_vector_type(module_ref, module.i16_type().as_type(), lanes::<16>())?,
         )?;
         Ok(())
     }
@@ -2630,8 +2823,8 @@ mod tests {
     #[test]
     fn vec_of_bitcasts_to_int_preserves_shape_and_integerizes_element() -> IrResult<()> {
         let module = crate::module_new!("intrinsic-vector-bitcast-int")?;
-        let module_ref = module.module_ref();
-        let f32_vec = fixed_vector_type(module_ref, module.f32_type().as_type(), 4);
+        let module_ref = module.capability_ref();
+        let f32_vec = fixed_vector_type(module_ref, module.f32_type().as_type(), lanes::<4>())?;
         let i32_vec = vector_of_bitcasts_to_int(module_ref, f32_vec)?;
 
         assert_eq!(format!("{i32_vec}"), "<4 x i32>");
@@ -2645,9 +2838,9 @@ mod tests {
     #[test]
     fn vec_of_bitcasts_to_int_matcher_compares_integer_vector() -> IrResult<()> {
         let module = crate::module_new!("intrinsic-vector-bitcast-int-match")?;
-        let module_ref = module.module_ref();
-        let f32_vec = fixed_vector_type(module_ref, module.f32_type().as_type(), 4);
-        let i32_vec = fixed_vector_type(module_ref, module.i32_type().as_type(), 4);
+        let module_ref = module.capability_ref();
+        let f32_vec = fixed_vector_type(module_ref, module.f32_type().as_type(), lanes::<4>())?;
+        let i32_vec = fixed_vector_type(module_ref, module.i32_type().as_type(), lanes::<4>())?;
         let mut overloads = vec![Some(f32_vec)];
 
         let descriptors = [IitDescriptor::VecOfBitcastsToInt(0)];
@@ -2687,6 +2880,71 @@ mod tests {
                     )
                 });
             }
+        }
+        Ok(())
+    }
+
+    /// Every generated sample overload that has a scalar integer or
+    /// floating-point sample declares again with each such sample widened to
+    /// `<4 x T>` (`widened_sample_type`); the others, whose widened form is
+    /// their scalar form, are passed over.
+    /// `generated_all_intrinsic_names_lookup_and_decode` declares the scalar
+    /// samples only, which is how a vector `llvm.scmp` went undeclarable
+    /// unnoticed: `getIntrinsicArgAttributeSet` (emitted by
+    /// `llvm/utils/TableGen/Basic/IntrinsicEmitter.cpp`) sizes `int_scmp`'s
+    /// `Range<RetIndex, -1, 2>` by `ArgType->getScalarSizeInBits()`, and
+    /// llvmkit asked for a scalar integer. Every widened descriptor must build
+    /// and declare, as the scalar ones must. llvmkit-specific: no upstream
+    /// unit test declares every intrinsic. Positive control: `llvm.scmp` and
+    /// `llvm.ucmp` are among the declared.
+    #[test]
+    fn generated_sample_overloads_declare_with_vector_samples() -> IrResult<()> {
+        let module = crate::module_new!("generated-vector-samples")?;
+        let module_ref = module.capability_ref();
+        let mut declared = Vec::new();
+        for sample in generated::SAMPLE_OVERLOADS {
+            if !sample.overloads.iter().any(|overload| {
+                matches!(
+                    overload,
+                    IntrinsicSampleType::Int(_) | IntrinsicSampleType::Float(_)
+                )
+            }) {
+                continue;
+            }
+            let id = IntrinsicId::from_raw(sample.raw_id).ok_or(IrError::InvalidOperation {
+                message: "generated sample intrinsic id is out of range",
+            })?;
+            let overloads = sample
+                .overloads
+                .iter()
+                .map(|overload| widened_sample_type(module_ref, overload))
+                .collect::<Vec<_>>();
+            let descriptor = IntrinsicDescriptor::new(id, overloads).unwrap_or_else(|err| {
+                panic!(
+                    "{}#{} widened sample descriptor failed: {err}",
+                    id.enum_name(),
+                    id.raw()
+                )
+            });
+            module
+                .get_or_insert_intrinsic_declaration(&descriptor)
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "{}#{} widened sample declaration failed: {err}",
+                        id.enum_name(),
+                        id.raw()
+                    )
+                });
+            declared.push(id);
+        }
+        for name in ["llvm.scmp", "llvm.ucmp"] {
+            let id = IntrinsicId::lookup(name).ok_or(IrError::UnknownIntrinsic {
+                name: name.to_owned(),
+            })?;
+            assert!(
+                declared.contains(&id),
+                "{name}'s widened sample was not declared"
+            );
         }
         Ok(())
     }
@@ -2741,7 +2999,7 @@ mod tests {
             let overloads = sample
                 .overloads
                 .iter()
-                .map(|sample| sample_type(module.module_ref(), sample))
+                .map(|sample| sample_type(module.capability_ref(), sample))
                 .collect::<Vec<_>>();
             let descriptor = IntrinsicDescriptor::new(id, overloads).unwrap_or_else(|err| {
                 panic!(
@@ -2787,7 +3045,7 @@ mod tests {
             let overloads = sample
                 .overloads
                 .iter()
-                .map(|sample| sample_type(module.module_ref(), sample))
+                .map(|sample| sample_type(module.capability_ref(), sample))
                 .collect::<Vec<_>>();
             let raw_entries = iit_entries(id.record())
                 .unwrap_or_else(|| panic!("{}#{} has no IIT entries", id.enum_name(), id.raw()));

@@ -9,6 +9,7 @@ use llvmkit_ir::ShuffleMaskElem::{Lane, Poison};
 use llvmkit_ir::{
     Dyn, DynBrand, IntValue, IrBuilder, IrError, Linkage, Module, ShuffleVectorInst, module_new,
 };
+use llvmkit_ir::{VectorType, lanes};
 
 // --------------------------------------------------------------------------
 // extractvalue
@@ -285,7 +286,7 @@ fn extract_element_vector_i8_index() -> Result<(), IrError> {
     let f32_ty = m.f32_type();
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
-    let vec_ty = m.vector_type(f32_ty, 4);
+    let vec_ty = VectorType::of(f32_ty, lanes::<4>());
     let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type()]);
     let f = m.add_function_dyn("instructions.vectorops", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -315,7 +316,7 @@ fn insert_element_vector_float_at_i8() -> Result<(), IrError> {
     let f32_ty = m.f32_type();
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
-    let vec_ty = m.vector_type(f32_ty, 4);
+    let vec_ty = VectorType::of(f32_ty, lanes::<4>());
     let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -346,7 +347,7 @@ fn shuffle_vector_zeroinitializer_mask() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let f32_ty = m.f32_type();
     let void_ty = m.void_type();
-    let vec_ty = m.vector_type(f32_ty, 4);
+    let vec_ty = VectorType::of(f32_ty, lanes::<4>());
     let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -375,7 +376,7 @@ fn shuffle_vector_explicit_mask_print() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let vec_ty = m.vector_type(i32_ty, 4);
+    let vec_ty = VectorType::of(i32_ty, lanes::<4>());
     let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -411,7 +412,7 @@ fn shuffle_vector_scalable_zero_mask_splat() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let vec_ty = m.scalable_vector_type(i32_ty, 4);
+    let vec_ty = VectorType::scalable_of(i32_ty, lanes::<4>());
     let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()]);
     let f = m.add_function_dyn("non_const_shufflevector", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -443,7 +444,7 @@ fn shuffle_vector_scalable_poison_mask() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let vec_ty = m.scalable_vector_type(i32_ty, 4);
+    let vec_ty = VectorType::scalable_of(i32_ty, lanes::<4>());
     let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -474,7 +475,7 @@ fn shuffle_vector_scalable_rejects_a_non_splat_mask() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let vec_ty = m.scalable_vector_type(i32_ty, 4);
+    let vec_ty = VectorType::scalable_of(i32_ty, lanes::<4>());
     let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -511,7 +512,7 @@ fn shuffle_vector_rejects_an_out_of_range_mask_lane() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let vec_ty = m.vector_type(i32_ty, 2);
+    let vec_ty = VectorType::of(i32_ty, lanes::<2>());
     let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -554,7 +555,7 @@ fn shuffle_vector_scalable_constant_operand_survives_folding() -> Result<(), IrE
     let i64_ty = m.i64_type();
     let my_global = m.add_global_uninitialized("my_global", i32_ty.as_type())?;
     let global_ptr = m.view(my_global).as_global_constant_ptr();
-    let vec_ty = m.scalable_vector_type(global_ptr.ty(), 4);
+    let vec_ty = m.scalable_vector_type(global_ptr.ty(), lanes::<4>())?;
     let no_parameters: [llvmkit_ir::Type<'_, _>; 0] = [];
     let fn_ty = m.function_type(vec_ty.as_type(), no_parameters);
     let f = m.add_function_dyn("ret_scalable_vector_ptr", fn_ty, Linkage::External)?;
@@ -610,7 +611,7 @@ fn shuffle_vector_operands_reject_a_mask_from_another_module() -> Result<(), IrE
     for value in 0..64_i32 {
         let _ = a_i32.const_int(value);
     }
-    let a_mask_ty = a.vector_type(a_i32.as_type(), 4);
+    let a_mask_ty = VectorType::of(a_i32, lanes::<4>());
     let a_mask = a_mask_ty
         .const_vector([
             a_i32.const_int(0_i32),
@@ -623,7 +624,7 @@ fn shuffle_vector_operands_reject_a_mask_from_another_module() -> Result<(), IrE
     // Module B: two well-formed `<4 x i32>` operands and its own mask, which is
     // the same shape as A's so nothing but the tag differs.
     let b_i32 = b.i32_type();
-    let b_vec_ty = b.vector_type(b_i32.as_type(), 4);
+    let b_vec_ty = VectorType::of(b_i32, lanes::<4>());
     let b_lhs = b_vec_ty.as_type().poison().as_erased();
     let b_rhs = b_vec_ty.as_type().poison().as_erased();
     let b_mask = b_vec_ty
@@ -671,7 +672,7 @@ fn shuffle_vector_operands_reject_a_mask_from_another_module() -> Result<(), IrE
 fn scalable_const_vector_admits_only_a_splat() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
-    let vec_ty = m.scalable_vector_type(i32_ty.as_type(), 4);
+    let vec_ty = VectorType::scalable_of(i32_ty, lanes::<4>());
     let seven = i32_ty.const_int(7_i32).as_constant();
     let eight = i32_ty.const_int(8_i32).as_constant();
 

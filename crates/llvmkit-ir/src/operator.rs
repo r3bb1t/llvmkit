@@ -9,6 +9,7 @@
 //! `udiv`/`sdiv`/`lshr`/`ashr`). The remaining operator classes land as
 //! their consumers do.
 
+use crate::capability::Capability;
 use crate::derived_types::AnyTypeEnum;
 use crate::instructions::{
     AddInst, AshrInst, LshrInst, MulInst, SdivInst, ShlInst, SubInst, UdivInst,
@@ -24,8 +25,8 @@ use crate::r#type::Type;
 /// A **literal** struct qualifies when `containsHomogeneousTypes` holds and
 /// its first element is FP-or-FP-vector; an array qualifies when the type
 /// reached by peeling every array level is. An identified struct never does.
-fn is_composed_of_homogeneous_floating_point_types<'ctx, B: ModuleBrand + 'ctx>(
-    ty: Type<'ctx, B>,
+fn is_composed_of_homogeneous_floating_point_types<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
 ) -> bool {
     let mut ty = ty;
     match AnyTypeEnum::from(ty) {
@@ -61,7 +62,11 @@ fn is_composed_of_homogeneous_floating_point_types<'ctx, B: ModuleBrand + 'ctx>(
 /// `LLParser::parseInstruction`'s two fast-math guards and `parseCall`'s third.
 /// It is **wider** than [`Type::is_float_or_float_vector`], which is what the
 /// `fcmp` and `atomicrmw` operand checks ask instead.
-pub fn is_supported_floating_point_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> bool {
+///
+/// A read, so a type of either capability is accepted.
+pub fn is_supported_floating_point_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
+) -> bool {
     ty.is_float_or_float_vector() || is_composed_of_homogeneous_floating_point_types(ty)
 }
 
@@ -85,7 +90,7 @@ pub trait PossiblyExactOperator<'ctx> {
     fn is_exact(&self) -> bool;
 }
 
-impl<'ctx, B: ModuleBrand> OverflowingBinaryOperator<'ctx> for AddInst<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> OverflowingBinaryOperator<'ctx> for AddInst<'ctx, B, C> {
     #[inline]
     fn has_no_unsigned_wrap(self) -> bool {
         AddInst::has_no_unsigned_wrap(self)
@@ -96,7 +101,7 @@ impl<'ctx, B: ModuleBrand> OverflowingBinaryOperator<'ctx> for AddInst<'ctx, B> 
     }
 }
 
-impl<'ctx, B: ModuleBrand> OverflowingBinaryOperator<'ctx> for SubInst<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> OverflowingBinaryOperator<'ctx> for SubInst<'ctx, B, C> {
     #[inline]
     fn has_no_unsigned_wrap(self) -> bool {
         SubInst::has_no_unsigned_wrap(self)
@@ -107,7 +112,7 @@ impl<'ctx, B: ModuleBrand> OverflowingBinaryOperator<'ctx> for SubInst<'ctx, B> 
     }
 }
 
-impl<'ctx, B: ModuleBrand> OverflowingBinaryOperator<'ctx> for MulInst<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> OverflowingBinaryOperator<'ctx> for MulInst<'ctx, B, C> {
     #[inline]
     fn has_no_unsigned_wrap(self) -> bool {
         MulInst::has_no_unsigned_wrap(self)
@@ -118,7 +123,7 @@ impl<'ctx, B: ModuleBrand> OverflowingBinaryOperator<'ctx> for MulInst<'ctx, B> 
     }
 }
 
-impl<'ctx, B: ModuleBrand> OverflowingBinaryOperator<'ctx> for ShlInst<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> OverflowingBinaryOperator<'ctx> for ShlInst<'ctx, B, C> {
     #[inline]
     fn has_no_unsigned_wrap(self) -> bool {
         ShlInst::has_no_unsigned_wrap(self)
@@ -129,25 +134,25 @@ impl<'ctx, B: ModuleBrand> OverflowingBinaryOperator<'ctx> for ShlInst<'ctx, B> 
     }
 }
 
-impl<'ctx, B: ModuleBrand> PossiblyExactOperator<'ctx> for UdivInst<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> PossiblyExactOperator<'ctx> for UdivInst<'ctx, B, C> {
     #[inline]
     fn is_exact(&self) -> bool {
         UdivInst::is_exact(*self)
     }
 }
-impl<'ctx, B: ModuleBrand> PossiblyExactOperator<'ctx> for SdivInst<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> PossiblyExactOperator<'ctx> for SdivInst<'ctx, B, C> {
     #[inline]
     fn is_exact(&self) -> bool {
         SdivInst::is_exact(*self)
     }
 }
-impl<'ctx, B: ModuleBrand> PossiblyExactOperator<'ctx> for LshrInst<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> PossiblyExactOperator<'ctx> for LshrInst<'ctx, B, C> {
     #[inline]
     fn is_exact(&self) -> bool {
         LshrInst::is_exact(*self)
     }
 }
-impl<'ctx, B: ModuleBrand> PossiblyExactOperator<'ctx> for AshrInst<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> PossiblyExactOperator<'ctx> for AshrInst<'ctx, B, C> {
     #[inline]
     fn is_exact(&self) -> bool {
         AshrInst::is_exact(*self)

@@ -14,6 +14,7 @@ use llvmkit_ir::{
     Linkage, ModuleBrand, MulFlags, NoFolder, OverflowFlags, PointerValue, ShlFlags, Type,
     UdivFlags, Value, constant_fold_binary_instruction, module_new,
 };
+use llvmkit_ir::{VectorType, lanes};
 use llvmkit_macros::Branded;
 
 #[derive(Branded)]
@@ -263,8 +264,8 @@ fn constant_folder_vector_gep_nonzero_index_builds_vector_expr() -> Result<(), I
     let m = module_new!("folder-vector-gep")?;
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let ptr_vec_ty = m.vector_type(m.ptr_type(0).as_type(), 2);
-    let index_ty = m.vector_type(i64_ty.as_type(), 2);
+    let ptr_vec_ty = VectorType::of(m.ptr_type(0), lanes::<2>());
+    let index_ty = VectorType::of(i64_ty, lanes::<2>());
     let g = m.add_global("g", i32_ty.const_zero())?;
     let index = index_ty.const_vector::<ConstantIntValue<'_, i64, _>, _>([
         i64_ty.const_int(1_i64),
@@ -333,7 +334,7 @@ fn constant_folder_gep_declines_scalable_target_ext_source_type() -> Result<(), 
 fn constant_folder_scalable_shuffle_builds_scalable_mask_expr() -> Result<(), IrError> {
     let m = module_new!("folder-scalable-shuffle")?;
     let i32_ty = m.i32_type();
-    let vec_ty = m.scalable_vector_type(i32_ty.as_type(), 2);
+    let vec_ty = VectorType::scalable_of(i32_ty, lanes::<2>());
     let lhs = vec_ty.const_vector::<ConstantIntValue<'_, i32, _>, _>([
         i32_ty.const_int(1_i32),
         i32_ty.const_int(1_i32),
@@ -372,7 +373,7 @@ fn constant_folder_pointer_cast_helpers_allow_one_lane_pointer_bitcasts() -> Res
     let m = module_new!("folder-ptr-one-lane-bitcast")?;
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
-    let vec_ptr_ty = m.vector_type(ptr_ty.as_type(), 1);
+    let vec_ptr_ty = VectorType::of(ptr_ty, lanes::<1>());
     let g = m.add_global("g", i32_ty.const_zero())?;
     let scalar = m.view(g).as_global_constant_ptr();
 
@@ -507,7 +508,7 @@ fn constant_folder_folds_pointer_cmp_global_vs_null_without_instruction() -> Res
 fn default_builder_folds_insert_extract_element_chain() -> Result<(), IrError> {
     let m = module_new!("folder-insert-extract-element")?;
     let i64_ty = m.i64_type();
-    let vec_ty = m.vector_type(i64_ty.as_type(), 4);
+    let vec_ty = VectorType::of(i64_ty, lanes::<4>());
     let fn_ty = m.function_type_no_parameters(i64_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");

@@ -21,7 +21,8 @@ use llvmkit_ir::{
     AddFlags, Align, AshrFlags, AttrIndex, AttrKind, Attribute, AttributeStorage, Dyn, DynBrand,
     FloatPredicate, FloatValue, FloatValueId, GepNoWrapFlags, IntPredicate, IntValue, IntValueId,
     IntrinsicId, IrBuilder, IrError, Linkage, LshrFlags, MemoryEffects, MulFlags, PointerValue,
-    PointerValueId, SdivFlags, ShlFlags, SubFlags, UdivFlags, VerifierRule, module_new,
+    PointerValueId, SdivFlags, ShlFlags, SubFlags, UdivFlags, VectorType, VerifierRule, lanes,
+    module_new,
 };
 
 fn abs_function_attrs_without_immarg() -> AttributeStorage {
@@ -125,9 +126,12 @@ fn verify_all_fixed_signature_intrinsic_declarations() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `llvm/lib/IR/Verifier.cpp::visitFunction`: generated intrinsic
-/// declarations must retain TableGen-emitted function attributes such as
-/// `nounwind`, `willreturn`, `speculatable`, and `memory(none)`.
+/// Pins llvmkit's own rule that a generated intrinsic declaration retains its
+/// TableGen-emitted function attributes such as `nounwind`, `willreturn`,
+/// `speculatable`, and `memory(none)`. No upstream counterpart:
+/// `llvm/lib/IR/Verifier.cpp::visitFunction` never consults
+/// `Intrinsic::getAttributes`, so upstream accepts this module
+/// (`docs/divergences.md`, the intrinsic declaration attributes entry).
 #[test]
 fn intrinsic_declaration_missing_generated_function_attrs_is_rejected() -> Result<(), IrError> {
     let m = module_new!("intrinsic-missing-function-attrs")?;
@@ -146,9 +150,12 @@ fn intrinsic_declaration_missing_generated_function_attrs_is_rejected() -> Resul
     Ok(())
 }
 
-/// Mirrors `llvm/lib/IR/Verifier.cpp::visitFunction`: generated intrinsic
-/// declarations must retain indexed argument attributes from Intrinsics.td;
-/// `llvm.abs.*` marks its `is_int_min_poison` argument as `immarg`.
+/// Pins llvmkit's own rule that a generated intrinsic declaration retains its
+/// indexed argument attributes from Intrinsics.td; `llvm.abs.*` marks its
+/// `is_int_min_poison` argument as `immarg`. No upstream counterpart:
+/// `llvm/lib/IR/Verifier.cpp::visitFunction` never consults
+/// `Intrinsic::getAttributes` (`docs/divergences.md`, the intrinsic
+/// declaration attributes entry).
 #[test]
 fn intrinsic_declaration_missing_generated_argument_attr_is_rejected() -> Result<(), IrError> {
     let m = module_new!("intrinsic-missing-argument-attrs")?;
@@ -164,24 +171,31 @@ fn intrinsic_declaration_missing_generated_argument_attr_is_rejected() -> Result
     Ok(())
 }
 
-/// Mirrors `llvm/utils/TableGen/Basic/IntrinsicEmitter.cpp` pretty-printer
-/// argument metadata: generated declaration construction applies descriptor
-/// argument names even when callers use the name-based convenience API.
+/// A declared intrinsic's arguments are unnamed, even where TableGen gives
+/// them an `ArgName`. `getOrInsertIntrinsicDeclarationImpl`
+/// (`llvm/lib/IR/Intrinsics.cpp`) names no argument, and `Function`'s
+/// arguments are built unnamed (`Function::BuildLazyArguments` passes `""`);
+/// `ArgName` (`llvm/include/llvm/IR/Intrinsics.td`) is pretty-printer data,
+/// read at a call site (`asm_writer_prints_generated_intrinsic_immediate_argument_comments`
+/// in `intrinsics_generated.rs`). llvmkit-specific: no upstream unit test asks
+/// a declaration's argument names; derived from those routines. Positive
+/// control: `llvm.nvvm.tcgen05.mma.tensor` is one of the intrinsics whose
+/// arguments 5–7 carry `ArgName`s (`kind`, `cta_group`, `collector`), which
+/// llvmkit used to apply.
 #[test]
-fn intrinsic_declaration_by_name_applies_generated_argument_names() -> Result<(), IrError> {
+fn intrinsic_declaration_by_name_leaves_its_arguments_unnamed() -> Result<(), IrError> {
     let m = module_new!("intrinsic-arg-names")?;
     let intrinsic =
         m.get_or_insert_intrinsic_declaration_by_name("llvm.nvvm.tcgen05.mma.tensor")?;
 
-    assert_eq!(m.view(intrinsic).param(5)?.name().as_deref(), Some("kind"));
-    assert_eq!(
-        m.view(intrinsic).param(6)?.name().as_deref(),
-        Some("cta_group")
+    let id = m.view(intrinsic).intrinsic_id().expect("an intrinsic");
+    assert!(
+        id.has_pretty_printed_args(),
+        "the positive control lost its pretty-printer data"
     );
-    assert_eq!(
-        m.view(intrinsic).param(7)?.name().as_deref(),
-        Some("collector")
-    );
+    for index in 5..=7 {
+        assert_eq!(m.view(intrinsic).param(index)?.name(), None);
+    }
 
     m.verify_borrowed()?;
     Ok(())
@@ -749,7 +763,7 @@ fn verify_gep_into_scalable_struct_fails() -> Result<(), IrError> {
     let double_ty = m.f64_type();
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type();
-    let vscale_double = m.scalable_vector_type(double_ty.as_type(), 1);
+    let vscale_double = VectorType::scalable_of(double_ty, lanes::<1>());
     let struct_ty = m.struct_type([vscale_double.as_type(), vscale_double.as_type()]);
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
     let f = m.add_function_dyn("gep", fn_ty, Linkage::External)?;
@@ -771,6 +785,60 @@ fn verify_gep_into_scalable_struct_fails() -> Result<(), IrError> {
                 rule: VerifierRule::GepScalableStructSource,
                 ..
             }
+        ),
+        "got {err:?}"
+    );
+    Ok(())
+}
+
+/// `Verifier::visitBitCastInst` is `Check(CastInst::castIsValid(BitCast, …),
+/// "Invalid bitcast")`, so a `bitcast` between two scalable vectors of equal
+/// size verifies (`<vscale x 4 x i16>` to `<vscale x 2 x i32>`), and one
+/// between unequal sizes is `VerifierRule::InvalidBitCast` with upstream's
+/// message (`<vscale x 2 x i64>` to `<vscale x 2 x i32>`).
+///
+/// llvmkit-specific regression (D10, D11): the verifier's hand-written copy
+/// gave a scalable vector no bit width, so it refused the valid cast. No
+/// upstream fixture verifies a scalable `bitcast`:
+/// `rg -n --no-ignore "bitcast <vscale x|bitcast \(<vscale x" llvm/test/Assembler llvm/test/Verifier`
+/// finds nothing in the vendored `llvmorg-22.1.4` tree.
+#[test]
+fn verify_bitcast_asks_cast_is_valid() -> Result<(), IrError> {
+    // `bitcast <vscale x 4 x i16> %0 to <vscale x 2 x i32>`: both 32 x vscale
+    // bits.
+    let m = module_new!("bitcast-ok")?;
+    let src = VectorType::scalable_of(m.i16_type(), lanes::<4>());
+    let dst = VectorType::scalable_of(m.i32_type(), lanes::<2>());
+    let fn_ty = m.function_type(dst.as_type(), [src.as_type()]);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let cast = b.bitcast_dyn(m.view(f).param(0)?, dst.as_type(), "c")?;
+    b.ret(m.view(cast))?;
+    m.verify_borrowed()?;
+
+    // `bitcast <vscale x 2 x i64> %0 to <vscale x 2 x i32>`: 128 x vscale bits
+    // against 64.
+    let m = module_new!("bitcast-bad")?;
+    let src = VectorType::scalable_of(m.i64_type(), lanes::<2>());
+    let dst = VectorType::scalable_of(m.i32_type(), lanes::<2>());
+    let fn_ty = m.function_type(dst.as_type(), [src.as_type()]);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let cast = b.bitcast_dyn(m.view(f).param(0)?, dst.as_type(), "c")?;
+    b.ret(m.view(cast))?;
+    let err = m
+        .verify_borrowed()
+        .expect_err("a bitcast between unequal sizes must fail verification");
+    assert!(
+        matches!(
+            &err,
+            IrError::VerifierFailure {
+                rule: VerifierRule::InvalidBitCast,
+                message,
+                ..
+            } if message == "Invalid bitcast"
         ),
         "got {err:?}"
     );
@@ -800,8 +868,8 @@ fn verify_vector_gep_with_disagreeing_index_widths_fails() -> Result<(), IrError
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type();
     let array_ty = m.array_type(i8_ty, 4);
-    let vec2_i32 = m.vector_type(i32_ty.as_type(), 2);
-    let vec4_i32 = m.vector_type(i32_ty.as_type(), 4);
+    let vec2_i32 = VectorType::of(i32_ty, lanes::<2>());
+    let vec4_i32 = VectorType::of(i32_ty, lanes::<4>());
     let fn_ty = m.function_type(
         void_ty.as_type(),
         [ptr_ty.as_type(), vec2_i32.as_type(), vec4_i32.as_type()],

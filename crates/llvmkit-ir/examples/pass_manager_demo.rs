@@ -82,7 +82,7 @@ impl<B: ModuleBrand> FunctionPass<B> for ReportFunctionPass {
             .expect("demo function has a merge block");
         self.out.borrow_mut().push(format!(
             "function_pass {} entry_dominates_merge={}",
-            function.name(),
+            function.name().unwrap_or_default(),
             dt.dominates_block(entry, merge)
         ));
         Ok(cx.done())

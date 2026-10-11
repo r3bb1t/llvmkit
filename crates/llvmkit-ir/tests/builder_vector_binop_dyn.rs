@@ -2,7 +2,7 @@
 //! (`int_xor_dyn` & friends), which accept integer-*vector* operands
 //! that the scalar-only typed `int_*` family rejects.
 
-use llvmkit_ir::{Dyn, IrBuilder, Linkage, module_new};
+use llvmkit_ir::{Dyn, IrBuilder, Linkage, VectorType, lanes, module_new};
 
 /// llvmkit-specific: `xor`/`add`/`shl` on `<2 x i64>` vector operands emit
 /// element-wise vector IR through llvmkit's type-erased builders. Closest
@@ -12,7 +12,7 @@ use llvmkit_ir::{Dyn, IrBuilder, Linkage, module_new};
 fn vector_binops_emit_elementwise_ir() {
     let m = module_new!("vbinop").expect("fresh module");
     let i64_ty = m.i64_type();
-    let vec_ty = m.vector_type(i64_ty.as_type(), 2);
+    let vec_ty = VectorType::of(i64_ty, lanes::<2>());
 
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()]);

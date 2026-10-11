@@ -7,8 +7,8 @@ error[E0277]: the trait bound `(): IntoIntValue<'_, i32, DynBrand>` is not satis
    |               required by a bound introduced by this call
    |
    = help: the following other types implement trait `IntoIntValue<'ctx, W, B>`:
-             `ConstantIntValue<'ctx, W, B>` implements `IntoIntValue<'ctx, W, B>`
-             `IntValue<'ctx, W, B>` implements `IntoIntValue<'ctx, W, B>`
+             `ConstantIntValue<'ctx, W, B, C>` implements `IntoIntValue<'ctx, W, B>`
+             `IntValue<'ctx, W, B, C>` implements `IntoIntValue<'ctx, W, B>`
              `IntValueId<W, B>` implements `IntoIntValue<'ctx, W, B>`
              `bool` implements `IntoIntValue<'ctx, bool, B>`
              `i128` implements `IntoIntValue<'ctx, i128, B>`

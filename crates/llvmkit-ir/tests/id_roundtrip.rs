@@ -277,22 +277,26 @@ fn typed_ids_lift_at_operand_positions() -> Result<(), IrError> {
     let x: FloatValue<'_, f32, _> = m.view(f).param(1)?.try_into()?;
     let p: PointerValue<'_, _> = m.view(f).param(2)?.try_into()?;
 
+    // A reference reached through the module's read view is `ReadOnly`, and
+    // a lift comes back at its reference's capability, so each lifted handle
+    // is compared with the original at `ReadOnly`, where equality is defined:
+    // the same slot of the same module, of the same type.
     let mref = ModuleRef::from(m.as_view());
 
     // Owned id + owning module -> Ok(original handle).
     assert_eq!(
-        a.id().into_int_value(mref)?,
-        a,
+        a.id().into_int_value(mref)?.as_erased(),
+        a.as_erased().read_only(),
         "IntValueId did not lift back to its IntValue operand",
     );
     assert_eq!(
-        x.id().into_float_value(mref)?,
-        x,
+        x.id().into_float_value(mref)?.as_erased(),
+        x.as_erased().read_only(),
         "FloatValueId did not lift back to its FloatValue operand",
     );
     assert_eq!(
-        p.id().into_pointer_value(mref)?,
-        p,
+        p.id().into_pointer_value(mref)?.as_erased(),
+        p.as_erased().read_only(),
         "PointerValueId did not lift back to its PointerValue operand",
     );
 

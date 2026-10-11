@@ -21,13 +21,13 @@
 
 use llvmkit_ir::{
     Align, Analyses, AtomicOrdering, AtomicRmwBinOp, AtomicRmwConfig, BasicBlock, CallInst,
-    CallSiteConfig, CastOpcode, DominatorTreeAnalysis, Dyn, DynBrand, FastMathFlags, FloatDyn,
-    FloatValue, FnCx, FnReport, FunctionId, FunctionPass, GepNoWrapFlags, InlineAsmOptions,
-    InstructionView, IntCastFlags, IntDyn, IntValue, InvokeInst, IrBuilder, IrError, IrResult,
+    CallSiteConfig, CastOpcode, CastOperation, DominatorTreeAnalysis, Dyn, DynBrand, FastMathFlags,
+    FloatDyn, FloatValue, FnCx, FnReport, FunctionId, FunctionPass, GepNoWrapFlags,
+    InlineAsmOptions, InstructionView, IntDyn, IntValue, InvokeInst, IrBuilder, IrError, IrResult,
     IrStruct, Linkage, Module, OperandBundleDef, OperandBundleTag, OperandBundleUse, PatchBody,
-    PointerValue, Positioned, ReshapeCfg, SsaBuilder, SsaState, SyncScope, TailCallKind,
-    TruncFlags, Type, UiToFpFlags, Unterminated, Value, ValueId, ZextFlags, iter::BlockCursor,
-    run_function_pass,
+    PointerValue, Positioned, ReshapeCfg, SsaBuilder, SsaState, StructSchema, SyncScope,
+    TailCallKind, TruncFlags, Type, UiToFpFlags, Unterminated, Value, ValueId, ZextFlags,
+    comdat::SelectionKind, iter::BlockCursor, lanes, run_function_pass,
 };
 
 /// A two-field schema, so a struct-typed value exists to hand across modules.
@@ -35,6 +35,13 @@ use llvmkit_ir::{
 struct Pair {
     first: i32,
     second: i32,
+}
+
+/// A schema with a `Pair` field, so the derive's own value type meets a field
+/// operand position.
+#[derive(IrStruct)]
+struct Nest {
+    pair: Pair,
 }
 
 /// A positioned erased-return builder over a `DynBrand` module.
@@ -457,19 +464,29 @@ fn a_constant_operand_rejects_a_constant_from_another_module() {
 }
 
 /// The struct-schema arms of `IntoIrField` and `IntoCallArg` refuse a value
-/// from another module.
+/// from another module, and so does the `IrStruct` derive's own value type in
+/// each of its three operand positions. Its lifts once passed the struct value
+/// through unadmitted: as a call argument the value was accepted, and as a
+/// return value it was refused only as a type mismatch, because type equality
+/// includes the module; as a field, the insertion the lift feeds checks again.
+/// The returning function returns the struct type, so the module is all that
+/// is wrong with the foreign value and the assertion names the module check's
+/// error; a value of the home module is accepted in both lifted positions.
 ///
 /// No upstream counterpart: llvmkit's struct schemas have none, and
-/// `IRBuilderBase::CreateExtractValue` / `CreateCall` take `Value *`s.
+/// `IRBuilderBase::CreateExtractValue` / `CreateCall` / `CreateRet` take
+/// `Value *`s.
 #[test]
 fn a_struct_schema_operand_rejects_a_value_from_another_module() {
     // `#[derive(IrStruct)]` is dual-purpose (Rust data + IR schema); read the
     // Rust side once, as `derived_struct_schema.rs` does, so it is not dead.
-    let rust_pair = Pair {
-        first: 1,
-        second: 2,
+    let rust_nest = Nest {
+        pair: Pair {
+            first: 1,
+            second: 2,
+        },
     };
-    let _ = rust_pair.first + rust_pair.second;
+    let _ = rust_nest.pair.first + rust_nest.pair.second;
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
     let g = foreign
@@ -481,21 +498,55 @@ fn a_struct_schema_operand_rejects_a_value_from_another_module() {
         .param(0)
         .expect("parameter")
         .as_erased();
+    let (foreign_pair_value,) = foreign.view(g).params();
     let h = home
         .add_typed_function::<i32, (Pair,), _>("h", Linkage::External)
         .expect("h");
     let b = builder(&home, "f");
+    // `%Pair name(%Pair)`, positioned at its entry, with its own parameter.
+    let returning = |name: &str| {
+        let k = home
+            .add_typed_function::<Pair, (Pair,), _>(name, Linkage::External)
+            .expect("returning function");
+        let entry = home.view(k).append_basic_block(&home, "entry");
+        let (parameter,) = home.view(k).params();
+        (
+            IrBuilder::new_for::<Dyn>(&home).position_at_end(entry),
+            parameter,
+        )
+    };
+    let (refusing, _) = returning("k");
+    // `NestValue::build` interns `%Nest` before it lifts its field, and
+    // llvmkit prints every named struct in the module's type arena where
+    // upstream prints only the ones a `TypeFinder` walk reaches
+    // (`docs/divergences.md`, entry 143). Intern it before the snapshot:
+    // interning a type is not the mutation under test — upstream's
+    // `StructType`s live in the `LLVMContext`, not the module.
+    <Nest as StructSchema>::ir_type(home.as_view()).expect("%Nest");
 
     let before = format!("{home}");
     let field = b.extract_field::<Pair, i32, _, _>(foreign_pair, 0, "first");
     assert!(matches!(field, Err(IrError::ForeignValueId)), "{field:?}");
     let call = b.call(home.view(h), (foreign_pair,), "r");
     assert!(matches!(call, Err(IrError::ForeignValueId)), "{call:?}");
+    let nested = NestValue::build(home.as_view(), &b, foreign_pair_value, "n");
+    assert!(matches!(nested, Err(IrError::ForeignValueId)), "{nested:?}");
+    let call = b.call(home.view(h), (foreign_pair_value,), "r");
+    assert!(matches!(call, Err(IrError::ForeignValueId)), "{call:?}");
+    let ret = refusing.ret(foreign_pair_value);
+    assert!(matches!(ret, Err(IrError::ForeignValueId)), "{ret:?}");
     assert_eq!(
         format!("{home}"),
         before,
         "a rejected operand must not mutate"
     );
+
+    // Positive control: the same two lifts accept a value of the home module.
+    let (accepting, home_pair_value) = returning("accepting");
+    let accepted = accepting.call(home.view(h), (home_pair_value,), "r");
+    assert!(accepted.is_ok(), "{accepted:?}");
+    let accepted = accepting.ret(home_pair_value);
+    assert!(accepted.is_ok(), "{accepted:?}");
 }
 
 /// `GlobalBuilder::initializer` then `build()` rejects a foreign constant and
@@ -573,6 +624,167 @@ fn a_global_builder_rejects_a_value_type_from_another_module() {
     assert!(
         home.global("g").is_none(),
         "a rejected build must not install"
+    );
+}
+
+/// The vector constructors — on `Module` and on `ModuleView` — reject an
+/// element type from another module: its slot would name a different type in
+/// this module's arena. The second list hands each the other module's `void`,
+/// which is also no vector element, and still expects `ForeignType`: the
+/// module check runs before the element check.
+///
+/// No upstream counterpart: `FixedVectorType::get` takes a `Type *`, uniqued
+/// per `LLVMContext`.
+#[test]
+fn the_vector_constructors_reject_an_element_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let view = home.as_view();
+    let element = foreign.i32_type().as_type();
+    let problems = not_refused(vec![
+        (
+            "vector_type",
+            without_value(home.vector_type(element, lanes::<2>())),
+        ),
+        (
+            "scalable_vector_type",
+            without_value(home.scalable_vector_type(element, lanes::<2>())),
+        ),
+        (
+            "view.vector_type",
+            without_value(view.vector_type(element, lanes::<2>())),
+        ),
+        (
+            "view.scalable_vector_type",
+            without_value(view.scalable_vector_type(element, lanes::<2>())),
+        ),
+    ]);
+    assert!(problems.is_empty(), "{problems:#?}");
+
+    let foreign_void = foreign.void_type().as_type();
+    let problems = not_refused(vec![
+        (
+            "vector_type(void)",
+            without_value(home.vector_type(foreign_void, lanes::<2>())),
+        ),
+        (
+            "scalable_vector_type(void)",
+            without_value(home.scalable_vector_type(foreign_void, lanes::<2>())),
+        ),
+        (
+            "view.vector_type(void)",
+            without_value(view.vector_type(foreign_void, lanes::<2>())),
+        ),
+        (
+            "view.scalable_vector_type(void)",
+            without_value(view.scalable_vector_type(foreign_void, lanes::<2>())),
+        ),
+    ]);
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+/// `set_comdat` on a global variable and on a function, and the global and
+/// function builders' `comdat`, refuse a comdat another module minted with
+/// `IrError::ForeignComdat` and change nothing. A global stores its comdat by
+/// name, so the foreign comdat's name would bind to *this* module's comdat of
+/// the same name — which exists here before the refusals, with a different
+/// selection kind, so a name stored before a refusal would read back through
+/// `comdat()` and print. Positive control: this module's own comdat is
+/// attached by each of the four entries and read back from each with its own
+/// selection kind; the printed module carries `$c = comdat any`, and the two
+/// globals' lines (`@g`, `@built`) carry `comdat($c)`.
+///
+/// No upstream counterpart: `GlobalObject::setComdat` (`lib/IR/Globals.cpp`)
+/// takes a `Comdat *`, whose identity is its address.
+#[test]
+fn a_comdat_from_another_module_is_refused() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let foreign_comdat = foreign.get_or_insert_comdat("c");
+    foreign_comdat.set_selection_kind(&foreign, SelectionKind::Largest);
+    let own = home.get_or_insert_comdat("c");
+    let i32_ty = home.i32_type();
+    let void_fn = home.function_type_no_parameters(home.void_type());
+    let g = home.add_global("g", i32_ty.const_int(0i32)).expect("g");
+    let f = home
+        .add_function_dyn("f", void_fn, Linkage::External)
+        .expect("f");
+    let before = format!("{home}");
+
+    let refused = home.view(g).set_comdat(&home, foreign_comdat);
+    assert!(
+        matches!(refused, Err(IrError::ForeignComdat)),
+        "{refused:?}"
+    );
+    let refused = home.view(f).set_comdat(&home, foreign_comdat);
+    assert!(
+        matches!(refused, Err(IrError::ForeignComdat)),
+        "{refused:?}"
+    );
+    let refused = home
+        .global_builder("built", i32_ty)
+        .comdat(foreign_comdat)
+        .build();
+    assert!(
+        matches!(refused, Err(IrError::ForeignComdat)),
+        "{refused:?}"
+    );
+    let refused = home
+        .function_builder::<(), _>("built_fn", void_fn)
+        .comdat(foreign_comdat)
+        .build();
+    assert!(
+        matches!(refused, Err(IrError::ForeignComdat)),
+        "{refused:?}"
+    );
+    assert!(
+        home.global("built").is_none(),
+        "a refused build installs nothing"
+    );
+    assert!(
+        home.function_dyn("built_fn").is_none(),
+        "a refused build installs nothing"
+    );
+    assert!(home.view(g).comdat().is_none() && home.view(f).comdat().is_none());
+    assert_eq!(
+        format!("{home}"),
+        before,
+        "a refused comdat must not mutate"
+    );
+
+    home.view(g).set_comdat(&home, own).expect("own comdat");
+    home.view(f).set_comdat(&home, own).expect("own comdat");
+    let built = home
+        .global_builder("built", i32_ty)
+        .initializer(i32_ty.const_int(1i32))
+        .comdat(own)
+        .build()
+        .expect("own comdat");
+    let built_fn = home
+        .function_builder::<(), _>("built_fn", void_fn)
+        .comdat(own)
+        .build()
+        .expect("own comdat");
+    let read_back = [
+        home.view(g).comdat(),
+        home.view(f).comdat(),
+        home.view(built).comdat(),
+        home.view(built_fn).comdat(),
+    ];
+    for comdat in read_back {
+        let comdat = comdat.expect("the own comdat is attached");
+        assert_eq!(comdat.name(), "c");
+        assert_eq!(comdat.selection_kind(), SelectionKind::Any);
+    }
+    let text = format!("{home}");
+    assert!(text.contains("$c = comdat any"), "got:\n{text}");
+    assert!(
+        text.contains("@g = global i32 0, comdat($c)"),
+        "got:\n{text}"
+    );
+    assert!(
+        text.contains("@built = global i32 1, comdat($c)"),
+        "got:\n{text}"
     );
 }
 
@@ -795,7 +1007,7 @@ fn target_ext_none_rejects_a_type_from_another_module() {
 /// before its folder or this module reads it: the typed `trunc`, `zext`,
 /// `sext`, their flag-carrying twins and `bitcast_int_to_int`, the
 /// runtime-width `trunc_dyn`, `trunc_with_flags_dyn`, `zext_dyn` / `sext_dyn`
-/// (one shared helper) and `zext_with_flags_dyn`, and `int_cast_erased`.
+/// (one shared helper) and `zext_with_flags_dyn`, and `cast_erased`.
 ///
 /// No upstream counterpart: `IRBuilderBase::CreateTrunc`, `CreateZExt`,
 /// `CreateSExt` and `CreateCast` (`IR/IRBuilder.h`) take a destination
@@ -888,12 +1100,11 @@ fn an_integer_cast_rejects_a_destination_type_from_another_module() {
             .map(|_| ()),
         ),
         (
-            "int_cast_erased",
-            b.int_cast_erased(
-                CastOpcode::Zext,
+            "cast_erased",
+            b.cast_erased(
+                CastOperation::Zext(ZextFlags::new()),
                 narrow,
                 foreign.i64_type().as_type(),
-                IntCastFlags::new(),
                 "z",
             )
             .map(|_| ()),
@@ -1939,7 +2150,7 @@ fn detached_call_sites_and_their_copies_refuse_another_modules_operands() {
     );
     let (b, first, second) = builder_with_targets(&home, "i");
     let (_, invoke) = b
-        .invoke_dyn::<Dyn, _, _, _, _, _>(home.view(h), [home_arg], &first, &second, "i")
+        .invoke_dyn::<Dyn, _, _, _, _, _, _>(home.view(h), [home_arg], &first, &second, "i")
         .expect("invoke");
     let (b, first, second) = builder_with_targets(&home, "cb");
     let (_, call_br) = b
@@ -2320,7 +2531,7 @@ fn append_block_with_params_rejects_a_function_or_type_from_another_module() {
         (
             "append_block_typed function",
             IrError::ForeignValueId,
-            b.append_block_typed::<(i32,), _>(foreign.view(g), "p")
+            b.append_block_typed::<(i32,), _, _>(foreign.view(g), "p")
                 .map(|_| ()),
         ),
     ];

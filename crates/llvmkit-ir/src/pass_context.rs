@@ -64,7 +64,9 @@ use super::analysis::{
     ModuleAnalysisSelector, PreservedAnalyses, RepairOutcome,
 };
 use super::basic_block::IntoBasicBlockLabel;
+use super::block_params::BlockParamsDyn;
 use super::block_state::Terminated;
+use super::capability::{Capability, Mutable, ReadOnly};
 use super::cfg_update::CfgUpdate;
 use super::dominator_tree::DominatorTreeAnalysis;
 use super::error::IrError;
@@ -82,7 +84,7 @@ use super::pass_access::{
     FnAccess, ModAccess, MutatingFn, MutatingModule, PatchBody, ReshapeCfg, RewriteModule,
 };
 use super::phi_check::{check_phi_incoming, render_phi_violation};
-use super::r#type::{Type, TypeSlot, TypeSlotAccess};
+use super::r#type::{IrType, Type, TypeSlot, TypeSlotAccess};
 use super::value::{IntoErasedValue, IsValue, Typed, Value, ValueSlot, ValueSlotAccess};
 use super::value::{SealedValueSlot, ValueKindData, ValueUse};
 use super::value_id::{BlockId, FunctionId, ValueId, ViewIn};
@@ -93,27 +95,36 @@ use super::worklist::Worklist;
 /// Stores the raw parts of the viewed block rather than a [`BasicBlock`]
 /// (which is a deliberately non-`Copy` linear handle), so the read-only view
 /// is `Copy` like its sibling [`FunctionView`].
+///
+/// Read-only by type (D8): the block and instruction handles it hands out are
+/// [`ReadOnly`], so a walk reached through a pass context — an `Inspect` pass
+/// included — cannot call a setter on them. A mutating rung edits through its
+/// context's own entries, which take ids and witnesses of any capability.
 #[derive(Branded)]
 pub struct BasicBlockView<'ctx, B: ModuleBrand> {
     id: ValueSlot,
-    module: ModuleRef<'ctx, B>,
+    module: ModuleRef<'ctx, B, ReadOnly>,
     ty: TypeSlot,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
     #[inline]
-    pub(super) fn new(block: BasicBlock<'ctx, Dyn, Terminated, B>) -> Self {
+    pub(super) fn new<C: Capability>(
+        block: BasicBlock<'ctx, Dyn, Terminated, B, BlockParamsDyn, C>,
+    ) -> Self {
         // Internal: the view keeps the block's own parts, with its own module.
         Self {
             id: block.slot_trusting_same_module(),
-            module: block.module,
+            module: block.module.read_only(),
             ty: block.to_erased().ty().slot_trusting_same_module(),
         }
     }
 
-    /// Underlying basic-block handle.
+    /// Underlying basic-block handle, at [`ReadOnly`].
     #[inline]
-    pub(super) fn as_basic_block(&self) -> BasicBlock<'ctx, Dyn, Terminated, B> {
+    pub(super) fn as_basic_block(
+        &self,
+    ) -> BasicBlock<'ctx, Dyn, Terminated, B, BlockParamsDyn, ReadOnly> {
         BasicBlock::from_parts(self.id, self.module, self.ty)
     }
 
@@ -137,10 +148,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
     #[inline]
     pub fn parent_function(&self) -> Option<FunctionView<'ctx, B>> {
         let id = self.as_basic_block().parent_id()?;
-        Some(FunctionView::new(FunctionValue::from_parts_unchecked(
-            id,
-            self.module,
-        )))
+        Some(FunctionView::new(
+            FunctionValue::<'ctx, Dyn, B, ReadOnly>::from_parts_unchecked(id, self.module),
+        ))
     }
 
     /// Number of instructions in program order.
@@ -161,7 +171,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
     #[inline]
     pub fn instructions(
         &self,
-    ) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>>
+    ) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B, ReadOnly>>
     + DoubleEndedIterator
     + FusedIterator
     + use<'ctx, B> {
@@ -187,7 +197,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
     #[inline]
     pub fn placed_instructions(
         &self,
-    ) -> impl ExactSizeIterator<Item = PlacedInstruction<'ctx, B>>
+    ) -> impl ExactSizeIterator<Item = PlacedInstruction<'ctx, B, ReadOnly>>
     + DoubleEndedIterator
     + FusedIterator
     + use<'ctx, B> {
@@ -210,11 +220,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
 #[branded(Debug)]
 pub struct BlockInstructionViews<'ctx, B: ModuleBrand> {
     ids: std::vec::IntoIter<ValueSlot>,
-    module: ModuleRef<'ctx, B>,
+    module: ModuleRef<'ctx, B, ReadOnly>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> Iterator for BlockInstructionViews<'ctx, B> {
-    type Item = InstructionView<'ctx, B>;
+    type Item = InstructionView<'ctx, B, ReadOnly>;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -250,7 +260,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FusedIterator for BlockInstructionViews<'ctx, 
 /// `for f in module { for bb in f { for inst in bb } }`. Sugar beside the
 /// named [`BasicBlockView::instructions`], not a replacement.
 impl<'ctx, B: ModuleBrand + 'ctx> IntoIterator for BasicBlockView<'ctx, B> {
-    type Item = InstructionView<'ctx, B>;
+    type Item = InstructionView<'ctx, B, ReadOnly>;
     type IntoIter = BlockInstructionViews<'ctx, B>;
 
     #[inline]
@@ -262,21 +272,26 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoIterator for BasicBlockView<'ctx, B> {
     }
 }
 
-/// Read-only view of a function under its owning module brand.
+/// Read-only view of a function under its owning module brand. The function
+/// it holds is [`ReadOnly`] (D8), whatever route it was reached by.
 #[derive(Branded)]
 pub struct FunctionView<'ctx, B: ModuleBrand> {
-    function: FunctionValue<'ctx, Dyn, B>,
+    function: FunctionValue<'ctx, Dyn, B, ReadOnly>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionView<'ctx, B> {
+    /// The view of `function`, read-only whatever its capability.
     #[inline]
-    pub(super) fn new(function: FunctionValue<'ctx, Dyn, B>) -> Self {
-        Self { function }
+    pub(super) fn new<C: Capability>(function: FunctionValue<'ctx, Dyn, B, C>) -> Self {
+        Self {
+            function: function.read_only(),
+        }
     }
 
-    /// Underlying typed function handle in erased-return form.
+    /// Underlying typed function handle in erased-return form, at
+    /// [`ReadOnly`].
     #[inline]
-    pub(super) fn as_function(self) -> FunctionValue<'ctx, Dyn, B> {
+    pub(super) fn as_function(self) -> FunctionValue<'ctx, Dyn, B, ReadOnly> {
         self.function
     }
 
@@ -287,9 +302,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionView<'ctx, B> {
         self.function.id()
     }
 
-    /// Function name.
+    /// Function name; [`None`] for an unnamed function.
     #[inline]
-    pub fn name(self) -> &'ctx str {
+    pub fn name(self) -> Option<String> {
         self.function.name()
     }
 
@@ -323,7 +338,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionView<'ctx, B> {
 #[derive(Branded)]
 #[branded(Debug)]
 pub struct FunctionBasicBlockViews<'ctx, B: ModuleBrand> {
-    inner: FunctionBasicBlocks<'ctx, Dyn, B>,
+    inner: FunctionBasicBlocks<'ctx, Dyn, B, ReadOnly>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> Iterator for FunctionBasicBlockViews<'ctx, B> {
@@ -373,11 +388,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoIterator for FunctionView<'ctx, B> {
     }
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> From<FunctionValue<'ctx, R, B>>
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> From<FunctionValue<'ctx, R, B, C>>
     for FunctionView<'ctx, B>
 {
     #[inline]
-    fn from(function: FunctionValue<'ctx, R, B>) -> Self {
+    fn from(function: FunctionValue<'ctx, R, B, C>) -> Self {
         Self::new(function.as_dyn())
     }
 }
@@ -411,7 +426,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoFunctionId<B> for FunctionView<'ctx, B> {
     }
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoFunctionId<B> for FunctionValue<'ctx, R, B> {
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> IntoFunctionId<B>
+    for FunctionValue<'ctx, R, B, C>
+{
     #[inline]
     fn into_function_id(self) -> FunctionId<Dyn, B> {
         self.as_dyn().id()
@@ -421,12 +438,12 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoFunctionId<B> for Functio
 /// Mutation-capable view of one function body.
 #[derive(Branded)]
 pub struct FunctionBody<'ctx, B: ModuleBrand> {
-    function: FunctionValue<'ctx, Dyn, B>,
+    function: FunctionValue<'ctx, Dyn, B, ReadOnly>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionBody<'ctx, B> {
     #[inline]
-    pub(super) fn new(function: FunctionValue<'ctx, Dyn, B>) -> Self {
+    pub(super) fn new(function: FunctionValue<'ctx, Dyn, B, ReadOnly>) -> Self {
         Self { function }
     }
 
@@ -436,9 +453,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionBody<'ctx, B> {
         FunctionView::new(self.function)
     }
 
-    /// Underlying function handle for body-local mutation APIs.
+    /// The function itself, at [`ReadOnly`]: a body's mutation goes through
+    /// its blocks and the rung's mutator, never through the function's own
+    /// setters — linkage, attributes and the like are module-level state no
+    /// function rung's preservation floor accounts for (D8).
     #[inline]
-    pub fn as_function(self) -> FunctionValue<'ctx, Dyn, B> {
+    pub fn as_function(self) -> FunctionValue<'ctx, Dyn, B, ReadOnly> {
         self.function
     }
 
@@ -449,24 +469,31 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionBody<'ctx, B> {
         self.function.id()
     }
 
-    /// Function name.
+    /// Function name; [`None`] for an unnamed function.
     #[inline]
-    pub fn name(self) -> &'ctx str {
+    pub fn name(self) -> Option<String> {
         self.function.name()
     }
 
-    /// Entry block if the function is a definition.
+    /// Entry block if the function is a definition, at [`ReadOnly`] like
+    /// every handle a pass context hands out: the rung mutates the body
+    /// through its own mutator — `erase`, `replace_all_uses`, `builder_at` —
+    /// which takes a block's instructions of either capability (D8).
     #[inline]
-    pub fn entry_block(self) -> Option<BasicBlock<'ctx, Dyn, Terminated, B>> {
+    pub fn entry_block(
+        self,
+    ) -> Option<BasicBlock<'ctx, Dyn, Terminated, B, BlockParamsDyn, ReadOnly>> {
         self.function.entry_block()
     }
 
-    /// Basic blocks in insertion order.
+    /// Basic blocks in insertion order, at [`ReadOnly`] (see
+    /// [`Self::entry_block`]).
     #[inline]
     pub fn basic_blocks(
         self,
-    ) -> impl ExactSizeIterator<Item = BasicBlock<'ctx, Dyn, Terminated, B>>
-    + DoubleEndedIterator
+    ) -> impl ExactSizeIterator<
+        Item = BasicBlock<'ctx, Dyn, Terminated, B, BlockParamsDyn, ReadOnly>,
+    > + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
         self.function.basic_blocks()
@@ -931,13 +958,17 @@ where
     /// would break the "CFG preserved" floor this rung rests on) is a compile
     /// error, not a runtime rejection. Infallible: erasing a non-terminator
     /// cannot fail.
+    ///
+    /// `target` may be of any capability — one a [`BasicBlockView`] walk hands
+    /// out is [`ReadOnly`]: naming the instruction is not mutating it, and this
+    /// context carries the authority to erase.
     #[inline]
-    pub fn erase(&self, target: &NonTerminator<'m, B>) {
+    pub fn erase<C2: Capability>(&self, target: &NonTerminator<'m, B, C2>) {
         // `target` may belong to another module; this infallible entry cannot
         // refuse it.
         // boundary (F1): refused by Task 26
         let id = target.to_erased().slot_trusting_same_module();
-        let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.module_ref());
+        let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.capability_ref());
         // Capture operand ids before erasing (erase drops their uses). Push them
         // all unconditionally — `Worklist::pop` is panic-safe and skips any id that
         // is not an instruction (constant/param operands), so no filter is needed
@@ -967,7 +998,7 @@ where
     #[inline]
     pub fn body_instructions(
         &self,
-    ) -> impl Iterator<Item = NonTerminator<'m, B>> + use<'m, 'r, 'ctx, B, R> {
+    ) -> impl Iterator<Item = NonTerminator<'m, B, ReadOnly>> + use<'m, 'r, 'ctx, B, R> {
         let module = self.module.module_ref();
         self.function
             .as_function()
@@ -986,15 +1017,22 @@ where
     ///
     /// Errors with [`IrError::ForeignValueId`] if `view` or `replacement`
     /// belongs to another module.
+    ///
+    /// `view` may be of any capability, as on [`Self::erase`].
     #[inline]
-    pub fn replace_all_uses<V>(&self, view: &InstructionView<'m, B>, replacement: V) -> IrResult<()>
+    pub fn replace_all_uses<V, C2>(
+        &self,
+        view: &InstructionView<'m, B, C2>,
+        replacement: V,
+    ) -> IrResult<()>
     where
         V: IntoErasedValue<'m, B>,
+        C2: Capability,
     {
         // Boundary: the caller's instruction view, admitted before anything
         // reads it.
         let id = view.slot_in(self.module.id())?;
-        let replacement = replacement.into_erased_value(self.module.module_ref())?;
+        let replacement = replacement.into_erased_value(self.module.capability_ref())?;
         // Capture the former users only when a worklist is active — the
         // inactive path must stay allocation-free (the field's zero-overhead
         // promise). The `borrow()` is a let-RHS temporary, released before the
@@ -1008,7 +1046,7 @@ where
         } else {
             Vec::new()
         };
-        let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.module_ref());
+        let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.capability_ref());
         inst.replace_all_uses_with(self.module, replacement)?;
         if let Some(wl) = self.worklist.borrow_mut().as_mut() {
             for user_id in users {
@@ -1089,7 +1127,7 @@ where
     /// reached. Skips terminators and erased ids (the latter never surface —
     /// `erase` removes them).
     #[inline]
-    pub fn step(&self) -> Option<NonTerminator<'m, B>> {
+    pub fn step(&self) -> Option<NonTerminator<'m, B, ReadOnly>> {
         let module = self.patch.module.module_ref();
         self.patch.worklist.borrow_mut().as_mut()?.pop(module)
     }
@@ -1291,7 +1329,7 @@ where
     /// Erase a non-terminator instruction. Delegated from the inner [`FnPatch`];
     /// an in-block erase preserves the CFG, so it records no [`CfgUpdate`].
     #[inline]
-    pub fn erase(&self, target: &NonTerminator<'m, B>) {
+    pub fn erase<C2: Capability>(&self, target: &NonTerminator<'m, B, C2>) {
         self.patch.erase(target);
     }
 
@@ -1299,9 +1337,14 @@ where
     /// the inner [`FnPatch`]; preserves the CFG. Takes a handle or a storable
     /// id, exactly as [`FnPatch::replace_all_uses`] does.
     #[inline]
-    pub fn replace_all_uses<V>(&self, view: &InstructionView<'m, B>, replacement: V) -> IrResult<()>
+    pub fn replace_all_uses<V, C2>(
+        &self,
+        view: &InstructionView<'m, B, C2>,
+        replacement: V,
+    ) -> IrResult<()>
     where
         V: IntoErasedValue<'m, B>,
+        C2: Capability,
     {
         self.patch.replace_all_uses(view, replacement)
     }
@@ -1358,13 +1401,20 @@ where
             .expect("pushed value is A::Result")
     }
 
-    /// Resolve a caller-supplied [`BlockId`] into the ephemeral read-only view
-    /// the mutator's internals work through. The single choke point for the
-    /// reshape surface's block arguments: a foreign id is rejected here, before
-    /// any successor scan, phi read, or arena write.
+    /// Resolve a caller-supplied [`BlockId`] into the block the mutator's
+    /// internals work through. The single choke point for the reshape
+    /// surface's block arguments: a foreign id is rejected here, before any
+    /// successor scan, phi read, or arena write.
+    ///
+    /// The block is minted at this context's own reference — the unverified
+    /// module the edit runs under — so it is [`Mutable`]; a
+    /// [`BasicBlockView`] built from it hands out [`ReadOnly`] handles.
     #[inline]
-    fn resolve_block(&self, block: BlockId<Dyn, B>) -> IrResult<BasicBlockView<'m, B>> {
-        let module_ref = self.patch.module_mut().module_ref();
+    fn resolve_basic_block(
+        &self,
+        block: BlockId<Dyn, B>,
+    ) -> IrResult<BasicBlock<'m, Dyn, Terminated, B>> {
+        let module_ref = self.patch.module_mut().capability_ref();
         // Internal: admitted by `into_basic_block_label` on this line.
         let slot = block
             .into_basic_block_label(module_ref)?
@@ -1374,9 +1424,7 @@ where
             .label_type::<B>()
             .as_type()
             .slot_trusting_same_module();
-        Ok(BasicBlockView::new(BasicBlock::from_parts(
-            slot, module_ref, label_ty,
-        )))
+        Ok(BasicBlock::from_parts(slot, module_ref, label_ty))
     }
 
     /// Split `block` in two at `before` and return the new block's id. The
@@ -1393,23 +1441,27 @@ where
     /// terminator, so the new block owes nothing that a linear handle would
     /// have to carry.
     ///
+    /// `before` may be a view of any capability — one a [`BasicBlockView`]
+    /// walk hands out is [`ReadOnly`].
+    ///
     /// Errors: [`IrError::ForeignValueId`] if `block` is not from this module;
     /// otherwise the errors of [`BasicBlock::split_at`].
     #[inline]
-    pub fn split_block<Name>(
+    pub fn split_block<Name, C2>(
         &self,
         block: BlockId<Dyn, B>,
-        before: &InstructionView<'m, B>,
+        before: &InstructionView<'m, B, C2>,
         name: Name,
     ) -> IrResult<BlockId<Dyn, B>>
     where
         Name: Into<String>,
+        C2: Capability,
     {
         // Capture the successors of `block`'s terminator *before* the split
         // moves that terminator into the new block. The split's effect on the
         // CFG is exactly: each edge `block → s` becomes `new_block → s`, and
         // the branch the split inserts adds `block → new_block`.
-        let source = self.resolve_block(block)?.as_basic_block();
+        let source = self.resolve_basic_block(block)?;
         // Internal: `source` was resolved against this module, and the split
         // mints `new_block` there; the successors are `source`'s own.
         let source_id = source.id().as_dyn();
@@ -1550,7 +1602,9 @@ where
         term_id: ValueSlot,
         slot: EditSlot,
     ) -> IrResult<()> {
-        let from_block = from.as_basic_block();
+        // The edit mutates `from`'s terminator, so the block is re-resolved at
+        // this context's own `Mutable` reference; the view is `ReadOnly`.
+        let from_block = self.resolve_basic_block(from.id())?;
         // Internal: the pass's own block, read in its own module.
         let from_id = from_block.slot_trusting_same_module();
         let ctx = self.patch.module_mut().core_ref().context();
@@ -1691,7 +1745,9 @@ where
         new_to: BlockId<Dyn, B>,
         phi_values: &[ValueId<B>],
     ) -> IrResult<()> {
-        let from_block = from.as_basic_block();
+        // The edit mutates `from`'s terminator, so the block is re-resolved at
+        // this context's own `Mutable` reference; the view is `ReadOnly`.
+        let from_block = self.resolve_basic_block(from.id())?;
         // Internal: the pass's own block, read in its own module.
         let from_id = from_block.slot_trusting_same_module();
         // Resolve the target id against this function's module *first*: a
@@ -1977,8 +2033,8 @@ where
         &'e self,
         from: BlockId<Dyn, B>,
     ) -> IrResult<TermEdit<'e, 'm, 'r, 'ctx, B, R>> {
-        let from_view = self.resolve_block(from)?;
-        let from_block = from_view.as_basic_block();
+        let from_block = self.resolve_basic_block(from)?;
+        let from_view = BasicBlockView::new(from_block.copy_handle());
         let term = from_block.terminator().ok_or(IrError::InvalidOperation {
             message: "edit_terminator: `from` has no terminator",
         })?;
@@ -2168,10 +2224,12 @@ where
     ) -> IrResult<Id>
     where
         Id: ViewIn<'m, B>,
-        Id::View: IsValue<'m, B> + Typed<'m, B> + TryFrom<Value<'m, B>, Error = IrError>,
+        Id::View<Mutable>: IsValue<'m, B, Capability = Mutable>
+            + Typed<'m, B>
+            + TryFrom<Value<'m, B>, Error = IrError>,
         R: AnalysisSelector<'ctx, B, DominatorTreeAnalysis, I>,
     {
-        let module_ref = self.patch.module_mut().module_ref();
+        let module_ref = self.patch.module_mut().capability_ref();
         let (first, _) = *incomings.first().ok_or(IrError::InvalidOperation {
             message: "insert_phi: needs at least one typed incoming to derive the \
                       result type; use insert_phi_dyn for the zero-incoming case",
@@ -2187,7 +2245,7 @@ where
             .resolve_in(module_ref)
             .ok_or(IrError::ForeignValueId)?
             .ty();
-        let phi = self.insert_phi_value::<I>(block, ty, &erased)?;
+        let phi = self.insert_phi_value::<I, _>(block, ty, &erased)?;
         // NOT total: `ty` matches `Id`'s type, but a narrow to `Id::View` is
         // type-driven only for the type-marker views (`IntValue<W>`,
         // `FloatValue<K>`, `PointerValue`, `VectorValue`, `ArrayValue`,
@@ -2198,7 +2256,7 @@ where
         // so the narrow's own error is propagated unchanged: it already names
         // the category (or the type) required and the one supplied. Rewriting
         // it here replaced a matchable finding with prose.
-        Id::View::try_from(phi)?;
+        Id::View::<Mutable>::try_from(phi)?;
         // Internal: the phi was minted in this module just above.
         Ok(Id::id_from_raw(
             module_ref.id(),
@@ -2244,22 +2302,27 @@ where
     /// unsatisfiable otherwise, so a pass that forgot it fails to compile — a
     /// type-level nudge rather than a runtime surprise.
     ///
+    /// `ty` may be a type of any capability — one read through
+    /// [`Self::module`] is [`ReadOnly`]. Naming a type is not
+    /// mutating it; the type is admitted against this module.
+    ///
     /// Errors: [`IrError::ForeignType`] if `ty` belongs to another module;
     /// [`IrError::PhiIncomingNotDominating`] if some incoming value does
     /// not dominate its edge; a coherence [`IrError`] (mapped from the shared
     /// phi check) if the incomings are incomplete, mistyped, or carry a
     /// differing duplicate for one predecessor.
     #[inline]
-    pub fn insert_phi_dyn<I>(
+    pub fn insert_phi_dyn<I, T>(
         &mut self,
         block: BlockId<Dyn, B>,
-        ty: Type<'m, B>,
+        ty: T,
         incomings: &[(ValueId<B>, BlockId<Dyn, B>)],
     ) -> IrResult<ValueId<B>>
     where
         R: AnalysisSelector<'ctx, B, DominatorTreeAnalysis, I>,
+        T: IrType<'m, B>,
     {
-        let module_ref = self.patch.module_mut().module_ref();
+        let module_ref = self.patch.module_mut().capability_ref();
         // Resolve the caller's value ids to ephemeral handles (tag-checked)
         // before anything else; a foreign id is rejected with
         // `IrError::ForeignValueId` while nothing has been touched.
@@ -2271,7 +2334,7 @@ where
                 *pred,
             ));
         }
-        self.insert_phi_value::<I>(block, ty, &resolved)
+        self.insert_phi_value::<I, _>(block, ty, &resolved)
             .map(|phi| phi.id())
     }
 
@@ -2280,20 +2343,21 @@ where
     /// as the ephemeral [`Value`] handle. Crate-private on purpose — the two
     /// public wrappers are what mint the storable id (typed and erased
     /// respectively), so the handle never escapes the module.
-    fn insert_phi_value<I>(
+    fn insert_phi_value<I, T>(
         &mut self,
         block: BlockId<Dyn, B>,
-        ty: Type<'m, B>,
+        ty: T,
         incomings: &[(Value<'m, B>, BlockId<Dyn, B>)],
     ) -> IrResult<Value<'m, B>>
     where
         R: AnalysisSelector<'ctx, B, DominatorTreeAnalysis, I>,
+        T: IrType<'m, B>,
     {
         // Boundary: the caller's phi type (from `insert_phi_dyn`), admitted
         // before any coherence, dominance or arena work reads it.
-        let ty_id = ty.slot_in(self.patch.module_mut().id())?;
-        let target_block = self.resolve_block(block)?.as_basic_block();
-        // Internal: resolved against this module by `resolve_block`. The
+        let ty_id = ty.as_type().slot_in(self.patch.module_mut().id())?;
+        let target_block = self.resolve_basic_block(block)?;
+        // Internal: resolved against this module by `resolve_basic_block`. The
         // incoming values below were resolved from tagged ids by both callers.
         let target_id = target_block.slot_trusting_same_module();
         // Resolve every predecessor id against this function's module up front:
@@ -2637,7 +2701,7 @@ where
         phi_values: &[ValueId<B>],
     ) -> IrResult<()> {
         let old_id = old_to
-            .into_basic_block_label(self.from.as_basic_block().module_ref())?
+            .into_basic_block_label(self.reshape.patch.module_mut().module_ref())?
             // Internal: admitted by `into_basic_block_label` just above.
             .slot_trusting_same_module();
         // `old_to` is target-based, so witness it names a live case before
@@ -2698,7 +2762,7 @@ where
     #[inline]
     pub fn remove_successor(&self, old_to: BlockId<Dyn, B>) -> IrResult<()> {
         let old_id = old_to
-            .into_basic_block_label(self.from.as_basic_block().module_ref())?
+            .into_basic_block_label(self.reshape.patch.module_mut().module_ref())?
             // Internal: admitted by `into_basic_block_label` just above.
             .slot_trusting_same_module();
         if self.reshape.switch_default_dest(self.term_id) == old_id {
@@ -3530,9 +3594,11 @@ mod tests {
         let patch = cx.mutate();
 
         // The read-only view carries the type constructors, and the type it
-        // hands back is the very same interned type the module named.
+        // hands back is the very same interned type the module named — at
+        // the view's read-only capability, so the module's is lowered to
+        // compare.
         let ty = patch.module().i32_type();
-        assert_eq!(ty.as_type(), i32_ty.as_type());
+        assert_eq!(ty.as_type(), i32_ty.as_type().read_only());
         // A constant mints against it with no module mutation at all.
         let seven = ty.const_int(7_u32);
         assert_eq!(seven.value_zext_u128(), Some(7));
@@ -4197,10 +4263,13 @@ mod tests {
         m.add_function_dyn("third", fn_ty, Linkage::External)?;
 
         let module = ModuleView::from(&m);
-        let named: Vec<&str> = module.functions().map(|f| f.name()).collect();
+        let named: Vec<String> = module
+            .functions()
+            .map(|f| f.name().unwrap_or_default())
+            .collect();
         let mut walked = Vec::new();
         for f in module {
-            walked.push(f.name());
+            walked.push(f.name().unwrap_or_default());
         }
         assert_eq!(walked, named);
         assert_eq!(walked, ["first", "second", "third"]);

@@ -5,6 +5,10 @@ use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_ir::Module;
 use llvmkit_ir::metadata::SpecializedMetadataKind;
 
+pub mod support;
+
+use support::{line_and_column, reported_line_and_column};
+
 fn parse_and_render(src: &str) -> String {
     let module = Module::dynamic("parser_debug_metadata");
     Parser::new(src.as_bytes(), &module)
@@ -163,10 +167,13 @@ fn a_debug_record_value_operand_goes_through_parse_metadata() {
     let err = parse_err(&roundtrip);
     assert_eq!(err.to_string(), "invalid metadata-value-metadata roundtrip");
     assert_eq!(
-        reported_offset(&err),
-        roundtrip
-            .find("metadata %a")
-            .expect("the fixture writes one")
+        reported_line_and_column(roundtrip.as_bytes(), &err),
+        line_and_column(
+            roundtrip.as_bytes(),
+            roundtrip
+                .find("metadata %a")
+                .expect("the fixture writes one")
+        )
     );
     // `parseType(Ty, TypeMsg, Loc)` with `TypeMsg = "expected metadata
     // operand"`, anchored at the token that is not a type.
@@ -174,16 +181,12 @@ fn a_debug_record_value_operand_goes_through_parse_metadata() {
     let err = parse_err(&not_a_type);
     assert_eq!(err.to_string(), "expected metadata operand");
     assert_eq!(
-        reported_offset(&err),
-        not_a_type.find("42").expect("the fixture writes one")
+        reported_line_and_column(not_a_type.as_bytes(), &err),
+        line_and_column(
+            not_a_type.as_bytes(),
+            not_a_type.find("42").expect("the fixture writes one")
+        )
     );
-}
-
-/// Byte offset a rejection reports, for comparison against a needle's own
-/// offset — the same "text alone cannot see the anchor" guard
-/// `parser_module_level.rs` spells with line and column.
-fn reported_offset(err: &ParseError) -> usize {
-    usize::try_from(err.loc().start).expect("span start fits in usize")
 }
 
 /// Regression (broad-review Critical): an align-less alloca with attached

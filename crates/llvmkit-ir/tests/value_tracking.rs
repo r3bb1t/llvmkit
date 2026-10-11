@@ -8,6 +8,7 @@ use llvmkit_ir::{
     Width, compute_known_bits, is_known_non_zero, is_known_not_poison, is_known_one, is_known_zero,
     known_bits_from_operator, module_new,
 };
+use llvmkit_ir::{VectorType, lanes};
 
 fn zeros(width: usize) -> String {
     "0".repeat(width)
@@ -630,7 +631,11 @@ fn query_carries_context_demanded_elements_and_instr_info_policy() -> Result<(),
         .with_demanded_elements(&demanded)
         .without_instruction_info();
 
-    assert_eq!(query.context_instruction(), Some(load_inst.to_erased()));
+    // The query keeps its context at `ReadOnly`; compare at that capability.
+    assert_eq!(
+        query.context_instruction(),
+        Some(load_inst.to_erased().read_only())
+    );
     assert_eq!(query.demanded_elements(), Some(&demanded));
     assert!(!query.uses_instruction_info());
     assert!(query.with_instruction_info().uses_instruction_info());
@@ -806,7 +811,7 @@ fn gep_and_vector_lane_operations_compute_known_bits() -> Result<(), IrError> {
     let m = module_new!("vt-gep-vector")?;
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
-    let vec_ty = m.vector_type(i8_ty.as_type(), 2);
+    let vec_ty = VectorType::of(i8_ty, lanes::<2>());
     let void_ty = m.void_type();
     let fn_ty = m.function_type_no_parameters(void_ty.as_type());
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -864,8 +869,8 @@ fn vector_gep_known_bits_use_element_pointer_address_space_index_width() -> Resu
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let ptr1_ty = m.ptr_type(1);
-    let ptr_vec_ty = m.vector_type(ptr1_ty.as_type(), 2);
-    let i32_vec_ty = m.vector_type(i32_ty.as_type(), 2);
+    let ptr_vec_ty = VectorType::of(ptr1_ty, lanes::<2>());
+    let i32_vec_ty = VectorType::of(i32_ty, lanes::<2>());
     let base = ptr_vec_ty.const_vector([ptr1_ty.const_null(); 2])?;
     let minus_one = i32_ty.const_int(-1_i32);
     let index = i32_vec_ty
@@ -973,7 +978,7 @@ fn a_scalable_shuffle_propagates_its_sources_known_bits() -> Result<(), IrError>
     let m = module_new!("vt-scalable-shuffle")?;
     let i8_ty = m.i8_type();
     let i64_ty = m.i64_type();
-    let vec_ty = m.scalable_vector_type(i8_ty.as_type(), 2);
+    let vec_ty = VectorType::scalable_of(i8_ty, lanes::<2>());
     let void_ty = m.void_type();
     let fn_ty = m.function_type_no_parameters(void_ty.as_type());
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;

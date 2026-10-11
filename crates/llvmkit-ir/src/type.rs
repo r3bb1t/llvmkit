@@ -30,6 +30,7 @@ use core::hash::{Hash, Hasher};
 use core::num::NonZeroU32;
 
 use crate::TypeKindLabel;
+use crate::capability::{Capability, CapabilityOf, Mutable};
 use crate::error::RenderedType;
 use crate::error::{IrError, IrResult};
 use crate::module::{ModuleBrand, ModuleCore, ModuleId, ModuleRef, ModuleView};
@@ -116,13 +117,17 @@ pub(crate) enum TypeData {
         elem: TypeSlot,
         n: u64,
     },
+    /// `FixedVectorType`. The lane count is never zero: `FixedVectorType::get`
+    /// asserts `NumElts > 0`.
     FixedVector {
         elem: TypeSlot,
-        n: u32,
+        n: NonZeroU32,
     },
+    /// `ScalableVectorType`. The minimum lane count is never zero:
+    /// `ScalableVectorType::get` asserts `MinNumElts > 0`.
     ScalableVector {
         elem: TypeSlot,
-        min: u32,
+        min: NonZeroU32,
     },
     Struct(StructTypeData),
     /// Typed pointer (legacy, only used by a few GPU targets in LLVM 22).
@@ -205,12 +210,19 @@ impl TypeData {
         }
     }
     #[inline]
-    pub(crate) fn as_vector(&self) -> Option<(TypeSlot, u32, bool)> {
+    pub(crate) fn as_vector(&self) -> Option<(TypeSlot, NonZeroU32, bool)> {
         match *self {
             Self::FixedVector { elem, n } => Some((elem, n, false)),
             Self::ScalableVector { elem, min } => Some((elem, min, true)),
             _ => None,
         }
+    }
+    /// A vector's [`ElementCount`] (`VectorType::getElementCount`), or `None`
+    /// for a non-vector.
+    #[inline]
+    pub(crate) fn element_count(&self) -> Option<ElementCount> {
+        self.as_vector()
+            .map(|(_, min, scalable)| ElementCount { min, scalable })
     }
     #[inline]
     pub(crate) fn as_function(&self) -> Option<(TypeSlot, &[TypeSlot], bool)> {
@@ -253,6 +265,25 @@ impl TypeData {
             None
         }
     }
+}
+
+/// A vector's lane count and whether it scales with `vscale`. Mirrors
+/// `ElementCount` (`llvm/include/llvm/Support/TypeSize.h`), as
+/// `VectorType::getElementCount` returns it: equality compares both the count
+/// and the scalability, as upstream's `getElementCount() == …` comparisons do.
+///
+/// Upstream's `ElementCount` can be zero (`ElementCount::getFixed(0)` stands
+/// for "not a vector" in `CastInst::castIsValid`); this one cannot, because no
+/// vector has zero lanes — "not a vector" is `None` from
+/// [`TypeData::element_count`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ElementCount {
+    /// The lane count: exact for a fixed vector, the known minimum for a
+    /// scalable one (`ElementCount::getKnownMinValue`).
+    pub(crate) min: NonZeroU32,
+    /// Whether the count is a multiple of `vscale`
+    /// (`ElementCount::isScalable`).
+    pub(crate) scalable: bool,
 }
 
 /// Payload for any struct type — literal or identified.
@@ -321,32 +352,37 @@ pub(crate) struct TargetExtTypeData {
 /// reference. Equality and hashing compare the branded module reference by
 /// [`ModuleId`], so the handle remains cheap to copy and
 /// store in maps.
-pub struct Type<'ctx, B: ModuleBrand> {
+///
+/// `C` is the [`Capability`] of the module reference (D8): a type minted
+/// from an unverified [`Module`](crate::Module) is [`Mutable`], one minted
+/// through a [`ModuleView`] is [`ReadOnly`](crate::ReadOnly), and every type
+/// reached from it — an element, a return type, a scalar type — keeps it.
+pub struct Type<'ctx, B: ModuleBrand, C: Capability = Mutable> {
     // Private to this module: the slot leaves a type handle only through the
     // two doors of `TypeSlotAccess`.
     id: TypeSlot,
-    pub(crate) module: ModuleRef<'ctx, B>,
+    pub(crate) module: ModuleRef<'ctx, B, C>,
 }
 
-impl<B: ModuleBrand> Clone for Type<'_, B> {
+impl<B: ModuleBrand, C: Capability> Clone for Type<'_, B, C> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<B: ModuleBrand> Copy for Type<'_, B> {}
+impl<B: ModuleBrand, C: Capability> Copy for Type<'_, B, C> {}
 
-impl<B: ModuleBrand> PartialEq for Type<'_, B> {
+impl<B: ModuleBrand, C: Capability> PartialEq for Type<'_, B, C> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module
     }
 }
 
-impl<B: ModuleBrand> Eq for Type<'_, B> {}
+impl<B: ModuleBrand, C: Capability> Eq for Type<'_, B, C> {}
 
-impl<B: ModuleBrand> Hash for Type<'_, B> {
+impl<B: ModuleBrand, C: Capability> Hash for Type<'_, B, C> {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.id.hash(state);
@@ -354,19 +390,23 @@ impl<B: ModuleBrand> Hash for Type<'_, B> {
     }
 }
 
-impl<B: ModuleBrand> fmt::Debug for Type<'_, B> {
+impl<B: ModuleBrand, C: Capability> fmt::Debug for Type<'_, B, C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Type").field("id", &self.id).finish()
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
+impl<B: ModuleBrand, C: Capability> CapabilityOf for Type<'_, B, C> {
+    type Capability = C;
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Type<'ctx, B, C> {
     /// Construct from raw parts. Crate-internal: a public Module method
     /// is the only path that hands out type handles.
     #[inline]
     pub(crate) fn new<M>(id: TypeSlot, module: M) -> Self
     where
-        M: Into<ModuleRef<'ctx, B>>,
+        M: Into<ModuleRef<'ctx, B, C>>,
     {
         Self {
             id,
@@ -384,6 +424,33 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
     #[inline]
     pub fn module(self) -> ModuleView<'ctx, B> {
         ModuleView::new(self.module.module())
+    }
+
+    /// This type at [`ReadOnly`](crate::ReadOnly). Always sound — reading is a
+    /// subset of mutating — and the way to compare a type minted through a
+    /// [`ModuleView`] with one minted from the module itself: equality is
+    /// defined within one capability.
+    #[inline]
+    pub fn read_only(self) -> Type<'ctx, B, crate::ReadOnly> {
+        Type {
+            id: self.id,
+            module: self.module.read_only(),
+        }
+    }
+
+    /// Crate-internal: this type admitted at `module` through the checked
+    /// door — [`IrError::ForeignType`](crate::IrError::ForeignType) unless
+    /// `module` is this type's own — and re-minted at `module`'s capability.
+    /// The type twin of `Value::admitted_at`: how an authority takes a type
+    /// operand of any capability (R12), the capability coming from a
+    /// reference it already holds, never from the operand.
+    #[inline]
+    pub(crate) fn admitted_at<C2: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, C2>,
+    ) -> crate::IrResult<Type<'ctx, B, C2>> {
+        let id = self.slot_in(module.id())?;
+        Ok(Type { id, module })
     }
 
     /// Require `got` to be exactly `self`, reporting the most precise
@@ -664,17 +731,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
         Type::new(scalar_type_slot(self.module.module(), self.id), self.module)
     }
 
-    /// Element count of a vector — the *minimum* count for a scalable one, as
-    /// `ElementCount` carries it. `None` for a non-vector.
+    /// Element count of a vector — the exact count of a fixed vector, the
+    /// *minimum* count of a scalable one (`ElementCount::getKnownMinValue`).
+    /// `None` for a non-vector. Never zero: a vector has at least one lane
+    /// (`FixedVectorType::get` and `ScalableVectorType::get` assert it).
     ///
-    /// Comparing two of these also settles scalar-versus-vector agreement,
-    /// which is how `CastInst::castIsValid` avoids a separate arm for it.
-    pub fn vector_element_count(self) -> Option<u32> {
-        match self.data() {
-            TypeData::FixedVector { n, .. } => Some(*n),
-            TypeData::ScalableVector { min, .. } => Some(*min),
-            _ => None,
-        }
+    /// The count alone does not say whether the vector is scalable, so two
+    /// equal counts are not two equal `ElementCount`s.
+    pub fn vector_element_count(self) -> Option<NonZeroU32> {
+        self.data().element_count().map(|count| count.min)
     }
 
     /// Bit width of this type's *scalar* type, or 0 where LLVM has no answer.
@@ -699,10 +764,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
             TypeData::Integer { bits } => *bits,
             TypeData::FixedVector { elem, n } => Type::new(*elem, self.module)
                 .primitive_size_in_bits()
-                .saturating_mul(*n),
+                .saturating_mul(n.get()),
             TypeData::ScalableVector { elem, min } => Type::new(*elem, self.module)
                 .primitive_size_in_bits()
-                .saturating_mul(*min),
+                .saturating_mul(min.get()),
             _ => 0,
         }
     }
@@ -840,7 +905,7 @@ pub enum TypeKind {
 // Display
 // --------------------------------------------------------------------------
 
-impl<'ctx, B: ModuleBrand> fmt::Display for Type<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> fmt::Display for Type<'ctx, B, C> {
     /// IR-textual form. Placeholder until the full `AsmWriter.cpp` port
     /// lands; deterministic but not a faithful reproduction of every
     /// LLVM corner case (notably padding/alignment annotations).
@@ -949,20 +1014,19 @@ impl<'ctx, B: ModuleBrand> fmt::Display for Type<'ctx, B> {
             TypeData::TypedPointer {
                 pointee,
                 addr_space: 0,
-            } => write!(f, "{}*", Type::<B>::new(*pointee, self.module.module())),
+            } => write!(f, "{}*", Type::new(*pointee, self.module)),
             TypeData::TypedPointer {
                 pointee,
                 addr_space,
             } => write!(
                 f,
                 "{} addrspace({addr_space})*",
-                Type::<B>::new(*pointee, self.module.module())
+                Type::new(*pointee, self.module)
             ),
             TypeData::TargetExt(t) => {
                 write!(f, "target(\"{}\"", t.name)?;
-                let m = self.module.module();
                 for tp in t.type_params.iter() {
-                    write!(f, ", {}", Type::<B>::new(*tp, m))?;
+                    write!(f, ", {}", Type::new(*tp, self.module))?;
                 }
                 for ip in t.int_params.iter() {
                     write!(f, ", {ip}")?;
@@ -976,6 +1040,21 @@ impl<'ctx, B: ModuleBrand> fmt::Display for Type<'ctx, B> {
 // --------------------------------------------------------------------------
 // Helpers
 // --------------------------------------------------------------------------
+
+/// `ty` under [`DynBrand`](crate::DynBrand) at [`ReadOnly`](crate::ReadOnly),
+/// for the layout queries ([`DataLayout`](crate::DataLayout)'s) declared over
+/// erased types. The one copy: `value_tracking`, `demanded_bits`,
+/// `constant_folding` and `constant_fold` import it. The brand changes and
+/// the module does not, and reading is a subset of mutating, so no check is
+/// owed.
+pub(crate) fn erase_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
+) -> Type<'ctx, crate::DynBrand, crate::ReadOnly> {
+    Type {
+        id: ty.id,
+        module: ModuleRef::new(ty.module.module()),
+    }
+}
 
 /// `Type::getScalarType` one layer below [`Type::scalar_type`].
 ///
@@ -1159,15 +1238,17 @@ pub(crate) mod sealed {
 /// not an extension point. Bound generic code with `T: IrType<'ctx>`
 /// when a function should accept any type without enumerating every
 /// concrete handle.
-pub trait IrType<'ctx, B: ModuleBrand>: sealed::Sealed + Copy + Sized + core::fmt::Debug {
-    /// Widen to the erased [`Type`] handle.
-    fn as_type(self) -> Type<'ctx, B>;
+pub trait IrType<'ctx, B: ModuleBrand>:
+    sealed::Sealed + Copy + Sized + core::fmt::Debug + CapabilityOf
+{
+    /// Widen to the erased [`Type`] handle, at the same capability.
+    fn as_type(self) -> Type<'ctx, B, Self::Capability>;
 }
 
-impl<'ctx, B: ModuleBrand> sealed::Sealed for Type<'ctx, B> {}
-impl<'ctx, B: ModuleBrand> IrType<'ctx, B> for Type<'ctx, B> {
+impl<'ctx, B: ModuleBrand, C: Capability> sealed::Sealed for Type<'ctx, B, C> {}
+impl<'ctx, B: ModuleBrand, C: Capability> IrType<'ctx, B> for Type<'ctx, B, C> {
     #[inline]
-    fn as_type(self) -> Type<'ctx, B> {
+    fn as_type(self) -> Type<'ctx, B, C> {
         self
     }
 }

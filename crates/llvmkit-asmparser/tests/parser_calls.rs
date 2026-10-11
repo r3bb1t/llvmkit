@@ -13,7 +13,10 @@ pub mod support;
 // that is how the fixture's *input* spells it, and canonicalization is why
 // they still match `llvm-dis`'s single space. That fixture's `RUN` line does
 // not pass `--strict-whitespace`, so upstream canonicalizes there too.
-use support::{Check, canonicalize_horizontal_whitespace, check_directives};
+use support::{
+    Check, canonicalize_horizontal_whitespace, check_directives, rejection_at,
+    reported_line_and_column,
+};
 
 fn parse_and_render(src: &str) -> String {
     parse_and_render_bytes("parser_calls", src.as_bytes())
@@ -545,7 +548,12 @@ fn musttail_varargs_forwarding_round_trips() {
 }
 
 /// `LLParser::parseParameterList`: `...` in a non-musttail call's argument
-/// list is rejected.
+/// list is `tokError(Twine(Msg) + "non-musttail call")` — the whole sentence,
+/// at the `...`, with no `expected ` in front of it, so it is a
+/// `ParseError::Message`. No upstream fixture pins this arm
+/// (`rg -n -F "unexpected ellipsis in argument list for non-musttail call" llvm/test llvm/unittests`
+/// finds nothing in the vendored `llvmorg-22.1.4` tree); the routine is the
+/// anchor (D11).
 #[test]
 fn ellipsis_in_non_musttail_call_rejected() {
     let src = "declare void @f(...)\n\
@@ -554,15 +562,25 @@ fn ellipsis_in_non_musttail_call_rejected() {
                  call void (...) @f(i32 1, ...)\n\
                  ret void\n\
                }\n";
-    assert_fixture_rejected(
-        "ellipsis_non_musttail",
-        src.as_bytes(),
-        "expected unexpected ellipsis in argument list for non-musttail call",
+    assert_eq!(
+        rejection_at(src),
+        (
+            "unexpected ellipsis in argument list for non-musttail call".to_owned(),
+            (4, 27)
+        )
     );
+    assert!(matches!(
+        parse_fixture_err("ellipsis_non_musttail", src.as_bytes()),
+        ParseError::Message { .. }
+    ));
 }
 
 /// `LLParser::parseParameterList`: a musttail `...` is rejected when the
-/// enclosing function is not varargs.
+/// enclosing function is not varargs, by `tokError` at the `...` — a whole
+/// sentence, so a `ParseError::Message`.
+/// `test/Assembler/musttail-invalid-1.ll` pins the text by containment only;
+/// [`upstream_musttail_ellipsis_fixtures_report_upstreams_exact_text`] holds
+/// it to equality.
 #[test]
 fn musttail_ellipsis_in_non_varargs_function_rejected() {
     let src = "declare void @f(...)\n\
@@ -571,15 +589,29 @@ fn musttail_ellipsis_in_non_varargs_function_rejected() {
                  musttail call void (...) @f(...)\n\
                  ret void\n\
                }\n";
-    assert_fixture_rejected(
-        "musttail_non_varargs",
-        src.as_bytes(),
-        "expected unexpected ellipsis in argument list for musttail call in non-varargs function",
+    assert_eq!(
+        rejection_at(src),
+        (
+            "unexpected ellipsis in argument list for musttail call in non-varargs function"
+                .to_owned(),
+            (4, 29)
+        )
     );
+    assert!(matches!(
+        parse_fixture_err("musttail_non_varargs", src.as_bytes()),
+        ParseError::Message { .. }
+    ));
 }
 
 /// `LLParser::parseParameterList`'s reciprocal rule: a musttail call in a
-/// varargs function must forward the varargs with a trailing `...`.
+/// varargs function must forward the varargs with a trailing `...`. Upstream
+/// tests it after the loop and *before* `Lex.Lex(); // Lex the ')'`, so the
+/// `tokError` is anchored at the `)`, not at the token after it.
+/// `test/Assembler/musttail-invalid-2.ll` is the upstream fixture.
+///
+/// The message begins with `expected `, so `ParseError`'s split stores the
+/// remainder in `ParseError::Expected`. The rendered text is the same in
+/// either variant, which is why the variant is asserted on its own.
 #[test]
 fn musttail_in_varargs_without_ellipsis_rejected() {
     let src = "declare void @f(...)\n\
@@ -588,10 +620,263 @@ fn musttail_in_varargs_without_ellipsis_rejected() {
                  musttail call void (...) @f()\n\
                  ret void\n\
                }\n";
-    assert_fixture_rejected(
-        "musttail_missing_ellipsis",
-        src.as_bytes(),
-        "expected '...' at end of argument list for musttail call in varargs function",
+    assert_eq!(
+        rejection_at(src),
+        (
+            "expected '...' at end of argument list for musttail call in varargs function"
+                .to_owned(),
+            (4, 29)
+        )
+    );
+    assert!(matches!(
+        parse_fixture_err("musttail_missing_ellipsis", src.as_bytes()),
+        ParseError::Expected { expected, .. }
+            if expected == "'...' at end of argument list for musttail call in varargs function"
+    ));
+}
+
+/// Ports `test/Assembler/musttail-invalid-1.ll` and
+/// `test/Assembler/musttail-invalid-2.ll` whole, comparing the message for
+/// **equality** and the anchor. Their corpus rows match the text by
+/// containment — `FileCheck`'s rule — which is why
+/// `expected unexpected ellipsis in argument list for musttail call in non-varargs function`
+/// passed the first one's row while carrying a word upstream never prints.
+/// The anchors are `LLParser::parseParameterList`'s: the `...` for the first,
+/// the `)` for the second.
+#[test]
+fn upstream_musttail_ellipsis_fixtures_report_upstreams_exact_text() {
+    assert_eq!(
+        rejection_at(include_bytes!(
+            "fixtures/upstream/assembler-corpus/musttail-invalid-1.ll"
+        )),
+        (
+            "unexpected ellipsis in argument list for musttail call in non-varargs function"
+                .to_owned(),
+            (11, 52)
+        )
+    );
+    assert_eq!(
+        rejection_at(include_bytes!(
+            "fixtures/upstream/assembler-corpus/musttail-invalid-2.ll"
+        )),
+        (
+            "expected '...' at end of argument list for musttail call in varargs function"
+                .to_owned(),
+            (10, 50)
+        )
+    );
+}
+
+/// `LLParser::parseParameterList` opens with
+/// `parseToken(lltok::lparen, "expected '(' in call")`, and `parseCall`,
+/// `parseInvoke` and `parseCallBr` all reach it — so an `invoke` or `callbr`
+/// missing its `(` says `in call` too. llvmkit-specific: no upstream test pins
+/// the message (`rg -n -F "expected '(' in call" llvm/test llvm/unittests`
+/// finds nothing in the vendored `llvmorg-22.1.4` tree); the routine is the
+/// anchor (D11).
+#[test]
+fn every_caller_reports_a_missing_open_paren_as_in_call() {
+    for (src, at) in [
+        (
+            "declare void @f()\ndefine void @g() {\nentry:\n  call void @f\n  ret void\n}\n",
+            (5, 3),
+        ),
+        (
+            "declare void @f()\ndefine void @g() {\nentry:\n  invoke void @f to label %a unwind label %b\n}\n",
+            (4, 18),
+        ),
+        (
+            "declare void @f()\ndefine void @g() {\nentry:\n  callbr void @f to label %a []\n}\n",
+            (4, 18),
+        ),
+    ] {
+        assert_eq!(
+            rejection_at(src),
+            ("expected '(' in call".to_owned(), at),
+            "{src}"
+        );
+    }
+}
+
+/// `LLParser::parseParameterList` loops `while (Lex.getKind() != lltok::rparen)`
+/// and demands a comma at the head of every iteration after the first:
+/// `parseToken(lltok::comma, "expected ',' in argument list")`, at the token
+/// where the comma belongs — including in front of a forwarding `...`.
+/// llvmkit-specific: no upstream test pins the message
+/// (`rg -n -F "expected ',' in argument list" llvm/test llvm/unittests` finds
+/// nothing in the vendored `llvmorg-22.1.4` tree); the routine is the anchor
+/// (D11).
+#[test]
+fn a_missing_comma_between_arguments_is_reported_where_it_belongs() {
+    for (src, at) in [
+        (
+            "declare void @f(i32, i32)\ndefine void @g() {\nentry:\n  call void @f(i32 1 i32 2)\n  ret void\n}\n",
+            (4, 22),
+        ),
+        (
+            "declare void @f(...)\ndefine void @g(...) {\nentry:\n  musttail call void (...) @f(i32 1 ...)\n  ret void\n}\n",
+            (4, 37),
+        ),
+    ] {
+        assert_eq!(
+            rejection_at(src),
+            ("expected ',' in argument list".to_owned(), at),
+            "{src}"
+        );
+    }
+}
+
+/// `LLParser::parseParameterList`'s ellipsis arm ends with
+/// `return parseToken(lltok::rparen, "expected ')' at end of argument list")`:
+/// the forwarding `...` must be the last thing in the list. llvmkit-specific:
+/// `LLParser::parseArgumentList` raises the same text, and no upstream test
+/// pins it from either routine
+/// (`rg -uuu -n -F "expected ')' at end of argument list" test unittests`, run
+/// in the vendored `llvmorg-22.1.4` tree's `llvm/`, finds nothing); the
+/// routine is the anchor (D11).
+#[test]
+fn a_forwarding_ellipsis_must_close_the_argument_list() {
+    let src = "declare void @f(...)\ndefine void @g(...) {\nentry:\n  musttail call void (...) @f(..., i32 1)\n  ret void\n}\n";
+    assert_eq!(
+        rejection_at(src),
+        ("expected ')' at end of argument list".to_owned(), (4, 34))
+    );
+}
+
+/// `parseInvoke` and `parseCallBr` call `parseParameterList(ArgList, PFS)`,
+/// leaving `IsMustTailCall` at its `false` default, so a `...` in either is
+/// the non-musttail arm's `tokError`. llvmkit-specific; the routine and its
+/// callers are the anchor (D11).
+#[test]
+fn an_invoke_or_callbr_ellipsis_is_a_non_musttail_ellipsis() {
+    for src in [
+        "declare void @f(...)\ndefine void @g() {\nentry:\n  invoke void (...) @f(...) to label %a unwind label %b\n}\n",
+        "declare void @f(...)\ndefine void @g() {\nentry:\n  callbr void (...) @f(...) to label %a []\n}\n",
+    ] {
+        assert_eq!(
+            rejection_at(src),
+            (
+                "unexpected ellipsis in argument list for non-musttail call".to_owned(),
+                (4, 24)
+            ),
+            "{src}"
+        );
+    }
+}
+
+/// Ports `test/Assembler/invalid-label-call-arg.ll` whole, comparing the
+/// message for equality and the anchor: `LLParser::parseParameterList`'s
+/// `error(ArgLoc, "invalid type for function argument")`, at the `label` of
+/// the inline-asm call's argument, before the callee's constraint string is
+/// ever compared against the arguments.
+#[test]
+fn upstream_label_call_argument_fixture_is_rejected_at_the_argument() {
+    assert_eq!(
+        rejection_at(include_bytes!(
+            "fixtures/upstream/assembler-corpus/invalid-label-call-arg.ll"
+        )),
+        ("invalid type for function argument".to_owned(), (6, 24))
+    );
+}
+
+/// `LLParser::parseParameterList`'s
+/// `if (!FunctionType::isValidArgumentType(ArgTy)) return error(ArgLoc, …)`,
+/// straight after `parseType(ArgTy, ArgLoc)`, reached from all three callers.
+/// `isValidArgumentType` is `isFirstClassType() && !isLabelTy()`, so a
+/// `label`, a function type and an opaque struct are each refused at the
+/// argument's type. llvmkit-specific: the upstream fixtures exercise the
+/// `label` case through `call` only
+/// (`test/Assembler/invalid-label-call-arg.ll`, `test/Verifier/invalid-label-param.ll`);
+/// the routine is the anchor for the rest (D11).
+#[test]
+fn every_caller_refuses_an_invalid_argument_type_at_the_type() {
+    for (src, at) in [
+        (
+            "declare void @f(...)\ndefine void @g() {\nbb:\n  call void (...) @f(label %bb)\n  ret void\n}\n",
+            (4, 22),
+        ),
+        (
+            "declare void @f(...)\ndefine void @g() {\nbb:\n  invoke void (...) @f(label %bb) to label %a unwind label %b\n}\n",
+            (4, 24),
+        ),
+        (
+            "define void @g() {\nbb:\n  callbr void asm \"\", \"r,!i\"(label %bb) to label %a [label %bb]\n}\n",
+            (3, 30),
+        ),
+        (
+            "declare void @f(...)\ndefine void @g() {\nentry:\n  call void (...) @f(i32 () @g)\n  ret void\n}\n",
+            (4, 22),
+        ),
+        (
+            "%T = type opaque\ndeclare void @f(...)\ndefine void @g() {\nentry:\n  call void (...) @f(%T zeroinitializer)\n  ret void\n}\n",
+            (5, 22),
+        ),
+    ] {
+        assert_eq!(
+            rejection_at(src),
+            ("invalid type for function argument".to_owned(), at),
+            "{src}"
+        );
+    }
+}
+
+/// `LLParser::parseParameterList` reads each argument's type with
+/// `parseType(ArgTy, ArgLoc)`, leaving `AllowVoid` at its `false` default
+/// (`LLParser.h`), so a `void` argument never reaches the
+/// `isValidArgumentType` guard: `parseType`'s suffix loop refuses it first
+/// with `void type only allowed for function results`, at the `void`. The
+/// guard would refuse it too, with a different message at the same token —
+/// which is why the message is the half that tells the two orders apart.
+/// Through all three callers.
+///
+/// llvmkit-specific: no upstream test pins this arm.
+/// `rg -uuu -l -F "void type only allowed for function results" test unittests`,
+/// run in the vendored `llvmorg-22.1.4` tree's `llvm/`, finds only
+/// `test/Assembler/invalid-byval-type2.ll`, a `byval(void)` attribute; the
+/// routine is the anchor (D11).
+#[test]
+fn every_caller_refuses_a_void_argument_before_the_type_guard() {
+    for (src, at) in [
+        (
+            "declare void @f(...)\ndefine void @g() {\nentry:\n  call void (...) @f(void undef)\n  ret void\n}\n",
+            (4, 22),
+        ),
+        (
+            "declare void @f(...)\ndefine void @g() {\nentry:\n  invoke void (...) @f(void undef) to label %a unwind label %b\n}\n",
+            (4, 24),
+        ),
+        (
+            "declare void @f(...)\ndefine void @g() {\nentry:\n  callbr void (...) @f(void undef) to label %a []\n}\n",
+            (4, 24),
+        ),
+    ] {
+        assert_eq!(
+            rejection_at(src),
+            ("void type only allowed for function results".to_owned(), at),
+            "{src}"
+        );
+    }
+}
+
+/// `LLParser::parseParameterList` reads a `metadata` argument with
+/// `parseMetadataAsValue` alone; `parseOptionalParamAttrs` sits on the other
+/// branch. So an attribute after `metadata` is not an attribute: it reaches
+/// `parseMetadata`'s `parseValueAsMetadata(MD, "expected metadata operand", PFS)`,
+/// whose `parseType` reports `expected metadata operand` at it. The second
+/// source is the positive control: the same call without the attribute parses.
+/// llvmkit-specific: no upstream `.ll` writes a parameter attribute after a
+/// call's `metadata` type (the search is recorded in this test's
+/// `UPSTREAM.md` row); the routine is the anchor (D11).
+#[test]
+fn a_metadata_argument_takes_no_parameter_attributes() {
+    assert_eq!(
+        rejection_at(
+            "declare void @f(metadata)\ndefine void @g() {\nentry:\n  call void @f(metadata noundef i32 0)\n  ret void\n}\n"
+        ),
+        ("expected metadata operand".to_owned(), (4, 25))
+    );
+    parse_and_render(
+        "declare void @f(metadata)\ndefine void @g() {\nentry:\n  call void @f(metadata i32 0)\n  ret void\n}\n",
     );
 }
 
@@ -727,7 +1012,7 @@ fn operand_bundle_reads_back_and_refuses_a_duplicated_tag() {
     let view = module.as_view();
     let call = view
         .functions()
-        .find(|function| function.name() == "f3")
+        .find(|function| function.name().as_deref() == Some("f3"))
         .expect("the fixture defines @f3")
         .basic_blocks()
         .flat_map(|block| block.instructions())
@@ -744,7 +1029,7 @@ fn operand_bundle_reads_back_and_refuses_a_duplicated_tag() {
                 bundle.tag().clone(),
                 bundle
                     .inputs()
-                    .map(|input: Value<'_, _>| input.to_string())
+                    .map(|input: Value<'_, _, llvmkit_ir::ReadOnly>| input.to_string())
                     .collect(),
             )
         })
@@ -774,8 +1059,8 @@ fn operand_bundle_reads_back_and_refuses_a_duplicated_tag() {
 
 /// Every bundle of a call site, as `(tag, input texts)`, read through the
 /// `OperandBundleUse` view: shared by the invoke and callbr read-back tests.
-fn bundle_texts<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx>(
-    bundles: impl Iterator<Item = llvmkit_ir::OperandBundleUse<'ctx, B>>,
+fn bundle_texts<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx, C: llvmkit_ir::Capability>(
+    bundles: impl Iterator<Item = llvmkit_ir::OperandBundleUse<'ctx, B, C>>,
 ) -> Vec<(llvmkit_ir::OperandBundleTag, Vec<String>)> {
     bundles
         .map(|bundle| {
@@ -813,7 +1098,7 @@ fn invoke_operand_bundles_read_back() {
     let view = module.as_view();
     let invokes = |name: &str| {
         view.functions()
-            .find(|function| function.name() == name)
+            .find(|function| function.name().as_deref() == Some(name))
             .expect("the fixture defines the function")
             .basic_blocks()
             .flat_map(|block| block.instructions())
@@ -926,7 +1211,9 @@ fn callbr_operand_bundles_read_back() {
     let view = module.as_view();
     let callbr = view
         .functions()
-        .find(|function| function.name() == "test_callbr_intrinsic_no_operand_bundles")
+        .find(|function| {
+            function.name().as_deref() == Some("test_callbr_intrinsic_no_operand_bundles")
+        })
         .expect("the fixture defines the function")
         .basic_blocks()
         .flat_map(|block| block.instructions())
@@ -1512,14 +1799,6 @@ fn indirect_call_ptrauth_operand_bundles_round_trip() {
     );
 }
 
-/// The `(line, column)` a diagnostic points at, computed the way
-/// `parse_file.rs` computes it for its `<path>:LINE:COL:` prefix — the same
-/// coordinates `llvm-as` prints as `<stdin>:LINE:COL:`.
-fn error_line_col(src: &str, err: &ParseError) -> llvmkit_support::LineCol {
-    let span = err.loc();
-    llvmkit_support::SourceMap::new(src.as_bytes()).line_col(span.start)
-}
-
 /// The source text the diagnostic's span opens on, for asserting *which token*
 /// an anchor landed on rather than only where it landed.
 fn error_token<'a>(src: &'a str, err: &ParseError) -> &'a str {
@@ -1559,10 +1838,7 @@ fn fast_math_flags_on_a_non_fp_call_report_at_call_loc() {
         err.to_string(),
         "fast-math-flags specified for call without floating-point scalar or vector return type"
     );
-    assert_eq!(
-        error_line_col(SRC, &err),
-        llvmkit_support::LineCol { line: 3, column: 8 }
-    );
+    assert_eq!(reported_line_and_column(SRC.as_bytes(), &err), (3, 8));
     assert_eq!(error_token(SRC, &err), "nnan");
 }
 
@@ -1598,10 +1874,7 @@ fn call_loc_anchors_at_the_call_keyword_only_for_a_tail_call() {
         plain.to_string(),
         "not enough parameters specified for call"
     );
-    assert_eq!(
-        error_line_col(PLAIN, &plain),
-        llvmkit_support::LineCol { line: 3, column: 8 }
-    );
+    assert_eq!(reported_line_and_column(PLAIN.as_bytes(), &plain), (3, 8));
     assert_eq!(error_token(PLAIN, &plain), "void");
 
     let musttail = parse_fixture_err("call_loc_musttail", MUSTTAIL.as_bytes());
@@ -1610,11 +1883,8 @@ fn call_loc_anchors_at_the_call_keyword_only_for_a_tail_call() {
         "not enough parameters specified for call"
     );
     assert_eq!(
-        error_line_col(MUSTTAIL, &musttail),
-        llvmkit_support::LineCol {
-            line: 3,
-            column: 12
-        }
+        reported_line_and_column(MUSTTAIL.as_bytes(), &musttail),
+        (3, 12)
     );
     assert_eq!(error_token(MUSTTAIL, &musttail), "call");
 }
@@ -2246,13 +2516,7 @@ fn call_in_zero_program_addrspace_rejects_a_nonzero_callee() {
     );
     // `; CHECK: …:[[@LINE-1]]:25:` on the line after `%call_no_as = call i8
     // %fnptr42(i32 0)` — upstream's `ID.Loc`, the `%fnptr42` token.
-    assert_eq!(
-        error_line_col(src, &err),
-        llvmkit_support::LineCol {
-            line: 10,
-            column: 25
-        }
-    );
+    assert_eq!(reported_line_and_column(FIXTURE, &err), (10, 25));
     assert_eq!(error_token(src, &err), "%fnptr42");
 }
 
@@ -3184,7 +3448,7 @@ attributes #0 = { nounwind }
     let view = module.as_view();
     let instructions: Vec<_> = view
         .functions()
-        .find(|function| function.name() == "f")
+        .find(|function| function.name().as_deref() == Some("f"))
         .expect("the source defines @f")
         .basic_blocks()
         .flat_map(|block| block.instructions())
@@ -3269,7 +3533,7 @@ attributes #0 = { speculatable }
     let view = module.as_view();
     let call = |name: &str| {
         view.functions()
-            .find(|function| function.name() == "f")
+            .find(|function| function.name().as_deref() == Some("f"))
             .expect("the source defines @f")
             .basic_blocks()
             .flat_map(|block| block.instructions())

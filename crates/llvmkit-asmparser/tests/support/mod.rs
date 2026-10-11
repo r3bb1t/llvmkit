@@ -14,6 +14,14 @@
 //! visibility statement rather than a lint suppression, which the repo forbids.
 //! Do not narrow it back to `pub(crate)` without giving every includer a reason
 //! to touch every item.
+//!
+//! Beside the `FileCheck` subset it holds the rejection helpers
+//! ([`rejection_at`], [`reported_line_and_column`]) that assert where a
+//! diagnostic is anchored as well as what it says.
+
+use llvmkit_asmparser::ll_parser::Parser;
+use llvmkit_asmparser::parse_error::ParseError;
+use llvmkit_ir::Module;
 
 /// One directive of a ported fixture's `CHECK` block.
 pub enum Check<'a> {
@@ -166,4 +174,31 @@ pub fn line_and_column(src: &[u8], offset: usize) -> (u32, u32) {
     };
     let narrow = |value: usize| u32::try_from(value).unwrap_or(u32::MAX);
     (narrow(line), narrow(column))
+}
+
+/// Project a rejection's reported span back onto its source as
+/// `(line, column)`, the coordinates upstream's `SourceMgr` prints as
+/// `<stdin>:LINE:COL:`.
+pub fn reported_line_and_column(source: &[u8], error: &ParseError) -> (u32, u32) {
+    let start = usize::try_from(error.loc().start).unwrap_or(usize::MAX);
+    line_and_column(source, start)
+}
+
+/// Parse `source` as a module that must be rejected, and return the rendered
+/// message **and** the `(line, column)` it is anchored at.
+///
+/// Comparing the text alone is what let a diagnostic carry upstream's exact
+/// wording from an unrelated token. `test/Verifier/invalid-label-param.ll`
+/// was one: its `CHECK` pins only the message, and llvmkit raised that
+/// message from another routine at another token, because its call sites
+/// lacked `LLParser::parseParameterList`'s argument-type guard. A caller that
+/// does not care about the anchor projects `.0`.
+pub fn rejection_at(source: impl AsRef<[u8]>) -> (String, (u32, u32)) {
+    let source = source.as_ref();
+    let module = Module::dynamic("rejection_at");
+    let error = Parser::new(source, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect_err("source is rejected");
+    (error.to_string(), reported_line_and_column(source, &error))
 }

@@ -27,6 +27,7 @@
 
 use std::collections::HashSet;
 
+use crate::capability::Capability;
 use crate::instruction::{InstructionView, NonTerminator};
 use crate::module::{ModuleBrand, ModuleRef};
 use crate::value_id::{ValueId, ViewIn};
@@ -110,9 +111,13 @@ impl<B: ModuleBrand> Worklist<B> {
     /// `TryFrom`, so a non-instruction id is *skipped*, never fed to the
     /// `unreachable!` kind check on the instruction payload. Releases the popped
     /// id from the dedup set so a later [`Self::push`] can re-queue it —
-    /// required for the cascade. `None` when drained.
+    /// required for the cascade. `None` when drained. The instruction comes
+    /// back at `module`'s capability.
     #[inline]
-    pub fn pop<'ctx>(&mut self, module: ModuleRef<'ctx, B>) -> Option<NonTerminator<'ctx, B>>
+    pub fn pop<'ctx, C: Capability>(
+        &mut self,
+        module: ModuleRef<'ctx, B, C>,
+    ) -> Option<NonTerminator<'ctx, B, C>>
     where
         B: 'ctx,
     {

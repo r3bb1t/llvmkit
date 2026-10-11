@@ -347,7 +347,7 @@ fn a_stale_id_from_a_dead_generation_is_refused_by_its_successor() -> Result<(),
     );
     // ...and the live one does resolve, so the check is discriminating rather
     // than blanket-refusing.
-    assert_eq!(gen2.view(fresh).name(), "successor");
+    assert_eq!(gen2.view(fresh).name().as_deref(), Some("successor"));
 
     // The fallible id-consuming surfaces report it as a foreign id rather than
     // reopening whatever block now sits at that index.

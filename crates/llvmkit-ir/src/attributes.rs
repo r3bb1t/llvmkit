@@ -25,6 +25,7 @@ use core::iter::FusedIterator;
 use std::fmt;
 
 use super::ApInt;
+use super::capability::{Capability, ReadOnly};
 use super::constant_range::ConstantRange;
 use super::constant_range_list::ConstantRangeList;
 use super::fp_class::FpClassTest;
@@ -807,11 +808,13 @@ pub enum Attribute<'ctx, B: ModuleBrand> {
     Enum(AttrKind),
     /// Integer-valued attribute (`align(8)`, `dereferenceable(N)`, ...).
     Int(AttrKind, u64),
-    /// Type-valued attribute (`byval(T)`, `sret(T)`, ...).
-    Type(AttrKind, Type<'ctx, B>),
+    /// Type-valued attribute (`byval(T)`, `sret(T)`, ...). An attribute is a
+    /// record, so the type it holds is `ReadOnly` whatever capability it was
+    /// built from (D1, D8).
+    Type(AttrKind, Type<'ctx, B, ReadOnly>),
     /// Integer constant-range attribute (`range(i32 0, 8)`).
     Range {
-        ty: Type<'ctx, B>,
+        ty: Type<'ctx, B, ReadOnly>,
         lower: ApInt,
         upper: ApInt,
     },
@@ -1207,9 +1210,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Attribute<'ctx, B> {
 
     /// Construct a type-valued attribute. Returns `None` if `kind` is
     /// not a type-flavored kind.
-    pub fn type_attr(kind: AttrKind, ty: Type<'ctx, B>) -> Option<Self> {
+    pub fn type_attr<C: Capability>(kind: AttrKind, ty: Type<'ctx, B, C>) -> Option<Self> {
         if kind.is_type_kind() {
-            Some(Self::Type(kind, ty))
+            Some(Self::Type(kind, ty.read_only()))
         } else {
             None
         }
@@ -1219,7 +1222,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Attribute<'ctx, B> {
     /// integer type, when the bounds have the wrong bit width, or when the
     /// range spells an empty set other than LLVM's canonical full-set form
     /// `range(T 0, 0)`.
-    pub fn range(ty: Type<'ctx, B>, lower: ApInt, upper: ApInt) -> Option<Self> {
+    pub fn range<C: Capability>(ty: Type<'ctx, B, C>, lower: ApInt, upper: ApInt) -> Option<Self> {
         let TypeKind::Integer { bits } = ty.kind() else {
             return None;
         };
@@ -1229,7 +1232,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Attribute<'ctx, B> {
         if lower.eq_ap_int(&upper) && !lower.is_zero() {
             return None;
         }
-        Some(Self::Range { ty, lower, upper })
+        Some(Self::Range {
+            ty: ty.read_only(),
+            lower,
+            upper,
+        })
     }
 
     /// Construct an `initializes` attribute. Returns `None` when the ranges

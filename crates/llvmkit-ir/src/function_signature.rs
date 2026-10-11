@@ -2,9 +2,10 @@
 //!
 //! The traits in this module describe logical LLVM IR signatures using
 //! lifetime-free Rust schema tokens. Concrete values produced from those
-//! schemas remain branded by the originating module through `'ctx` and `B`.
+//! schemas remain branded by the originating module through `'ctx` and `B`,
+//! and carry the capability `C` of the handle they were read through.
 //! Derived struct schemas can therefore map a Rust type such as
-//! `WindowPlacement` to a branded `WindowPlacementValue<'ctx, B>` wrapper
+//! `WindowPlacement` to a branded `WindowPlacementValue<'ctx, B, C>` wrapper
 //! without erasing module identity.
 
 use core::fmt;
@@ -16,9 +17,10 @@ use crate::CrateOnly;
 use crate::argument::Argument;
 use crate::basic_block::BasicBlock;
 use crate::block_state::Unterminated;
+use crate::capability::{CanMutate, Capability, CapabilityOf, Mutable, ReadOnly};
 use crate::error::{IrError, IrResult, TypeKindLabel};
 use crate::float_kind::{Bfloat, Fp128, Half, IntoFloatValue, PpcFp128, X86Fp80};
-use crate::function::FunctionValue;
+use crate::function::{FunctionValue, IntoCallee};
 use crate::int_width::{IntoIntValue, Width};
 use crate::ir_builder::{IrBuilder, Unpositioned, constant_folder::ConstantFolder};
 use crate::marker::{Ptr, ReturnMarker};
@@ -71,12 +73,12 @@ pub trait FunctionReturn: Sized + 'static {
     type Marker: ReturnMarker;
 
     /// Construct this schema's LLVM IR return type in `module`.
-    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
     where
         B: ModuleBrand + 'ctx;
 
     /// Check whether an existing raw return type matches this schema.
-    fn matches_ir_type<'ctx, B>(ty: Type<'ctx, B>) -> bool
+    fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
     where
         B: ModuleBrand + 'ctx;
 
@@ -84,18 +86,19 @@ pub trait FunctionReturn: Sized + 'static {
     fn expected_kind_label() -> TypeKindLabel;
 
     /// Branded result handle of a typed call to a callee with this
-    /// return schema: `()` for void, `IntValue<'ctx, i32, B>` for
-    /// `i32`, `S::Value<'ctx, B>` for a struct schema, etc.
-    type CallResult<'ctx, B: ModuleBrand + 'ctx>;
+    /// return schema, at the call's capability `C`: `()` for void,
+    /// `IntValue<'ctx, i32, B, C>` for `i32`, `S::Value<'ctx, B, C>` for a
+    /// struct schema, etc.
+    type CallResult<'ctx, B: ModuleBrand + 'ctx, C: Capability>;
 
     /// Wrap a raw call result. The token is only minted by this crate
     /// after the callee schema was validated
     /// (`TypedFunctionValue::try_from_function`), so the unchecked
     /// wraps below cannot mistype.
-    fn call_result_from_value<'ctx, B>(
-        value: Value<'ctx, B>,
+    fn call_result_from_value<'ctx, B, C: Capability>(
+        value: Value<'ctx, B, C>,
         validated: &token::ValidatedCallResult<'_>,
-    ) -> Self::CallResult<'ctx, B>
+    ) -> Self::CallResult<'ctx, B, C>
     where
         B: ModuleBrand + 'ctx;
 }
@@ -103,20 +106,22 @@ pub trait FunctionReturn: Sized + 'static {
 /// Lifetime-free schema token for one function parameter.
 pub trait FunctionParam: Sized + 'static {
     /// Branded IR value returned by [`TypedFunctionValue::params`].
-    type Value<'ctx, B: ModuleBrand + 'ctx>;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability>;
 
     /// Construct this schema's LLVM IR parameter type in `module`.
-    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
     where
         B: ModuleBrand + 'ctx;
 
     /// Check whether an existing raw parameter type matches this schema.
-    fn matches_ir_type<'ctx, B>(ty: Type<'ctx, B>) -> bool
+    fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
     where
         B: ModuleBrand + 'ctx;
 
     /// Validate that a raw argument can be represented by [`Self::Value`].
-    fn validate_argument<'ctx, B>(arg: Argument<'ctx, B>) -> IrResult<()>
+    /// Validation only reads, so the argument is [`ReadOnly`]: a function of
+    /// any capability is validated through it.
+    fn validate_argument<'ctx, B>(arg: Argument<'ctx, B, ReadOnly>) -> IrResult<()>
     where
         B: ModuleBrand + 'ctx;
 
@@ -124,10 +129,10 @@ pub trait FunctionParam: Sized + 'static {
     /// The validation capability is only created by this crate after
     /// [`TypedFunctionValue::try_from_function`] succeeds, so safe downstream
     /// code cannot bypass the facade's type checks.
-    fn value_from_argument<'ctx, B>(
-        arg: Argument<'ctx, B>,
+    fn value_from_argument<'ctx, B, C: Capability>(
+        arg: Argument<'ctx, B, C>,
         validated: &ValidatedFunctionParams<'_>,
-    ) -> Self::Value<'ctx, B>
+    ) -> Self::Value<'ctx, B, C>
     where
         B: ModuleBrand + 'ctx;
 
@@ -142,10 +147,10 @@ pub trait FunctionParam: Sized + 'static {
     /// the token is only minted by this crate after the phi types were built
     /// from this schema, so the unchecked wrap cannot mistype and safe
     /// downstream code cannot reach it.
-    fn value_from_value<'ctx, B>(
-        value: Value<'ctx, B>,
+    fn value_from_value<'ctx, B, C: Capability>(
+        value: Value<'ctx, B, C>,
         validated: &ValidatedFunctionParams<'_>,
-    ) -> Self::Value<'ctx, B>
+    ) -> Self::Value<'ctx, B, C>
     where
         B: ModuleBrand + 'ctx;
 }
@@ -156,15 +161,17 @@ pub trait FunctionParamList: Sized + 'static {
     const ARITY: u32;
 
     /// Branded tuple returned by [`TypedFunctionValue::params`].
-    type Values<'ctx, B: ModuleBrand + 'ctx>;
+    type Values<'ctx, B: ModuleBrand + 'ctx, C: Capability>;
 
     /// Construct the LLVM IR parameter type list in tuple order.
-    fn ir_types<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Vec<Type<'ctx, B>>>
+    fn ir_types<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Vec<Type<'ctx, B, ReadOnly>>>
     where
         B: ModuleBrand + 'ctx;
 
-    /// Validate every raw argument in declaration order.
-    fn validate<'ctx, R, B>(function: FunctionValue<'ctx, R, B>) -> IrResult<()>
+    /// Validate every raw argument in declaration order. Validation only
+    /// reads, so the function is [`ReadOnly`]: a facade of any capability is
+    /// validated through it.
+    fn validate<'ctx, R, B>(function: FunctionValue<'ctx, R, B, ReadOnly>) -> IrResult<()>
     where
         R: ReturnMarker,
         B: ModuleBrand + 'ctx;
@@ -172,10 +179,10 @@ pub trait FunctionParamList: Sized + 'static {
     /// Return typed parameter values in declaration order.
     /// The validation capability is only created by this crate after the raw
     /// function has passed arity and per-parameter checks.
-    fn values<'ctx, R, B>(
-        function: FunctionValue<'ctx, R, B>,
+    fn values<'ctx, R, B, C: Capability>(
+        function: FunctionValue<'ctx, R, B, C>,
         validated: &ValidatedFunctionParams<'_>,
-    ) -> Self::Values<'ctx, B>
+    ) -> Self::Values<'ctx, B, C>
     where
         R: ReturnMarker,
         B: ModuleBrand + 'ctx;
@@ -188,10 +195,10 @@ pub trait FunctionParamList: Sized + 'static {
     /// establishes that arity and ordering (one phi per `ir_types` entry, in
     /// order) before minting the capability token, so the per-position
     /// unchecked wraps cannot mistype.
-    fn values_from_phi_values<'ctx, B>(
-        phi_values: &[Value<'ctx, B>],
+    fn values_from_phi_values<'ctx, B, C: Capability>(
+        phi_values: &[Value<'ctx, B, C>],
         validated: &ValidatedFunctionParams<'_>,
-    ) -> Self::Values<'ctx, B>
+    ) -> Self::Values<'ctx, B, C>
     where
         B: ModuleBrand + 'ctx;
 }
@@ -203,21 +210,25 @@ pub trait FunctionSignature: Sized + 'static {
 }
 
 /// Function handle whose return and parameter schema are both known at compile time.
-pub struct TypedFunctionValue<'ctx, Ret, Params, B: ModuleBrand>
+///
+/// `C` is the handle's [`Capability`] (D8), the capability of the function it
+/// wraps.
+pub struct TypedFunctionValue<'ctx, Ret, Params, B: ModuleBrand, C: Capability = Mutable>
 where
     Ret: FunctionReturn,
     Params: FunctionParamList,
 {
-    function: FunctionValue<'ctx, Ret::Marker, B>,
+    function: FunctionValue<'ctx, Ret::Marker, B, C>,
     _ret: PhantomData<Ret>,
     _params: PhantomData<Params>,
 }
 
-impl<'ctx, Ret, Params, B> Clone for TypedFunctionValue<'ctx, Ret, Params, B>
+impl<'ctx, Ret, Params, B, C> Clone for TypedFunctionValue<'ctx, Ret, Params, B, C>
 where
     B: ModuleBrand,
     Ret: FunctionReturn,
     Params: FunctionParamList,
+    C: Capability,
 {
     #[inline]
     fn clone(&self) -> Self {
@@ -225,19 +236,21 @@ where
     }
 }
 
-impl<'ctx, Ret, Params, B> Copy for TypedFunctionValue<'ctx, Ret, Params, B>
+impl<'ctx, Ret, Params, B, C> Copy for TypedFunctionValue<'ctx, Ret, Params, B, C>
 where
     B: ModuleBrand,
     Ret: FunctionReturn,
     Params: FunctionParamList,
+    C: Capability,
 {
 }
 
-impl<'ctx, Ret, Params, B> PartialEq for TypedFunctionValue<'ctx, Ret, Params, B>
+impl<'ctx, Ret, Params, B, C> PartialEq for TypedFunctionValue<'ctx, Ret, Params, B, C>
 where
     B: ModuleBrand,
     Ret: FunctionReturn,
     Params: FunctionParamList,
+    C: Capability,
 {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
@@ -245,19 +258,21 @@ where
     }
 }
 
-impl<'ctx, Ret, Params, B> Eq for TypedFunctionValue<'ctx, Ret, Params, B>
+impl<'ctx, Ret, Params, B, C> Eq for TypedFunctionValue<'ctx, Ret, Params, B, C>
 where
     B: ModuleBrand,
     Ret: FunctionReturn,
     Params: FunctionParamList,
+    C: Capability,
 {
 }
 
-impl<'ctx, Ret, Params, B> Hash for TypedFunctionValue<'ctx, Ret, Params, B>
+impl<'ctx, Ret, Params, B, C> Hash for TypedFunctionValue<'ctx, Ret, Params, B, C>
 where
     B: ModuleBrand,
     Ret: FunctionReturn,
     Params: FunctionParamList,
+    C: Capability,
 {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -265,11 +280,12 @@ where
     }
 }
 
-impl<'ctx, Ret, Params, B> fmt::Debug for TypedFunctionValue<'ctx, Ret, Params, B>
+impl<'ctx, Ret, Params, B, C> fmt::Debug for TypedFunctionValue<'ctx, Ret, Params, B, C>
 where
     B: ModuleBrand,
     Ret: FunctionReturn,
     Params: FunctionParamList,
+    C: Capability,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TypedFunctionValue")
@@ -278,14 +294,26 @@ where
     }
 }
 
-impl<'ctx, Ret, Params, B> TypedFunctionValue<'ctx, Ret, Params, B>
+impl<Ret, Params, B, C> CapabilityOf for TypedFunctionValue<'_, Ret, Params, B, C>
+where
+    B: ModuleBrand,
+    Ret: FunctionReturn,
+    Params: FunctionParamList,
+    C: Capability,
+{
+    type Capability = C;
+}
+
+impl<'ctx, Ret, Params, B, C> TypedFunctionValue<'ctx, Ret, Params, B, C>
 where
     B: ModuleBrand + 'ctx,
     Ret: FunctionReturn,
     Params: FunctionParamList,
+    C: Capability,
 {
     /// Wrap an existing raw function after validating the complete schema.
-    pub fn try_from_function(function: FunctionValue<'ctx, Ret::Marker, B>) -> IrResult<Self> {
+    /// The facade keeps the function's capability.
+    pub fn try_from_function(function: FunctionValue<'ctx, Ret::Marker, B, C>) -> IrResult<Self> {
         if function.signature().is_var_arg() {
             return Err(IrError::UnexpectedVarArgsSignature);
         }
@@ -303,7 +331,7 @@ where
                 got: return_type.kind_label(),
             });
         }
-        Params::validate(function)?;
+        Params::validate(function.read_only())?;
         Ok(Self {
             function,
             _ret: PhantomData,
@@ -326,17 +354,11 @@ where
         )
     }
 
-    /// Return the underlying return-typed function handle.
+    /// Return the underlying return-typed function handle, at this facade's
+    /// capability.
     #[inline]
-    pub fn as_function(self) -> FunctionValue<'ctx, Ret::Marker, B> {
+    pub fn as_function(self) -> FunctionValue<'ctx, Ret::Marker, B, C> {
         self.function
-    }
-
-    /// Return typed parameter values in declaration order.
-    #[inline]
-    pub fn params(self) -> Params::Values<'ctx, B> {
-        let validated = ValidatedFunctionParams::new();
-        Params::values(self.function, &validated)
     }
 
     /// Append a basic block to this function.
@@ -348,6 +370,7 @@ where
     ) -> BasicBlock<'ctx, Ret::Marker, Unterminated, B>
     where
         Name: Into<String>,
+        C: CanMutate,
     {
         self.function.append_basic_block(module, name)
     }
@@ -357,8 +380,27 @@ where
     pub fn builder<'m>(
         self,
         module: &'ctx Module<B, Unverified>,
-    ) -> IrBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, Ret::Marker> {
+    ) -> IrBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, Ret::Marker>
+    where
+        C: CanMutate,
+    {
         IrBuilder::new_for::<Ret::Marker>(module)
+    }
+}
+
+impl<'ctx, Ret, Params, B, C> TypedFunctionValue<'ctx, Ret, Params, B, C>
+where
+    B: ModuleBrand + 'ctx,
+    Ret: FunctionReturn,
+    Params: FunctionParamList,
+    C: Capability,
+{
+    /// Return typed parameter values in declaration order, at the facade's
+    /// capability (D8): navigation from the function keeps what it holds.
+    #[inline]
+    pub fn params(self) -> Params::Values<'ctx, B, C> {
+        let validated = ValidatedFunctionParams::new();
+        Params::values(self.function, &validated)
     }
 }
 
@@ -370,22 +412,24 @@ where
 /// convention (`FunctionType::isVarArg`); the fixed-arity
 /// [`TypedFunctionValue`] and this facade are mutually exclusive —
 /// each requires the opposite of [`crate::derived_types::FunctionType::is_var_arg`]
-/// at construction time.
-pub struct TypedVarArgsFunctionValue<'ctx, Ret, Params, B: ModuleBrand>
+/// at construction time. `C` is the handle's [`Capability`] (D8), the
+/// capability of the function it wraps.
+pub struct TypedVarArgsFunctionValue<'ctx, Ret, Params, B: ModuleBrand, C: Capability = Mutable>
 where
     Ret: FunctionReturn,
     Params: FunctionParamList,
 {
-    function: FunctionValue<'ctx, Ret::Marker, B>,
+    function: FunctionValue<'ctx, Ret::Marker, B, C>,
     _ret: PhantomData<Ret>,
     _params: PhantomData<Params>,
 }
 
-impl<'ctx, Ret, Params, B> Clone for TypedVarArgsFunctionValue<'ctx, Ret, Params, B>
+impl<'ctx, Ret, Params, B, C> Clone for TypedVarArgsFunctionValue<'ctx, Ret, Params, B, C>
 where
     B: ModuleBrand,
     Ret: FunctionReturn,
     Params: FunctionParamList,
+    C: Capability,
 {
     #[inline]
     fn clone(&self) -> Self {
@@ -393,19 +437,21 @@ where
     }
 }
 
-impl<'ctx, Ret, Params, B> Copy for TypedVarArgsFunctionValue<'ctx, Ret, Params, B>
+impl<'ctx, Ret, Params, B, C> Copy for TypedVarArgsFunctionValue<'ctx, Ret, Params, B, C>
 where
     B: ModuleBrand,
     Ret: FunctionReturn,
     Params: FunctionParamList,
+    C: Capability,
 {
 }
 
-impl<'ctx, Ret, Params, B> PartialEq for TypedVarArgsFunctionValue<'ctx, Ret, Params, B>
+impl<'ctx, Ret, Params, B, C> PartialEq for TypedVarArgsFunctionValue<'ctx, Ret, Params, B, C>
 where
     B: ModuleBrand,
     Ret: FunctionReturn,
     Params: FunctionParamList,
+    C: Capability,
 {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
@@ -413,19 +459,21 @@ where
     }
 }
 
-impl<'ctx, Ret, Params, B> Eq for TypedVarArgsFunctionValue<'ctx, Ret, Params, B>
+impl<'ctx, Ret, Params, B, C> Eq for TypedVarArgsFunctionValue<'ctx, Ret, Params, B, C>
 where
     B: ModuleBrand,
     Ret: FunctionReturn,
     Params: FunctionParamList,
+    C: Capability,
 {
 }
 
-impl<'ctx, Ret, Params, B> Hash for TypedVarArgsFunctionValue<'ctx, Ret, Params, B>
+impl<'ctx, Ret, Params, B, C> Hash for TypedVarArgsFunctionValue<'ctx, Ret, Params, B, C>
 where
     B: ModuleBrand,
     Ret: FunctionReturn,
     Params: FunctionParamList,
+    C: Capability,
 {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -433,11 +481,12 @@ where
     }
 }
 
-impl<'ctx, Ret, Params, B> fmt::Debug for TypedVarArgsFunctionValue<'ctx, Ret, Params, B>
+impl<'ctx, Ret, Params, B, C> fmt::Debug for TypedVarArgsFunctionValue<'ctx, Ret, Params, B, C>
 where
     B: ModuleBrand,
     Ret: FunctionReturn,
     Params: FunctionParamList,
+    C: Capability,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TypedVarArgsFunctionValue")
@@ -446,15 +495,27 @@ where
     }
 }
 
-impl<'ctx, Ret, Params, B> TypedVarArgsFunctionValue<'ctx, Ret, Params, B>
+impl<Ret, Params, B, C> CapabilityOf for TypedVarArgsFunctionValue<'_, Ret, Params, B, C>
+where
+    B: ModuleBrand,
+    Ret: FunctionReturn,
+    Params: FunctionParamList,
+    C: Capability,
+{
+    type Capability = C;
+}
+
+impl<'ctx, Ret, Params, B, C> TypedVarArgsFunctionValue<'ctx, Ret, Params, B, C>
 where
     B: ModuleBrand + 'ctx,
     Ret: FunctionReturn,
     Params: FunctionParamList,
+    C: Capability,
 {
     /// Wrap an existing raw function after validating the fixed-prefix
-    /// schema and the variadic marker.
-    pub fn try_from_function(function: FunctionValue<'ctx, Ret::Marker, B>) -> IrResult<Self> {
+    /// schema and the variadic marker. The facade keeps the function's
+    /// capability.
+    pub fn try_from_function(function: FunctionValue<'ctx, Ret::Marker, B, C>) -> IrResult<Self> {
         if !function.signature().is_var_arg() {
             return Err(IrError::MissingVarArgsSignature);
         }
@@ -472,7 +533,7 @@ where
                 got: return_type.kind_label(),
             });
         }
-        Params::validate(function)?;
+        Params::validate(function.read_only())?;
         Ok(Self {
             function,
             _ret: PhantomData,
@@ -493,19 +554,11 @@ where
         )
     }
 
-    /// Return the underlying return-typed function handle.
+    /// Return the underlying return-typed function handle, at this facade's
+    /// capability.
     #[inline]
-    pub fn as_function(self) -> FunctionValue<'ctx, Ret::Marker, B> {
+    pub fn as_function(self) -> FunctionValue<'ctx, Ret::Marker, B, C> {
         self.function
-    }
-
-    /// Return typed fixed-prefix parameter values in declaration order.
-    /// The `...` tail is not represented here — it is supplied
-    /// per-call through [`crate::IrBuilder::varargs_call`].
-    #[inline]
-    pub fn params(self) -> Params::Values<'ctx, B> {
-        let validated = ValidatedFunctionParams::new();
-        Params::values(self.function, &validated)
     }
 
     /// Append a basic block to this function.
@@ -517,6 +570,7 @@ where
     ) -> BasicBlock<'ctx, Ret::Marker, Unterminated, B>
     where
         Name: Into<String>,
+        C: CanMutate,
     {
         self.function.append_basic_block(module, name)
     }
@@ -526,8 +580,28 @@ where
     pub fn builder<'m>(
         self,
         module: &'ctx Module<B, Unverified>,
-    ) -> IrBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, Ret::Marker> {
+    ) -> IrBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, Ret::Marker>
+    where
+        C: CanMutate,
+    {
         IrBuilder::new_for::<Ret::Marker>(module)
+    }
+}
+
+impl<'ctx, Ret, Params, B, C> TypedVarArgsFunctionValue<'ctx, Ret, Params, B, C>
+where
+    B: ModuleBrand + 'ctx,
+    Ret: FunctionReturn,
+    Params: FunctionParamList,
+    C: Capability,
+{
+    /// Return typed fixed-prefix parameter values in declaration order, at
+    /// the facade's capability. The `...` tail is not represented here — it
+    /// is supplied per-call through [`crate::IrBuilder::varargs_call`].
+    #[inline]
+    pub fn params(self) -> Params::Values<'ctx, B, C> {
+        let validated = ValidatedFunctionParams::new();
+        Params::values(self.function, &validated)
     }
 }
 
@@ -597,19 +671,23 @@ where
 /// resolver [`Module::view`](crate::Module::view) uses).
 macro_rules! impl_into_typed_callee {
     ($trait:ident :: $method:ident => $facade:ident, $id:ident) => {
-        impl<'ctx, Ret, Params, B> typed_callee_sealed::Sealed for $facade<'ctx, Ret, Params, B>
+        impl<'ctx, Ret, Params, B, C> typed_callee_sealed::Sealed
+            for $facade<'ctx, Ret, Params, B, C>
         where
             Ret: FunctionReturn,
             Params: FunctionParamList,
             B: ModuleBrand,
+            C: Capability,
         {
         }
 
-        impl<'ctx, Ret, Params, B> $trait<'ctx, Ret, Params, B> for $facade<'ctx, Ret, Params, B>
+        impl<'ctx, Ret, Params, B, C> $trait<'ctx, Ret, Params, B>
+            for $facade<'ctx, Ret, Params, B, C>
         where
             Ret: FunctionReturn,
             Params: FunctionParamList,
             B: ModuleBrand + 'ctx,
+            C: Capability,
         {
             #[inline]
             fn $method(
@@ -617,9 +695,15 @@ macro_rules! impl_into_typed_callee {
                 module: ModuleRef<'ctx, B>,
             ) -> IrResult<$facade<'ctx, Ret, Params, B>> {
                 // Boundary: refuse a facade whose function another module
-                // minted.
-                ValueSlotAccess::slot_in(self.as_function(), module.id())?;
-                Ok(self)
+                // minted. A facade of any capability is admitted and its
+                // function re-minted at `module`'s; the schema it was
+                // validated against rides along unchanged.
+                let function = IntoCallee::into_callee(self.as_function(), module)?;
+                Ok($facade {
+                    function,
+                    _ret: PhantomData,
+                    _params: PhantomData,
+                })
             }
         }
 
@@ -659,7 +743,7 @@ impl FunctionReturn for () {
     type Marker = ();
 
     #[inline]
-    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -667,7 +751,7 @@ impl FunctionReturn for () {
     }
 
     #[inline]
-    fn matches_ir_type<'ctx, B>(ty: Type<'ctx, B>) -> bool
+    fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
@@ -679,13 +763,13 @@ impl FunctionReturn for () {
         TypeKindLabel::Void
     }
 
-    type CallResult<'ctx, B: ModuleBrand + 'ctx> = ();
+    type CallResult<'ctx, B: ModuleBrand + 'ctx, C: Capability> = ();
 
     #[inline]
-    fn call_result_from_value<'ctx, B>(
-        value: Value<'ctx, B>,
+    fn call_result_from_value<'ctx, B, C: Capability>(
+        value: Value<'ctx, B, C>,
         validated: &token::ValidatedCallResult<'_>,
-    ) -> Self::CallResult<'ctx, B>
+    ) -> Self::CallResult<'ctx, B, C>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -697,7 +781,7 @@ impl FunctionReturn for Ptr {
     type Marker = Ptr;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -705,7 +789,7 @@ impl FunctionReturn for Ptr {
     }
 
     #[inline]
-    fn matches_ir_type<'ctx, B>(ty: Type<'ctx, B>) -> bool
+    fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
@@ -717,13 +801,13 @@ impl FunctionReturn for Ptr {
         TypeKindLabel::Pointer
     }
 
-    type CallResult<'ctx, B: ModuleBrand + 'ctx> = PointerValue<'ctx, B>;
+    type CallResult<'ctx, B: ModuleBrand + 'ctx, C: Capability> = PointerValue<'ctx, B, C>;
 
     #[inline]
-    fn call_result_from_value<'ctx, B>(
-        value: Value<'ctx, B>,
+    fn call_result_from_value<'ctx, B, C: Capability>(
+        value: Value<'ctx, B, C>,
         _validated: &token::ValidatedCallResult<'_>,
-    ) -> Self::CallResult<'ctx, B>
+    ) -> Self::CallResult<'ctx, B, C>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -732,10 +816,10 @@ impl FunctionReturn for Ptr {
 }
 
 impl FunctionParam for Ptr {
-    type Value<'ctx, B: ModuleBrand + 'ctx> = PointerValue<'ctx, B>;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = PointerValue<'ctx, B, C>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -743,7 +827,7 @@ impl FunctionParam for Ptr {
     }
 
     #[inline]
-    fn matches_ir_type<'ctx, B>(ty: Type<'ctx, B>) -> bool
+    fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
@@ -751,18 +835,18 @@ impl FunctionParam for Ptr {
     }
 
     #[inline]
-    fn validate_argument<'ctx, B>(arg: Argument<'ctx, B>) -> IrResult<()>
+    fn validate_argument<'ctx, B>(arg: Argument<'ctx, B, ReadOnly>) -> IrResult<()>
     where
         B: ModuleBrand + 'ctx,
     {
-        PointerValue::try_from(arg).map(|_| ())
+        PointerValue::<B, ReadOnly>::try_from(arg).map(|_| ())
     }
 
     #[inline]
-    fn value_from_argument<'ctx, B>(
-        arg: Argument<'ctx, B>,
+    fn value_from_argument<'ctx, B, C: Capability>(
+        arg: Argument<'ctx, B, C>,
         _validated: &ValidatedFunctionParams<'_>,
-    ) -> Self::Value<'ctx, B>
+    ) -> Self::Value<'ctx, B, C>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -770,10 +854,10 @@ impl FunctionParam for Ptr {
     }
 
     #[inline]
-    fn value_from_value<'ctx, B>(
-        value: Value<'ctx, B>,
+    fn value_from_value<'ctx, B, C: Capability>(
+        value: Value<'ctx, B, C>,
         _validated: &ValidatedFunctionParams<'_>,
-    ) -> Self::Value<'ctx, B>
+    ) -> Self::Value<'ctx, B, C>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -787,7 +871,7 @@ macro_rules! impl_int_signature_marker {
             type Marker = $marker;
 
             #[inline]
-            fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
+            fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -795,7 +879,7 @@ macro_rules! impl_int_signature_marker {
             }
 
             #[inline]
-            fn matches_ir_type<'ctx, B>(ty: Type<'ctx, B>) -> bool
+            fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -807,25 +891,25 @@ macro_rules! impl_int_signature_marker {
                 TypeKindLabel::Integer
             }
 
-            type CallResult<'ctx, B: ModuleBrand + 'ctx> = IntValue<'ctx, $marker, B>;
+            type CallResult<'ctx, B: ModuleBrand + 'ctx, C: Capability> = IntValue<'ctx, $marker, B, C>;
 
             #[inline]
-            fn call_result_from_value<'ctx, B>(
-                value: Value<'ctx, B>,
+            fn call_result_from_value<'ctx, B, C: Capability>(
+                value: Value<'ctx, B, C>,
                 _validated: &token::ValidatedCallResult<'_>,
-            ) -> Self::CallResult<'ctx, B>
+            ) -> Self::CallResult<'ctx, B, C>
             where
                 B: ModuleBrand + 'ctx,
             {
-                IntValue::<$marker, B>::from_value_unchecked(value)
+                IntValue::<$marker, B, C>::from_value_unchecked(value)
             }
         }
 
         impl FunctionParam for $marker {
-            type Value<'ctx, B: ModuleBrand + 'ctx> = IntValue<'ctx, $marker, B>;
+            type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = IntValue<'ctx, $marker, B, C>;
 
             #[inline]
-            fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
+            fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -833,7 +917,7 @@ macro_rules! impl_int_signature_marker {
             }
 
             #[inline]
-            fn matches_ir_type<'ctx, B>(ty: Type<'ctx, B>) -> bool
+            fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -841,33 +925,33 @@ macro_rules! impl_int_signature_marker {
             }
 
             #[inline]
-            fn validate_argument<'ctx, B>(arg: Argument<'ctx, B>) -> IrResult<()>
+            fn validate_argument<'ctx, B>(arg: Argument<'ctx, B, ReadOnly>) -> IrResult<()>
             where
                 B: ModuleBrand + 'ctx,
             {
-                IntValue::<$marker, B>::try_from(arg).map(|_| ())
+                IntValue::<$marker, B, ReadOnly>::try_from(arg).map(|_| ())
             }
 
             #[inline]
-            fn value_from_argument<'ctx, B>(
-                arg: Argument<'ctx, B>,
+            fn value_from_argument<'ctx, B, C: Capability>(
+                arg: Argument<'ctx, B, C>,
                 _validated: &ValidatedFunctionParams<'_>,
-            ) -> Self::Value<'ctx, B>
+            ) -> Self::Value<'ctx, B, C>
             where
                 B: ModuleBrand + 'ctx,
             {
-                IntValue::<$marker, B>::from_value_unchecked(arg.as_erased())
+                IntValue::<$marker, B, C>::from_value_unchecked(arg.as_erased())
             }
 
             #[inline]
-            fn value_from_value<'ctx, B>(
-                value: Value<'ctx, B>,
+            fn value_from_value<'ctx, B, C: Capability>(
+                value: Value<'ctx, B, C>,
                 _validated: &ValidatedFunctionParams<'_>,
-            ) -> Self::Value<'ctx, B>
+            ) -> Self::Value<'ctx, B, C>
             where
                 B: ModuleBrand + 'ctx,
             {
-                IntValue::<$marker, B>::from_value_unchecked(value)
+                IntValue::<$marker, B, C>::from_value_unchecked(value)
             }
         }
     };
@@ -884,7 +968,7 @@ impl<const N: u32> FunctionReturn for Width<N> {
     type Marker = Width<N>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -892,7 +976,7 @@ impl<const N: u32> FunctionReturn for Width<N> {
     }
 
     #[inline]
-    fn matches_ir_type<'ctx, B>(ty: Type<'ctx, B>) -> bool
+    fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
@@ -904,25 +988,25 @@ impl<const N: u32> FunctionReturn for Width<N> {
         TypeKindLabel::Integer
     }
 
-    type CallResult<'ctx, B: ModuleBrand + 'ctx> = IntValue<'ctx, Width<N>, B>;
+    type CallResult<'ctx, B: ModuleBrand + 'ctx, C: Capability> = IntValue<'ctx, Width<N>, B, C>;
 
     #[inline]
-    fn call_result_from_value<'ctx, B>(
-        value: Value<'ctx, B>,
+    fn call_result_from_value<'ctx, B, C: Capability>(
+        value: Value<'ctx, B, C>,
         _validated: &token::ValidatedCallResult<'_>,
-    ) -> Self::CallResult<'ctx, B>
+    ) -> Self::CallResult<'ctx, B, C>
     where
         B: ModuleBrand + 'ctx,
     {
-        IntValue::<Width<N>, B>::from_value_unchecked(value)
+        IntValue::<Width<N>, B, C>::from_value_unchecked(value)
     }
 }
 
 impl<const N: u32> FunctionParam for Width<N> {
-    type Value<'ctx, B: ModuleBrand + 'ctx> = IntValue<'ctx, Width<N>, B>;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = IntValue<'ctx, Width<N>, B, C>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -930,7 +1014,7 @@ impl<const N: u32> FunctionParam for Width<N> {
     }
 
     #[inline]
-    fn matches_ir_type<'ctx, B>(ty: Type<'ctx, B>) -> bool
+    fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
@@ -938,33 +1022,33 @@ impl<const N: u32> FunctionParam for Width<N> {
     }
 
     #[inline]
-    fn validate_argument<'ctx, B>(arg: Argument<'ctx, B>) -> IrResult<()>
+    fn validate_argument<'ctx, B>(arg: Argument<'ctx, B, ReadOnly>) -> IrResult<()>
     where
         B: ModuleBrand + 'ctx,
     {
-        IntValue::<Width<N>, B>::try_from(arg).map(|_| ())
+        IntValue::<Width<N>, B, ReadOnly>::try_from(arg).map(|_| ())
     }
 
     #[inline]
-    fn value_from_argument<'ctx, B>(
-        arg: Argument<'ctx, B>,
+    fn value_from_argument<'ctx, B, C: Capability>(
+        arg: Argument<'ctx, B, C>,
         _validated: &ValidatedFunctionParams<'_>,
-    ) -> Self::Value<'ctx, B>
+    ) -> Self::Value<'ctx, B, C>
     where
         B: ModuleBrand + 'ctx,
     {
-        IntValue::<Width<N>, B>::from_value_unchecked(arg.as_erased())
+        IntValue::<Width<N>, B, C>::from_value_unchecked(arg.as_erased())
     }
 
     #[inline]
-    fn value_from_value<'ctx, B>(
-        value: Value<'ctx, B>,
+    fn value_from_value<'ctx, B, C: Capability>(
+        value: Value<'ctx, B, C>,
         _validated: &ValidatedFunctionParams<'_>,
-    ) -> Self::Value<'ctx, B>
+    ) -> Self::Value<'ctx, B, C>
     where
         B: ModuleBrand + 'ctx,
     {
-        IntValue::<Width<N>, B>::from_value_unchecked(value)
+        IntValue::<Width<N>, B, C>::from_value_unchecked(value)
     }
 }
 
@@ -974,7 +1058,7 @@ macro_rules! impl_float_signature_marker {
             type Marker = $marker;
 
             #[inline]
-            fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
+            fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -982,7 +1066,7 @@ macro_rules! impl_float_signature_marker {
             }
 
             #[inline]
-            fn matches_ir_type<'ctx, B>(ty: Type<'ctx, B>) -> bool
+            fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -994,25 +1078,27 @@ macro_rules! impl_float_signature_marker {
                 TypeKindLabel::$label
             }
 
-            type CallResult<'ctx, B: ModuleBrand + 'ctx> = FloatValue<'ctx, $marker, B>;
+            type CallResult<'ctx, B: ModuleBrand + 'ctx, C: Capability> =
+                FloatValue<'ctx, $marker, B, C>;
 
             #[inline]
-            fn call_result_from_value<'ctx, B>(
-                value: Value<'ctx, B>,
+            fn call_result_from_value<'ctx, B, C: Capability>(
+                value: Value<'ctx, B, C>,
                 _validated: &token::ValidatedCallResult<'_>,
-            ) -> Self::CallResult<'ctx, B>
+            ) -> Self::CallResult<'ctx, B, C>
             where
                 B: ModuleBrand + 'ctx,
             {
-                FloatValue::<$marker, B>::from_value_unchecked(value)
+                FloatValue::<$marker, B, C>::from_value_unchecked(value)
             }
         }
 
         impl FunctionParam for $marker {
-            type Value<'ctx, B: ModuleBrand + 'ctx> = FloatValue<'ctx, $marker, B>;
+            type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> =
+                FloatValue<'ctx, $marker, B, C>;
 
             #[inline]
-            fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
+            fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -1020,7 +1106,7 @@ macro_rules! impl_float_signature_marker {
             }
 
             #[inline]
-            fn matches_ir_type<'ctx, B>(ty: Type<'ctx, B>) -> bool
+            fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -1028,33 +1114,33 @@ macro_rules! impl_float_signature_marker {
             }
 
             #[inline]
-            fn validate_argument<'ctx, B>(arg: Argument<'ctx, B>) -> IrResult<()>
+            fn validate_argument<'ctx, B>(arg: Argument<'ctx, B, ReadOnly>) -> IrResult<()>
             where
                 B: ModuleBrand + 'ctx,
             {
-                FloatValue::<$marker, B>::try_from(arg).map(|_| ())
+                FloatValue::<$marker, B, ReadOnly>::try_from(arg).map(|_| ())
             }
 
             #[inline]
-            fn value_from_argument<'ctx, B>(
-                arg: Argument<'ctx, B>,
+            fn value_from_argument<'ctx, B, C: Capability>(
+                arg: Argument<'ctx, B, C>,
                 _validated: &ValidatedFunctionParams<'_>,
-            ) -> Self::Value<'ctx, B>
+            ) -> Self::Value<'ctx, B, C>
             where
                 B: ModuleBrand + 'ctx,
             {
-                FloatValue::<$marker, B>::from_value_unchecked(arg.as_erased())
+                FloatValue::<$marker, B, C>::from_value_unchecked(arg.as_erased())
             }
 
             #[inline]
-            fn value_from_value<'ctx, B>(
-                value: Value<'ctx, B>,
+            fn value_from_value<'ctx, B, C: Capability>(
+                value: Value<'ctx, B, C>,
                 _validated: &ValidatedFunctionParams<'_>,
-            ) -> Self::Value<'ctx, B>
+            ) -> Self::Value<'ctx, B, C>
             where
                 B: ModuleBrand + 'ctx,
             {
-                FloatValue::<$marker, B>::from_value_unchecked(value)
+                FloatValue::<$marker, B, C>::from_value_unchecked(value)
             }
         }
     };
@@ -1068,10 +1154,11 @@ impl_float_signature_marker!(Fp128, fp128_type, TypeKind::Fp128, Fp128);
 impl_float_signature_marker!(X86Fp80, x86_fp80_type, TypeKind::X86Fp80, X86Fp80);
 impl_float_signature_marker!(PpcFp128, ppc_fp128_type, TypeKind::PpcFp128, PpcFp128);
 
-fn next_function_param<'ctx, B, I>(params: &mut I) -> Argument<'ctx, B>
+fn next_function_param<'ctx, B, C, I>(params: &mut I) -> Argument<'ctx, B, C>
 where
     B: ModuleBrand + 'ctx,
-    I: Iterator<Item = Argument<'ctx, B>>,
+    C: Capability,
+    I: Iterator<Item = Argument<'ctx, B, C>>,
 {
     match params.next() {
         Some(arg) => arg,
@@ -1083,10 +1170,10 @@ where
 
 impl FunctionParamList for () {
     const ARITY: u32 = 0;
-    type Values<'ctx, B: ModuleBrand + 'ctx> = ();
+    type Values<'ctx, B: ModuleBrand + 'ctx, C: Capability> = ();
 
     #[inline]
-    fn ir_types<'ctx, B>(_module: ModuleView<'ctx, B>) -> IrResult<Vec<Type<'ctx, B>>>
+    fn ir_types<'ctx, B>(_module: ModuleView<'ctx, B>) -> IrResult<Vec<Type<'ctx, B, ReadOnly>>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -1094,7 +1181,7 @@ impl FunctionParamList for () {
     }
 
     #[inline]
-    fn validate<'ctx, R, B>(_function: FunctionValue<'ctx, R, B>) -> IrResult<()>
+    fn validate<'ctx, R, B>(_function: FunctionValue<'ctx, R, B, ReadOnly>) -> IrResult<()>
     where
         R: ReturnMarker,
         B: ModuleBrand + 'ctx,
@@ -1103,10 +1190,10 @@ impl FunctionParamList for () {
     }
 
     #[inline]
-    fn values<'ctx, R, B>(
-        _function: FunctionValue<'ctx, R, B>,
+    fn values<'ctx, R, B, C: Capability>(
+        _function: FunctionValue<'ctx, R, B, C>,
         _validated: &ValidatedFunctionParams<'_>,
-    ) -> Self::Values<'ctx, B>
+    ) -> Self::Values<'ctx, B, C>
     where
         R: ReturnMarker,
         B: ModuleBrand + 'ctx,
@@ -1114,10 +1201,10 @@ impl FunctionParamList for () {
     }
 
     #[inline]
-    fn values_from_phi_values<'ctx, B>(
-        _phi_values: &[Value<'ctx, B>],
+    fn values_from_phi_values<'ctx, B, C: Capability>(
+        _phi_values: &[Value<'ctx, B, C>],
         _validated: &ValidatedFunctionParams<'_>,
-    ) -> Self::Values<'ctx, B>
+    ) -> Self::Values<'ctx, B, C>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -1131,10 +1218,10 @@ macro_rules! impl_param_list_tuple {
             $($param: FunctionParam,)+
         {
             const ARITY: u32 = $arity;
-            type Values<'ctx, B: ModuleBrand + 'ctx> = ($($param::Value<'ctx, B>,)+);
+            type Values<'ctx, B: ModuleBrand + 'ctx, C: Capability> = ($($param::Value<'ctx, B, C>,)+);
 
             #[inline]
-            fn ir_types<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Vec<Type<'ctx, B>>>
+            fn ir_types<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Vec<Type<'ctx, B, ReadOnly>>>
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -1142,7 +1229,7 @@ macro_rules! impl_param_list_tuple {
             }
 
             #[inline]
-            fn validate<'ctx, R, B>(function: FunctionValue<'ctx, R, B>) -> IrResult<()>
+            fn validate<'ctx, R, B>(function: FunctionValue<'ctx, R, B, ReadOnly>) -> IrResult<()>
             where
                 R: ReturnMarker,
                 B: ModuleBrand + 'ctx,
@@ -1154,10 +1241,10 @@ macro_rules! impl_param_list_tuple {
             }
 
             #[inline]
-            fn values<'ctx, R, B>(
-                function: FunctionValue<'ctx, R, B>,
+            fn values<'ctx, R, B, C: Capability>(
+                function: FunctionValue<'ctx, R, B, C>,
                 validated: &ValidatedFunctionParams<'_>,
-            ) -> Self::Values<'ctx, B>
+            ) -> Self::Values<'ctx, B, C>
             where
                 R: ReturnMarker,
                 B: ModuleBrand + 'ctx,
@@ -1167,10 +1254,10 @@ macro_rules! impl_param_list_tuple {
             }
 
             #[inline]
-            fn values_from_phi_values<'ctx, B>(
-                phi_values: &[Value<'ctx, B>],
+            fn values_from_phi_values<'ctx, B, C: Capability>(
+                phi_values: &[Value<'ctx, B, C>],
                 validated: &ValidatedFunctionParams<'_>,
-            ) -> Self::Values<'ctx, B>
+            ) -> Self::Values<'ctx, B, C>
             where
                 B: ModuleBrand + 'ctx,
             {

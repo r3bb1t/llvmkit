@@ -1,0 +1,25 @@
+error[E0277]: `VoidType<'_, DynBrand>` cannot be a vector element
+  --> tests/compile_fail/vector_of_void_element.rs:10:28
+   |
+10 |     let _ = VectorType::of(m.void_type(), lanes::<4>());
+   |             -------------- ^^^^^^^^^^^^^ LLVM vectors hold integers, floats and pointers
+   |             |
+   |             required by a bound introduced by this call
+   |
+   = help: the trait `llvmkit_ir::VectorElement<'_, _>` is not implemented for `VoidType<'_, DynBrand>`
+   = note: a target type that declares `CanBeVectorElement`, or any runtime `Type`, goes through `vector_type(ty, lanes)?`, which checks it (`VectorType::isValidElementType`)
+   = help: the following other types implement trait `llvmkit_ir::VectorElement<'ctx, B>`:
+             FloatType<'ctx, FloatDyn, B, C>
+             FloatType<'ctx, f32, B, C>
+             FloatType<'ctx, f64, B, C>
+             FloatType<'ctx, llvmkit_ir::Bfloat, B, C>
+             FloatType<'ctx, llvmkit_ir::Fp128, B, C>
+             FloatType<'ctx, llvmkit_ir::Half, B, C>
+             FloatType<'ctx, llvmkit_ir::PpcFp128, B, C>
+             FloatType<'ctx, llvmkit_ir::X86Fp80, B, C>
+           and $N others
+note: required by a bound in `type_components::<impl VectorType<'ctx, ElemDyn, LenDyn, B>>::of`
+  --> src/type_components.rs
+   |
+   |     pub fn of<T: VectorElement<'ctx, B>>(
+   |                  ^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `type_components::<impl VectorType<'ctx, ElemDyn, LenDyn, B>>::of`

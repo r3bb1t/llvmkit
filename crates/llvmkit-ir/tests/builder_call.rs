@@ -1042,7 +1042,7 @@ fn call_base_copies_each_call_site_with_other_bundles() -> Result<(), IrError> {
         .set_metadata(&m, MetadataAttachmentKind::Dbg, dbg)?;
     b.br(&invoking)?;
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(invoking);
-    let (_, invoke) = b.invoke_dyn_with_config::<Dyn, _, _, _, _>(
+    let (_, invoke) = b.invoke_dyn_with_config::<Dyn, _, _, _, _, _>(
         m.view(h),
         [x],
         &normal,

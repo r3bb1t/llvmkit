@@ -1873,13 +1873,15 @@ mod tests {
         let function: FunctionView<'_, _> = m.view(f).into();
 
         // Cache a dom tree before the edit: `entry` dominates `next`.
-        let mut dt = DominatorTree::new(function.as_function());
+        let mut dt = DominatorTree::new(m.view(f));
         assert!(dt.is_reachable_from_entry(next_label));
 
         // Edit the CFG: split the entry at its terminator. The `br next` (and
         // the edge into `next`) moves into `entry.split`, and `entry` gains a
         // branch to it, so `entry.split` now dominates `next`.
-        let entry_bb = function.entry_block().expect("definition").as_basic_block();
+        // The block to split comes from the unverified module itself: a
+        // `FunctionView`'s blocks are `ReadOnly` and have no `split_at`.
+        let entry_bb = m.view(f).entry_block().expect("definition");
         let terminator = entry_bb.terminator().expect("terminated");
         let new_bb = entry_bb.split_at(&m, &terminator, "entry.split")?;
         let new_label = new_bb.id();
@@ -1897,7 +1899,7 @@ mod tests {
             dt.apply_updates(&updates, function),
             RepairOutcome::Repaired
         );
-        let fresh = DominatorTree::new(function.as_function());
+        let fresh = DominatorTree::new(m.view(f));
         assert_eq!(
             dt.dominates_block(new_label, next_label),
             fresh.dominates_block(new_label, next_label)

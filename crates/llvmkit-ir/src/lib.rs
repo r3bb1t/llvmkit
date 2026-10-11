@@ -71,6 +71,7 @@ pub mod basic_block;
 pub mod block_params;
 pub mod block_state;
 pub mod calling_conv;
+pub mod capability;
 pub mod cfg;
 pub mod cfg_update;
 pub mod cmp_predicate;
@@ -161,6 +162,7 @@ pub mod sync_scope;
 pub mod target_library_info;
 pub mod term_open_state;
 pub mod r#type;
+pub mod type_components;
 pub mod typed_pointer_type;
 pub mod typed_pointer_value;
 pub mod r#use;
@@ -202,13 +204,15 @@ pub use basic_block::{BasicBlock, BasicBlockLabel, BlockCall, IntoBasicBlockLabe
 pub use block_params::{BlockParams, BlockParamsDyn};
 pub use block_state::{BlockTerminationState, Terminated, Unterminated};
 pub use calling_conv::CallingConv;
+pub use capability::{CanMutate, Capability, CapabilityOf, ModuleState, Mutable, ReadOnly};
 pub use cfg::{BasicBlockEdge, FunctionCfg};
 pub use cfg_update::{CfgEdge, CfgUpdate};
 pub use cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate, PredicateWithSameSign};
 pub use comdat::{ComdatRef, SelectionKind};
 pub use constant::{
-    Constant, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantGepFlags,
-    ForwardRefValue, IntoConstantValue, IsConstant, OverflowingConstantExprFlags,
+    Constant, ConstantAggregateKind, ConstantDataKind, ConstantExprFlags, ConstantExprInRange,
+    ConstantExprOpcode, ConstantGepFlags, ConstantKind, ConstantSequentialKind, ForwardRefValue,
+    IntoConstantValue, IsConstant, OverflowingConstantExprFlags, Undefined,
 };
 pub use constant_fold::{
     constant_fold_binary_instruction, constant_fold_cast_instruction,
@@ -256,8 +260,8 @@ pub use derived_types::{
 };
 pub use dominator_tree::{DominatorTree, DominatorTreeAnalysis, DominatorTreeBlock};
 pub use error::{
-    Blame, BrandError, DataLayoutError, IrError, IrResult, RenderedType, TypeKindLabel,
-    ValueCategoryLabel, VerifierRule, VerifierSubject,
+    Blame, BrandError, DataLayoutError, InvalidValueNameReason, IrError, IrResult, RenderedType,
+    TypeKindLabel, TypePosition, ValueCategoryLabel, VerifierRule, VerifierSubject,
 };
 pub use fmf::FastMathFlags;
 pub use function::{FunctionBasicBlocks, FunctionBuilder, FunctionValue, IntoCallee};
@@ -277,8 +281,8 @@ pub use inline_asm::{
 pub use inst_simplify::InstSimplifyPass;
 pub use instr_types::{
     AddFlags, AshrFlags, AtomicCmpXchgConfig, AtomicRmwConfig, AtomicRmwFlags, BinaryOpcode,
-    CallAttributeData, CastOpcode, CmpXchgFlags, ExactFlags, IcmpFlags, IntBinOpFlags,
-    IntCastFlags, LshrFlags, MulFlags, OperandBundleDef, OperandBundleTag, OperandBundleUse,
+    CallAttributeData, CastOpcode, CastOperation, CmpXchgFlags, ExactFlags, IcmpFlags,
+    IntBinOpFlags, LshrFlags, MulFlags, OperandBundleDef, OperandBundleTag, OperandBundleUse,
     OrFlags, OverflowFlags, SdivFlags, ShlFlags, ShuffleMaskElem, SubFlags, TailCallKind,
     TruncFlags, UdivFlags, UiToFpFlags, UnaryOpcode, ZextFlags,
 };
@@ -382,6 +386,7 @@ pub use struct_schema::{
 pub use sync_scope::SyncScope;
 pub use target_library_info::{LibFunc, TargetLibraryInfo};
 pub use r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeKind};
+pub use type_components::{VectorElement, lanes};
 pub use typed_pointer_type::TypedPointerType;
 pub use typed_pointer_value::TypedPointerValue;
 pub use unnamed_addr::UnnamedAddr;
@@ -389,7 +394,7 @@ pub use r#use::Use;
 pub use user::User;
 pub use value::{
     ArrayValue, FloatValue, FunctionTypedValue, HasDebugLoc, HasName, IntValue, IntoErasedValue,
-    IntoPointerValue, IsValue, PointerValue, StructValue, Typed, UseListOrderError, Value,
+    IntoPointerValue, IsValue, PointerValue, SetName, StructValue, Typed, UseListOrderError, Value,
     ValueCategory, VectorValue,
 };
 pub use value_id::{

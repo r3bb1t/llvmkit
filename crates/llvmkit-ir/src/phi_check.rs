@@ -19,6 +19,7 @@
 use std::collections::HashMap;
 
 use crate::Branded;
+use crate::capability::Capability;
 use crate::function::FunctionValue;
 use crate::instruction::InstructionKindData;
 use crate::marker::Dyn;
@@ -172,9 +173,9 @@ pub(crate) fn render_phi_violation<B: ModuleBrand>(
 /// applies the exact same coherence algorithm as the verifier. Returns
 /// the first violation encountered (block order, then phi order).
 #[doc(hidden)]
-pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
+pub fn check_function_phi_coherence<'ctx, B: ModuleBrand, C: Capability>(
     module: &'ctx Module<B, Unverified>,
-    function: FunctionValue<'ctx, Dyn, B>,
+    function: FunctionValue<'ctx, Dyn, B, C>,
 ) -> Result<(), PhiCoherenceError<B>> {
     let ctx = module.core_ref().context();
 

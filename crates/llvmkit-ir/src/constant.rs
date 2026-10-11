@@ -29,19 +29,21 @@
 //! [`ConstantIntValue`]: crate::constants::ConstantIntValue
 //! [`ConstantFloatValue`]: crate::constants::ConstantFloatValue
 
+use super::capability::{CanMutate, Capability, CapabilityOf, Mutable, ReadOnly};
+use super::constants::{ConstantFloatValue, ConstantIntValue};
 use super::derived_types::{FloatType, IntType};
 use super::error::ValueCategoryLabel;
-use super::float_kind::IntoConstantFloat;
-use super::int_width::IntoConstantInt;
+use super::float_kind::{FloatDyn, IntoConstantFloat};
+use super::int_width::{IntDyn, IntoConstantInt};
 use super::module::ModuleBrand;
 use super::value::ValueKindData;
 use crate::Branded;
 use crate::ap_int::ApInt;
 use crate::gep_no_wrap_flags::GepNoWrapFlags;
 use crate::module::{Module, ModuleRef, Unverified};
-use crate::r#type::{Type, TypeKind, TypeSlot, TypeSlotAccess};
+use crate::r#type::{Type, TypeData, TypeKind, TypeSlot, TypeSlotAccess};
 use crate::value::{
-    HasDebugLoc, HasName, IsValue, Typed, Value, ValueSlot, ValueSlotAccess, sealed,
+    HasDebugLoc, HasName, IsValue, SetName, Typed, Value, ValueSlot, ValueSlotAccess, sealed,
 };
 use crate::{DebugLoc, IrError, IrResult};
 
@@ -229,30 +231,42 @@ impl ConstantGepFlags {
     }
 }
 
-/// `isa<UndefValue>(C)` **minus** poison.
+/// `isa<UndefValue>(C)` **minus** poison, asked of the constant's class
+/// ([`Constant::kind`]) rather than its storage: an element list of one
+/// `undef` repeated is the `UndefValue` upstream canonicalises it to.
 ///
 /// Upstream's `PoisonValue` derives from `UndefValue`, so a bare
 /// `isa<UndefValue>` there answers `true` for both. llvmkit splits the two so a
 /// port can say which it means; a caller mirroring upstream's `isa<UndefValue>`
 /// wants [`is_undef_or_poison`].
-pub(crate) fn is_undef<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
+pub(crate) fn is_undef<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+) -> bool {
     matches!(
-        &constant.as_erased().data().kind,
-        ValueKindData::Constant(ConstantData::Undef)
+        constant.kind(),
+        ConstantKind::Data(ConstantDataKind::Undef(Undefined::Undef))
     )
 }
 
-/// `isa<PoisonValue>(C)`.
-pub(crate) fn is_poison<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
+/// `isa<PoisonValue>(C)`, asked of the constant's class ([`Constant::kind`]).
+pub(crate) fn is_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+) -> bool {
     matches!(
-        &constant.as_erased().data().kind,
-        ValueKindData::Constant(ConstantData::Poison)
+        constant.kind(),
+        ConstantKind::Data(ConstantDataKind::Undef(Undefined::Poison))
     )
 }
 
-/// Upstream's plain `isa<UndefValue>(C)`, which catches `poison` too.
-pub(crate) fn is_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
-    is_undef(constant) || is_poison(constant)
+/// Upstream's plain `isa<UndefValue>(C)`, which catches `poison` too, asked
+/// of the constant's class ([`Constant::kind`]).
+pub(crate) fn is_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+) -> bool {
+    matches!(
+        constant.kind(),
+        ConstantKind::Data(ConstantDataKind::Undef(_))
+    )
 }
 
 /// Optional optimization and predicate flags attached to a constant expression.
@@ -514,6 +528,382 @@ impl<'ctx, B: ModuleBrand + 'ctx> ForwardRefValue<'ctx, B> {
 }
 
 // --------------------------------------------------------------------------
+// Upstream's constant classes, as a sum type
+// --------------------------------------------------------------------------
+
+/// Which of upstream's `Constant` classes a constant is: the `HANDLE_CONSTANT`
+/// list of `include/llvm/IR/Value.def` as a sum type, grouped the way
+/// upstream groups it — `ConstantData`, then `ConstantAggregate`, then the
+/// rest — so an abstract class's question (`isa<ConstantData>`) is a pattern
+/// on the group. Read it with [`Constant::kind`]. Mirrors
+/// `Value::getValueID` and each class's `classof`.
+#[derive(Branded)]
+#[branded(Clone, Copy, Debug)]
+pub enum ConstantKind<'ctx, B: ModuleBrand, C: Capability = Mutable> {
+    /// `ConstantData`: a constant with no operands.
+    Data(ConstantDataKind<'ctx, B, C>),
+    /// `ConstantAggregate`: an element list that is none of the
+    /// `ConstantData` forms upstream canonicalises such a list to.
+    Aggregate(ConstantAggregateKind),
+    /// `GlobalValue`: a function, global variable, alias or ifunc.
+    GlobalValue,
+    /// `BlockAddress`.
+    BlockAddress,
+    /// `ConstantExpr`, by opcode.
+    Expr(ConstantExprOpcode),
+    /// `DSOLocalEquivalent`.
+    DsoLocalEquivalent,
+    /// `NoCFIValue`.
+    NoCfi,
+    /// `ConstantPtrAuth`.
+    PtrAuth,
+    /// llvmkit's parser placeholder for a global, `blockaddress` or
+    /// `dso_local_equivalent` referenced before it is defined. Upstream's
+    /// placeholder in each position is a `GlobalVariable`
+    /// (`createGlobalFwdRef`, and the `blockaddress` and
+    /// `dso_local_equivalent` deferrals in `LLParser::parseValID`), so upstream
+    /// answers `isa<GlobalValue>`; llvmkit's is a bare constant with no global
+    /// behind it, so it is its own variant (`docs/divergences.md`, the
+    /// forward-reference placeholder entry).
+    ForwardReference,
+}
+
+impl<B: ModuleBrand, C: Capability> CapabilityOf for ConstantKind<'_, B, C> {
+    type Capability = C;
+}
+
+/// The `ConstantData` classes. See [`ConstantKind::Data`].
+#[derive(Branded)]
+#[branded(Clone, Copy, Debug)]
+pub enum ConstantDataKind<'ctx, B: ModuleBrand, C: Capability = Mutable> {
+    /// `UndefValue`. `PoisonValue` derives from it upstream, so `Undef(_)`
+    /// answers `isa<UndefValue>` and `Undef(Undefined::Poison)` answers
+    /// `isa<PoisonValue>`.
+    Undef(Undefined),
+    /// `ConstantAggregateZero`.
+    AggregateZero,
+    /// `ConstantDataArray` or `ConstantDataVector`.
+    Sequential(ConstantSequentialKind),
+    /// `ConstantInt`.
+    Int(ConstantIntValue<'ctx, IntDyn, B, C>),
+    /// `ConstantFP`.
+    Float(ConstantFloatValue<'ctx, FloatDyn, B, C>),
+    /// `ConstantTargetNone`.
+    TargetNone,
+    /// `ConstantPointerNull`.
+    PointerNull,
+    /// `ConstantTokenNone`.
+    TokenNone,
+}
+
+impl<B: ModuleBrand, C: Capability> CapabilityOf for ConstantDataKind<'_, B, C> {
+    type Capability = C;
+}
+
+/// `UndefValue` and its subclass `PoisonValue`. See [`ConstantDataKind::Undef`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Undefined {
+    /// `UndefValue` that is not a `PoisonValue`.
+    Undef,
+    /// `PoisonValue`.
+    Poison,
+}
+
+/// The two `ConstantDataSequential` classes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConstantSequentialKind {
+    /// `ConstantDataArray`.
+    Array,
+    /// `ConstantDataVector`.
+    Vector,
+}
+
+/// The three `ConstantAggregate` classes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConstantAggregateKind {
+    /// `ConstantArray`.
+    Array,
+    /// `ConstantStruct`.
+    Struct,
+    /// `ConstantVector`.
+    Vector,
+}
+
+/// Mirrors `ConstantDataSequential::isElementTypeCompatible`: `half`,
+/// `bfloat`, `float`, `double`, or an integer of 8, 16, 32 or 64 bits.
+fn is_element_type_compatible(ty: &TypeData) -> bool {
+    if matches!(
+        ty,
+        TypeData::Half | TypeData::Bfloat | TypeData::Float | TypeData::Double
+    ) {
+        return true;
+    }
+    if let TypeData::Integer { bits } = ty {
+        return matches!(bits, 8 | 16 | 32 | 64);
+    }
+    false
+}
+
+/// Which `UndefValue` an element is, if it is one: `isa<UndefValue>` is
+/// `.is_some()`, `isa<PoisonValue>` is `== Some(Undefined::Poison)`.
+fn undefined<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+) -> Option<Undefined> {
+    match constant.kind() {
+        ConstantKind::Data(ConstantDataKind::Undef(undefined)) => Some(undefined),
+        _ => None,
+    }
+}
+
+/// The `C`s the canonicalisations below compare a list against — the null
+/// value, `undef` and `poison` — and everything else.
+///
+/// Upstream's comparisons (`rangeOnlyContains(V, C)`, `V[i] != C`) test
+/// uniqued pointers. Each of the three is unique for its type
+/// (`Constant::getNullValue`, `UndefValue::get`, `PoisonValue::get`), and an
+/// array or vector has one element type, so "`V[i]` is `C`" is "`V[i]` is the
+/// same one of the three". A constant is at most one of them, so classifying
+/// each element once keeps every list a single pass.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UniqueConstant {
+    Null,
+    Undefined(Undefined),
+    Other,
+}
+
+impl UniqueConstant {
+    fn of<'ctx, B: ModuleBrand + 'ctx, C: Capability>(constant: Constant<'ctx, B, C>) -> Self {
+        if constant.is_null_value() {
+            return Self::Null;
+        }
+        match undefined(constant) {
+            Some(undefined) => Self::Undefined(undefined),
+            None => Self::Other,
+        }
+    }
+}
+
+/// The element at `slot` of an element list, minted as it is visited, so
+/// classifying a list allocates nothing.
+fn element_at<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
+    slot: ValueSlot,
+) -> Constant<'ctx, B, C> {
+    Constant::from_parts(Value::from_parts(slot, module, module.value_data(slot).ty))
+}
+
+/// Mirrors `getSequenceIfElementsMatch` (with `getIntSequenceIfElementsMatch`
+/// and `getFPSequenceIfElementsMatch`): a `ConstantDataArray` /
+/// `ConstantDataVector` when the first element is a `ConstantInt` of 8, 16, 32
+/// or 64 bits and every element is a `ConstantInt`, or the first is a `half`,
+/// `bfloat`, `float` or `double` `ConstantFP` and every element is a
+/// `ConstantFP`. `None` is upstream's `nullptr`.
+fn sequence_if_elements_match<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
+    first: Constant<'ctx, B, C>,
+    slots: &[ValueSlot],
+    sequence: ConstantSequentialKind,
+) -> Option<ConstantKind<'ctx, B, C>> {
+    let every = |class: fn(&ConstantKind<'ctx, B, C>) -> bool| {
+        slots
+            .iter()
+            .all(|slot| class(&element_at(module, *slot).kind()))
+    };
+    let matched = match first.kind() {
+        ConstantKind::Data(ConstantDataKind::Int(_))
+            if matches!(
+                first.ty().data(),
+                TypeData::Integer {
+                    bits: 8 | 16 | 32 | 64
+                }
+            ) =>
+        {
+            every(|kind| matches!(kind, ConstantKind::Data(ConstantDataKind::Int(_))))
+        }
+        ConstantKind::Data(ConstantDataKind::Float(_))
+            if matches!(
+                first.ty().data(),
+                TypeData::Half | TypeData::Bfloat | TypeData::Float | TypeData::Double
+            ) =>
+        {
+            every(|kind| matches!(kind, ConstantKind::Data(ConstantDataKind::Float(_))))
+        }
+        _ => false,
+    };
+    matched.then_some(ConstantKind::Data(ConstantDataKind::Sequential(sequence)))
+}
+
+/// The classification half of `ConstantArray::getImpl`.
+fn array_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
+    slots: &[ValueSlot],
+) -> ConstantKind<'ctx, B, C> {
+    // Empty arrays are canonicalized to ConstantAggregateZero.
+    let Some(&first_slot) = slots.first() else {
+        return ConstantKind::Data(ConstantDataKind::AggregateZero);
+    };
+    let first = element_at(module, first_slot);
+    // If this is an all-zero array, return a ConstantAggregateZero object. If
+    // all undef, return an UndefValue, if "all simple", then return a
+    // ConstantDataArray.
+    //
+    // Upstream asks `isa<PoisonValue>(C)`, then `isa<UndefValue>(C)`, then
+    // `C->isNullValue()`, each paired with the same `rangeOnlyContains(V, C)`.
+    // `C` is at most one of the three, so the arm its class names decides, and
+    // the list is scanned once.
+    let first_class = UniqueConstant::of(first);
+    let uniform = || {
+        slots
+            .iter()
+            .all(|slot| UniqueConstant::of(element_at(module, *slot)) == first_class)
+    };
+    match first_class {
+        UniqueConstant::Undefined(undefined) if uniform() => {
+            return ConstantKind::Data(ConstantDataKind::Undef(undefined));
+        }
+        UniqueConstant::Null if uniform() => {
+            return ConstantKind::Data(ConstantDataKind::AggregateZero);
+        }
+        _ => {}
+    }
+    // Check to see if all of the elements are ConstantFP or ConstantInt and if
+    // the element type is compatible with ConstantDataVector. If so, use it.
+    if is_element_type_compatible(first.ty().data())
+        && let Some(kind) =
+            sequence_if_elements_match(module, first, slots, ConstantSequentialKind::Array)
+    {
+        return kind;
+    }
+    // Otherwise, we really do want to create a ConstantArray.
+    ConstantKind::Aggregate(ConstantAggregateKind::Array)
+}
+
+/// The classification half of `ConstantStruct::get`.
+fn struct_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
+    slots: &[ValueSlot],
+) -> ConstantKind<'ctx, B, C> {
+    // Create a ConstantAggregateZero value if all elements are zeros.
+    let mut is_zero = true;
+    let mut is_undef = false;
+    let mut is_poison = false;
+    if let Some(&first_slot) = slots.first() {
+        let first = UniqueConstant::of(element_at(module, first_slot));
+        is_undef = matches!(first, UniqueConstant::Undefined(_));
+        is_poison = first == UniqueConstant::Undefined(Undefined::Poison);
+        is_zero = first == UniqueConstant::Null;
+        // PoisonValue inherits UndefValue, so its check is not necessary.
+        if is_undef || is_zero {
+            for slot in slots {
+                let element = UniqueConstant::of(element_at(module, *slot));
+                if element != UniqueConstant::Null {
+                    is_zero = false;
+                }
+                if element != UniqueConstant::Undefined(Undefined::Poison) {
+                    is_poison = false;
+                }
+                if element == UniqueConstant::Undefined(Undefined::Poison)
+                    || !matches!(element, UniqueConstant::Undefined(_))
+                {
+                    is_undef = false;
+                }
+            }
+        }
+    }
+    if is_zero {
+        return ConstantKind::Data(ConstantDataKind::AggregateZero);
+    }
+    if is_poison {
+        return ConstantKind::Data(ConstantDataKind::Undef(Undefined::Poison));
+    }
+    if is_undef {
+        return ConstantKind::Data(ConstantDataKind::Undef(Undefined::Undef));
+    }
+    ConstantKind::Aggregate(ConstantAggregateKind::Struct)
+}
+
+/// The classification half of `ConstantVector::getImpl`.
+fn fixed_vector_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
+    slots: &[ValueSlot],
+) -> ConstantKind<'ctx, B, C> {
+    // `assert(!V.empty() && "Vectors can't be empty")`. llvmkit's builder
+    // accepts a zero-lane vector type (only the parser refuses `<0 x T>`), so
+    // an empty list answers as `ConstantArray::getImpl` answers an empty array.
+    let Some(&first_slot) = slots.first() else {
+        return ConstantKind::Data(ConstantDataKind::AggregateZero);
+    };
+    let first = element_at(module, first_slot);
+    // If this is an all-undef or all-zero vector, return a
+    // ConstantAggregateZero or UndefValue.
+    let first_class = UniqueConstant::of(first);
+    let mut is_zero = first_class == UniqueConstant::Null;
+    let mut is_undef = matches!(first_class, UniqueConstant::Undefined(_));
+    let mut is_poison = first_class == UniqueConstant::Undefined(Undefined::Poison);
+    // Upstream also carries `isSplatFP` / `isSplatInt` here, gated by the
+    // hidden `-use-constant-fp-for-fixed-length-splat` and
+    // `-use-constant-int-for-fixed-length-splat` options. Both default to
+    // `false` and llvmkit has no option surface, so neither arm can run.
+    if (is_zero || is_undef)
+        && slots
+            .iter()
+            .skip(1)
+            .any(|slot| UniqueConstant::of(element_at(module, *slot)) != first_class)
+    {
+        is_zero = false;
+        is_undef = false;
+        is_poison = false;
+    }
+    if is_zero {
+        return ConstantKind::Data(ConstantDataKind::AggregateZero);
+    }
+    if is_poison {
+        return ConstantKind::Data(ConstantDataKind::Undef(Undefined::Poison));
+    }
+    if is_undef {
+        return ConstantKind::Data(ConstantDataKind::Undef(Undefined::Undef));
+    }
+    // Check to see if all of the elements are ConstantFP or ConstantInt and if
+    // the element type is compatible with ConstantDataVector. If so, use it.
+    if is_element_type_compatible(first.ty().data())
+        && let Some(kind) =
+            sequence_if_elements_match(module, first, slots, ConstantSequentialKind::Vector)
+    {
+        return kind;
+    }
+    // Otherwise, the element type isn't compatible with ConstantDataVector, or
+    // the operand list contains a ConstantExpr or something else strange.
+    ConstantKind::Aggregate(ConstantAggregateKind::Vector)
+}
+
+/// The classification half of `ConstantVector::getSplat`'s scalable branch.
+/// `VectorType::const_vector` demands a scalable list's lanes agree, so the
+/// list is a splat of its first element.
+fn scalable_vector_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
+    slots: &[ValueSlot],
+) -> ConstantKind<'ctx, B, C> {
+    // Upstream first tries the hidden `-use-constant-int-for-scalable-splat`
+    // and `-use-constant-fp-for-scalable-splat` options; both default to
+    // `false` and llvmkit has no option surface, so neither arm can run. An
+    // empty list answers as `fixed_vector_kind` answers one.
+    let Some(&splat_slot) = slots.first() else {
+        return ConstantKind::Data(ConstantDataKind::AggregateZero);
+    };
+    // `isNullValue`, then `isa<PoisonValue>`, then `isa<UndefValue>`; a
+    // constant is at most one of the three.
+    match UniqueConstant::of(element_at(module, splat_slot)) {
+        UniqueConstant::Null => ConstantKind::Data(ConstantDataKind::AggregateZero),
+        UniqueConstant::Undefined(undefined) => {
+            ConstantKind::Data(ConstantDataKind::Undef(undefined))
+        }
+        // Upstream builds the splat as
+        // `shufflevector (insertelement poison, V, 0), poison, zeroinitializer`.
+        UniqueConstant::Other => ConstantKind::Expr(ConstantExprOpcode::ShuffleVector),
+    }
+}
+
+// --------------------------------------------------------------------------
 // Public erased handle
 // --------------------------------------------------------------------------
 
@@ -523,20 +913,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> ForwardRefValue<'ctx, B> {
 /// passes.
 ///
 /// [`ConstantIntValue`]: crate::constants::ConstantIntValue
+///
+/// `C` is the [`Capability`] (D8). A constant reached from a `ReadOnly` value
+/// or type is `ReadOnly`, and so is every constant read out of it.
 #[derive(Branded)]
-pub struct Constant<'ctx, B: ModuleBrand> {
+pub struct Constant<'ctx, B: ModuleBrand, C: Capability = Mutable> {
     // Private to this module: the slot leaves a handle only through the two
     // doors of `ValueSlotAccess`, and the cached type only as a `Type` handle.
     id: ValueSlot,
-    pub(crate) module: ModuleRef<'ctx, B>,
+    pub(crate) module: ModuleRef<'ctx, B, C>,
     ty: TypeSlot,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
+impl<B: ModuleBrand, C: Capability> CapabilityOf for Constant<'_, B, C> {
+    type Capability = C;
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Constant<'ctx, B, C> {
     /// Construct from raw parts. Crate-internal: only the constant
     /// constructors hand these out.
     #[inline]
-    pub(crate) fn from_parts(value: Value<'ctx, B>) -> Self {
+    pub(crate) fn from_parts(value: Value<'ctx, B, C>) -> Self {
         // Internal: a re-wrap that keeps `value`'s own module.
         Self {
             id: value.slot_trusting_same_module(),
@@ -570,9 +967,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
     /// The constant-*expression* splat form is handled, in a private helper
     /// below — though only a *scalable* vector ever reaches it, because the
     /// folder materialises a fixed one into an element list at construction.
-    pub fn splat_value(self, allow_poison: bool) -> Option<Constant<'ctx, B>> {
+    pub fn splat_value(self, allow_poison: bool) -> Option<Constant<'ctx, B, C>> {
         let (element_ty, _, _) = self.ty().data().as_vector()?;
-        let element_ty = Type::new(element_ty, self.as_erased().module());
+        let element_ty = Type::new(element_ty, self.module);
 
         match &self.as_erased().data().kind {
             ValueKindData::Constant(ConstantData::Poison) => {
@@ -594,13 +991,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
         else {
             return None;
         };
-        let module = self.as_erased().module();
+        let module = self.module;
         let element_at = |slot: &ValueSlot| {
-            let data = module.context().value_data(*slot);
+            let data = module.value_data(*slot);
             Constant::from_parts(Value::from_parts(*slot, module, data.ty))
         };
 
-        let mut splat: Option<Constant<'ctx, B>> = None;
+        let mut splat: Option<Constant<'ctx, B, C>> = None;
         for slot in elements.iter() {
             let element = element_at(slot);
             let element_is_poison = matches!(
@@ -650,16 +1047,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
     /// `all_of(Mask, I == 0)` is upstream's test, and it is strict: an `undef`
     /// mask lane reads back as `-1` through `getShuffleMask`, so it fails.
     /// Every lane must be a defined zero.
-    fn constant_expression_splat_value(self) -> Option<Constant<'ctx, B>> {
-        let module = self.as_erased().module();
+    fn constant_expression_splat_value(self) -> Option<Constant<'ctx, B, C>> {
+        let module = self.module;
         let at = |slot: ValueSlot| {
-            Constant::from_parts(Value::from_parts(
-                slot,
-                module,
-                module.context().value_data(slot).ty,
-            ))
+            Constant::from_parts(Value::from_parts(slot, module, module.value_data(slot).ty))
         };
-        let is_undefined = |constant: Constant<'ctx, B>| {
+        let is_undefined = |constant: Constant<'ctx, B, C>| {
             // `isa<UndefValue>`, which catches `poison` upstream.
             matches!(
                 &constant.as_erased().data().kind,
@@ -715,9 +1108,101 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
         at(shuffle_mask).is_null_value().then(|| at(splat))
     }
 
+    /// Which upstream `Constant` class this is. Mirrors `Value::getValueID`
+    /// and each class's `classof`.
+    ///
+    /// llvmkit stores every element list — `zeroinitializer` included — in
+    /// one form, where upstream canonicalises the list when it builds it. So
+    /// an element list is classified by replaying that canonicalisation:
+    /// `ConstantArray::getImpl` for an array, `ConstantStruct::get` for a
+    /// struct, `ConstantVector::getImpl` for a fixed vector, and
+    /// `ConstantVector::getSplat` for a scalable one — upstream's only
+    /// constructor for a scalable vector constant, which
+    /// `VectorType::const_vector` mirrors by demanding that a scalable list's
+    /// lanes agree.
+    pub fn kind(self) -> ConstantKind<'ctx, B, C> {
+        // Matched exhaustively on purpose: a new constant kind has to be
+        // classified against upstream's hierarchy, not defaulted.
+        let data = match &self.as_erased().data().kind {
+            ValueKindData::Constant(data) => data,
+            // A global's own slot: `as_constant` on a global variable, alias
+            // or ifunc wraps one, and so can an aliasee, a resolver, a
+            // personality or an initializer. Upstream's `GlobalValue` is a
+            // `Constant`, so this is its class.
+            ValueKindData::Function(_)
+            | ValueKindData::GlobalVariable(_)
+            | ValueKindData::GlobalAlias(_)
+            | ValueKindData::GlobalIfunc(_) => return ConstantKind::GlobalValue,
+            ValueKindData::Argument { .. }
+            | ValueKindData::BasicBlock(_)
+            | ValueKindData::Instruction(_)
+            | ValueKindData::MetadataAsValue(_)
+            | ValueKindData::InlineAsm(_) => unreachable!(
+                "a Constant view wraps a constant or a global value: every `Constant::from_parts` \
+                 call passes a `ValueKindData::Constant` slot, an element or operand of one, or a \
+                 global's own slot — audited per call by tests/constant_handle_mint_drift.rs"
+            ),
+        };
+        match data {
+            ConstantData::Undef => ConstantKind::Data(ConstantDataKind::Undef(Undefined::Undef)),
+            ConstantData::Poison => ConstantKind::Data(ConstantDataKind::Undef(Undefined::Poison)),
+            // The storage form proves the type: an `Int` payload is only ever
+            // stored at an integer type, a `Float` payload at a float type.
+            ConstantData::Int(_) => ConstantKind::Data(ConstantDataKind::Int(
+                ConstantIntValue::from_parts_typed(self),
+            )),
+            ConstantData::Float(_) => ConstantKind::Data(ConstantDataKind::Float(
+                ConstantFloatValue::from_parts_typed(self),
+            )),
+            ConstantData::PointerNull => ConstantKind::Data(ConstantDataKind::PointerNull),
+            ConstantData::TokenNone => ConstantKind::Data(ConstantDataKind::TokenNone),
+            ConstantData::TargetExtNone => ConstantKind::Data(ConstantDataKind::TargetNone),
+            ConstantData::Aggregate(elements) => self.element_list_kind(elements),
+            ConstantData::Expr(expr) => ConstantKind::Expr(expr.opcode),
+            // llvmkit's compact forms, each printed as the constant expression
+            // its variant's doc comment names, and classified as upstream's
+            // constructor leaves that expression. `ConstantFoldGetElementPtr`
+            // returns the base pointer for a GEP whose indices are all null
+            // (its `IsNoOp`), so a zero offset is the base global itself; and
+            // `ConstantFoldBinaryInstruction` returns `X` for `add X, 0` (its
+            // `getBinOpIdentity` fold), so a zero addend is the plain delta.
+            ConstantData::GepOffset { off: 0, .. } => ConstantKind::GlobalValue,
+            ConstantData::GepOffset { .. } => ConstantKind::Expr(ConstantExprOpcode::GetElementPtr),
+            ConstantData::SymbolDelta { .. } => ConstantKind::Expr(ConstantExprOpcode::Sub),
+            ConstantData::SymbolDeltaPlus { addend: 0, .. } => {
+                ConstantKind::Expr(ConstantExprOpcode::Sub)
+            }
+            ConstantData::SymbolDeltaPlus { .. } => ConstantKind::Expr(ConstantExprOpcode::Add),
+            ConstantData::GlobalValueRef { .. } => ConstantKind::GlobalValue,
+            ConstantData::BlockAddress { .. } => ConstantKind::BlockAddress,
+            ConstantData::DsoLocalEquivalent { .. } => ConstantKind::DsoLocalEquivalent,
+            ConstantData::NoCfi { .. } => ConstantKind::NoCfi,
+            ConstantData::PtrAuth { .. } => ConstantKind::PtrAuth,
+            ConstantData::ForwardRefPlaceholder => ConstantKind::ForwardReference,
+        }
+    }
+
+    /// The class upstream's constructor returns for this element list. See
+    /// [`Self::kind`]. Each element is asked through its own `kind`, because
+    /// a nested list is stored uncanonicalised too.
+    fn element_list_kind(self, slots: &[ValueSlot]) -> ConstantKind<'ctx, B, C> {
+        let module = self.module;
+        match self.ty().data() {
+            TypeData::Array { .. } => array_kind(module, slots),
+            TypeData::Struct(_) => struct_kind(module, slots),
+            TypeData::FixedVector { .. } => fixed_vector_kind(module, slots),
+            TypeData::ScalableVector { .. } => scalable_vector_kind(module, slots),
+            _ => unreachable!(
+                "an element list is interned only by `intern_aggregate`, whose callers pass an \
+                 array, struct or vector type"
+            ),
+        }
+    }
+
     /// Whether this constant belongs to upstream's `ConstantData` class —
     /// the operand-less, context-shared corner of the constant hierarchy that
-    /// `isa<ConstantData>` selects and `Value::hasUseList` negates.
+    /// `isa<ConstantData>` selects and `Value::hasUseList` negates: whether
+    /// [`Self::kind`] answers [`ConstantKind::Data`].
     ///
     /// Upstream's members are `ConstantInt`, `ConstantFP`,
     /// `ConstantPointerNull`, `ConstantTokenNone`, `ConstantTargetNone`,
@@ -725,71 +1210,20 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
     /// `ConstantDataSequential`. Everything else that is a `Constant` —
     /// constant expressions, `ConstantAggregate`, every `GlobalValue`,
     /// `BlockAddress`, `DSOLocalEquivalent`, `NoCFIValue`, `ConstantPtrAuth`
-    /// — is not.
-    ///
-    /// Two arms need a note. llvmkit has no distinct `ConstantAggregateZero`
-    /// or `ConstantDataSequential`: an aggregate is always an element list,
-    /// and upstream builds a `ConstantAggregateZero` from exactly the lists
-    /// whose elements are all null, so that arm asks
-    /// [`Self::is_null_value`] rather than testing a class. And
-    /// `ForwardRefPlaceholder` is llvmkit's own; upstream's stand-in for a
-    /// forward reference is an ordinary `GlobalValue` or instruction, which
-    /// must keep a use list for RAUW to reach — so it answers `false`.
+    /// — is not, and neither is llvmkit's forward-reference placeholder,
+    /// whose upstream counterpart is a `GlobalVariable` that must keep a use
+    /// list for RAUW to reach.
     pub fn is_constant_data(self) -> bool {
-        // Matched exhaustively on purpose: a new constant kind has to be
-        // classified against upstream's hierarchy, not defaulted.
-        let ValueKindData::Constant(data) = &self.as_erased().data().kind else {
-            unreachable!("a Constant view only ever wraps ValueKindData::Constant")
-        };
-        match data {
-            ConstantData::Int(_)
-            | ConstantData::Float(_)
-            | ConstantData::PointerNull
-            | ConstantData::TokenNone
-            | ConstantData::TargetExtNone
-            | ConstantData::Undef
-            | ConstantData::Poison => true,
-            ConstantData::Aggregate(_) => self.is_null_value(),
-            ConstantData::Expr(_)
-            | ConstantData::GlobalValueRef { .. }
-            | ConstantData::ForwardRefPlaceholder
-            | ConstantData::GepOffset { .. }
-            | ConstantData::SymbolDelta { .. }
-            | ConstantData::SymbolDeltaPlus { .. }
-            | ConstantData::BlockAddress { .. }
-            | ConstantData::DsoLocalEquivalent { .. }
-            | ConstantData::NoCfi { .. }
-            | ConstantData::PtrAuth { .. } => false,
-        }
+        matches!(self.kind(), ConstantKind::Data(_))
     }
 
-    /// Whether this constant is the all-zero value of its type.
-    ///
-    /// Ports `Constant::isNullValue` for the constant forms llvmkit stores.
-    /// The forms it does not reach — constant expressions, `blockaddress`,
-    /// global references and the symbol-relative payloads — are never null,
-    /// which is the answer upstream gives them too.
+    /// Whether this constant is the all-zero value of its type: `0`, `+0.0`,
+    /// `null`, `token none`, `target(...) none`, or an element list of those
+    /// (upstream's `ConstantAggregateZero`). Ports `Constant::isNullValue`;
+    /// constant expressions, `blockaddress`, global values and the
+    /// symbol-relative payloads are never null, as upstream answers too.
     pub fn is_null_value(self) -> bool {
-        let value = self.as_erased();
-        match &value.data().kind {
-            ValueKindData::Constant(ConstantData::Int(words)) => {
-                words.iter().all(|word| *word == 0)
-            }
-            ValueKindData::Constant(ConstantData::Float(bits)) => *bits == 0,
-            ValueKindData::Constant(ConstantData::PointerNull) => true,
-            ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-                let module = value.module();
-                elements.iter().all(|slot| {
-                    Constant::from_parts(Value::from_parts(
-                        *slot,
-                        module,
-                        module.context().value_data(*slot).ty,
-                    ))
-                    .is_null_value()
-                })
-            }
-            _ => false,
-        }
+        crate::constants::constant_id_is_null_value(self.module.module(), self.id)
     }
 
     /// Whether every bit of this constant is set.
@@ -845,7 +1279,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
     /// `ConstantFP` splat forms have no llvmkit representation at all — a
     /// vector constant is always an element list — so those arms are
     /// unreachable rather than missing.
-    pub fn aggregate_element(self, index: u32) -> Option<Constant<'ctx, B>> {
+    pub fn aggregate_element(self, index: u32) -> Option<Constant<'ctx, B, C>> {
         let value = self.as_erased();
         let ValueKindData::Constant(constant) = &value.data().kind else {
             return None;
@@ -855,11 +1289,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
             // handed back rather than rebuilt.
             ConstantData::Aggregate(elements) => {
                 let slot = *elements.get(usize::try_from(index).ok()?)?;
-                let module = value.module();
+                let module = self.module;
                 Some(Constant::from_parts(Value::from_parts(
                     slot,
                     module,
-                    module.context().value_data(slot).ty,
+                    module.value_data(slot).ty,
                 )))
             }
             // `dyn_cast<PoisonValue>` and `dyn_cast<UndefValue>`, which answer
@@ -881,11 +1315,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
     /// Ports the `getNumElements` / `getElementValue` pair that
     /// `UndefValue` and `PoisonValue` share, plus the `isa<ScalableVectorType>`
     /// bail-out that guards them.
-    fn aggregate_element_type(self, index: u32) -> Option<Type<'ctx, B>> {
-        let module = self.as_erased().module();
+    fn aggregate_element_type(self, index: u32) -> Option<Type<'ctx, B, C>> {
+        let module = self.module;
         let data = self.ty().data();
         let slot = if let Some((element, lanes, scalable)) = data.as_vector() {
-            if scalable || index >= lanes {
+            if scalable || index >= lanes.get() {
                 return None;
             }
             element
@@ -901,16 +1335,28 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
         Some(Type::new(slot, module))
     }
 
-    /// Widen to the erased [`Value`] handle.
+    /// Widen to the erased [`Value`] handle, at the same capability.
     #[inline]
-    pub fn as_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
-    /// IR type of the constant.
+    /// IR type of the constant, at the constant's capability.
     #[inline]
-    pub fn ty(self) -> Type<'ctx, B> {
+    pub fn ty(self) -> Type<'ctx, B, C> {
         Type::new(self.ty, self.module)
+    }
+
+    /// This constant at [`ReadOnly`]. Always sound — reading is a subset of
+    /// mutating — and how a builder keeps a constant of any capability until
+    /// it admits it against its own module.
+    #[inline]
+    pub fn read_only(self) -> Constant<'ctx, B, ReadOnly> {
+        Constant {
+            id: self.id,
+            module: self.module.read_only(),
+            ty: self.ty,
+        }
     }
 }
 
@@ -932,7 +1378,7 @@ fn float_format_bit_width(kind: TypeKind) -> Option<u32> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> core::fmt::Display for Constant<'ctx, B, C> {
     /// Print the operand form `<type> <literal>`, identical to what the
     /// erased [`Value`] handle from [`Constant::as_erased`] prints.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -940,54 +1386,58 @@ impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for Constant<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> sealed::Sealed for Constant<'ctx, B> {}
-impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> sealed::Sealed for Constant<'ctx, B, C> {}
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IsValue<'ctx, B> for Constant<'ctx, B, C> {
     #[inline]
-    fn as_erased(self) -> Value<'ctx, B> {
+    fn as_erased(self) -> Value<'ctx, B, C> {
         Constant::as_erased(self)
     }
 }
 crate::value::impl_into_erased_value_for_handle!(Constant);
-impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Typed<'ctx, B> for Constant<'ctx, B, C> {
     #[inline]
-    fn ty(self) -> Type<'ctx, B> {
+    fn ty(self) -> Type<'ctx, B, C> {
         Constant::ty(self)
     }
 }
-impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> HasName<'ctx, B> for Constant<'ctx, B, C> {
     #[inline]
     fn name(self) -> Option<String> {
         self.as_erased().name()
     }
+}
+impl<'ctx, B: ModuleBrand + 'ctx, C: CanMutate> SetName<'ctx, B> for Constant<'ctx, B, C> {
     #[inline]
-    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
     where
         Name: Into<String>,
     {
-        self.as_erased().set_name(module_token, name);
+        self.as_erased().set_name(module_token, name)
     }
     #[inline]
     fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         self.as_erased().clear_name(module_token);
     }
 }
-impl<B: ModuleBrand + 'static> HasDebugLoc for Constant<'_, B> {
+impl<B: ModuleBrand + 'static, C: Capability> HasDebugLoc for Constant<'_, B, C> {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
         self.as_erased().debug_loc()
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> From<Constant<'ctx, B>> for Value<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> From<Constant<'ctx, B, C>> for Value<'ctx, B, C> {
     #[inline]
-    fn from(c: Constant<'ctx, B>) -> Self {
+    fn from(c: Constant<'ctx, B, C>) -> Self {
         c.as_erased()
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> TryFrom<Value<'ctx, B, C>>
+    for Constant<'ctx, B, C>
+{
     type Error = IrError;
-    fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
+    fn try_from(v: Value<'ctx, B, C>) -> IrResult<Self> {
         if let ValueKindData::Constant(_) = v.data().kind {
             Ok(Self::from_parts(v))
         } else {
@@ -1008,13 +1458,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for Constant<'ctx, B> 
 /// [`Constant`] itself. Bound generic code with this trait when a
 /// function should accept any constant.
 pub trait IsConstant<'ctx, B: ModuleBrand>: sealed::Sealed + IsValue<'ctx, B> {
-    /// Widen to the erased [`Constant`] handle.
-    fn as_constant(self) -> Constant<'ctx, B>;
+    /// Widen to the erased [`Constant`] handle, at the same capability.
+    fn as_constant(self) -> Constant<'ctx, B, Self::Capability>;
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IsConstant<'ctx, B> for Constant<'ctx, B, C> {
     #[inline]
-    fn as_constant(self) -> Constant<'ctx, B> {
+    fn as_constant(self) -> Constant<'ctx, B, C> {
         self
     }
 }
@@ -1037,20 +1487,28 @@ impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for Constant<'ctx, B> {
 /// [`IntoConstantInt`], floats through
 /// [`IntoConstantFloat`].
 pub trait IntoConstantValue<'ctx, B: ModuleBrand> {
-    /// Materialize `self` as an erased [`Constant`] owned by `module`.
+    /// Materialize `self` as an erased [`Constant`] owned by `module`, at
+    /// `module`'s capability.
     ///
     /// [`IrError::ForeignValueId`] when `self` is a constant handle another
     /// module minted.
-    fn into_constant(self, module: ModuleRef<'ctx, B>) -> IrResult<Constant<'ctx, B>>;
+    fn into_constant<C: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, C>,
+    ) -> IrResult<Constant<'ctx, B, C>>;
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx, C: IsConstant<'ctx, B>> IntoConstantValue<'ctx, B> for C {
+impl<'ctx, B: ModuleBrand + 'ctx, K: IsConstant<'ctx, B>> IntoConstantValue<'ctx, B> for K {
     #[inline]
-    fn into_constant(self, module: ModuleRef<'ctx, B>) -> IrResult<Constant<'ctx, B>> {
-        let constant = self.as_constant();
-        // Boundary: refuse a handle minted by another module.
-        constant.slot_in(module.id())?;
-        Ok(constant)
+    fn into_constant<C: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, C>,
+    ) -> IrResult<Constant<'ctx, B, C>> {
+        // Boundary: refuse a handle minted by another module; one of any
+        // capability is admitted and re-minted at `module`'s.
+        Ok(Constant::from_parts(
+            self.as_constant().as_erased().admitted_at(module)?,
+        ))
     }
 }
 
@@ -1058,15 +1516,11 @@ macro_rules! impl_into_constant_value_int {
     ($rust_ty:ty, $marker:ty, $ty_method:ident) => {
         impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantValue<'ctx, B> for $rust_ty {
             #[inline]
-            fn into_constant(self, module: ModuleRef<'ctx, B>) -> IrResult<Constant<'ctx, B>> {
-                let ty = IntType::<$marker, B>::new(
-                    module
-                        .module()
-                        .$ty_method::<B>()
-                        .as_type()
-                        .slot_trusting_same_module(),
-                    module,
-                );
+            fn into_constant<C: Capability>(
+                self,
+                module: ModuleRef<'ctx, B, C>,
+            ) -> IrResult<Constant<'ctx, B, C>> {
+                let ty: IntType<'ctx, $marker, B, C> = module.$ty_method();
                 Ok(IntoConstantInt::into_constant_int(self, ty)
                     .unwrap_or_else(|_| {
                         unreachable!("exact-width scalar literal is an infallible IR constant")
@@ -1094,15 +1548,11 @@ macro_rules! impl_into_constant_value_float {
     ($rust_ty:ty, $marker:ty, $ty_method:ident) => {
         impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantValue<'ctx, B> for $rust_ty {
             #[inline]
-            fn into_constant(self, module: ModuleRef<'ctx, B>) -> IrResult<Constant<'ctx, B>> {
-                let ty = FloatType::<$marker, B>::new(
-                    module
-                        .module()
-                        .$ty_method::<B>()
-                        .as_type()
-                        .slot_trusting_same_module(),
-                    module,
-                );
+            fn into_constant<C: Capability>(
+                self,
+                module: ModuleRef<'ctx, B, C>,
+            ) -> IrResult<Constant<'ctx, B, C>> {
+                let ty: FloatType<'ctx, $marker, B, C> = module.$ty_method();
                 Ok(IntoConstantFloat::into_constant_float(self, ty)
                     .unwrap_or_else(|_| {
                         unreachable!("exact-width scalar literal is an infallible IR constant")

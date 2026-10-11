@@ -7,7 +7,7 @@
 //! `unittests/IR/InstructionsTest.cpp` (`GEPIndices`, `ZeroIndexGEP`)
 //! or mirrors a `test/Assembler/getelementptr*.ll` fixture.
 
-use llvmkit_ir::{Dyn, GepNoWrapFlags, IrBuilder, IrError, Linkage, module_new};
+use llvmkit_ir::{Dyn, GepNoWrapFlags, IrBuilder, IrError, Linkage, VectorType, lanes, module_new};
 
 /// Port of `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, GEPIndices)`
 /// for the array-offset GEP case. Textual form mirrors
@@ -128,8 +128,8 @@ fn gep_erased_ports_gep_return_type() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
-    let vec_ptr_ty = m.vector_type(ptr_ty.as_type(), 2);
-    let vec_i32_ty = m.vector_type(i32_ty.as_type(), 2);
+    let vec_ptr_ty = VectorType::of(ptr_ty, lanes::<2>());
+    let vec_i32_ty = VectorType::of(i32_ty, lanes::<2>());
     let void_ty = m.void_type();
     let fn_ty = m.function_type(
         void_ty.as_type(),
@@ -189,8 +189,8 @@ fn gep_erased_rejects_invalid_indices() -> Result<(), IrError> {
     let m = module_new!("gv")?;
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
-    let vec_ptr_ty = m.vector_type(ptr_ty.as_type(), 2);
-    let vec_i32_ty = m.vector_type(i32_ty.as_type(), 2);
+    let vec_ptr_ty = VectorType::of(ptr_ty, lanes::<2>());
+    let vec_i32_ty = VectorType::of(i32_ty, lanes::<2>());
     let void_ty = m.void_type();
     let s_ty = m.struct_type([i32_ty.as_type(), i32_ty.as_type()]);
     let fn_ty = m.function_type(void_ty.as_type(), [vec_ptr_ty.as_type()]);

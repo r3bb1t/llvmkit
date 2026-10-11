@@ -6,6 +6,7 @@
 
 use crate::CrateOnly;
 use crate::argument::Argument;
+use crate::capability::{Capability, Mutable, ReadOnly};
 use crate::constant::Constant;
 use crate::error::{IrError, IrResult, TypeKindLabel};
 use crate::float_kind::{Bfloat, Fp128, Half, IntoFloatValue, PpcFp128, X86Fp80};
@@ -19,9 +20,7 @@ use crate::int_width::{IntDyn, IntoIntValue, Width};
 use crate::marker::{Dyn, Ptr, ReturnMarker};
 use crate::module::{ModuleBrand, ModuleRef, ModuleView};
 use crate::r#type::{Type, TypeData};
-use crate::value::{
-    FloatValue, IntValue, IntoPointerValue, PointerValue, StructValue, Value, ValueSlotAccess,
-};
+use crate::value::{FloatValue, IntValue, IntoPointerValue, PointerValue, StructValue, Value};
 
 #[doc(hidden)]
 pub mod token {
@@ -49,21 +48,23 @@ pub use token::ValidatedStructValue;
 /// Lifetime-free schema token for one LLVM struct field.
 pub trait IrField: Sized + 'static {
     /// Branded IR value produced by typed field extraction.
-    type Value<'ctx, B: ModuleBrand + 'ctx>;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability>;
 
     /// Construct this field's LLVM IR type in `module`.
-    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
     where
         B: ModuleBrand + 'ctx;
 
     /// Check whether an existing raw LLVM type matches this field schema.
-    fn matches_ir_type<'ctx, B>(ty: Type<'ctx, B>) -> bool
+    fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
     where
         B: ModuleBrand + 'ctx;
 
     /// Convert a raw field value after [`matches_ir_type`](Self::matches_ir_type)
     /// has accepted its type.
-    fn value_from_ir_value<'ctx, B>(value: Value<'ctx, B>) -> IrResult<Self::Value<'ctx, B>>
+    fn value_from_ir_value<'ctx, B, C: Capability>(
+        value: Value<'ctx, B, C>,
+    ) -> IrResult<Self::Value<'ctx, B, C>>
     where
         B: ModuleBrand + 'ctx;
 }
@@ -73,69 +74,103 @@ pub trait IntoIrField<'ctx, F: IrField, B: ModuleBrand>: Sized {
     fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>>;
 }
 
+/// A handle that may be a struct value, at capability `C`: the conversion
+/// keeps the capability (D8).
 #[doc(hidden)]
-pub trait TryIntoStructValue<'ctx, B: ModuleBrand>: Sized {
-    fn try_into_struct_value(self) -> IrResult<StructValue<'ctx, B>>;
+pub trait TryIntoStructValue<'ctx, B: ModuleBrand, C: Capability>: Sized {
+    fn try_into_struct_value(self) -> IrResult<StructValue<'ctx, B, C>>;
 }
 
-impl<'ctx, B> TryIntoStructValue<'ctx, B> for StructValue<'ctx, B>
+impl<'ctx, B, C> TryIntoStructValue<'ctx, B, C> for StructValue<'ctx, B, C>
 where
     B: ModuleBrand + 'ctx,
+    C: Capability,
 {
     #[inline]
-    fn try_into_struct_value(self) -> IrResult<StructValue<'ctx, B>> {
+    fn try_into_struct_value(self) -> IrResult<StructValue<'ctx, B, C>> {
         Ok(self)
     }
 }
 
 macro_rules! impl_try_into_struct_value {
-    ($source:ty) => {
-        impl<'ctx, B> TryIntoStructValue<'ctx, B> for $source
+    ($source:ident) => {
+        impl<'ctx, B, C> TryIntoStructValue<'ctx, B, C> for $source<'ctx, B, C>
         where
             B: ModuleBrand + 'ctx,
+            C: Capability,
         {
             #[inline]
-            fn try_into_struct_value(self) -> IrResult<StructValue<'ctx, B>> {
+            fn try_into_struct_value(self) -> IrResult<StructValue<'ctx, B, C>> {
                 StructValue::try_from(self)
             }
         }
     };
 }
 
-impl_try_into_struct_value!(Value<'ctx, B>);
-impl_try_into_struct_value!(Argument<'ctx, B>);
-impl_try_into_struct_value!(Constant<'ctx, B>);
-impl_try_into_struct_value!(Instruction<'ctx, Attached, B>);
+impl_try_into_struct_value!(Value);
+impl_try_into_struct_value!(Argument);
+impl_try_into_struct_value!(Constant);
 
-/// Branded wrapper value generated for a [`StructSchema`].
-pub trait StructSchemaValue<'ctx, S: StructSchema, B: ModuleBrand>: Sized + Copy {
-    fn as_struct_value(self) -> StructValue<'ctx, B>;
+// The linear `Instruction` handle is `Mutable` by construction (R7).
+impl<'ctx, B> TryIntoStructValue<'ctx, B, Mutable> for Instruction<'ctx, Attached, B>
+where
+    B: ModuleBrand + 'ctx,
+{
+    #[inline]
+    fn try_into_struct_value(self) -> IrResult<StructValue<'ctx, B>> {
+        StructValue::try_from(self)
+    }
+}
 
-    fn from_struct_value(raw: StructValue<'ctx, B>, validated: &ValidatedStructValue<'_>) -> Self;
+/// Branded wrapper value generated for a [`StructSchema`], at capability `C`
+/// — the capability of the struct value it wraps (D8).
+pub trait StructSchemaValue<'ctx, S: StructSchema, B: ModuleBrand, C: Capability>:
+    Sized + Copy
+{
+    fn as_struct_value(self) -> StructValue<'ctx, B, C>;
+
+    fn from_struct_value(
+        raw: StructValue<'ctx, B, C>,
+        validated: &ValidatedStructValue<'_>,
+    ) -> Self;
 
     /// Validate a raw struct-typed value against schema `S` before wrapping it.
     #[inline]
-    fn try_from_struct_value(raw: StructValue<'ctx, B>) -> IrResult<Self> {
-        let got = raw.ty().as_type();
-        if !<S as IrField>::matches_ir_type(got) {
-            // `matches_ir_type` compares the struct's *name*, not just its
-            // kind, so the common failure is one identified struct given
-            // where another was required — and `expected:
-            // TypeKindLabel::Struct` rendered that as "expected struct, got
-            // struct".
-            return Err(IrError::TypeIdentityMismatch {
-                expected: <S as IrField>::ir_type(got.module())?.rendered(),
-                got: got.rendered(),
-            });
-        }
+    fn try_from_struct_value(raw: StructValue<'ctx, B, C>) -> IrResult<Self> {
+        check_struct_identity::<S, B, _>(raw)?;
         let validated = ValidatedStructValue::new();
         Ok(Self::from_struct_value(raw, &validated))
     }
 }
 
+/// The identity check behind [`StructSchemaValue::try_from_struct_value`]:
+/// `raw`'s type must be the struct schema `S` names. It reads `raw` only
+/// through its own module, so it runs on a handle of any capability — the
+/// operand lifts below check before they admit.
+fn check_struct_identity<'ctx, S, B, C>(raw: StructValue<'ctx, B, C>) -> IrResult<()>
+where
+    S: IrField,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+{
+    let got = raw.ty().as_type();
+    if !<S as IrField>::matches_ir_type(got) {
+        // `matches_ir_type` compares the struct's *name*, not just its
+        // kind, so the common failure is one identified struct given
+        // where another was required — and `expected:
+        // TypeKindLabel::Struct` rendered that as "expected struct, got
+        // struct".
+        return Err(IrError::TypeIdentityMismatch {
+            expected: <S as IrField>::ir_type(got.module())?.rendered(),
+            got: got.rendered(),
+        });
+    }
+    Ok(())
+}
+
 /// Lifetime-free schema token for an LLVM identified struct.
 pub trait StructSchema: Sized + 'static {
-    type Value<'ctx, B: ModuleBrand + 'ctx>: StructSchemaValue<'ctx, Self, B>;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability>: StructSchemaValue<'ctx, Self, B, C>;
 
     /// Tuple of top-level field schemas in source-layout order.
     type FieldParams: FunctionParamList;
@@ -147,12 +182,12 @@ pub trait StructSchema: Sized + 'static {
     const PACKED: bool = false;
 
     /// Construct this schema's field types in source-layout order.
-    fn field_types<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Vec<Type<'ctx, B>>>
+    fn field_types<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Vec<Type<'ctx, B, ReadOnly>>>
     where
         B: ModuleBrand + 'ctx;
 
     /// Check a raw identified-struct body against this schema.
-    fn matches_fields<'ctx, B>(fields: &[Type<'ctx, B>]) -> bool
+    fn matches_fields<'ctx, B, C: Capability>(fields: &[Type<'ctx, B, C>]) -> bool
     where
         B: ModuleBrand + 'ctx;
 
@@ -160,7 +195,7 @@ pub trait StructSchema: Sized + 'static {
     #[inline]
     fn ir_type<'ctx, B>(
         module: ModuleView<'ctx, B>,
-    ) -> IrResult<crate::StructType<'ctx, crate::BodySet, B>>
+    ) -> IrResult<crate::StructType<'ctx, crate::BodySet, B, ReadOnly>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -169,13 +204,14 @@ pub trait StructSchema: Sized + 'static {
 
     /// Convert an existing raw IR value into this schema's branded wrapper.
     #[inline]
-    fn try_value_from_ir<'ctx, B, V>(value: V) -> IrResult<Self::Value<'ctx, B>>
+    fn try_value_from_ir<'ctx, B, C, V>(value: V) -> IrResult<Self::Value<'ctx, B, C>>
     where
         B: ModuleBrand + 'ctx,
-        V: TryIntoStructValue<'ctx, B>,
+        C: Capability,
+        V: TryIntoStructValue<'ctx, B, C>,
     {
         let raw = value.try_into_struct_value()?;
-        <Self::Value<'ctx, B> as StructSchemaValue<'ctx, Self, B>>::try_from_struct_value(raw)
+        <Self::Value<'ctx, B, C> as StructSchemaValue<'ctx, Self, B, C>>::try_from_struct_value(raw)
     }
 }
 
@@ -183,17 +219,17 @@ impl<S> IrField for S
 where
     S: StructSchema,
 {
-    type Value<'ctx, B: ModuleBrand + 'ctx> = S::Value<'ctx, B>;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = S::Value<'ctx, B, C>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
     where
         B: ModuleBrand + 'ctx,
     {
         Ok(S::ir_type(module)?.as_type())
     }
 
-    fn matches_ir_type<'ctx, B>(ty: Type<'ctx, B>) -> bool
+    fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
@@ -210,7 +246,7 @@ where
         if body.packed != S::PACKED {
             return false;
         }
-        let fields: Vec<Type<'ctx, B>> = body
+        let fields: Vec<Type<'ctx, B, C>> = body
             .elements
             .iter()
             .map(|id| Type::new(*id, ty.module))
@@ -218,22 +254,24 @@ where
         S::matches_fields(&fields)
     }
 
-    fn value_from_ir_value<'ctx, B>(value: Value<'ctx, B>) -> IrResult<Self::Value<'ctx, B>>
+    fn value_from_ir_value<'ctx, B, C: Capability>(
+        value: Value<'ctx, B, C>,
+    ) -> IrResult<Self::Value<'ctx, B, C>>
     where
         B: ModuleBrand + 'ctx,
     {
         let raw = StructValue::try_from(value)?;
-        <S::Value<'ctx, B> as StructSchemaValue<'ctx, S, B>>::try_from_struct_value(raw)
+        <S::Value<'ctx, B, C> as StructSchemaValue<'ctx, S, B, C>>::try_from_struct_value(raw)
     }
 }
 
 macro_rules! impl_int_field {
     ($($w:ty => $method:ident, $bits:literal),+ $(,)?) => {$(
         impl IrField for $w {
-            type Value<'ctx, B: ModuleBrand + 'ctx> = IntValue<'ctx, $w, B>;
+            type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = IntValue<'ctx, $w, B, C>;
 
             #[inline]
-            fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
+            fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -241,7 +279,7 @@ macro_rules! impl_int_field {
             }
 
             #[inline]
-            fn matches_ir_type<'ctx, B>(ty: Type<'ctx, B>) -> bool
+            fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -249,11 +287,13 @@ macro_rules! impl_int_field {
             }
 
             #[inline]
-            fn value_from_ir_value<'ctx, B>(value: Value<'ctx, B>) -> IrResult<Self::Value<'ctx, B>>
+            fn value_from_ir_value<'ctx, B, C: Capability>(
+                value: Value<'ctx, B, C>,
+            ) -> IrResult<Self::Value<'ctx, B, C>>
             where
                 B: ModuleBrand + 'ctx,
             {
-                IntValue::<'ctx, $w, B>::try_from(value)
+                IntValue::<'ctx, $w, B, C>::try_from(value)
             }
         }
 
@@ -280,10 +320,10 @@ impl_int_field!(
 );
 
 impl IrField for IntDyn {
-    type Value<'ctx, B: ModuleBrand + 'ctx> = IntValue<'ctx, IntDyn, B>;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = IntValue<'ctx, IntDyn, B, C>;
 
     #[inline]
-    fn ir_type<'ctx, B>(_module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(_module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -293,7 +333,7 @@ impl IrField for IntDyn {
     }
 
     #[inline]
-    fn matches_ir_type<'ctx, B>(ty: Type<'ctx, B>) -> bool
+    fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
@@ -301,11 +341,13 @@ impl IrField for IntDyn {
     }
 
     #[inline]
-    fn value_from_ir_value<'ctx, B>(value: Value<'ctx, B>) -> IrResult<Self::Value<'ctx, B>>
+    fn value_from_ir_value<'ctx, B, C: Capability>(
+        value: Value<'ctx, B, C>,
+    ) -> IrResult<Self::Value<'ctx, B, C>>
     where
         B: ModuleBrand + 'ctx,
     {
-        IntValue::<'ctx, IntDyn, B>::try_from(value)
+        IntValue::<'ctx, IntDyn, B, C>::try_from(value)
     }
 }
 
@@ -321,10 +363,10 @@ where
 }
 
 impl<const N: u32> IrField for Width<N> {
-    type Value<'ctx, B: ModuleBrand + 'ctx> = IntValue<'ctx, Width<N>, B>;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = IntValue<'ctx, Width<N>, B, C>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -332,7 +374,7 @@ impl<const N: u32> IrField for Width<N> {
     }
 
     #[inline]
-    fn matches_ir_type<'ctx, B>(ty: Type<'ctx, B>) -> bool
+    fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
@@ -340,11 +382,13 @@ impl<const N: u32> IrField for Width<N> {
     }
 
     #[inline]
-    fn value_from_ir_value<'ctx, B>(value: Value<'ctx, B>) -> IrResult<Self::Value<'ctx, B>>
+    fn value_from_ir_value<'ctx, B, C: Capability>(
+        value: Value<'ctx, B, C>,
+    ) -> IrResult<Self::Value<'ctx, B, C>>
     where
         B: ModuleBrand + 'ctx,
     {
-        IntValue::<'ctx, Width<N>, B>::try_from(value)
+        IntValue::<'ctx, Width<N>, B, C>::try_from(value)
     }
 }
 
@@ -362,10 +406,10 @@ where
 macro_rules! impl_float_field {
     ($($k:ty => $method:ident, $kind:pat),+ $(,)?) => {$(
         impl IrField for $k {
-            type Value<'ctx, B: ModuleBrand + 'ctx> = FloatValue<'ctx, $k, B>;
+            type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = FloatValue<'ctx, $k, B, C>;
 
             #[inline]
-            fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
+            fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -373,7 +417,7 @@ macro_rules! impl_float_field {
             }
 
             #[inline]
-            fn matches_ir_type<'ctx, B>(ty: Type<'ctx, B>) -> bool
+            fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -381,11 +425,13 @@ macro_rules! impl_float_field {
             }
 
             #[inline]
-            fn value_from_ir_value<'ctx, B>(value: Value<'ctx, B>) -> IrResult<Self::Value<'ctx, B>>
+            fn value_from_ir_value<'ctx, B, C: Capability>(
+                value: Value<'ctx, B, C>,
+            ) -> IrResult<Self::Value<'ctx, B, C>>
             where
                 B: ModuleBrand + 'ctx,
             {
-                FloatValue::<'ctx, $k, B>::try_from(value)
+                FloatValue::<'ctx, $k, B, C>::try_from(value)
             }
         }
 
@@ -413,10 +459,10 @@ impl_float_field!(
 );
 
 impl IrField for Ptr {
-    type Value<'ctx, B: ModuleBrand + 'ctx> = PointerValue<'ctx, B>;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = PointerValue<'ctx, B, C>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -424,7 +470,7 @@ impl IrField for Ptr {
     }
 
     #[inline]
-    fn matches_ir_type<'ctx, B>(ty: Type<'ctx, B>) -> bool
+    fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
@@ -432,7 +478,9 @@ impl IrField for Ptr {
     }
 
     #[inline]
-    fn value_from_ir_value<'ctx, B>(value: Value<'ctx, B>) -> IrResult<Self::Value<'ctx, B>>
+    fn value_from_ir_value<'ctx, B, C: Capability>(
+        value: Value<'ctx, B, C>,
+    ) -> IrResult<Self::Value<'ctx, B, C>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -451,50 +499,73 @@ where
     }
 }
 
-macro_rules! impl_struct_into_field {
-    ($source:ty) => {
-        impl<'ctx, S, B> IntoIrField<'ctx, S, B> for $source
+/// The struct-schema operand lift behind every [`IntoIrField`] and
+/// [`IntoCallArg`] impl below: narrow `value` to a struct, check it is the
+/// struct `S` names, then admit it at `module`. The narrow and the check
+/// read `value` only through its own module; admission comes last.
+fn struct_operand<'ctx, S, B, C>(
+    value: Value<'ctx, B, C>,
+    module: ModuleRef<'ctx, B>,
+) -> IrResult<Value<'ctx, B>>
+where
+    S: StructSchema,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+{
+    let raw = StructValue::try_from(value)?;
+    check_struct_identity::<S, B, C>(raw)?;
+    // Boundary: refuse a value another module minted. A handle of any
+    // capability is admitted and re-minted at `module`'s, so reading a value
+    // as an operand is not mutating it.
+    raw.as_erased().admitted_at(module)
+}
+
+macro_rules! impl_struct_operand {
+    ($trait:ident :: $method:ident) => {
+        impl<'ctx, S, B, C> $trait<'ctx, S, B> for Value<'ctx, B, C>
+        where
+            S: StructSchema,
+            B: ModuleBrand + 'ctx,
+            C: Capability,
+        {
+            fn $method(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+                struct_operand::<S, B, C>(self, module)
+            }
+        }
+        impl<'ctx, S, B, C> $trait<'ctx, S, B> for Argument<'ctx, B, C>
+        where
+            S: StructSchema,
+            B: ModuleBrand + 'ctx,
+            C: Capability,
+        {
+            fn $method(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+                struct_operand::<S, B, C>(self.as_erased(), module)
+            }
+        }
+        impl<'ctx, S, B, C> $trait<'ctx, S, B> for Constant<'ctx, B, C>
+        where
+            S: StructSchema,
+            B: ModuleBrand + 'ctx,
+            C: Capability,
+        {
+            fn $method(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+                struct_operand::<S, B, C>(self.as_erased(), module)
+            }
+        }
+        impl<'ctx, S, B> $trait<'ctx, S, B> for Instruction<'ctx, Attached, B>
         where
             S: StructSchema,
             B: ModuleBrand + 'ctx,
         {
-            fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                let value = S::try_value_from_ir(self)?.as_struct_value();
-                // Boundary: refuse a value another module minted. The schema
-                // narrow above reads it only through its own module.
-                value.slot_in(module.id())?;
-                Ok(value.as_erased())
+            fn $method(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+                struct_operand::<S, B, Mutable>(Instruction::to_erased(&self), module)
             }
         }
     };
 }
 
-impl_struct_into_field!(Value<'ctx, B>);
-impl_struct_into_field!(Argument<'ctx, B>);
-impl_struct_into_field!(Constant<'ctx, B>);
-impl_struct_into_field!(Instruction<'ctx, Attached, B>);
-
-macro_rules! impl_struct_into_call_arg {
-    ($source:ty) => {
-        impl<'ctx, S, B> IntoCallArg<'ctx, S, B> for $source
-        where
-            S: StructSchema,
-            B: ModuleBrand + 'ctx,
-        {
-            fn into_call_arg(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                let value = S::try_value_from_ir(self)?.as_struct_value();
-                // Boundary: refuse a value another module minted. The schema
-                // narrow above reads it only through its own module.
-                value.slot_in(module.id())?;
-                Ok(value.as_erased())
-            }
-        }
-    };
-}
-impl_struct_into_call_arg!(Value<'ctx, B>);
-impl_struct_into_call_arg!(Argument<'ctx, B>);
-impl_struct_into_call_arg!(Constant<'ctx, B>);
-impl_struct_into_call_arg!(Instruction<'ctx, Attached, B>);
+impl_struct_operand!(IntoIrField::into_ir_field);
+impl_struct_operand!(IntoCallArg::into_call_arg);
 
 /// The `I`-th top-level field schema of a field tuple. Implemented for
 /// tuple arities 1..=16, one impl per (arity, index) pair, so an
@@ -565,11 +636,11 @@ where
     S: StructSchema,
 {
     const ARITY: u32 = <S::FieldParams as FunctionParamList>::ARITY;
-    type Values<'ctx, B: ModuleBrand + 'ctx> =
-        <S::FieldParams as FunctionParamList>::Values<'ctx, B>;
+    type Values<'ctx, B: ModuleBrand + 'ctx, C: Capability> =
+        <S::FieldParams as FunctionParamList>::Values<'ctx, B, C>;
 
     #[inline]
-    fn ir_types<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Vec<Type<'ctx, B>>>
+    fn ir_types<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Vec<Type<'ctx, B, ReadOnly>>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -577,7 +648,7 @@ where
     }
 
     #[inline]
-    fn validate<'ctx, R, B>(function: FunctionValue<'ctx, R, B>) -> IrResult<()>
+    fn validate<'ctx, R, B>(function: FunctionValue<'ctx, R, B, ReadOnly>) -> IrResult<()>
     where
         R: ReturnMarker,
         B: ModuleBrand + 'ctx,
@@ -586,10 +657,10 @@ where
     }
 
     #[inline]
-    fn values<'ctx, R, B>(
-        function: FunctionValue<'ctx, R, B>,
+    fn values<'ctx, R, B, C: Capability>(
+        function: FunctionValue<'ctx, R, B, C>,
         validated: &ValidatedFunctionParams<'_>,
-    ) -> Self::Values<'ctx, B>
+    ) -> Self::Values<'ctx, B, C>
     where
         R: ReturnMarker,
         B: ModuleBrand + 'ctx,
@@ -598,10 +669,10 @@ where
     }
 
     #[inline]
-    fn values_from_phi_values<'ctx, B>(
-        phi_values: &[Value<'ctx, B>],
+    fn values_from_phi_values<'ctx, B, C: Capability>(
+        phi_values: &[Value<'ctx, B, C>],
         validated: &ValidatedFunctionParams<'_>,
-    ) -> Self::Values<'ctx, B>
+    ) -> Self::Values<'ctx, B, C>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -627,7 +698,7 @@ where
     type Marker = Dyn;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -635,7 +706,7 @@ where
     }
 
     #[inline]
-    fn matches_ir_type<'ctx, B>(ty: Type<'ctx, B>) -> bool
+    fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
@@ -647,12 +718,12 @@ where
         TypeKindLabel::Struct
     }
 
-    type CallResult<'ctx, B: ModuleBrand + 'ctx> = S::Value<'ctx, B>;
+    type CallResult<'ctx, B: ModuleBrand + 'ctx, C: Capability> = S::Value<'ctx, B, C>;
 
-    fn call_result_from_value<'ctx, B>(
-        value: Value<'ctx, B>,
+    fn call_result_from_value<'ctx, B, C: Capability>(
+        value: Value<'ctx, B, C>,
         _validated: &ValidatedCallResult<'_>,
-    ) -> Self::CallResult<'ctx, B>
+    ) -> Self::CallResult<'ctx, B, C>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -665,10 +736,10 @@ impl<S> FunctionParam for S
 where
     S: StructSchema,
 {
-    type Value<'ctx, B: ModuleBrand + 'ctx> = S::Value<'ctx, B>;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = S::Value<'ctx, B, C>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -676,14 +747,14 @@ where
     }
 
     #[inline]
-    fn matches_ir_type<'ctx, B>(ty: Type<'ctx, B>) -> bool
+    fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
         <S as IrField>::matches_ir_type(ty)
     }
 
-    fn validate_argument<'ctx, B>(arg: Argument<'ctx, B>) -> IrResult<()>
+    fn validate_argument<'ctx, B>(arg: Argument<'ctx, B, ReadOnly>) -> IrResult<()>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -699,10 +770,10 @@ where
         }
     }
 
-    fn value_from_argument<'ctx, B>(
-        arg: Argument<'ctx, B>,
+    fn value_from_argument<'ctx, B, C: Capability>(
+        arg: Argument<'ctx, B, C>,
         _validated: &ValidatedFunctionParams<'_>,
-    ) -> Self::Value<'ctx, B>
+    ) -> Self::Value<'ctx, B, C>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -713,10 +784,10 @@ where
         )
     }
 
-    fn value_from_value<'ctx, B>(
-        value: Value<'ctx, B>,
+    fn value_from_value<'ctx, B, C: Capability>(
+        value: Value<'ctx, B, C>,
         _validated: &ValidatedFunctionParams<'_>,
-    ) -> Self::Value<'ctx, B>
+    ) -> Self::Value<'ctx, B, C>
     where
         B: ModuleBrand + 'ctx,
     {

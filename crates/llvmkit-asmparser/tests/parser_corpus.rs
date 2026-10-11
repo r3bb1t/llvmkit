@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 
 pub mod support;
 
-use support::line_and_column;
+use support::reported_line_and_column;
 
 const CORPUS_MANIFEST: &str = include_str!("fixtures/parser_corpus_manifest.txt");
 
@@ -210,10 +210,8 @@ fn parser_corpus_round_trips_checked_in_fixtures() {
                     );
                 }
                 if let Some((line, column)) = entry.loc {
-                    let start = error.loc().start;
-                    let offset = usize::try_from(start).unwrap_or(usize::MAX);
                     assert_eq!(
-                        line_and_column(&source, offset),
+                        reported_line_and_column(&source, &error),
                         (line, column),
                         "corpus fixture {} should report upstream's diagnostic location",
                         entry.fixture

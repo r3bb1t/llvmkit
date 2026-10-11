@@ -34,7 +34,10 @@ fn parse(source: &str) -> Module<DynBrand, Unverified> {
 }
 
 /// The instruction named `%name` in the module's definitions.
-fn named<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, DynBrand> {
+fn named<'m>(
+    module: &'m Module<DynBrand, Unverified>,
+    name: &str,
+) -> Value<'m, DynBrand, llvmkit_ir::ReadOnly> {
     instruction(module, name).to_erased()
 }
 
@@ -42,7 +45,7 @@ fn named<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, 
 fn instruction<'m>(
     module: &'m Module<DynBrand, Unverified>,
     name: &str,
-) -> llvmkit_ir::InstructionView<'m, DynBrand> {
+) -> llvmkit_ir::InstructionView<'m, DynBrand, llvmkit_ir::ReadOnly> {
     module
         .as_view()
         .functions()
@@ -56,7 +59,7 @@ fn instruction<'m>(
 fn assume<'m>(
     module: &'m Module<DynBrand, Unverified>,
     index: usize,
-) -> llvmkit_ir::InstructionView<'m, DynBrand> {
+) -> llvmkit_ir::InstructionView<'m, DynBrand, llvmkit_ir::ReadOnly> {
     module
         .as_view()
         .functions()
@@ -87,17 +90,24 @@ fn dominator_tree(module: &Module<DynBrand, Unverified>) -> DominatorTree {
 }
 
 /// The defined function's parameter at `index`.
-fn parameter<'m>(module: &'m Module<DynBrand, Unverified>, index: usize) -> Value<'m, DynBrand> {
+fn parameter<'m>(
+    module: &'m Module<DynBrand, Unverified>,
+    index: usize,
+) -> Value<'m, DynBrand, llvmkit_ir::ReadOnly> {
     module
         .view(defined_function(module).id())
         .params()
         .nth(index)
         .expect("fixture has that many parameters")
         .as_erased()
+        .read_only()
 }
 
 /// The right-hand operand of the `icmp` named `%name`.
-fn compare_rhs<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, DynBrand> {
+fn compare_rhs<'m>(
+    module: &'m Module<DynBrand, Unverified>,
+    name: &str,
+) -> Value<'m, DynBrand, llvmkit_ir::ReadOnly> {
     instruction(module, name)
         .kind()
         .and_then(|kind| kind.as_cmp())
@@ -983,7 +993,7 @@ define i32 @test(i32 %x) nosync {
     let declaration = module
         .as_view()
         .functions()
-        .find(|function| function.name() == "llvm.assume")
+        .find(|function| function.name().as_deref() == Some("llvm.assume"))
         .expect("the fixture declares @llvm.assume");
     module
         .view(declaration.id())

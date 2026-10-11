@@ -7,7 +7,7 @@ use llvmkit_asmparser::parser;
 
 pub mod support;
 
-use support::line_and_column;
+use support::{line_and_column, reported_line_and_column};
 
 fn parse_and_print(src: &str) -> String {
     parser::parse_assembly(src, |module, _parsed| format!("{module}")).expect("parse")
@@ -36,9 +36,10 @@ fn parse_expect_error_at(src: &str) -> (String, (u32, u32)) {
         Ok(()) => panic!("expected parse to fail, but it succeeded"),
         Err(e) => e,
     };
-    let start = error.loc().start;
-    let offset = usize::try_from(start).unwrap_or(usize::MAX);
-    (format!("{error}"), line_and_column(src.as_bytes(), offset))
+    (
+        format!("{error}"),
+        reported_line_and_column(src.as_bytes(), &error),
+    )
 }
 
 /// Mirrors `LLParser::parseRet`'s `void` arm on the smallest body shape:

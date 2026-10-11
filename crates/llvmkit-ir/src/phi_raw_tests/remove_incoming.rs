@@ -24,7 +24,10 @@
 //! `build_*_phi` builders, which are crate-internal (block arguments are the
 //! public phi-authoring surface).
 
-use crate::{Dyn, InstructionKind, InstructionView, IrBuilder, IrError, Linkage, VerifierRule};
+use crate::{
+    Dyn, InstructionKind, InstructionView, IrBuilder, IrError, Linkage, VectorType, VerifierRule,
+    lanes,
+};
 
 /// Three predecessors, three incomings; removing index 0 backfills it from the
 /// **end**, exactly as upstream's `removeIncomingValue` does. The printed phi
@@ -231,7 +234,7 @@ fn remove_incoming_through_phi_kind_covers_every_flavour() -> Result<(), IrError
     let i32_ty = m.i32_type();
     let f64_ty = m.f64_type();
     let ptr_ty = m.ptr_type(0);
-    let vec_ty = m.vector_type(i32_ty, 2);
+    let vec_ty = VectorType::of(i32_ty, lanes::<2>());
     let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let a = m.view(f).append_basic_block(&m, "a");
