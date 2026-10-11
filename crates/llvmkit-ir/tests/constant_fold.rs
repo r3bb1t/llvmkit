@@ -1396,8 +1396,14 @@ fn fp_undef_binary_rules_fold_to_undef_or_nan() -> Result<(), IrError> {
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldBinaryInstruction`
 /// plus `PatternMatch.h::m_NegZeroFP`: scalable vector
 /// `-0.0 - undef` follows the scalar/scalable undef rule only when the
-/// left operand matches the negative-zero FP pattern; a poison-only vector
-/// does not match.
+/// left operand matches the negative-zero FP pattern; a `+0.0` splat does
+/// not match, and takes the generic finite-op-with-undef rule (NaN).
+///
+/// A poison splat never reaches that rule: `ConstantVector::getSplat` builds
+/// it as a `PoisonValue`, and `ConstantFoldBinaryInstruction` answers
+/// `isa<PoisonValue>(C1)` with poison before its undef handling. This test
+/// used to assert NaN for the poison splat — the answer of a folder whose
+/// `isa<PoisonValue>` read llvmkit's element list rather than the class.
 ///
 /// The mixed-lane cases this used to carry (`[-0.0, poison]` matching and
 /// `[-0.0, undef]` not) are gone with the constant that expressed them:
@@ -1423,16 +1429,30 @@ fn scalable_vector_fsub_negative_zero_pattern_controls_undef_fold() -> Result<()
     assert_eq!(folded, rhs);
 
     // Does not match: the generic finite-op-with-undef rule answers NaN.
-    let poison_splat = vec_ty
-        .const_vector::<Constant<'_, _>, _>([poison_lane, poison_lane])?
+    let pos_zero = f32_ty.const_float(0.0).as_constant();
+    let pos_zero_splat = vec_ty
+        .const_vector::<Constant<'_, _>, _>([pos_zero, pos_zero])?
         .as_constant();
-    let folded = constant_fold_binary_instruction(BinaryOpcode::Fsub, poison_splat, rhs)?
+    let folded = constant_fold_binary_instruction(BinaryOpcode::Fsub, pos_zero_splat, rhs)?
         .expect("non-matching scalable fsub undef folds to NaN");
     let lane_zero =
         constant_fold_extract_element_instruction(folded, m.i32_type().const_zero().as_constant())?
             .expect("folded NaN splat extracts lane zero");
     let lane_zero = ConstantFloatValue::<FloatDyn, _>::try_from(lane_zero)?;
     assert!(lane_zero.ap_float().is_nan());
+
+    // A poison splat is a `PoisonValue`: poison propagates before the undef rule.
+    let poison_splat = vec_ty
+        .const_vector::<Constant<'_, _>, _>([poison_lane, poison_lane])?
+        .as_constant();
+    let folded = constant_fold_binary_instruction(BinaryOpcode::Fsub, poison_splat, rhs)?
+        .expect("scalable poison - undef folds");
+    assert!(matches!(
+        folded.kind(),
+        llvmkit_ir::ConstantKind::Data(llvmkit_ir::ConstantDataKind::Undef(
+            llvmkit_ir::Undefined::Poison
+        ))
+    ));
     Ok(())
 }
 

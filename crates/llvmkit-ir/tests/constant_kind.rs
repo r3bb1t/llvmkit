@@ -9,7 +9,8 @@
 
 use llvmkit_ir::{
     ApFloat, ApFloatSign, Constant, ConstantAggregateKind, ConstantDataKind, ConstantExprOpcode,
-    ConstantKind, ConstantSequentialKind, DynBrand, IrResult, Linkage, Module, Undefined,
+    ConstantKind, ConstantSequentialKind, DynBrand, IrResult, Linkage, Module, Type, UnaryOpcode,
+    Undefined, constant_fold_unary_instruction,
 };
 
 /// The class of a two-element fixed vector of `elements`.
@@ -103,8 +104,8 @@ fn float_zero_and_one(m: &Module<DynBrand>) -> IrResult<[[Constant<'_, DynBrand>
 /// **Blocked half, by name:** each loop's second assertion round-trips the
 /// array through `ConstantDataArray::getRaw(getRawDataValues(), …)` and
 /// checks it is the same uniqued constant. llvmkit has no raw-data
-/// constructor or accessor (`rg -n "raw_data|get_raw" crates/llvmkit-ir/src`
-/// finds nothing on 2026-10-10), so that assertion is not ported;
+/// constructor or accessor (`git grep -nE "raw_data|get_raw" feb8505 --
+/// crates/llvmkit-ir/src` finds nothing), so that assertion is not ported;
 /// `docs/future-work.md` records the gap.
 #[test]
 fn build_constant_data_arrays() -> IrResult<()> {
@@ -431,5 +432,200 @@ fn constant_data_membership_follows_the_class() -> IrResult<()> {
         .as_constant();
     assert!(!aggregate.is_constant_data());
     assert!(aggregate.as_erased().has_use_list());
+    Ok(())
+}
+
+/// `token none` and `target(...) none` are null values: `Constant::isNullValue`
+/// ends `isa<ConstantAggregateZero>(this) || isa<ConstantPointerNull>(this) ||
+/// isa<ConstantTokenNone>(this) || isa<ConstantTargetNone>(this)`, so a list
+/// of target-extension `none`s is the `ConstantAggregateZero`
+/// `ConstantArray::getImpl` builds from all-null elements. Regression: the
+/// five copies of the test at `feb8505` (`git grep -nE "fn
+/// (constant_is_null_value|constant_id_is_null_value|is_null_value|is_zero_initializer_value)\b"
+/// feb8505 -- crates/llvmkit-ir/src`) each answered `false` for both; one port
+/// remains. llvmkit-specific rule anchor (D11).
+#[test]
+fn token_none_and_target_none_are_null_values() -> IrResult<()> {
+    let m = Module::dynamic("constants");
+    assert!(m.token_none().is_null_value());
+    let target = m
+        .target_ext_type("spirv.foo", Vec::<Type<'_, _>>::new(), Vec::<u32>::new())
+        .as_type();
+    let none = m.target_ext_none(target)?;
+    assert!(matches!(
+        none.kind(),
+        ConstantKind::Data(ConstantDataKind::TargetNone)
+    ));
+    assert!(none.is_null_value());
+    let pair = m
+        .array_type(target, 2)
+        .const_array([none, none])?
+        .as_constant();
+    assert!(pair.is_null_value());
+    assert!(matches!(
+        pair.kind(),
+        ConstantKind::Data(ConstantDataKind::AggregateZero)
+    ));
+    Ok(())
+}
+
+/// A whole-value fold sees an all-`poison` element list as the `PoisonValue`
+/// upstream canonicalises it to: `ConstantFoldUnaryInstruction` opens with
+/// `if (isa<PoisonValue>(C)) return PoisonValue::get(C->getType())`.
+/// Regression: the folders' `isa<PoisonValue>` read the storage, so the list
+/// was folded lane by lane and printed as one. llvmkit-specific (D11).
+#[test]
+fn a_whole_value_fold_sees_an_all_poison_list_as_poison() -> IrResult<()> {
+    let m = Module::dynamic("fold");
+    let poison = m.f32_type().as_type().poison().as_constant();
+    let lanes = m
+        .vector_type(m.f32_type(), 2)
+        .const_vector([poison, poison])?
+        .as_constant();
+    let folded = constant_fold_unary_instruction(UnaryOpcode::Fneg, lanes)?
+        .expect("fneg of a constant folds");
+    assert_eq!(folded.to_string(), "<2 x float> poison");
+    Ok(())
+}
+
+/// llvmkit's compact constant forms are classified as upstream's constructor
+/// leaves them: a zero-offset `GepOffset` is its base global
+/// (`ConstantFoldGetElementPtr`'s `IsNoOp` returns the pointer), a non-zero one
+/// a `getelementptr`; a zero-addend delta is the plain `sub`
+/// (`ConstantFoldBinaryInstruction`'s `getBinOpIdentity` fold), a non-zero one
+/// an `add`. llvmkit-specific rule anchor (D11).
+#[test]
+fn a_compact_form_is_classified_as_upstream_folds_it() -> IrResult<()> {
+    let m = Module::dynamic("constants");
+    let f = m.add_function_dyn(
+        "f",
+        m.function_type_no_parameters(m.void_type()),
+        Linkage::External,
+    )?;
+    assert!(matches!(
+        m.view(f).as_aggregate_ptr(0).kind(),
+        ConstantKind::GlobalValue
+    ));
+    let g = m.add_global("g", m.i32_type().const_int(0_i32))?;
+    let h = m.add_global("h", m.i32_type().const_int(0_i32))?;
+    assert!(matches!(
+        m.view(g).ptr_offset(0).kind(),
+        ConstantKind::GlobalValue
+    ));
+    assert!(matches!(
+        m.view(g).ptr_offset(4).kind(),
+        ConstantKind::Expr(ConstantExprOpcode::GetElementPtr)
+    ));
+    assert!(matches!(
+        m.view(g)
+            .try_delta_from_plus(m.view(h), 0)?
+            .as_constant()
+            .kind(),
+        ConstantKind::Expr(ConstantExprOpcode::Sub)
+    ));
+    assert!(matches!(
+        m.view(g)
+            .try_delta_from_plus(m.view(h), 5)?
+            .as_constant()
+            .kind(),
+        ConstantKind::Expr(ConstantExprOpcode::Add)
+    ));
+    assert!(matches!(
+        m.view(g).try_delta_from(m.view(h))?.as_constant().kind(),
+        ConstantKind::Expr(ConstantExprOpcode::Sub)
+    ));
+    Ok(())
+}
+
+/// A nested element list is classified through its own class: an array of
+/// all-`undef` arrays is all-`undef` (each inner list is the `UndefValue`
+/// upstream builds), an array of all-zero arrays is all-null, and an array of
+/// distinct inner lists stays a `ConstantArray`. The empty struct is a
+/// `ConstantAggregateZero`: `ConstantStruct::get` starts `isZero = true` and an
+/// empty list never clears it. llvmkit-specific rule anchor (D11).
+#[test]
+fn nested_and_empty_lists_are_classified_through_their_class() -> IrResult<()> {
+    let m = Module::dynamic("constants");
+    let i32_ty = m.i32_type();
+    let undef = i32_ty.as_type().undef().as_constant();
+    let zero = i32_ty.const_int(0_i32).as_constant();
+    let one = i32_ty.const_int(1_i32).as_constant();
+    let inner = m.array_type(i32_ty, 2);
+
+    let undef_inner = inner.const_array([undef, undef])?.as_constant();
+    let undef_outer = m
+        .array_type(undef_inner.ty(), 2)
+        .const_array([undef_inner, undef_inner])?
+        .as_constant();
+    assert!(matches!(
+        undef_outer.kind(),
+        ConstantKind::Data(ConstantDataKind::Undef(Undefined::Undef))
+    ));
+
+    let zero_inner = inner.const_array([zero, zero])?.as_constant();
+    let zero_outer = m
+        .array_type(zero_inner.ty(), 2)
+        .const_array([zero_inner, zero_inner])?
+        .as_constant();
+    assert!(matches!(
+        zero_outer.kind(),
+        ConstantKind::Data(ConstantDataKind::AggregateZero)
+    ));
+
+    let simple_inner = inner.const_array([zero, one])?.as_constant();
+    let mixed_outer = m
+        .array_type(simple_inner.ty(), 2)
+        .const_array([simple_inner, zero_inner])?
+        .as_constant();
+    assert!(matches!(
+        mixed_outer.kind(),
+        ConstantKind::Aggregate(ConstantAggregateKind::Array)
+    ));
+
+    let empty_struct = m
+        .struct_type(Vec::<Type<'_, _>>::new())
+        .const_struct(Vec::<Constant<'_, _>>::new())?
+        .as_constant();
+    assert!(matches!(
+        empty_struct.kind(),
+        ConstantKind::Data(ConstantDataKind::AggregateZero)
+    ));
+    Ok(())
+}
+
+/// A list the class calls `ConstantAggregateZero` prints as
+/// `zeroinitializer`: `AsmWriter.cpp`'s `writeConstantInternal` prints that for
+/// `isa<ConstantAggregateZero>(CV) || isa<ConstantTargetNone>(CV)`, before its
+/// `ConstantDataArray` string arm, and an array of `target none`s or of
+/// `i8 0`s is one (`ConstantArray::getImpl`'s `isNullValue` arm).
+/// Regression: the printer kept its own all-zero test, which did not count
+/// `target none`, and asked it only after the `c"…"` arm, so it printed the
+/// `target none`s one by one and the zero bytes as `c"\00\00"`.
+/// llvmkit-specific rule anchor (D11).
+#[test]
+fn an_aggregate_zero_list_prints_as_zeroinitializer() -> IrResult<()> {
+    let m = Module::dynamic("constants");
+    let target = m
+        .target_ext_type("spirv.foo", Vec::<Type<'_, _>>::new(), Vec::<u32>::new())
+        .as_type();
+    let none = m.target_ext_none(target)?;
+    let pair = m
+        .array_type(target, 2)
+        .const_array([none, none])?
+        .as_constant();
+    assert!(matches!(
+        pair.kind(),
+        ConstantKind::Data(ConstantDataKind::AggregateZero)
+    ));
+    assert_eq!(
+        pair.to_string(),
+        "[2 x target(\"spirv.foo\")] zeroinitializer"
+    );
+    let zero_byte = m.i8_type().const_int(0_i8).as_constant();
+    let zero_bytes = m
+        .array_type(m.i8_type(), 2)
+        .const_array([zero_byte, zero_byte])?
+        .as_constant();
+    assert_eq!(zero_bytes.to_string(), "[2 x i8] zeroinitializer");
     Ok(())
 }

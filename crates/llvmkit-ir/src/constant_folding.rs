@@ -1005,7 +1005,7 @@ fn fold_ptr_int_cast_vs_null<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     dl: &DataLayout,
     denormal_mode: Option<DenormalMode>,
 ) -> IrResult<Option<Option<Constant<'ctx, B, C>>>> {
-    if !constant_is_null_value(rhs) {
+    if !Constant::is_null_value(rhs) {
         return Ok(None);
     }
     let Some(expr) = constant_expr_data(lhs) else {
@@ -1304,38 +1304,6 @@ fn swap_cmp_predicate(predicate: CmpPredicate) -> CmpPredicate {
         CmpPredicate::Int(pred) => CmpPredicate::Int(pred.swapped()),
         CmpPredicate::Float(pred) => CmpPredicate::Float(pred.swapped()),
     }
-}
-
-/// `Constant::isNullValue` (`llvm/lib/IR/Constants.cpp`), restricted to the
-/// scalar/aggregate shapes reachable here. A local copy of the
-/// pure-IR-layer `constant_fold::constant_is_null_value` for this
-/// DataLayout-aware analysis module, mirroring that module's own existing
-/// `is_undef`/`is_poison` duplication here rather than threading
-/// cross-module visibility.
-fn constant_is_null_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    constant: Constant<'ctx, B, C>,
-) -> bool {
-    match &constant.as_erased().data().kind {
-        ValueKindData::Constant(ConstantData::Int(_)) => is_zero_int_constant(constant),
-        ValueKindData::Constant(ConstantData::Float(_)) => {
-            ConstantFloatValue::<FloatDyn, B, C>::try_from(constant)
-                .is_ok_and(|value| value.ap_float().is_pos_zero())
-        }
-        ValueKindData::Constant(ConstantData::PointerNull) => true,
-        ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-            let module = constant.module;
-            elements
-                .iter()
-                .all(|id| constant_from_id(module, *id).is_some_and(constant_is_null_value))
-        }
-        _ => false,
-    }
-}
-
-fn is_zero_int_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    constant: Constant<'ctx, B, C>,
-) -> bool {
-    ConstantIntValue::<IntDyn, B, C>::try_from(constant).is_ok_and(|value| value.ap_int().is_zero())
 }
 
 /// Fold a unary operation with a caller-provided constant operand.
@@ -2214,7 +2182,7 @@ fn gep_offset_magnitude(off: i64, index_bits: u32) -> ApInt {
 fn is_null_or_inttoptr_nonzero_base<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     ptr: Constant<'ctx, B, C>,
 ) -> bool {
-    if constant_is_null_value(ptr) {
+    if Constant::is_null_value(ptr) {
         return true;
     }
     let ValueKindData::Constant(ConstantData::Expr(expr)) = &ptr.as_erased().data().kind else {

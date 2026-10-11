@@ -1758,16 +1758,26 @@ fn constant_id_is_undef_or_poison(module: &ModuleCore, id: ValueSlot) -> bool {
     )
 }
 
-/// Mirrors `Constant::isNullValue`: the all-zero value of the constant's own
-/// type, aggregates included — `zeroinitializer` is exactly this predicate.
-/// A float is null only at `+0.0`, which is the all-zero bit pattern.
+/// Mirrors `Constant::isNullValue` — the crate's one port of it;
+/// [`Constant::is_null_value`], the folders and the printer's
+/// `zeroinitializer` arm ask through it.
+///
+/// Upstream's arms: a `ConstantInt` that is zero; a `ConstantFP` for which
+/// `isExactlyValue(+0.0)` holds — a bitwise comparison with `+0.0` at the
+/// constant's semantics, whose pattern is all zeros at every float kind; and
+/// a `ConstantAggregateZero`, `ConstantPointerNull`, `ConstantTokenNone` or
+/// `ConstantTargetNone`. An element list is a `ConstantAggregateZero`
+/// exactly when every element is null, because that is the list the
+/// canonicalisations in `ConstantArray::getImpl`, `ConstantStruct::get` and
+/// `ConstantVector::getImpl` turn into one (see `Constant::kind`).
 pub(crate) fn constant_id_is_null_value(module: &ModuleCore, id: ValueSlot) -> bool {
     match &module.context().value_data(id).kind {
-        ValueKindData::Constant(ConstantData::Int(_)) => {
-            const_index_u64(module, id).is_some_and(|value| value == 0)
-        }
+        // `ConstantInt::isZero`, over every word of the width.
+        ValueKindData::Constant(ConstantData::Int(words)) => words.iter().all(|word| *word == 0),
         ValueKindData::Constant(ConstantData::Float(bits)) => *bits == 0,
-        ValueKindData::Constant(ConstantData::PointerNull) => true,
+        ValueKindData::Constant(
+            ConstantData::PointerNull | ConstantData::TokenNone | ConstantData::TargetExtNone,
+        ) => true,
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => elements
             .iter()
             .all(|element| constant_id_is_null_value(module, *element)),

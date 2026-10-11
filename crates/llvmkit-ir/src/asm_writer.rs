@@ -1469,19 +1469,6 @@ fn collect_byte_string<B: ModuleBrand, C: Capability>(
     }
 }
 
-fn is_zero_initializer_value(module: &ModuleCore, id: ValueSlot) -> bool {
-    let data = module.context().value_data(id);
-    match &data.kind {
-        ValueKindData::Constant(ConstantData::Int(words)) => words.iter().all(|word| *word == 0),
-        ValueKindData::Constant(ConstantData::Float(bits)) => *bits == 0,
-        ValueKindData::Constant(ConstantData::PointerNull) => true,
-        ValueKindData::Constant(ConstantData::Aggregate(elements)) => elements
-            .iter()
-            .all(|element| is_zero_initializer_value(module, *element)),
-        _ => false,
-    }
-}
-
 fn aggregate_splat_id(elem_ids: &[ValueSlot]) -> Option<ValueSlot> {
     let first = elem_ids.first().copied()?;
     elem_ids.iter().all(|id| *id == first).then_some(first)
@@ -1533,19 +1520,20 @@ fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 ) -> fmt::Result {
     let module = host.module();
     let ty = host.ty();
+    // `isa<ConstantAggregateZero>(CV)`, asked before the `ConstantDataArray`
+    // string arm as `writeConstantInternal` asks it. An element list is one
+    // exactly when every element is null, the empty list included — the
+    // canonicalisation `Constant::kind` replays.
+    if elem_ids
+        .iter()
+        .all(|id| crate::constants::constant_id_is_null_value(module.core_ref(), *id))
+    {
+        return f.write_str("zeroinitializer");
+    }
     if let Some(bytes) = collect_byte_string(module.core_ref(), ty, elem_ids) {
         f.write_str("c\"")?;
         print_escaped_string(f, &bytes)?;
         return f.write_str("\"");
-    }
-    if elem_ids.is_empty() {
-        return f.write_str("zeroinitializer");
-    }
-    if elem_ids
-        .iter()
-        .all(|id| is_zero_initializer_value(module.core_ref(), *id))
-    {
-        return f.write_str("zeroinitializer");
     }
     if let Some(splat) = aggregate_splat_id(elem_ids)
         && prints_as_splat(module.core_ref(), ty, splat)

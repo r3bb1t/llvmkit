@@ -12,7 +12,7 @@ use llvmkit_ir::comdat::SelectionKind;
 use llvmkit_ir::global_value::{DllStorageClass, ThreadLocalMode, Visibility};
 use llvmkit_ir::{
     Align, ConstantExprFlags, ConstantExprOpcode, ConstantExprOptions, DataLayout, GepNoWrapFlags,
-    IrBuilder, IrError, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, UnnamedAddr,
+    IrBuilder, IrError, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, Type, UnnamedAddr,
     VerifierRule, VerifierSubject, constant_fold_constant, module_new,
 };
 
@@ -978,6 +978,27 @@ fn common_linkage_constant_rejected() {
         ),
         "got: {err:?}"
     );
+}
+
+/// Mirrors `Verifier::visitGlobalVariable` -- the `hasCommonLinkage`
+/// arm's `GV.getInitializer()->isNullValue()`, which is true of a
+/// `ConstantTargetNone` (`Constant::isNullValue`'s last arm), so a
+/// common-linkage global initialised with `target none` verifies.
+/// Regression: the verifier's isNullValue copy had no `target none` arm and
+/// rejected it. llvmkit-specific (D11).
+#[test]
+fn common_linkage_target_none_initializer_accepted() {
+    let m = module_new!("m").expect("fresh module");
+    let target = m
+        .target_ext_type("spirv.foo", Vec::<Type<'_, _>>::new(), Vec::<u32>::new())
+        .as_type();
+    let none = m.target_ext_none(target).expect("target none");
+    m.global_builder("c", target)
+        .linkage(Linkage::Common)
+        .initializer(none)
+        .build()
+        .expect("build");
+    m.verify_borrowed().expect("verifier accepts");
 }
 
 /// Mirrors `Verifier::visitGlobalVariable` -- the

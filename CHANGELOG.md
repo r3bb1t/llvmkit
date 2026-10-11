@@ -53,11 +53,58 @@ cut, entries accumulate under **Unreleased**.
   personality or initializer that names a global — on the premise that a
   `Constant` only ever wraps a constant-kind slot. A global is now
   `ConstantKind::GlobalValue`, as upstream's `GlobalValue` is a `Constant`.
-- Neither was covered: `rg -n "has_use_list\(|is_constant_data\(" crates --type rust`
-  found only production callers on 2026-10-10.
+- Neither was covered: `git grep -nE "has_use_list\(|is_constant_data\(" 1109ee0 -- 'crates/*.rs'`
+  matches only definitions and production callers under `crates/llvmkit-ir/src/`.
   `constant_kind.rs::constant_data_membership_follows_the_class` and
   `::a_global_widened_to_a_constant_is_a_global_value` fail against the old
   body (the second by its `unreachable!`).
+
+### Fixed — one port of `Constant::isNullValue`; the undef/poison tests and the compact forms answer by class
+
+- **`token none` and `target(...) none` are null values.** The crate held five
+  copies of `Constant::isNullValue` (`git grep -nE "fn
+  (constant_is_null_value|constant_id_is_null_value|is_null_value|is_zero_initializer_value)\b"
+  feb8505 -- crates/llvmkit-ir/src`), and none had upstream's
+  `ConstantTokenNone` / `ConstantTargetNone` arms. One port remains,
+  `constants.rs::constant_id_is_null_value`; `Constant::is_null_value`, both
+  folders, the verifier and the printer ask through it. What answers
+  differently, each as upstream: `Constant::is_null_value` on either; a list
+  of `target none`s is a `ConstantAggregateZero` to `Constant::kind`; the
+  verifier accepts a `common` global initialised with `target none` (it
+  reported "'common' global must have a zero initializer!"); and the folders'
+  float test, which asked `ApFloat::is_pos_zero`, is now the bitwise
+  comparison with `+0.0` that upstream's `isExactlyValue(+0.0)` makes, so a
+  `ppc_fp128` whose high double is `+0.0` and whose low double is not is no
+  longer null to them (`is_pos_zero` reads the high double only).
+- **The printer prints every all-null element list as `zeroinitializer`,
+  before its `c"…"` arm**, as `writeConstantInternal` asks
+  `isa<ConstantAggregateZero>` before the `ConstantDataArray` string arm.
+  `[2 x i8] [i8 0, i8 0]` — and so a parsed `[N x i8] zeroinitializer` —
+  printed `c"\00\00"`, `[0 x i8]` printed `c""`, and a list of `target none`s
+  printed element by element.
+- **`Constant::is_undef`, `is_poison` and `is_undef_or_poison` answer through
+  `Constant::kind`.** They read the storage, so an all-`undef` or all-`poison`
+  list — the `UndefValue` / `PoisonValue` upstream builds from it — answered
+  `false`, and a whole-value fold walked it lane by lane: `fneg` of `<2 x
+  float> <float poison, float poison>` folded to the list where upstream's
+  `ConstantFoldUnaryInstruction` returns `<2 x float> poison`. The
+  storage-level reads elsewhere in the crate are recorded, unaudited, in
+  `docs/future-work.md`.
+- **`Constant::kind` classifies llvmkit's compact forms as upstream's folds
+  leave them:** a zero-offset `GepOffset` is its base global
+  (`ConstantFoldGetElementPtr`'s `IsNoOp`) and a zero-addend delta is the plain
+  `sub` (`getBinOpIdentity`); they answered `getelementptr` and `add`.
+- `Constant::kind`'s `unreachable!` for an argument, block or instruction
+  slot is now guarded: `tests/constant_handle_mint_drift.rs` pins every
+  crate-private `Constant::from_parts` call to an audited reason the slot is a
+  constant or a global.
+- Tests: `constant_kind.rs::token_none_and_target_none_are_null_values`,
+  `::an_aggregate_zero_list_prints_as_zeroinitializer`,
+  `::a_whole_value_fold_sees_an_all_poison_list_as_poison`,
+  `::a_compact_form_is_classified_as_upstream_folds_it`,
+  `::nested_and_empty_lists_are_classified_through_their_class`, and
+  `globals_basic.rs::common_linkage_target_none_initializer_accepted`; each
+  fails with its fix reverted.
 
 ### Fixed — the pointer-strip walks are one port of `stripPointerCastsAndOffsets`
 

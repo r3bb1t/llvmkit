@@ -427,7 +427,7 @@ pub(crate) fn constant_fold_binary_instruction_trusting_same_module<
     if matches!(
         opcode,
         BinaryOpcode::Udiv | BinaryOpcode::Sdiv | BinaryOpcode::Urem | BinaryOpcode::Srem
-    ) && constant_is_null_value(rhs)
+    ) && Constant::is_null_value(rhs)
     {
         return Ok(Some(poison_for(lhs.ty())));
     }
@@ -694,7 +694,7 @@ pub(crate) fn constant_fold_cast_instruction_trusting_same_module<
             | CastOpcode::AddrSpaceCast => Ok(Some(dest_ty.undef().as_constant())),
         };
     }
-    if constant_is_null_value(operand) && !matches!(opcode, CastOpcode::AddrSpaceCast) {
+    if Constant::is_null_value(operand) && !matches!(opcode, CastOpcode::AddrSpaceCast) {
         return null_constant_for_type(dest_ty);
     }
     if let Some(folded) = fold_constant_cast_pair(opcode, operand, dest_ty)? {
@@ -997,7 +997,7 @@ pub(crate) fn constant_fold_compare_instruction_trusting_same_module<
         return fold_undef_compare(predicate, result_ty, lhs, rhs);
     }
     if let CmpPredicate::Int(pred) = predicate {
-        if constant_is_null_value(rhs) {
+        if Constant::is_null_value(rhs) {
             match pred {
                 IntPredicate::Uge => return bool_constant_for_type(result_ty, true),
                 IntPredicate::Ult => return bool_constant_for_type(result_ty, false),
@@ -1094,7 +1094,7 @@ pub(crate) fn constant_fold_compare_instruction_trusting_same_module<
                 ValueKindData::Constant(ConstantData::Expr(_))
             );
             if (lhs_is_not_expr && rhs_is_expr)
-                || (constant_is_null_value(lhs) && !constant_is_null_value(rhs))
+                || (Constant::is_null_value(lhs) && !Constant::is_null_value(rhs))
             {
                 return constant_fold_compare_instruction_trusting_same_module(
                     CmpPredicate::Int(swapped_int_predicate(pred)),
@@ -1511,7 +1511,7 @@ pub(crate) fn constant_fold_select_instruction_trusting_same_module<
     if true_value.ty() != false_value.ty() {
         return Ok(None);
     }
-    if constant_is_null_value(condition) {
+    if Constant::is_null_value(condition) {
         return Ok(Some(false_value));
     }
     if constant_is_all_ones_value(condition)? {
@@ -1794,7 +1794,7 @@ pub(crate) fn constant_fold_insert_element_instruction_trusting_same_module<
     if is_undef_or_poison(index) {
         return Ok(Some(poison_for(vector.ty())));
     }
-    if constant_is_null_value(vector) && constant_is_null_value(value) {
+    if Constant::is_null_value(vector) && Constant::is_null_value(value) {
         return Ok(Some(vector));
     }
     if scalable {
@@ -1871,7 +1871,7 @@ pub(crate) fn constant_fold_shuffle_vector_instruction_trusting_same_module<
         let index = lhs.as_erased().module.i32_type().const_zero().as_constant();
         if let Some(element) =
             constant_fold_extract_element_instruction_trusting_same_module(lhs, index)?
-            && (!scalable || constant_is_null_value(element) || is_undef_or_poison(element))
+            && (!scalable || Constant::is_null_value(element) || is_undef_or_poison(element))
         {
             return vector_splat_constant(result_ty, element);
         }
@@ -1926,7 +1926,7 @@ pub fn shufflevector_mask_from_constant<'ctx, B: ModuleBrand + 'ctx, C: Capabili
     if is_undef_or_poison(mask) {
         return Some(vec![ShuffleMaskElem::Poison; lane_count]);
     }
-    if constant_is_null_value(mask) {
+    if Constant::is_null_value(mask) {
         return Some(vec![ShuffleMaskElem::Lane(0); lane_count]);
     }
     if scalable {
@@ -2070,7 +2070,7 @@ pub(crate) fn constant_fold_get_element_ptr_trusting_same_module<
         && indices
             .iter()
             .copied()
-            .all(|index| constant_is_null_value(index) || is_undef_or_poison(index));
+            .all(|index| Constant::is_null_value(index) || is_undef_or_poison(index));
     if is_noop {
         if result_ty.data().as_vector().is_some() && pointer.ty().data().as_vector().is_none() {
             return vector_splat_constant(result_ty, pointer);
@@ -2140,29 +2140,6 @@ fn pointer_address_space<B: ModuleBrand, C: Capability>(ty: Type<'_, B, C>) -> O
             pointer_address_space(Type::new(*elem, ty.module))
         }
         _ => None,
-    }
-}
-
-fn constant_is_null_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    constant: Constant<'ctx, B, C>,
-) -> bool {
-    match &constant.as_erased().data().kind {
-        ValueKindData::Constant(ConstantData::Int(_)) => is_zero_int_constant(constant),
-        ValueKindData::Constant(ConstantData::Float(_)) => {
-            ConstantFloatValue::<FloatDyn, B, C>::try_from(constant)
-                .is_ok_and(|value| value.ap_float().is_pos_zero())
-        }
-        ValueKindData::Constant(ConstantData::PointerNull) => true,
-        ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-            let module = constant.as_erased().module();
-            elements.iter().all(|id| {
-                let data = module.context().value_data(*id);
-                constant_is_null_value(Constant::from_parts(Value::from_parts(
-                    *id, module, data.ty,
-                )))
-            })
-        }
-        _ => false,
     }
 }
 
@@ -3187,9 +3164,9 @@ fn binop_identity<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 ) -> IrResult<Option<Constant<'ctx, B, C>>> {
     let folded = match opcode {
         BinaryOpcode::Add | BinaryOpcode::Or | BinaryOpcode::Xor => {
-            if constant_is_null_value(lhs) {
+            if Constant::is_null_value(lhs) {
                 Some(rhs)
-            } else if constant_is_null_value(rhs) {
+            } else if Constant::is_null_value(rhs) {
                 Some(lhs)
             } else {
                 None
@@ -3236,7 +3213,7 @@ fn binop_identity<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         | BinaryOpcode::Lshr
         | BinaryOpcode::Ashr
         | BinaryOpcode::Fsub
-            if constant_is_null_value(rhs) =>
+            if Constant::is_null_value(rhs) =>
         {
             Some(lhs)
         }
@@ -3267,7 +3244,7 @@ fn binop_rhs_absorber<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }
     let folded = match opcode {
         BinaryOpcode::Or if constant_is_all_ones_value(rhs)? => Some(rhs),
-        BinaryOpcode::And | BinaryOpcode::Mul if constant_is_null_value(rhs) => Some(rhs),
+        BinaryOpcode::And | BinaryOpcode::Mul if Constant::is_null_value(rhs) => Some(rhs),
         _ => None,
     };
     Ok(folded)
@@ -3291,7 +3268,7 @@ fn binop_lhs_absorber<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         | BinaryOpcode::Udiv
         | BinaryOpcode::Urem
         | BinaryOpcode::Srem
-            if constant_is_null_value(lhs) =>
+            if Constant::is_null_value(lhs) =>
         {
             Some(lhs)
         }

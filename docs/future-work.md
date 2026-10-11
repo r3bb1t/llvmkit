@@ -1854,12 +1854,43 @@ rider on the bundle copy.
 `ConstantDataArray::getRaw(CDA->getRawDataValues(), CDA->getNumElements(),
 CDA->getElementType())` and assert the result is the same uniqued constant.
 llvmkit has neither half: no accessor for a sequential constant's packed bytes
-and no constructor from them (`rg -n "raw_data|get_raw" crates/llvmkit-ir/src`
-found nothing on 2026-10-10). `crates/llvmkit-ir/tests/constant_kind.rs` ports
+and no constructor from them (`git grep -nE "raw_data|get_raw" feb8505 --
+crates/llvmkit-ir/src` finds nothing). `crates/llvmkit-ir/tests/constant_kind.rs` ports
 the class assertions of both tests and names the round trip as their blocked
 half. Closing it means a `getRawDataValues` / `getRaw` pair on the
 `ConstantDataKind::Sequential` constants, after which the two tests take their
 second assertion back.
+
+## Storage-level `isa<UndefValue>` / `isa<PoisonValue>` reads outside `Constant` (found 2026-10-10, capability plan Task 6.1 review)
+
+Upstream canonicalises an all-`undef` or all-`poison` element list to one
+`UndefValue` / `PoisonValue` when it builds it (`ConstantArray::getImpl`,
+`ConstantStruct::get`, `ConstantVector::getImpl`). llvmkit keeps the list, so
+a routine that ports `isa<UndefValue>(C)` by matching `ConstantData::Undef` /
+`ConstantData::Poison` on the storage answers `false` for such a list where
+upstream answers `true`. `Constant::is_undef`, `is_poison` and
+`is_undef_or_poison` now answer through `Constant::kind`, and the review that
+moved them found the folders' whole-value `isa<PoisonValue>` reads wrong
+(`constant_kind.rs::a_whole_value_fold_sees_an_all_poison_list_as_poison`).
+The other storage-level matches are unaudited. `rg -n
+"ConstantData::(Undef|Poison)\b" crates/llvmkit-ir/src` lists them; outside
+`constant.rs`, the interning in `llvm_context.rs` and the printer's `undef` /
+`poison` arms in `asm_writer.rs`, they sit in `constant_fold.rs`
+(`is_not_poison_for_select`), `constant_folding.rs`
+(`constant_to_store_bytes`, `is_guaranteed_not_to_be_undef_or_poison`),
+`constants.rs` (`constant_with_replaced_operand`,
+`valid_shufflevector_mask_constant`), `known_fp_class.rs`
+(`constant_fp_class`), `pointer_analysis.rs` (`is_bytewise_value`),
+`value_tracking.rs` (`compute_constant_known_bits`,
+`constant_is_well_defined`, `leaf_constant_known_bits`,
+`splat_or_scalar_constant`, `zero_int_constant`), `vector_utils.rs`
+(`constant_mask_lanes_satisfy`, `is_splat_value_at_depth`) and `verifier.rs`
+(`verify_constant_tree`, `verify_must_tail_call`). One is checked:
+`constants.rs::constant_id_is_undef_or_poison` reads only the scalar lanes of
+a shuffle mask, where storage and class agree. Some matches are exhaustive
+arms or element reads rather than `isa` ports. Each needs reading against the
+upstream routine it ports, and a test where its answer is wrong, before it
+moves to `Constant::kind`.
 
 ## Ergonomics backlog (from the core audit)
 

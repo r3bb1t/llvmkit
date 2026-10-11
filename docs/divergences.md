@@ -2223,8 +2223,9 @@ answered by `Constant::kind` as `ConstantKind::ForwardReference`
   is replaced before a parse succeeds — or through the public
   `Module::forward_ref_value_placeholder`.
 - **Found:** 2026-10-10, writing `Constant::kind` (capability plan Task 6.1).
-  `rg -n "ForwardRefPlaceholder|forward.reference placeholder|createGlobalFwdRef" docs/divergences.md docs/future-work.md`
-  found only D2's passing mention of the `no_cfi` deferral. The same task
+  `git grep -nE "ForwardRefPlaceholder|forward.reference placeholder|createGlobalFwdRef" 1109ee0 -- docs/divergences.md docs/future-work.md`
+  (the commit before this entry) matches only D2's passing mention of the
+  `no_cfi` deferral. The same task
   corrected `is_constant_data`'s doc comment, which said upstream's stand-in is
   "a `GlobalValue` or instruction".
 - **Fix:** mint the placeholder as a global (a `GlobalVariable` with no
