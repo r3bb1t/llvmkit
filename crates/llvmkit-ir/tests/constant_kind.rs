@@ -10,7 +10,7 @@
 use llvmkit_ir::{
     ApFloat, ApFloatSign, Constant, ConstantAggregateKind, ConstantDataKind, ConstantExprOpcode,
     ConstantKind, ConstantSequentialKind, DynBrand, IrResult, Linkage, Module, Type, UnaryOpcode,
-    Undefined, constant_fold_unary_instruction,
+    Undefined, VectorType, constant_fold_unary_instruction, lanes,
 };
 
 /// The class of a two-element fixed vector of `elements`.
@@ -18,7 +18,7 @@ fn vector_kind<'m>(
     m: &'m Module<DynBrand>,
     elements: [Constant<'m, DynBrand>; 2],
 ) -> IrResult<ConstantKind<'m, DynBrand>> {
-    let ty = m.vector_type(elements[0].ty(), 2);
+    let ty = m.vector_type(elements[0].ty(), lanes::<2>())?;
     Ok(ty.const_vector(elements)?.as_constant().kind())
 }
 
@@ -301,7 +301,7 @@ fn a_list_that_is_not_all_simple_is_a_constant_aggregate() -> IrResult<()> {
 #[test]
 fn a_scalable_vector_is_classified_as_get_splat_builds_it() -> IrResult<()> {
     let m = Module::dynamic("constants");
-    let scalable = m.scalable_vector_type(m.i32_type(), 2);
+    let scalable = VectorType::scalable_of(m.i32_type(), lanes::<2>());
     let seven = m.i32_type().const_int(7_i32).as_constant();
     let zero = m.i32_type().const_int(0_i32).as_constant();
     let poison = m.i32_type().as_type().poison().as_constant();
@@ -413,21 +413,18 @@ fn constant_data_membership_follows_the_class() -> IrResult<()> {
     let one = m.i32_type().const_int(1_i32).as_constant();
     let undef = m.i32_type().as_type().undef().as_constant();
 
-    let data_vector = m
-        .vector_type(m.i32_type(), 2)
+    let data_vector = VectorType::of(m.i32_type(), lanes::<2>())
         .const_vector([zero, one])?
         .as_constant();
     assert!(data_vector.is_constant_data());
     assert!(!data_vector.as_erased().has_use_list());
 
-    let undef_vector = m
-        .vector_type(m.i32_type(), 2)
+    let undef_vector = VectorType::of(m.i32_type(), lanes::<2>())
         .const_vector([undef, undef])?
         .as_constant();
     assert!(undef_vector.is_constant_data());
 
-    let aggregate = m
-        .vector_type(m.i32_type(), 2)
+    let aggregate = VectorType::of(m.i32_type(), lanes::<2>())
         .const_vector([one, undef])?
         .as_constant();
     assert!(!aggregate.is_constant_data());
@@ -478,11 +475,10 @@ fn token_none_and_target_none_are_null_values() -> IrResult<()> {
 fn a_whole_value_fold_sees_an_all_poison_list_as_poison() -> IrResult<()> {
     let m = Module::dynamic("fold");
     let poison = m.f32_type().as_type().poison().as_constant();
-    let lanes = m
-        .vector_type(m.f32_type(), 2)
+    let list = VectorType::of(m.f32_type(), lanes::<2>())
         .const_vector([poison, poison])?
         .as_constant();
-    let folded = constant_fold_unary_instruction(UnaryOpcode::Fneg, lanes)?
+    let folded = constant_fold_unary_instruction(UnaryOpcode::Fneg, list)?
         .expect("fneg of a constant folds");
     assert_eq!(folded.to_string(), "<2 x float> poison");
     Ok(())

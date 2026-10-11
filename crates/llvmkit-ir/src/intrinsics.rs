@@ -11,9 +11,10 @@ use crate::attributes::{
 };
 use crate::capability::{Capability, CapabilityOf, ModuleState, Mutable};
 use crate::derived_types::FunctionType;
-use crate::error::{IrError, IrResult};
+use crate::error::{IrError, IrResult, TypePosition};
 use crate::module::{Module, ModuleBrand, ModuleId, ModuleRef};
 use crate::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
+use crate::type_components::{lanes, require_component};
 use crate::value::{Value, ValueKindData};
 use std::borrow::Cow;
 
@@ -1078,9 +1079,10 @@ fn match_fixed_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     *descriptors = rest;
     match descriptor {
         IitDescriptor::Void | IitDescriptor::VarArg => require_type(actual, void_type(module)),
-        IitDescriptor::Mmx => {
-            require_type(actual, fixed_vector_type(module, int_type(module, 64), 1))
-        }
+        IitDescriptor::Mmx => require_type(
+            actual,
+            fixed_vector_type(module, int_type(module, 64), lanes::<1>())?,
+        ),
         IitDescriptor::Amx => require_type(
             actual,
             Type::new(module.module().context().x86_amx(), module),
@@ -1698,17 +1700,23 @@ where
     if let Some((addr_space, consumed)) = parse_prefixed_u32(text, "p", true) {
         return Ok((ptr_type(module, addr_space), consumed));
     }
-    if let Some((lanes, consumed)) = parse_prefixed_u32(text, "nxv", false) {
+    // `getMangledTypeStr` spells a vector `"v" + utostr(EC.getKnownMinValue())`
+    // (with `"nx"` before it when scalable) from a vector that exists, so no
+    // upstream name spells zero lanes. `parse_prefixed_lanes` reads no zero
+    // count, so `v0…` falls through to the mismatch any other spelling no type
+    // mangles to reaches; an element no vector may hold is refused by the
+    // constructor below, as `VectorType::get` asserts.
+    if let Some((min, consumed)) = parse_prefixed_lanes(text, "nxv") {
         let (elem, elem_consumed) = parse_mangled_type_prefix(module, &text[consumed..])?;
         return Ok((
-            scalable_vector_type(module, elem, lanes),
+            scalable_vector_type(module, elem, min)?,
             consumed + elem_consumed,
         ));
     }
-    if let Some((lanes, consumed)) = parse_prefixed_u32(text, "v", false) {
+    if let Some((lane_count, consumed)) = parse_prefixed_lanes(text, "v") {
         let (elem, elem_consumed) = parse_mangled_type_prefix(module, &text[consumed..])?;
         return Ok((
-            fixed_vector_type(module, elem, lanes),
+            fixed_vector_type(module, elem, lane_count)?,
             consumed + elem_consumed,
         ));
     }
@@ -1924,6 +1932,13 @@ fn parse_prefixed_u32(text: &str, prefix: &str, allow_zero: bool) -> Option<(u32
     Some((value, prefix.len() + len))
 }
 
+/// A vector's lane count after `prefix`, as [`parse_prefixed_u32`] reads it
+/// with zero refused — so the count is a [`NonZeroU32`].
+fn parse_prefixed_lanes(text: &str, prefix: &str) -> Option<(NonZeroU32, usize)> {
+    let (count, consumed) = parse_prefixed_u32(text, prefix, false)?;
+    Some((NonZeroU32::new(count)?, consumed))
+}
+
 fn parse_prefixed_u64(text: &str, prefix: &str, allow_zero: bool) -> Option<(u64, usize)> {
     let digits = text.strip_prefix(prefix)?;
     let len = digits.bytes().take_while(u8::is_ascii_digit).count();
@@ -1975,16 +1990,33 @@ enum IitDescriptor {
     PpcQuad,
     Aarch64Svcount,
     Integer(u32),
-    Vector { width: u32, scalable: bool },
+    /// `IITDescriptor::getVector(Width, IsScalable)`. `DecodeIITType` writes
+    /// each width as a literal (`IIT_V1` … `IIT_V4096`), never zero, so the
+    /// width is a [`NonZeroU32`] spelled with [`lanes`].
+    Vector {
+        width: NonZeroU32,
+        scalable: bool,
+    },
     Pointer(u32),
-    Struct { elements: usize },
-    Argument { index: usize, kind: IitArgKind },
+    Struct {
+        elements: usize,
+    },
+    Argument {
+        index: usize,
+        kind: IitArgKind,
+    },
     ExtendArgument(usize),
     TruncArgument(usize),
-    OneNthEltsVecArgument { divisor: u32, argument: usize },
+    OneNthEltsVecArgument {
+        divisor: u32,
+        argument: usize,
+    },
     SameVecWidthArgument(usize),
     VecElementArgument(usize),
-    VecOfAnyPtrsToElt { overload: usize, reference: usize },
+    VecOfAnyPtrsToElt {
+        overload: usize,
+        reference: usize,
+    },
     Subdivide2Argument(usize),
     Subdivide4Argument(usize),
     VecOfBitcastsToInt(usize),
@@ -2036,17 +2068,17 @@ fn decode_iit_type(
         6 => out.push(IitDescriptor::Half),
         7 => out.push(IitDescriptor::Float),
         8 => out.push(IitDescriptor::Double),
-        9 => decode_iit_vector(entries, pos, info, out, 2, scalable)?,
-        10 => decode_iit_vector(entries, pos, info, out, 4, scalable)?,
-        11 => decode_iit_vector(entries, pos, info, out, 8, scalable)?,
-        12 => decode_iit_vector(entries, pos, info, out, 16, scalable)?,
-        13 => decode_iit_vector(entries, pos, info, out, 32, scalable)?,
+        9 => decode_iit_vector(entries, pos, info, out, lanes::<2>(), scalable)?,
+        10 => decode_iit_vector(entries, pos, info, out, lanes::<4>(), scalable)?,
+        11 => decode_iit_vector(entries, pos, info, out, lanes::<8>(), scalable)?,
+        12 => decode_iit_vector(entries, pos, info, out, lanes::<16>(), scalable)?,
+        13 => decode_iit_vector(entries, pos, info, out, lanes::<32>(), scalable)?,
         14 => out.push(IitDescriptor::Pointer(0)),
         15 => {
             let (index, kind) = decode_argument_info(next_iit_usize_or_zero(entries, pos))?;
             out.push(IitDescriptor::Argument { index, kind });
         }
-        16 => decode_iit_vector(entries, pos, info, out, 64, scalable)?,
+        16 => decode_iit_vector(entries, pos, info, out, lanes::<64>(), scalable)?,
         17 => out.push(IitDescriptor::Mmx),
         18 => out.push(IitDescriptor::Token),
         19 => out.push(IitDescriptor::Metadata),
@@ -2067,7 +2099,7 @@ fn decode_iit_type(
         24 => out.push(IitDescriptor::Pointer(u32::from(next_iit_byte(
             entries, pos,
         )?))),
-        25 => decode_iit_vector(entries, pos, info, out, 1, scalable)?,
+        25 => decode_iit_vector(entries, pos, info, out, lanes::<1>(), scalable)?,
         26 => out.push(IitDescriptor::VarArg),
         27 => {
             let argument = next_iit_usize_or_zero(entries, pos);
@@ -2082,8 +2114,8 @@ fn decode_iit_type(
             reference: next_iit_usize_or_zero(entries, pos),
         }),
         30 => out.push(IitDescriptor::Integer(128)),
-        31 => decode_iit_vector(entries, pos, info, out, 512, scalable)?,
-        32 => decode_iit_vector(entries, pos, info, out, 1024, scalable)?,
+        31 => decode_iit_vector(entries, pos, info, out, lanes::<512>(), scalable)?,
+        32 => decode_iit_vector(entries, pos, info, out, lanes::<1024>(), scalable)?,
         33 => out.push(IitDescriptor::Quad),
         34 => out.push(IitDescriptor::VecElementArgument(decode_argument_index(
             next_iit_usize_or_zero(entries, pos),
@@ -2098,21 +2130,21 @@ fn decode_iit_type(
         38 => out.push(IitDescriptor::VecOfBitcastsToInt(decode_argument_index(
             next_iit_usize_or_zero(entries, pos),
         )?)),
-        39 => decode_iit_vector(entries, pos, info, out, 128, scalable)?,
+        39 => decode_iit_vector(entries, pos, info, out, lanes::<128>(), scalable)?,
         40 => out.push(IitDescriptor::Bfloat),
-        41 => decode_iit_vector(entries, pos, info, out, 256, scalable)?,
+        41 => decode_iit_vector(entries, pos, info, out, lanes::<256>(), scalable)?,
         42 => out.push(IitDescriptor::Amx),
         43 => out.push(IitDescriptor::PpcQuad),
-        44 => decode_iit_vector(entries, pos, info, out, 3, scalable)?,
+        44 => decode_iit_vector(entries, pos, info, out, lanes::<3>(), scalable)?,
         45 => out.push(IitDescriptor::Pointer(10)),
         46 => out.push(IitDescriptor::Pointer(20)),
         47 => out.push(IitDescriptor::Integer(2)),
         48 => out.push(IitDescriptor::Integer(4)),
         49 => out.push(IitDescriptor::Aarch64Svcount),
-        50 => decode_iit_vector(entries, pos, info, out, 6, scalable)?,
-        51 => decode_iit_vector(entries, pos, info, out, 10, scalable)?,
-        52 => decode_iit_vector(entries, pos, info, out, 2048, scalable)?,
-        53 => decode_iit_vector(entries, pos, info, out, 4096, scalable)?,
+        50 => decode_iit_vector(entries, pos, info, out, lanes::<6>(), scalable)?,
+        51 => decode_iit_vector(entries, pos, info, out, lanes::<10>(), scalable)?,
+        52 => decode_iit_vector(entries, pos, info, out, lanes::<2048>(), scalable)?,
+        53 => decode_iit_vector(entries, pos, info, out, lanes::<4096>(), scalable)?,
         code if code == generated::IIT_WASM_EXNREF => out.push(IitDescriptor::ExnRef),
         _ => return Err(intrinsic_mismatch()),
     }
@@ -2124,7 +2156,7 @@ fn decode_iit_vector(
     pos: &mut usize,
     info: u8,
     out: &mut Vec<IitDescriptor>,
-    width: u32,
+    width: NonZeroU32,
     scalable: bool,
 ) -> IrResult<()> {
     out.push(IitDescriptor::Vector { width, scalable });
@@ -2165,7 +2197,7 @@ where
 
     match descriptor {
         IitDescriptor::Void | IitDescriptor::VarArg => Ok(void_type(module)),
-        IitDescriptor::Mmx => Ok(fixed_vector_type(module, int_type(module, 64), 1)),
+        IitDescriptor::Mmx => fixed_vector_type(module, int_type(module, 64), lanes::<1>()),
         IitDescriptor::Amx => Ok(Type::new(module.module().context().x86_amx(), module)),
         IitDescriptor::ExnRef => Ok(Type::new(module.module().context().wasm_exnref(), module)),
         IitDescriptor::Token => Ok(Type::new(module.module().context().token(), module)),
@@ -2182,9 +2214,9 @@ where
         IitDescriptor::Vector { width, scalable } => {
             let elem = decode_fixed_type(module, descriptors, overloads)?;
             if scalable {
-                Ok(scalable_vector_type(module, elem, width))
+                scalable_vector_type(module, elem, width)
             } else {
-                Ok(fixed_vector_type(module, elem, width))
+                fixed_vector_type(module, elem, width)
             }
         }
         IitDescriptor::Struct { elements } => {
@@ -2290,22 +2322,25 @@ where
     Ok(FunctionType::new(id, module))
 }
 
+/// `ScalableVectorType::get`, for the decoders here, checked as
+/// [`fixed_vector_type`] is.
 fn scalable_vector_type<'ctx, B, C>(
     module: ModuleRef<'ctx, B, C>,
     elem: Type<'ctx, B, C>,
-    min: u32,
-) -> Type<'ctx, B, C>
+    min: NonZeroU32,
+) -> IrResult<Type<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
     C: Capability,
 {
-    Type::new(
+    require_component(TypePosition::VectorElement, elem)?;
+    Ok(Type::new(
         module
             .module()
             .context()
             .scalable_vector_type(elem.slot_trusting_same_module(), min),
         module,
-    )
+    ))
 }
 
 fn array_type<'ctx, B, C: Capability>(
@@ -2366,19 +2401,11 @@ where
             .ok_or_else(intrinsic_mismatch),
         TypeData::FixedVector { elem, n } => {
             let elem_ty = Type::new(*elem, module);
-            Ok(fixed_vector_type(
-                module,
-                extend_integer_type(module, elem_ty)?,
-                *n,
-            ))
+            fixed_vector_type(module, extend_integer_type(module, elem_ty)?, *n)
         }
         TypeData::ScalableVector { elem, min } => {
             let elem_ty = Type::new(*elem, module);
-            Ok(scalable_vector_type(
-                module,
-                extend_integer_type(module, elem_ty)?,
-                *min,
-            ))
+            scalable_vector_type(module, extend_integer_type(module, elem_ty)?, *min)
         }
         _ => Err(intrinsic_mismatch()),
     }
@@ -2396,19 +2423,15 @@ where
         TypeData::Integer { bits } if bits % 2 == 0 => Ok(int_type(module, bits / 2)),
         TypeData::FixedVector { elem, n } => {
             let elem_ty = Type::new(*elem, module);
-            Ok(fixed_vector_type(
-                module,
-                truncated_vector_element_type(module, elem_ty)?,
-                *n,
-            ))
+            fixed_vector_type(module, truncated_vector_element_type(module, elem_ty)?, *n)
         }
         TypeData::ScalableVector { elem, min } => {
             let elem_ty = Type::new(*elem, module);
-            Ok(scalable_vector_type(
+            scalable_vector_type(
                 module,
                 truncated_vector_element_type(module, elem_ty)?,
                 *min,
-            ))
+            )
         }
         _ => Err(intrinsic_mismatch()),
     }
@@ -2424,8 +2447,8 @@ where
     C: Capability,
 {
     match reference.data() {
-        TypeData::FixedVector { n, .. } => Ok(fixed_vector_type(module, elem, *n)),
-        TypeData::ScalableVector { min, .. } => Ok(scalable_vector_type(module, elem, *min)),
+        TypeData::FixedVector { n, .. } => fixed_vector_type(module, elem, *n),
+        TypeData::ScalableVector { min, .. } => scalable_vector_type(module, elem, *min),
         _ => Ok(elem),
     }
 }
@@ -2463,7 +2486,7 @@ where
         TypeData::PpcFp128 | TypeData::Fp128 => Some(128),
         TypeData::X86Amx => Some(8192),
         TypeData::FixedVector { elem, n } | TypeData::ScalableVector { elem, min: n } => {
-            primitive_size_in_bits(module, Type::new(*elem, module))?.checked_mul(*n)
+            primitive_size_in_bits(module, Type::new(*elem, module))?.checked_mul(n.get())
         }
         _ => None,
     }
@@ -2497,19 +2520,19 @@ where
     match ty.data() {
         TypeData::FixedVector { elem, n } => {
             let elem_ty = Type::new(*elem, module);
-            Ok(fixed_vector_type(
+            fixed_vector_type(
                 module,
                 integer_type_matching_primitive_size(module, elem_ty)?,
                 *n,
-            ))
+            )
         }
         TypeData::ScalableVector { elem, min } => {
             let elem_ty = Type::new(*elem, module);
-            Ok(scalable_vector_type(
+            scalable_vector_type(
                 module,
                 integer_type_matching_primitive_size(module, elem_ty)?,
                 *min,
-            ))
+            )
         }
         _ => Err(intrinsic_mismatch()),
     }
@@ -2527,17 +2550,21 @@ where
     if divisor == 0 {
         return Err(intrinsic_mismatch());
     }
+    // `VectorType::getOneNthElementsVectorType` asserts
+    // `isKnownMultipleOf(Denominator)` and passes `divideCoefficientBy`'s
+    // quotient to `VectorType::get`, which asserts it is not zero. A non-zero
+    // multiple of a non-zero divisor has a non-zero quotient, so the
+    // `NonZeroU32::new` below never answers `None`; the routine's mismatch is
+    // what it would report if it did.
     match ty.data() {
-        TypeData::FixedVector { elem, n } if n % divisor == 0 => Ok(fixed_vector_type(
-            module,
-            Type::new(*elem, module),
-            n / divisor,
-        )),
-        TypeData::ScalableVector { elem, min } if min % divisor == 0 => Ok(scalable_vector_type(
-            module,
-            Type::new(*elem, module),
-            min / divisor,
-        )),
+        TypeData::FixedVector { elem, n } if n.get() % divisor == 0 => {
+            let quotient = NonZeroU32::new(n.get() / divisor).ok_or_else(intrinsic_mismatch)?;
+            fixed_vector_type(module, Type::new(*elem, module), quotient)
+        }
+        TypeData::ScalableVector { elem, min } if min.get() % divisor == 0 => {
+            let quotient = NonZeroU32::new(min.get() / divisor).ok_or_else(intrinsic_mismatch)?;
+            scalable_vector_type(module, Type::new(*elem, module), quotient)
+        }
         _ => Err(intrinsic_mismatch()),
     }
 }
@@ -2579,19 +2606,23 @@ where
     B: ModuleBrand + 'ctx,
     C: Capability,
 {
-    let (mut elem, mut lanes, scalable) = match ty.data() {
+    let (mut elem, mut lane_count, scalable) = match ty.data() {
         TypeData::FixedVector { elem, n } => (Type::new(*elem, module), *n, false),
         TypeData::ScalableVector { elem, min } => (Type::new(*elem, module), *min, true),
         _ => return Err(intrinsic_mismatch()),
     };
     for _ in 0..subdivisions {
-        lanes = lanes.checked_mul(2).ok_or_else(intrinsic_mismatch)?;
+        // `VectorType::getDoubleElementsVectorType` asserts the doubled count
+        // fits in `unsigned`; doubling a non-zero count stays non-zero.
+        lane_count = lane_count
+            .checked_mul(lanes::<2>())
+            .ok_or_else(intrinsic_mismatch)?;
         elem = truncated_vector_element_type(module, elem)?;
     }
     if scalable {
-        Ok(scalable_vector_type(module, elem, lanes))
+        scalable_vector_type(module, elem, lane_count)
     } else {
-        Ok(fixed_vector_type(module, elem, lanes))
+        fixed_vector_type(module, elem, lane_count)
     }
 }
 
@@ -2601,20 +2632,24 @@ fn intrinsic_mismatch() -> IrError {
     }
 }
 
+/// `FixedVectorType::get`, for the decoders here. Its `NumElts > 0` assert is
+/// `lanes`'s type; its `isValidElementType` assert is [`require_component`],
+/// because an element can arrive from an overload type or a demangled name.
 fn fixed_vector_type<'ctx, B, C>(
     module: ModuleRef<'ctx, B, C>,
     elem: Type<'ctx, B, C>,
-    lanes: u32,
-) -> Type<'ctx, B, C>
+    lanes: NonZeroU32,
+) -> IrResult<Type<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
     C: Capability,
 {
+    require_component(TypePosition::VectorElement, elem)?;
     let id = module
         .module()
         .context()
         .fixed_vector_type(elem.slot_trusting_same_module(), lanes);
-    Type::new(id, module)
+    Ok(Type::new(id, module))
 }
 
 #[cfg(test)]
@@ -2641,8 +2676,13 @@ mod tests {
                 other => panic!("unsupported generated sample float `{other}`"),
             },
             IntrinsicSampleType::Pointer(addr_space) => ptr_type(module, *addr_space),
-            IntrinsicSampleType::FixedVector { lanes, element } => {
-                fixed_vector_type(module, sample_type(module, element), *lanes)
+            IntrinsicSampleType::FixedVector {
+                lanes: count,
+                element,
+            } => {
+                let count = NonZeroU32::new(*count).expect("a generated sample vector has lanes");
+                fixed_vector_type(module, sample_type(module, element), count)
+                    .expect("a generated sample vector's element is a vector element")
             }
         }
     }
@@ -2665,7 +2705,8 @@ mod tests {
     {
         match sample {
             IntrinsicSampleType::Int(_) | IntrinsicSampleType::Float(_) => {
-                fixed_vector_type(module, sample_type(module, sample), 4)
+                fixed_vector_type(module, sample_type(module, sample), lanes::<4>())
+                    .expect("an integer or float sample is a vector element")
             }
             IntrinsicSampleType::Pointer(_) | IntrinsicSampleType::FixedVector { .. } => {
                 sample_type(module, sample)
@@ -2686,7 +2727,7 @@ mod tests {
         let module = crate::module_new!("intrinsic-vec-element")?;
         let module_ref = module.capability_ref();
         let i32_ty = module.i32_type().as_type();
-        let vector_ty = fixed_vector_type(module_ref, i32_ty, 4);
+        let vector_ty = fixed_vector_type(module_ref, i32_ty, lanes::<4>())?;
 
         assert_eq!(vector_element_or_self(module_ref, vector_ty)?, i32_ty);
         assert!(vector_element_or_self(module_ref, i32_ty).is_err());
@@ -2699,7 +2740,7 @@ mod tests {
     fn subdivide_argument_halves_element_width_and_doubles_lanes() -> IrResult<()> {
         let module = crate::module_new!("intrinsic-subdivide")?;
         let module_ref = module.capability_ref();
-        let vector_ty = fixed_vector_type(module_ref, module.i64_type().as_type(), 4);
+        let vector_ty = fixed_vector_type(module_ref, module.i64_type().as_type(), lanes::<4>())?;
         let subdivided_once = subdivide_vector_type(module_ref, vector_ty, 1)?;
         let subdivided_twice = subdivide_vector_type(module_ref, vector_ty, 2)?;
 
@@ -2715,7 +2756,7 @@ mod tests {
     fn subdivide_argument_matcher_uses_llvm_subdivision_counts() -> IrResult<()> {
         let module = crate::module_new!("intrinsic-subdivide-match")?;
         let module_ref = module.capability_ref();
-        let vector_ty = fixed_vector_type(module_ref, module.i64_type().as_type(), 4);
+        let vector_ty = fixed_vector_type(module_ref, module.i64_type().as_type(), lanes::<4>())?;
         let mut overloads = vec![Some(vector_ty)];
 
         let subdivide2 = [IitDescriptor::Subdivide2Argument(0)];
@@ -2724,7 +2765,7 @@ mod tests {
             module_ref,
             &mut subdivide2_descriptors,
             &mut overloads,
-            fixed_vector_type(module_ref, module.i32_type().as_type(), 8),
+            fixed_vector_type(module_ref, module.i32_type().as_type(), lanes::<8>())?,
         )?;
 
         let subdivide4 = [IitDescriptor::Subdivide4Argument(0)];
@@ -2733,7 +2774,7 @@ mod tests {
             module_ref,
             &mut subdivide4_descriptors,
             &mut overloads,
-            fixed_vector_type(module_ref, module.i16_type().as_type(), 16),
+            fixed_vector_type(module_ref, module.i16_type().as_type(), lanes::<16>())?,
         )?;
         Ok(())
     }
@@ -2745,7 +2786,7 @@ mod tests {
     fn vec_of_bitcasts_to_int_preserves_shape_and_integerizes_element() -> IrResult<()> {
         let module = crate::module_new!("intrinsic-vector-bitcast-int")?;
         let module_ref = module.capability_ref();
-        let f32_vec = fixed_vector_type(module_ref, module.f32_type().as_type(), 4);
+        let f32_vec = fixed_vector_type(module_ref, module.f32_type().as_type(), lanes::<4>())?;
         let i32_vec = vector_of_bitcasts_to_int(module_ref, f32_vec)?;
 
         assert_eq!(format!("{i32_vec}"), "<4 x i32>");
@@ -2760,8 +2801,8 @@ mod tests {
     fn vec_of_bitcasts_to_int_matcher_compares_integer_vector() -> IrResult<()> {
         let module = crate::module_new!("intrinsic-vector-bitcast-int-match")?;
         let module_ref = module.capability_ref();
-        let f32_vec = fixed_vector_type(module_ref, module.f32_type().as_type(), 4);
-        let i32_vec = fixed_vector_type(module_ref, module.i32_type().as_type(), 4);
+        let f32_vec = fixed_vector_type(module_ref, module.f32_type().as_type(), lanes::<4>())?;
+        let i32_vec = fixed_vector_type(module_ref, module.i32_type().as_type(), lanes::<4>())?;
         let mut overloads = vec![Some(f32_vec)];
 
         let descriptors = [IitDescriptor::VecOfBitcastsToInt(0)];

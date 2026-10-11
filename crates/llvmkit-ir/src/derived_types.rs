@@ -28,6 +28,7 @@
 use crate::Branded;
 use core::fmt;
 use core::iter::FusedIterator;
+use core::num::NonZeroU32;
 
 use super::capability::{Capability, CapabilityOf, Mutable};
 use super::error::{IrError, IrResult, TypeKindLabel};
@@ -1150,9 +1151,10 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, C: Capability>
     }
     /// Length: for fixed vectors, the exact lane count. For scalable
     /// vectors, the *minimum* lane count (the runtime value is a positive
-    /// multiple of this).
+    /// multiple of this). Never zero — a vector has at least one lane
+    /// (`FixedVectorType::get` and `ScalableVectorType::get` assert it).
     #[inline]
-    pub fn min_len(self) -> u32 {
+    pub fn min_len(self) -> NonZeroU32 {
         let (_, n, _) = self
             .module
             .type_data(self.id)

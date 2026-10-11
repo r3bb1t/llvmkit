@@ -1319,7 +1319,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Constant<'ctx, B, C> {
         let module = self.module;
         let data = self.ty().data();
         let slot = if let Some((element, lanes, scalable)) = data.as_vector() {
-            if scalable || index >= lanes {
+            if scalable || index >= lanes.get() {
                 return None;
             }
             element

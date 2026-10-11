@@ -2171,11 +2171,11 @@ moves to `Constant::kind`.
   entirely — the length is known at compile time and the elements would be
   materialized at the type-level element `E` — but this needs typed
   `ArrayType<E, ArrLen<N>>` / `VectorType<E, Len<N>>` **type constructors**
-  first: today every `const_array`/`const_vector` caller builds an *erased*
-  `ArrayType<ElemDyn, ArrLenDyn>` / `VectorType<ElemDyn, LenDyn>` via
-  `m.array_type(...)` / `m.vector_type(...)`, so an infallible static
-  constructor would be dead code (no statically-typed receiver exists to call
-  it on). The fallible `const_array`/`const_struct`/`const_vector` now accept
+  first: `const_array`/`const_vector` callers build their receiver via
+  `m.array_type(...)` / `m.vector_type(...)` (both markers erased) or
+  `VectorType::of(...)` (element marker only, `LenDyn`), so an infallible
+  static constructor would be dead code (no statically-typed receiver exists
+  to call it on). The fallible `const_array`/`const_struct`/`const_vector` now accept
   `impl IntoConstantValue` elements (literals work), but stay `IrResult` — the
   element-vs-container type check still guards the erased receivers. Bundle the
   infallible variants with a typed aggregate-**type**-constructor slice; the

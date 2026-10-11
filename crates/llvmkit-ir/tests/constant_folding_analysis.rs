@@ -22,6 +22,7 @@ use llvmkit_ir::{
     constant_offset_from_global, is_constant_offset_from_global, lossless_inv_cast,
     lossless_signed_trunc, lossless_unsigned_trunc, module_new,
 };
+use llvmkit_ir::{VectorType, lanes};
 
 /// llvmkit-specific subset of `ConstantFolding.cpp::ConstantFoldLoadFromConstPtr`:
 /// byte extraction from constant globals uses the module `DataLayout` endianness.
@@ -182,7 +183,7 @@ fn fp_vector_fadd_folds_elementwise_through_analysis_path() -> Result<(), IrErro
     let dl = DataLayout::default();
     let f32_ty = m.f32_type();
     let i64_ty = m.i64_type();
-    let vec_ty = m.vector_type(f32_ty.as_type(), 2);
+    let vec_ty = VectorType::of(f32_ty, lanes::<2>());
 
     let lhs = vec_ty
         .const_vector::<ConstantFloatValue<'_, f32, _>, _>([

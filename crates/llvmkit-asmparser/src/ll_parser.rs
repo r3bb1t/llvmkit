@@ -30,6 +30,7 @@
 
 use core::cell::RefCell;
 use core::marker::PhantomData;
+use core::num::{NonZeroU32, NonZeroU64};
 use std::borrow::Cow;
 
 use llvmkit_ir::DataLayout;
@@ -51,7 +52,7 @@ use llvmkit_ir::{
     FpClassTest, GepNoWrapFlags, IntCastFlags, IntDyn, IntType, IntValue, IntrinsicNameResolution,
     IrBuilder, IrError, IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue,
     Positioned, RoundingMode, SelectionKind, Signedness, StructType, SyncScope, ThreadLocalMode,
-    Type, TypeKind, UiToFpFlags, UnnamedAddr, Unverified, ValueCategory, Visibility,
+    Type, TypeKind, UiToFpFlags, UnnamedAddr, Unverified, ValueCategory, VectorType, Visibility,
     derived_types::PointerType, resolve_intrinsic_name, shufflevector_mask_from_constant,
 };
 use llvmkit_ir::{FunctionValue, IsValue};
@@ -1051,7 +1052,7 @@ fn atomicrmw_op_is_floating_point(op: AtomicRmwBinOp) -> bool {
     )
 }
 
-fn vector_shape_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<(u32, bool)> {
+fn vector_shape_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<(NonZeroU32, bool)> {
     match AnyTypeEnum::from(ty) {
         AnyTypeEnum::Vector(v) => Some((v.min_len(), v.is_scalable())),
         _ => None,
@@ -7344,20 +7345,21 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let elem = self.parse_type(false)?;
         if is_vector {
             self.expect_punct(PunctKind::Greater, "'>' at end of vector type")?;
-            if n == 0 {
+            let Some(lanes) = NonZeroU64::new(n) else {
                 return Err(self.message_at(size_loc, "zero element vector is illegal"));
-            }
-            let Ok(n32) = u32::try_from(n) else {
+            };
+            let Ok(lanes) = NonZeroU32::try_from(lanes) else {
                 return Err(self.message_at(size_loc, "size too large for vector"));
             };
             if !elem.is_valid_vector_element() {
                 return Err(self.message_at(elem_loc, "invalid vector element type"));
             }
             let v = if scalable {
-                self.module.scalable_vector_type(elem, n32)
+                self.module.scalable_vector_type(elem, lanes)
             } else {
-                self.module.vector_type(elem, n32)
-            };
+                self.module.vector_type(elem, lanes)
+            }
+            .map_err(|e| self.builder_err_at(elem_loc, "vector type", e))?;
             Ok(v.as_type())
         } else {
             self.expect_punct(PunctKind::RSquare, "']' at end of array type")?;
@@ -8341,9 +8343,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if is_packed_struct {
                     return Ok(ValIdKind::PackedConstantStruct(values));
                 }
-                if values.is_empty() {
+                let Some(lanes) = NonZeroU32::new(u32::try_from(values.len()).unwrap_or(u32::MAX))
+                else {
                     return Err(self.message("constant vector must not be empty"));
-                }
+                };
                 let element_ty = values[0].ty();
                 if !element_ty.is_integer()
                     && !element_ty.is_floating_point()
@@ -8355,10 +8358,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     ));
                 }
                 self.check_aggregate_elements(&values, "vector", first_elt_loc)?;
-                let len = u32::try_from(values.len()).unwrap_or(u32::MAX);
                 let c = self
                     .module
-                    .vector_type(element_ty, len)
+                    .vector_type(element_ty, lanes)
+                    .map_err(|e| self.builder_err("vector constant", e))?
                     .const_vector(values)
                     .map_err(|e| self.builder_err("vector constant", e))?;
                 Ok(ValIdKind::Constant(c.as_constant()))
@@ -8588,7 +8591,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 loc,
             });
         }
-        let len = usize::try_from(vec_ty.min_len()).map_err(|_| ParseError::Expected {
+        let len = usize::try_from(vec_ty.min_len().get()).map_err(|_| ParseError::Expected {
             expected: "vector type for splat constant".into(),
             loc,
         })?;
@@ -8630,7 +8633,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .map_err(|e| self.builder_err_at(loc, "array zeroinitializer", e))
             }
             AnyTypeEnum::Vector(t) => {
-                let len = usize::try_from(t.min_len()).map_err(|_| ParseError::Expected {
+                let len = usize::try_from(t.min_len().get()).map_err(|_| ParseError::Expected {
                     expected: "vector zeroinitializer length fits in usize".into(),
                     loc,
                 })?;
@@ -9844,14 +9847,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if llvmkit_ir::indexed_gep_type(source_ty, &index_values).is_none() {
             return Err(self.message("invalid getelementptr indices"));
         }
-        let scalar_ptr = self.module.ptr_type(address_space).as_type();
+        let scalar_ptr = self.module.ptr_type(address_space);
         let result_ty = match gep_width {
-            None => scalar_ptr,
-            Some((lanes, true)) => self
-                .module
-                .scalable_vector_type(scalar_ptr, lanes)
-                .as_type(),
-            Some((lanes, false)) => self.module.vector_type(scalar_ptr, lanes).as_type(),
+            None => scalar_ptr.as_type(),
+            Some((lanes, true)) => VectorType::scalable_of(scalar_ptr, lanes).as_type(),
+            Some((lanes, false)) => VectorType::of(scalar_ptr, lanes).as_type(),
         };
         Ok((flags, result_ty))
     }
@@ -9885,10 +9885,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Ok(if lhs_ty.is_scalable() {
                     self.module
                         .scalable_vector_type(element, mask_ty.min_len())
+                        .map_err(|e| self.builder_err("shufflevector", e))?
                         .as_type()
                 } else {
                     self.module
                         .vector_type(element, mask_ty.min_len())
+                        .map_err(|e| self.builder_err("shufflevector", e))?
                         .as_type()
                 })
             }

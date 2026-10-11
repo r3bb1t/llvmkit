@@ -67,6 +67,7 @@ use crate::Branded;
 use core::convert::Infallible;
 use core::fmt;
 use core::marker::PhantomData;
+use core::num::NonZeroU32;
 
 use super::float_kind::{Bfloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
 use super::int_width::IntoConstantInt;
@@ -1061,7 +1062,7 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, Cap: Capability>
             ids.push(value.slot_trusting_same_module());
         }
         let n = ids.len();
-        let expected = usize::try_from(self.min_len())
+        let expected = usize::try_from(self.min_len().get())
             .unwrap_or_else(|_| unreachable!("vector lane count fits in usize"));
         if n != expected {
             return Err(IrError::OperandWidthMismatch {
@@ -1670,18 +1671,20 @@ fn canonicalize_gep_operands(module: &ModuleCore, data: &mut ConstantExprData) -
 fn vector_splat_constant(
     module: &ModuleCore,
     scalar: ValueSlot,
-    lanes: u32,
+    lanes: NonZeroU32,
     scalable: bool,
 ) -> IrResult<ValueSlot> {
-    let lane_count = usize::try_from(lanes).map_err(|_| IrError::InvalidOperation {
+    let lane_count = usize::try_from(lanes.get()).map_err(|_| IrError::InvalidOperation {
         message: "invalid getelementptr constant expression",
     })?;
     let module_ref = ModuleRef::<DynBrand, ReadOnly>::new(module);
     let elem_ty = Type::new(module.context().value_data(scalar).ty, module_ref);
+    // `ConstantVector::getSplat`'s `VectorType::get(V->getType(), EC)`: the
+    // index's type is checked as a vector element, as that asserts.
     let vector_ty = if scalable {
-        module_ref.scalable_vector_type(elem_ty, lanes)
+        module_ref.scalable_vector_type(elem_ty, lanes)?
     } else {
-        module_ref.vector_type(elem_ty, lanes)
+        module_ref.vector_type(elem_ty, lanes)?
     }
     .as_type();
     Ok(intern_aggregate(vector_ty, vec![scalar; lane_count].into_boxed_slice()).id)
@@ -2390,7 +2393,12 @@ pub(super) fn validate_constant_expr_data(
                         .as_type()
                         .slot_trusting_same_module()
                 || mask_scalable != lhs_scalable
-                || !valid_shufflevector_mask_constant(module, mask_id, lhs_lanes, lhs_scalable)
+                || !valid_shufflevector_mask_constant(
+                    module,
+                    mask_id,
+                    lhs_lanes.get(),
+                    lhs_scalable,
+                )
                 || result_elem != lhs_elem
                 || result_lanes != mask_lanes
                 || result_scalable != mask_scalable
@@ -2542,7 +2550,7 @@ fn scalar_int_bits(module: &ModuleCore, id: TypeSlot) -> Option<u32> {
     }
 }
 
-fn vector_shape(module: &ModuleCore, id: TypeSlot) -> Option<(u32, bool)> {
+fn vector_shape(module: &ModuleCore, id: TypeSlot) -> Option<(NonZeroU32, bool)> {
     module
         .context()
         .type_data(id)
@@ -2558,7 +2566,7 @@ fn pointer_bitcast_shape_matches(module: &ModuleCore, src: TypeSlot, dst: TypeSl
     match (vector_shape(module, src), vector_shape(module, dst)) {
         (None, None) => true,
         (Some(src_shape), Some(dst_shape)) => src_shape == dst_shape,
-        (None, Some((1, false))) | (Some((1, false)), None) => true,
+        (None, Some((lanes, false))) | (Some((lanes, false)), None) if lanes.get() == 1 => true,
         _ => false,
     }
 }
@@ -2670,7 +2678,7 @@ fn type_bit_width(module: &ModuleCore, id: TypeSlot) -> Option<u32> {
             Some(module.data_layout().pointer_size_in_bits(*addr_space))
         }
         TypeData::FixedVector { elem, n } => {
-            type_bit_width(module, *elem).and_then(|bits| bits.checked_mul(*n))
+            type_bit_width(module, *elem).and_then(|bits| bits.checked_mul(n.get()))
         }
         TypeData::ScalableVector { .. } => None,
         _ => None,

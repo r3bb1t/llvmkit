@@ -1,7 +1,7 @@
 use llvmkit_ir::{
     AnyTypeEnum, AttrIndex, AttrKind, Attribute, BinaryIntrinsic, Dyn, IntValue,
     IntrinsicDescriptor, IntrinsicId, IntrinsicNameResolution, IrBuilder, IrError,
-    LifetimeIntrinsic, Linkage, MemIntrinsic, PointerValue, Type, module_new,
+    LifetimeIntrinsic, Linkage, MemIntrinsic, PointerValue, Type, VectorType, lanes, module_new,
     resolve_intrinsic_name,
 };
 
@@ -155,7 +155,7 @@ fn generated_overloaded_float_signature_decodes() -> Result<(), IrError> {
 #[test]
 fn generated_truncated_floating_vector_signature_decodes() -> Result<(), IrError> {
     let m = module_new!("intrinsic-generated-float-trunc")?;
-    let f32_vec = m.vector_type(m.f32_type().as_type(), 4).as_type();
+    let f32_vec = VectorType::of(m.f32_type(), lanes::<4>()).as_type();
     let vmulls = IntrinsicId::lookup("llvm.arm.neon.vmulls.v4f32").expect("vmulls intrinsic");
 
     assert_eq!(
@@ -491,8 +491,8 @@ fn target_extension_overload_name_round_trips() -> Result<(), IrError> {
 
     let element = m
         .struct_type([
-            m.vector_type(m.f32_type().as_type(), 4).as_type(),
-            m.vector_type(m.i32_type().as_type(), 4).as_type(),
+            VectorType::of(m.f32_type(), lanes::<4>()).as_type(),
+            VectorType::of(m.i32_type(), lanes::<4>()).as_type(),
         ])
         .as_type();
     let raw_buffer = m
@@ -549,8 +549,8 @@ fn function_and_named_struct_mangled_overload_suffix_round_trips() -> Result<(),
 #[test]
 fn vector_pointer_overloads_reject_shape_and_lane_mismatches() -> Result<(), IrError> {
     let m = module_new!("intrinsic-vector-pointer-overloads")?;
-    let value_vec = m.vector_type(m.i32_type().as_type(), 4).as_type();
-    let ptr_vec = m.vector_type(m.ptr_type(0).as_type(), 4).as_type();
+    let value_vec = VectorType::of(m.i32_type(), lanes::<4>()).as_type();
+    let ptr_vec = VectorType::of(m.ptr_type(0), lanes::<4>()).as_type();
     let id = IntrinsicId::lookup("llvm.masked.gather.v4i32.v4p0").expect("masked gather intrinsic");
     let descriptor = IntrinsicDescriptor::new(id, [value_vec, ptr_vec])?;
     let name = descriptor.mangled_name()?;
@@ -569,7 +569,7 @@ fn vector_pointer_overloads_reject_shape_and_lane_mismatches() -> Result<(), IrE
             id,
             [
                 value_vec,
-                m.vector_type(m.ptr_type(0).as_type(), 2).as_type(),
+                VectorType::of(m.ptr_type(0), lanes::<2>()).as_type(),
             ],
         )
         .is_err()
@@ -584,7 +584,7 @@ fn vector_pointer_overloads_reject_shape_and_lane_mismatches() -> Result<(), IrE
 #[test]
 fn vector_element_overloads_reject_scalar_descriptors() -> Result<(), IrError> {
     let m = module_new!("intrinsic-vector-element-overloads")?;
-    let vec = m.vector_type(m.f32_type().as_type(), 4).as_type();
+    let vec = VectorType::of(m.f32_type(), lanes::<4>()).as_type();
     let id = IntrinsicId::lookup("llvm.spv.length").expect("spv length intrinsic");
     let descriptor = IntrinsicDescriptor::new(id, [vec])?;
     assert_eq!(
@@ -602,7 +602,7 @@ fn vector_element_overloads_reject_scalar_descriptors() -> Result<(), IrError> {
 #[test]
 fn same_vec_width_nested_vector_element_signature_matches() -> Result<(), IrError> {
     let m = module_new!("intrinsic-same-vec-width-vector-element")?;
-    let vec = m.vector_type(m.f32_type().as_type(), 4).as_type();
+    let vec = VectorType::of(m.f32_type(), lanes::<4>()).as_type();
     let id = IntrinsicId::lookup("llvm.spv.fdot.v4f32").expect("spv fdot intrinsic");
     let descriptor = IntrinsicDescriptor::new(id, [vec])?;
     let fn_ty = descriptor.function_type(&m)?;

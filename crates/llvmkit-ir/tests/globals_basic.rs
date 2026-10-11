@@ -15,6 +15,7 @@ use llvmkit_ir::{
     IrBuilder, IrError, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, Type, UnnamedAddr,
     VerifierRule, VerifierSubject, constant_fold_constant, module_new,
 };
+use llvmkit_ir::{VectorType, lanes};
 
 fn module_text<B: ModuleBrand, S>(m: &Module<B, S>) -> String {
     format!("{m}")
@@ -721,7 +722,7 @@ fn appending_global_cstring() {
 fn const_vector_initializer() {
     let m = module_new!("m").expect("fresh module");
     let i32_ty = m.i32_type();
-    let vec_ty = m.vector_type(i32_ty.as_type(), 3);
+    let vec_ty = VectorType::of(i32_ty, lanes::<3>());
     let zero = i32_ty.const_int(0i32);
     let one = i32_ty.const_int(1i32);
     let v = vec_ty
@@ -1007,7 +1008,7 @@ fn common_linkage_target_none_initializer_accepted() {
 fn scalable_vector_global_rejected() {
     let m = module_new!("m").expect("fresh module");
     let i32_ty = m.i32_type();
-    let scalable = m.scalable_vector_type(i32_ty.as_type(), 4);
+    let scalable = VectorType::scalable_of(i32_ty, lanes::<4>());
     m.global_builder("s", scalable.as_type())
         .build()
         .expect("build");

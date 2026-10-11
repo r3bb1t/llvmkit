@@ -20,6 +20,7 @@
 //! a future-work item if cross-module type sharing ever becomes a need.
 
 use core::cell::{Cell, RefCell};
+use core::num::NonZeroU32;
 use std::collections::HashMap;
 
 use super::value::{GlobalFieldKind, ValueUse};
@@ -53,8 +54,8 @@ pub(crate) struct Context {
     int_types: RefCell<HashMap<u32, TypeSlot>>,
     ptr_types: RefCell<HashMap<u32, TypeSlot>>,
     array_types: RefCell<HashMap<(TypeSlot, u64), TypeSlot>>,
-    fixed_vector_types: RefCell<HashMap<(TypeSlot, u32), TypeSlot>>,
-    scalable_vector_types: RefCell<HashMap<(TypeSlot, u32), TypeSlot>>,
+    fixed_vector_types: RefCell<HashMap<(TypeSlot, NonZeroU32), TypeSlot>>,
+    scalable_vector_types: RefCell<HashMap<(TypeSlot, NonZeroU32), TypeSlot>>,
     function_types: RefCell<HashMap<FunctionKey, TypeSlot>>,
     literal_struct_types: RefCell<HashMap<LiteralStructKey, TypeSlot>>,
     named_struct_types: RefCell<HashMap<String, TypeSlot>>,
@@ -301,7 +302,11 @@ impl Context {
         id
     }
 
-    pub(crate) fn fixed_vector_type(&self, elem: TypeSlot, n: u32) -> TypeSlot {
+    /// Interns `<n x elem>`. Mirrors `FixedVectorType::get`'s uniquing; its
+    /// `NumElts > 0` assert is `n`'s type. The element rule is the caller's:
+    /// the public routes run it (`ModuleRef::vector_type`) or cannot break it
+    /// (`VectorType::of`).
+    pub(crate) fn fixed_vector_type(&self, elem: TypeSlot, n: NonZeroU32) -> TypeSlot {
         let key = (elem, n);
         if let Some(&id) = self.fixed_vector_types.borrow().get(&key) {
             return id;
@@ -311,7 +316,10 @@ impl Context {
         id
     }
 
-    pub(crate) fn scalable_vector_type(&self, elem: TypeSlot, min: u32) -> TypeSlot {
+    /// Interns `<vscale x min x elem>`. Mirrors `ScalableVectorType::get`'s
+    /// uniquing; its `MinNumElts > 0` assert is `min`'s type. The element
+    /// rule is the caller's, as for [`Self::fixed_vector_type`].
+    pub(crate) fn scalable_vector_type(&self, elem: TypeSlot, min: NonZeroU32) -> TypeSlot {
         let key = (elem, min);
         if let Some(&id) = self.scalable_vector_types.borrow().get(&key) {
             return id;
@@ -333,7 +341,7 @@ impl Context {
     pub(crate) fn vector_type_with_scalability(
         &self,
         elem: TypeSlot,
-        n: u32,
+        n: NonZeroU32,
         scalable: bool,
     ) -> TypeSlot {
         if scalable {

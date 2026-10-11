@@ -1324,7 +1324,7 @@ fn intrinsic_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             let Some((_, lanes, _)) = vector.ty().data().as_vector() else {
                 return Ok(KnownBits::unknown(width));
             };
-            Ok(compute_known_bits_inner(vector, query, depth + 1, stack)?.reduce_add(lanes))
+            Ok(compute_known_bits_inner(vector, query, depth + 1, stack)?.reduce_add(lanes.get()))
         }
         IntrinsicSemantic::PtrMask => {
             let ptr = arg_bits(0, stack)?;
@@ -5060,7 +5060,7 @@ fn lane_index_known_in_range<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         return false;
     };
     argument_constant(Some(index))
-        .is_some_and(|idx| idx.limited_value(u64::from(lanes)) < u64::from(lanes))
+        .is_some_and(|idx| idx.limited_value(u64::from(lanes.get())) < u64::from(lanes.get()))
 }
 
 /// True when the call/invoke/callbr's return carries `noundef`.
@@ -6033,7 +6033,7 @@ pub(crate) fn vector_shape<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         .ty()
         .data()
         .as_vector()
-        .map(|(_, lanes, scalable)| (lanes, scalable))
+        .map(|(_, lanes, scalable)| (lanes.get(), scalable))
 }
 
 fn value_bit_width<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
@@ -6484,6 +6484,7 @@ mod tests {
     use crate::data_layout::DataLayout;
     use crate::instruction::build_instruction_value;
     use crate::module::Module;
+    use crate::{VectorType, lanes};
 
     fn fabricate_instruction<B: ModuleBrand>(
         m: &Module<B>,
@@ -6535,7 +6536,7 @@ mod tests {
         let i8_ty = m.i8_type();
         let i32_ty = m.i32_type();
         let ptr1_ty = m.ptr_type(1);
-        let ptr_vec_ty = m.vector_type(ptr1_ty.as_type(), 2);
+        let ptr_vec_ty = VectorType::of(ptr1_ty, lanes::<2>());
         let fn_ty = m.function_type_no_parameters(m.void_type());
         let f = m.add_function_dyn("f", fn_ty, crate::Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");

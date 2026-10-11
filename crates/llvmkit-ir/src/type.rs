@@ -117,13 +117,17 @@ pub(crate) enum TypeData {
         elem: TypeSlot,
         n: u64,
     },
+    /// `FixedVectorType`. The lane count is never zero: `FixedVectorType::get`
+    /// asserts `NumElts > 0`.
     FixedVector {
         elem: TypeSlot,
-        n: u32,
+        n: NonZeroU32,
     },
+    /// `ScalableVectorType`. The minimum lane count is never zero:
+    /// `ScalableVectorType::get` asserts `MinNumElts > 0`.
     ScalableVector {
         elem: TypeSlot,
-        min: u32,
+        min: NonZeroU32,
     },
     Struct(StructTypeData),
     /// Typed pointer (legacy, only used by a few GPU targets in LLVM 22).
@@ -206,7 +210,7 @@ impl TypeData {
         }
     }
     #[inline]
-    pub(crate) fn as_vector(&self) -> Option<(TypeSlot, u32, bool)> {
+    pub(crate) fn as_vector(&self) -> Option<(TypeSlot, NonZeroU32, bool)> {
         match *self {
             Self::FixedVector { elem, n } => Some((elem, n, false)),
             Self::ScalableVector { elem, min } => Some((elem, min, true)),
@@ -708,8 +712,8 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Type<'ctx, B, C> {
     /// which is how `CastInst::castIsValid` avoids a separate arm for it.
     pub fn vector_element_count(self) -> Option<u32> {
         match self.data() {
-            TypeData::FixedVector { n, .. } => Some(*n),
-            TypeData::ScalableVector { min, .. } => Some(*min),
+            TypeData::FixedVector { n, .. } => Some(n.get()),
+            TypeData::ScalableVector { min, .. } => Some(min.get()),
             _ => None,
         }
     }
@@ -736,10 +740,10 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Type<'ctx, B, C> {
             TypeData::Integer { bits } => *bits,
             TypeData::FixedVector { elem, n } => Type::new(*elem, self.module)
                 .primitive_size_in_bits()
-                .saturating_mul(*n),
+                .saturating_mul(n.get()),
             TypeData::ScalableVector { elem, min } => Type::new(*elem, self.module)
                 .primitive_size_in_bits()
-                .saturating_mul(*min),
+                .saturating_mul(min.get()),
             _ => 0,
         }
     }

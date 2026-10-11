@@ -3026,7 +3026,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ShuffleVectorInst<'ctx, B> {
         //
         // `V1Size * 2` is `int` arithmetic upstream; widening to `u64` keeps
         // the comparison exact for every `u32` lane count instead of wrapping.
-        let bound = u64::from(v1_size) * 2;
+        let bound = u64::from(v1_size.get()) * 2;
         for element in mask {
             if let ShuffleMaskElem::Lane(lane) = *element
                 && u64::from(lane) >= bound
@@ -3112,7 +3112,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ShuffleVectorInst<'ctx, B> {
         crate::constants::valid_shufflevector_mask_constant(
             v1.ty().module().core_ref(),
             mask_slot,
-            v1_size,
+            v1_size.get(),
             v1_scalable,
         )
     }

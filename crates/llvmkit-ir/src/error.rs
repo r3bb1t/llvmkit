@@ -129,6 +129,51 @@ impl fmt::Display for TypeKindLabel {
     }
 }
 
+/// Where a component type sits in the type being built — the position an
+/// [`IrError::InvalidTypeComponent`] names.
+///
+/// Each position is one of LLVM's component rules, and its `Display` is the
+/// wording `LLParser` uses when the rule rejects a parsed type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TypePosition {
+    /// A vector's element: `VectorType::isValidElementType`.
+    VectorElement,
+    /// An array's element: `ArrayType::isValidElementType`.
+    ArrayElement,
+    /// A struct's element: `StructType::isValidElementType`.
+    StructElement {
+        /// The element's position in the body.
+        index: usize,
+    },
+    /// A typed pointer's pointee: `TypedPointerType::isValidElementType`
+    /// (the same body as `PointerType::isValidElementType`).
+    PointerElement,
+    /// A function type's result: `FunctionType::isValidReturnType`.
+    FunctionReturn,
+    /// A function type's parameter: `FunctionType::isValidArgumentType`.
+    FunctionParameter {
+        /// The parameter's position.
+        index: usize,
+    },
+}
+
+impl fmt::Display for TypePosition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TypePosition::VectorElement => f.write_str("invalid vector element type"),
+            TypePosition::ArrayElement => f.write_str("invalid array element type"),
+            TypePosition::StructElement { index } => {
+                write!(f, "invalid element type for struct (element {index})")
+            }
+            TypePosition::PointerElement => f.write_str("pointer to this type is invalid"),
+            TypePosition::FunctionReturn => f.write_str("invalid function return type"),
+            TypePosition::FunctionParameter { index } => {
+                write!(f, "invalid type for function argument (parameter {index})")
+            }
+        }
+    }
+}
+
 /// A type's kind together with its printed form, captured where a diagnostic
 /// is raised.
 ///
@@ -1348,6 +1393,22 @@ pub enum IrError {
         kind: TypeKindLabel,
     },
 
+    /// A type constructor was given a component type LLVM forbids in that
+    /// position — `<4 x void>`, `[2 x label]`, `{ token }`, `label ()`.
+    ///
+    /// Upstream's constructors `assert` these rules (`FixedVectorType::get`,
+    /// `ArrayType::get`, `FunctionType::FunctionType`, `PointerType::get`), and
+    /// an `assert` is compiled out of a release build; `StructType::get`
+    /// checks nothing, though `LLParser` refuses the same elements. The
+    /// message is `LLParser`'s wording for the position, then the kind.
+    #[error("{position}: {kind}")]
+    InvalidTypeComponent {
+        /// Where the component sits.
+        position: TypePosition,
+        /// The kind of the refused component type.
+        kind: TypeKindLabel,
+    },
+
     /// A known-bits query was given a value whose type is neither an integer
     /// nor a pointer, nor a vector of either — so it has no bit pattern to
     /// reason about.
@@ -2026,6 +2087,7 @@ impl IrError {
             | Self::ArrayLengthMismatch { .. }
             | Self::AddressSpaceMismatch { .. }
             | Self::UnsizedType { .. }
+            | Self::InvalidTypeComponent { .. }
             | Self::NotIntOrPointerType { .. }
             | Self::ValueCategoryMismatch { .. }
             | Self::ReturnTypeMismatch { .. }

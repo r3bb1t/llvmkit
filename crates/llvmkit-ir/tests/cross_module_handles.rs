@@ -27,7 +27,7 @@ use llvmkit_ir::{
     IrStruct, Linkage, Module, OperandBundleDef, OperandBundleTag, OperandBundleUse, PatchBody,
     PointerValue, Positioned, ReshapeCfg, SsaBuilder, SsaState, StructSchema, SyncScope,
     TailCallKind, TruncFlags, Type, UiToFpFlags, Unterminated, Value, ValueId, ZextFlags,
-    comdat::SelectionKind, iter::BlockCursor, run_function_pass,
+    comdat::SelectionKind, iter::BlockCursor, lanes, run_function_pass,
 };
 
 /// A two-field schema, so a struct-typed value exists to hand across modules.
@@ -625,6 +625,33 @@ fn a_global_builder_rejects_a_value_type_from_another_module() {
         home.global("g").is_none(),
         "a rejected build must not install"
     );
+}
+
+/// The vector constructors reject an element type from another module: its
+/// slot would name a different type in this module's arena.
+///
+/// No upstream counterpart: `FixedVectorType::get` takes a `Type *`, uniqued
+/// per `LLVMContext`.
+#[test]
+fn the_vector_constructors_reject_an_element_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let element = foreign.i32_type().as_type();
+    let problems = not_refused(vec![
+        (
+            "vector_type",
+            without_value(home.vector_type(element, lanes::<2>())),
+        ),
+        (
+            "scalable_vector_type",
+            without_value(home.scalable_vector_type(element, lanes::<2>())),
+        ),
+        (
+            "view.vector_type",
+            without_value(home.as_view().vector_type(element, lanes::<2>())),
+        ),
+    ]);
+    assert!(problems.is_empty(), "{problems:#?}");
 }
 
 /// `set_comdat` on a global variable and on a function, and the global and

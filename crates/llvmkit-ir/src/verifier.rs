@@ -2403,7 +2403,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             .as_vector()
         {
             Some((re, n, _)) => {
-                let Ok(result_len) = usize::try_from(n) else {
+                let Ok(result_len) = usize::try_from(n.get()) else {
                     return Err(self.fail(
                         f,
                         bb,
@@ -7181,7 +7181,7 @@ fn vector_shape(m: &ModuleCore, ty: TypeSlot) -> Option<(u32, bool)> {
     m.context()
         .type_data(ty)
         .as_vector()
-        .map(|(_, count, scalable)| (count, scalable))
+        .map(|(_, count, scalable)| (count.get(), scalable))
 }
 
 enum AggWalkErr {
@@ -7260,11 +7260,11 @@ fn pointer_source_shape(m: &ModuleCore, ty: TypeSlot) -> Option<(u32, Option<(u3
     match m.context().type_data(ty) {
         TypeData::Pointer { addr_space } => Some((*addr_space, None)),
         TypeData::FixedVector { elem, n } => match m.context().type_data(*elem) {
-            TypeData::Pointer { addr_space } => Some((*addr_space, Some((*n, false)))),
+            TypeData::Pointer { addr_space } => Some((*addr_space, Some((n.get(), false)))),
             _ => None,
         },
         TypeData::ScalableVector { elem, min } => match m.context().type_data(*elem) {
-            TypeData::Pointer { addr_space } => Some((*addr_space, Some((*min, true)))),
+            TypeData::Pointer { addr_space } => Some((*addr_space, Some((min.get(), true)))),
             _ => None,
         },
         _ => None,
@@ -7275,11 +7275,11 @@ fn integer_result_shape(m: &ModuleCore, ty: TypeSlot) -> Option<(u32, Option<(u3
     match m.context().type_data(ty) {
         TypeData::Integer { bits } => Some((*bits, None)),
         TypeData::FixedVector { elem, n } => match m.context().type_data(*elem) {
-            TypeData::Integer { bits } => Some((*bits, Some((*n, false)))),
+            TypeData::Integer { bits } => Some((*bits, Some((n.get(), false)))),
             _ => None,
         },
         TypeData::ScalableVector { elem, min } => match m.context().type_data(*elem) {
-            TypeData::Integer { bits } => Some((*bits, Some((*min, true)))),
+            TypeData::Integer { bits } => Some((*bits, Some((min.get(), true)))),
             _ => None,
         },
         _ => None,
@@ -7337,7 +7337,7 @@ fn type_bit_width(m: &ModuleCore, ty: TypeSlot) -> Option<u32> {
         // pointers in the same address space round-trip as bitcast
         // identity (caught by source==dest equality before width).
         TypeData::Pointer { .. } => None,
-        TypeData::FixedVector { elem, n } => type_bit_width(m, *elem).map(|w| w * *n),
+        TypeData::FixedVector { elem, n } => type_bit_width(m, *elem).map(|w| w * n.get()),
         _ => None,
     }
 }

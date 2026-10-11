@@ -19,6 +19,96 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed (breaking) — type constructors refuse what LLVM forbids
+
+LLVM's vector constructors `assert` two rules — `FixedVectorType::get` and
+`ScalableVectorType::get` require a non-zero lane count and an element
+`VectorType::isValidElementType` admits — and an `assert` is compiled out of a
+release build. llvmkit's builder accepted both, so a module built in Rust could
+hold `<4 x void>`, `<2 x [2 x i32]>` or `<0 x i32>` and print text no parser
+reads back. This section covers the vector family; the other constructors
+follow.
+
+- **Breaking: `Module::vector_type` / `Module::scalable_vector_type`, and the
+  same two on `ModuleView`, take `lanes: NonZeroU32` / `min_lanes: NonZeroU32`
+  and return `IrResult`.** They refuse an element from another module with
+  `IrError::ForeignType`, checked first, and an element
+  `VectorType::isValidElementType` refuses with
+  `IrError::InvalidTypeComponent { position: TypePosition::VectorElement, kind }`
+  (`invalid vector element type: array`). Both took the element's slot
+  unchecked.
+- **Breaking: new `IrError::InvalidTypeComponent` variant**, with the new
+  exhaustive `TypePosition` enum naming the component rule (vector, array,
+  struct and pointer elements, a function's return and parameters); its
+  `Display` is `LLParser`'s wording for the rule. `IrError::blame` classes it
+  as a usage error.
+- **Added: `VectorType::of` / `VectorType::scalable_of`**, the routes that
+  cannot fail: they take a sealed `VectorElement` — an integer, float or
+  pointer handle — and a `NonZeroU32`, build in the element's own module, and
+  keep the element marker (`VectorType::of(m.i32_type(), lanes::<4>())` is a
+  `VectorType<'_, i32, LenDyn, _>`). Handing one a `void` or any other
+  non-element is a compile error carrying `VectorElement`'s own message. A
+  target type that declares `CanBeVectorElement`, and any runtime `Type`, goes
+  through `vector_type(ty, lanes)?`.
+- **Added: `lanes::<N>()`**, the lane count as a `NonZeroU32` checked at
+  compile time: `lanes::<0>()` does not compile. `vector_type_n::<E, 0>()`
+  still does not compile, now with `lanes`'s message.
+- **Breaking: `VectorType::min_len` returns `NonZeroU32`.** No vector has zero
+  lanes: the type arena stores the count as a `NonZeroU32`.
+- A `riscv.vector.tuple` with a count of `0` has no layout type: it is
+  unsized, `Type::is_scalable` answers `false` for it, and `DataLayout`
+  answers size `0` and alignment `1`, as for any target type without one. Its
+  layout was `<vscale x 0 x i8>`, which upstream's `getTargetTypeInfo` builds
+  through the asserting `ScalableVectorType::get`.
+- An intrinsic name whose overload suffix spells a vector of an invalid
+  element (`llvm.vector.reduce.add.v4isVoid`) is
+  `IrError::IntrinsicSignatureMismatch`; the demangler built `<4 x void>` and
+  the intrinsic was declared over it. The intrinsic signature decoders check
+  each vector element they build, and carry each lane count as a
+  `NonZeroU32`.
+- `IrBuilder::shuffle_vector` and `ConstantFolder::fold_shuffle_vector_dyn`
+  refuse an empty mask (`IrError::InvalidOperation`,
+  `shufflevector mask is empty`), whose result would be a zero-lane vector;
+  `constant_fold_shuffle_vector_instruction` answers `None` (no fold) for
+  one. Each built a `<0 x …>` result type.
+- `IrBuilder::vector_splat_dyn` refuses a scalar whose type is not a vector
+  element (`IrError::InvalidTypeComponent`); it built `<2 x { i32 }>`. Its
+  count stays a `u32`, and zero stays its own refusal.
+- The parser builds vector types and vector constants through the checked
+  constructors after its own checks, so its diagnostics are unchanged; a
+  `getelementptr` constant's vector result is built through `VectorType::of`.
+- Removed `select_pattern.rs::tests::an_empty_float_vector_proves_nothing` and
+  the empty-aggregate guard it pinned in the two float helpers: its input,
+  `<0 x float>`, can no longer be built.
+- Call sites: rust-analyzer `findReferences` on the working tree over
+  `dcde8b6`, less this section's new tests, found 106 calls of
+  `Module::vector_type`, 35 of `Module::scalable_vector_type`, none of either
+  `ModuleView` constructor, and 15 of `VectorType::min_len`; the three
+  trybuild fixtures outside the build that call a vector constructor are
+  listed by
+  `rg -l "\.(vector_type|scalable_vector_type)\([^)]" crates/llvmkit-ir/tests/compile_fail`
+  at `dcde8b6`. Every one was migrated.
+
+| Before | After |
+|---|---|
+| `m.vector_type(ty, 4)` | `m.vector_type(ty, lanes::<4>())?`, or `VectorType::of(handle, lanes::<4>())` for an integer, float or pointer handle |
+| `m.scalable_vector_type(ty, 4)` | `m.scalable_vector_type(ty, lanes::<4>())?`, or `VectorType::scalable_of(handle, lanes::<4>())` |
+| a run-time count `n: u32` | `NonZeroU32::new(n)`, handled where `n` is computed |
+| `v.min_len()` (`u32`) | `v.min_len()` (`NonZeroU32`; `.get()` for the number) |
+
+Tests: `type_components.rs` (`a_typed_vector_keeps_its_element_marker`,
+`an_erased_vector_refuses_an_invalid_element`,
+`a_zero_count_riscv_tuple_has_no_layout`,
+`an_intrinsic_name_cannot_spell_an_invalid_vector`,
+`the_builder_refuses_a_shuffle_with_an_empty_mask`,
+`the_constant_folder_refuses_a_shuffle_with_an_empty_mask`,
+`constant_folding_a_shuffle_with_an_empty_mask_does_not_fold`,
+`a_splat_of_a_non_vector_element_is_refused`),
+`cross_module_handles.rs::the_vector_constructors_reject_an_element_from_another_module`,
+and the trybuild fixtures `vector_of_void_element.rs` and `lanes_zero.rs`.
+`type_validity.rs`'s agreement law drops its 28 vector and scalable-vector
+known disagreements.
+
 ### Fixed — a call site's argument list is one port of `LLParser::parseParameterList`; the standalone type parser refuses a bare `void`
 
 `call`, `invoke` and `callbr` each carried an inline copy of the argument loop,

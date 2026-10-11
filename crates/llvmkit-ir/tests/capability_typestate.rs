@@ -13,8 +13,8 @@ use llvmkit_ir::{
     IrBuilder, IrError, Linkage, Module, ModuleState, Mutable, NoFolder, OtherPhiInstId,
     OverflowingBinaryOperator, PhiInstId, PhiKind, PointerPhiInstId, PointerValue,
     PossiblyExactOperator, ReadOnly, ShuffleMaskElem, ShuffleVectorInst, SyncScope, TerminatorKind,
-    TypedCallInstId, UdivFlags, Unverified, User, VaArgInstId, Value, ValueId, Verified,
-    is_supported_floating_point_type,
+    TypedCallInstId, UdivFlags, Unverified, User, VaArgInstId, Value, ValueId, VectorType,
+    Verified, is_supported_floating_point_type, lanes,
 };
 
 fn capability_of<S: ModuleState>() -> TypeId {
@@ -512,7 +512,7 @@ fn a_verified_modules_blocks_and_instructions_are_read_only() -> Result<(), IrEr
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
     let ptr_ty = m.ptr_type(0);
-    let vec_ty = m.vector_type(i32_ty, 2);
+    let vec_ty = VectorType::of(i32_ty, lanes::<2>());
     let callee = m.add_typed_function::<i32, (), _>("callee", Linkage::External)?;
     let f = m.add_function_dyn(
         "f",
@@ -659,7 +659,7 @@ fn read_only_predicates_take_each_operand_at_its_own_capability() -> Result<(), 
     let m = Module::dynamic("m");
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
-    let vec_ty = m.vector_type(i32_ty, 2);
+    let vec_ty = VectorType::of(i32_ty, lanes::<2>());
 
     // `shufflevector <2 x i32> %v1, <2 x i32> %v2, <2 x i32> <i32 0, i32 3>`.
     let v1 = vec_ty.as_type().poison().as_erased();

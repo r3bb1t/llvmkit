@@ -38,6 +38,7 @@ pub mod no_folder;
 use crate::Branded;
 use crate::CrateOnly;
 use core::marker::PhantomData;
+use core::num::NonZeroU32;
 
 use super::align::{Align, MaybeAlign};
 use super::array_len::ArrayLen;
@@ -2353,7 +2354,7 @@ where
 
     /// The element count and scalability of `ty`, or `None` when it is a
     /// scalar. Two types agree in shape when this answers equal for both.
-    fn vector_shape(&self, ty: Type<'ctx, B>) -> Option<(u32, bool)> {
+    fn vector_shape(&self, ty: Type<'ctx, B>) -> Option<(NonZeroU32, bool)> {
         match ty.data() {
             TypeData::FixedVector { n, .. } => Some((*n, false)),
             TypeData::ScalableVector { min, .. } => Some((*min, true)),
@@ -4079,9 +4080,10 @@ where
                 got: l.ty().kind_label(),
             });
         };
-        let mask_len = u32::try_from(mask.len()).map_err(|_| IrError::InvalidOperation {
-            message: "shufflevector mask too large",
-        })?;
+        // `VectorType::get` asserts the lane count is not zero, and llvmkit has
+        // no zero-lane result type to build, so an empty mask is refused here,
+        // where upstream's initializer would assert.
+        let mask_len = constant_folder::shuffle_mask_lanes(mask)?;
         let result_ty_id = self
             .module
             .context()
@@ -7441,14 +7443,16 @@ where
         Name: AsRef<str>,
         V: IntoErasedValue<'ctx, B>,
     {
-        if count == 0 {
+        let Some(lanes) = NonZeroU32::new(count) else {
             return Err(IrError::InvalidOperation {
                 message: "vector_splat_dyn requires at least one lane",
             });
-        }
+        };
         let scalar_value = scalar.into_erased_value(self.mutable_ref())?;
         let elem_ty = scalar_value.ty();
-        let vec_ty = self.mutable_ref().vector_type(elem_ty, count);
+        // `VectorType::get(V->getType(), EC)`, whose element assert is the
+        // checked constructor's refusal here.
+        let vec_ty = self.mutable_ref().vector_type(elem_ty, lanes)?;
         let poison = vec_ty.as_type().poison();
         let i64_ty = self.mutable_ref().i64_type();
         let zero_idx = i64_ty.const_int(0_u32);
@@ -10193,7 +10197,7 @@ where
     fn ptr_to_addr_source_shape(
         &self,
         src_ty: Type<'ctx, B>,
-    ) -> IrResult<(u32, Option<(u32, bool)>)> {
+    ) -> IrResult<(u32, Option<(NonZeroU32, bool)>)> {
         match src_ty.data() {
             TypeData::Pointer { addr_space } => Ok((*addr_space, None)),
             TypeData::FixedVector { elem, n } => match self.module.context().type_data(*elem) {

@@ -23,9 +23,13 @@
 //! arrays, vectors of pointers) are future work and deliberately absent
 //! from the marker set.
 //!
-//! This module replaces the earlier unwired `vector_element` /
-//! `sized_element` scaffolds, whose element-type-as-*type-handle* markers
-//! (`VectorElement` / `SizedElement`) never got a const-generic consumer.
+//! This module replaces two earlier, deleted scaffold modules
+//! (`vector_element.rs` / `sized_element.rs`), whose element-type-as-*type-
+//! handle* markers never got a const-generic consumer. They are unrelated to
+//! today's [`VectorElement`](crate::VectorElement), the sealed bound on
+//! [`VectorType::of`](crate::VectorType::of), which says which *type handles*
+//! may be a vector's element; the markers here say which element a typed
+//! vector or array *carries*.
 //!
 //! The base trait is **sealed** — the set of leaf element markers is closed,
 //! not an extension point.

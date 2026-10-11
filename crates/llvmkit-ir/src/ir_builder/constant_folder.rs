@@ -23,7 +23,10 @@ use super::{
     ConstantExprOpcode, ConstantExprOptions, FastMathFlags, FloatType, GepNoWrapFlags, IntType,
     IrError, IrResult, ModuleBrand, ModuleRef, ShuffleMaskElem, Type, TypeData, UnaryOpcode, Value,
 };
+use core::num::NonZeroU32;
+
 use crate::cmp_predicate::{FloatPredicate, IntPredicate};
+use crate::derived_types::VectorType;
 use crate::float_kind::FloatKind;
 use crate::instr_types::{ExactFlags, OverflowFlags};
 use crate::int_width::IntWidth;
@@ -823,7 +826,7 @@ fn pointer_bitcast_shape_matches<B: ModuleBrand>(lhs: Type<'_, B>, rhs: Type<'_,
 fn vector_shape<B: ModuleBrand>(ty: Type<'_, B>) -> Option<(u32, bool)> {
     ty.data()
         .as_vector()
-        .map(|(_, lanes, scalable)| (lanes, scalable))
+        .map(|(_, lanes, scalable)| (lanes.get(), scalable))
 }
 
 fn invalid_pointer_cast<T>() -> IrResult<T> {
@@ -844,16 +847,29 @@ fn shuffle_result_type<'ctx, B: ModuleBrand + 'ctx>(
     let Some((elem, _, scalable)) = lhs_ty.data().as_vector() else {
         return Ok(None);
     };
-    let lanes = u32::try_from(mask.len()).map_err(|_| IrError::InvalidOperation {
-        message: "shufflevector mask too large",
-    })?;
+    let lanes = shuffle_mask_lanes(mask)?;
     let module = lhs_ty.module;
     let elem_ty = Type::new(elem, module);
     Ok(Some(if scalable {
-        module.scalable_vector_type(elem_ty, lanes).as_type()
+        module.scalable_vector_type(elem_ty, lanes)?.as_type()
     } else {
-        module.vector_type(elem_ty, lanes).as_type()
+        module.vector_type(elem_ty, lanes)?.as_type()
     }))
+}
+
+/// A shuffle mask's length as the result's lane count — the one copy, which
+/// [`IrBuilder::shuffle_vector`] calls too. `VectorType::get` asserts the
+/// count is not zero, and llvmkit has no zero-lane type to build, so an empty
+/// mask is refused.
+///
+/// [`IrBuilder::shuffle_vector`]: crate::IrBuilder::shuffle_vector
+pub(super) fn shuffle_mask_lanes(mask: &[ShuffleMaskElem]) -> IrResult<NonZeroU32> {
+    let lanes = u32::try_from(mask.len()).map_err(|_| IrError::InvalidOperation {
+        message: "shufflevector mask too large",
+    })?;
+    NonZeroU32::new(lanes).ok_or(IrError::InvalidOperation {
+        message: "shufflevector mask is empty",
+    })
 }
 
 fn shuffle_mask_constant<'ctx, B: ModuleBrand + 'ctx>(
@@ -876,14 +892,13 @@ fn shuffle_mask_constant<'ctx, B: ModuleBrand + 'ctx>(
             }
         }
     }
-    let lanes = u32::try_from(mask.len()).map_err(|_| IrError::InvalidOperation {
-        message: "shufflevector mask too large",
-    })?;
+    let lanes = shuffle_mask_lanes(mask)?;
     (if scalable {
-        module.scalable_vector_type(i32_ty.as_type(), lanes)
+        VectorType::scalable_of(i32_ty, lanes)
     } else {
-        module.vector_type(i32_ty.as_type(), lanes)
+        VectorType::of(i32_ty, lanes)
     })
+    .as_dyn()
     .const_vector(elements)
     .map(|constant| constant.as_constant())
 }

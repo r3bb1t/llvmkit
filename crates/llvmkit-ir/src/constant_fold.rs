@@ -15,6 +15,8 @@
 //! calls with operands it minted or has already admitted — so each entry's
 //! check is the only one on its path.
 
+use core::num::NonZeroU32;
+
 use super::align::Align;
 use super::ap_float::{ApFloatCmpResult, ApFloatSemantics, ApFloatSign, NanPayload};
 use super::ap_int::{ApInt, Signedness};
@@ -37,6 +39,7 @@ use super::instruction::{InstructionKindData, InstructionView};
 use super::int_width::IntDyn;
 use super::module::{ModuleBrand, ModuleRef, ModuleView};
 use super::r#type::{IrType, Type, TypeData, TypeSlotAccess, erase_type};
+use super::type_components::lanes;
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{IsValue, Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use super::vec_len::LenDyn;
@@ -368,7 +371,7 @@ pub fn constant_fold_unary_instruction<'ctx, B: ModuleBrand + 'ctx, C: Capabilit
                 else {
                     return Ok(None);
                 };
-                let Ok(lane_count) = usize::try_from(lanes) else {
+                let Ok(lane_count) = usize::try_from(lanes.get()) else {
                     return Ok(None);
                 };
                 let mut folded = Vec::with_capacity(lane_count);
@@ -517,7 +520,7 @@ fn fold_vector_binary<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     let Some(rhs_elements) = fixed_vector_elements_for_rebuild(rhs, lanes, element_ty)? else {
         return Ok(None);
     };
-    let Ok(lane_count) = usize::try_from(lanes) else {
+    let Ok(lane_count) = usize::try_from(lanes.get()) else {
         return Ok(None);
     };
     if lhs_elements.len() != lane_count || rhs_elements.len() != lane_count {
@@ -1050,7 +1053,7 @@ pub(crate) fn constant_fold_compare_instruction_trusting_same_module<
         let Some(rhs_elements) = fixed_vector_elements_for_rebuild(rhs, lanes, element_ty)? else {
             return Ok(None);
         };
-        let Ok(lane_count) = usize::try_from(lanes) else {
+        let Ok(lane_count) = usize::try_from(lanes.get()) else {
             return Ok(None);
         };
         if lhs_elements.len() != lane_count || rhs_elements.len() != lane_count {
@@ -1534,7 +1537,7 @@ pub(crate) fn constant_fold_select_instruction_trusting_same_module<
         if value_lanes != lanes || value_scalable {
             return Ok(None);
         }
-        let Ok(lane_count) = usize::try_from(lanes) else {
+        let Ok(lane_count) = usize::try_from(lanes.get()) else {
             return Ok(None);
         };
         if condition_elements.len() != lane_count {
@@ -1658,7 +1661,7 @@ pub(crate) fn constant_fold_extract_element_instruction_trusting_same_module<
             .try_zext_u64()
             .and_then(|raw_index| usize::try_from(raw_index).ok())
     } else {
-        let limit = u64::from(lanes);
+        let limit = u64::from(lanes.get());
         let raw_index = index_ap.limited_value(limit);
         if raw_index == limit {
             return Ok(Some(poison_for(element_ty)));
@@ -1803,8 +1806,8 @@ pub(crate) fn constant_fold_insert_element_instruction_trusting_same_module<
     let Ok(index) = ConstantIntValue::<IntDyn, B, C>::try_from(index) else {
         return Ok(None);
     };
-    let raw_index = index.ap_int().limited_value(u64::from(lanes));
-    if raw_index == u64::from(lanes) {
+    let raw_index = index.ap_int().limited_value(u64::from(lanes.get()));
+    if raw_index == u64::from(lanes.get()) {
         return Ok(Some(poison_for(vector.ty())));
     }
     let Ok(index) = usize::try_from(raw_index) else {
@@ -1853,7 +1856,12 @@ pub(crate) fn constant_fold_shuffle_vector_instruction_trusting_same_module<
     }
     let module = lhs.as_erased().module;
     let element_ty = Type::new(element_ty, module);
-    let Ok(result_lanes) = u32::try_from(mask.len()) else {
+    // Upstream builds the result as `VectorType::get(EltTy, MaskEltCount)`,
+    // which asserts a non-zero count. No `shufflevector` has an empty mask
+    // (its mask is a vector constant), and llvmkit has no zero-lane result
+    // type to build, so an empty mask folds to nothing, as a mask too long
+    // for `u32` already does.
+    let Some(result_lanes) = u32::try_from(mask.len()).ok().and_then(NonZeroU32::new) else {
         return Ok(None);
     };
     let result_ty =
@@ -1891,13 +1899,13 @@ pub(crate) fn constant_fold_shuffle_vector_instruction_trusting_same_module<
             result.push(element_ty.undef().as_constant());
             continue;
         };
-        let source = if element < lanes {
+        let source = if element < lanes.get() {
             usize::try_from(element)
                 .ok()
                 .and_then(|index| lhs_elements.get(index).copied())
         } else {
-            let rhs_index = element - lanes;
-            if rhs_index >= lanes {
+            let rhs_index = element - lanes.get();
+            if rhs_index >= lanes.get() {
                 Some(element_ty.undef().as_constant())
             } else {
                 usize::try_from(rhs_index)
@@ -1922,7 +1930,7 @@ pub fn shufflevector_mask_from_constant<'ctx, B: ModuleBrand + 'ctx, C: Capabili
     mask: Constant<'ctx, B, C>,
 ) -> Option<Vec<ShuffleMaskElem>> {
     let (_, lanes, scalable) = mask.ty().data().as_vector()?;
-    let lane_count = usize::try_from(lanes).ok()?;
+    let lane_count = usize::try_from(lanes.get()).ok()?;
     if is_undef_or_poison(mask) {
         return Some(vec![ShuffleMaskElem::Poison; lane_count]);
     }
@@ -2106,7 +2114,7 @@ pub(crate) fn gep_result_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 fn gep_operand_vector_shape<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     pointer_ty: Type<'ctx, B, C>,
     indices: &[Constant<'ctx, B, C>],
-) -> IrResult<Option<(u32, bool)>> {
+) -> IrResult<Option<(NonZeroU32, bool)>> {
     let mut shape = pointer_ty
         .data()
         .as_vector()
@@ -2165,7 +2173,7 @@ fn vector_splat_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     if vector_ty.element() != scalar.ty() {
         return Ok(None);
     }
-    let Ok(lane_count) = usize::try_from(vector_ty.min_len()) else {
+    let Ok(lane_count) = usize::try_from(vector_ty.min_len().get()) else {
         return Ok(None);
     };
     vector_ty
@@ -2542,7 +2550,7 @@ fn fold_same_lane_vector_cast<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     let Some(elements) = fixed_vector_elements_for_rebuild(operand, lanes, src_element_ty)? else {
         return Ok(None);
     };
-    let Ok(lane_count) = usize::try_from(lanes) else {
+    let Ok(lane_count) = usize::try_from(lanes.get()) else {
         return Ok(None);
     };
     let mut folded = Vec::with_capacity(lane_count);
@@ -2572,7 +2580,13 @@ fn fold_bitcast<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         && (ConstantIntValue::<IntDyn, B, C>::try_from(operand).is_ok()
             || ConstantFloatValue::<FloatDyn, B, C>::try_from(operand).is_ok())
     {
-        let vector_ty = operand.as_erased().module.vector_type(operand.ty(), 1);
+        // `ConstantVector::get(V)`'s type, `FixedVectorType::get(V->getType(), 1)`.
+        let vector_ty = vector_type_with_scalability(
+            operand.as_erased().module,
+            operand.ty(),
+            lanes::<1>(),
+            false,
+        );
         let vector = vector_ty.const_vector::<Constant<'ctx, B, C>, _>([operand])?;
         return match operand.module.constant_expr(
             dest_ty,
@@ -2655,7 +2669,7 @@ fn fold_vector_bitcast_splat<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     let Some(dst_elem_bits) = type_bit_width_for_bitcast(dst_elem_ty) else {
         return Ok(None);
     };
-    if source_bits != u64::from(dst_elem_bits) * u64::from(dst_vec_ty.min_len()) {
+    if source_bits != u64::from(dst_elem_bits) * u64::from(dst_vec_ty.min_len().get()) {
         return Ok(None);
     }
     let Some(scalar) = (match pattern {
@@ -2664,7 +2678,7 @@ fn fold_vector_bitcast_splat<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }) else {
         return Ok(None);
     };
-    let Ok(lane_count) = usize::try_from(dst_vec_ty.min_len()) else {
+    let Ok(lane_count) = usize::try_from(dst_vec_ty.min_len().get()) else {
         return Ok(None);
     };
     dst_vec_ty
@@ -2749,7 +2763,7 @@ fn null_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         let Some(element) = null_constant_for_type(element_ty)? else {
             return Ok(None);
         };
-        let Ok(lane_count) = usize::try_from(lanes) else {
+        let Ok(lane_count) = usize::try_from(lanes.get()) else {
             return Ok(None);
         };
         let vector_ty = vector_type_with_scalability(module, element_ty, lanes, scalable);
@@ -2887,7 +2901,7 @@ fn bool_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     if element_ty != bool_ty.as_type().slot_trusting_same_module() {
         return Ok(None);
     }
-    let Ok(lane_count) = usize::try_from(lanes) else {
+    let Ok(lane_count) = usize::try_from(lanes.get()) else {
         return Ok(None);
     };
     let scalar = bool_ty.const_int(value).as_constant();
@@ -2949,11 +2963,11 @@ fn bool_constant_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 
 fn fixed_vector_elements_for_rebuild<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     vector: Constant<'ctx, B, C>,
-    lanes: u32,
+    lanes: NonZeroU32,
     element_ty: Type<'ctx, B, C>,
 ) -> IrResult<Option<Vec<Constant<'ctx, B, C>>>> {
     if let Some(elements) = aggregate_elements(vector) {
-        let Ok(lane_count) = usize::try_from(lanes) else {
+        let Ok(lane_count) = usize::try_from(lanes.get()) else {
             return Ok(None);
         };
         if elements.len() == lane_count {
@@ -2962,7 +2976,7 @@ fn fixed_vector_elements_for_rebuild<'ctx, B: ModuleBrand + 'ctx, C: Capability>
         return Ok(None);
     }
 
-    let Ok(lane_count) = usize::try_from(lanes) else {
+    let Ok(lane_count) = usize::try_from(lanes.get()) else {
         return Ok(None);
     };
     let fill = if is_undef(vector) {
@@ -2978,7 +2992,7 @@ fn fixed_vector_elements_for_rebuild<'ctx, B: ModuleBrand + 'ctx, C: Capability>
 
     let i32_ty = vector.as_erased().module.i32_type();
     let mut elements = Vec::with_capacity(lane_count);
-    for index in 0..lanes {
+    for index in 0..lanes.get() {
         let Ok(index) = i32::try_from(index) else {
             return Ok(None);
         };
@@ -3068,7 +3082,7 @@ fn all_ones_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         let Some(element) = all_ones_constant_for_type(element_ty)? else {
             return Ok(None);
         };
-        let Ok(lane_count) = usize::try_from(lanes) else {
+        let Ok(lane_count) = usize::try_from(lanes.get()) else {
             return Ok(None);
         };
         let vector_ty = vector_type_with_scalability(module, element_ty, lanes, scalable);
@@ -3371,25 +3385,31 @@ fn poison_for<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 }
 
 /// Runtime-scalability choke point for the folder's vector rebuilds: parsed
-/// or analyzed vectors carry `scalable` as data, so this dispatches between
-/// [`ModuleView::vector_type`] and [`ModuleView::scalable_vector_type`].
+/// or analyzed vectors carry `scalable` as data, so this dispatches on it.
 ///
 /// This is the handle-level spelling of `VectorType::get(Type *ElementType,
 /// unsigned NumElements, bool Scalable)` (`DerivedTypes.h`), minting at the
-/// capability of the reference it is given. The slot-level twin, used by the
-/// builder, is `Context::vector_type_with_scalability`.
+/// capability of the reference it is given, over the slot-level
+/// `Context::vector_type_with_scalability` the builder uses. It skips the
+/// checks [`ModuleView::vector_type`] runs because every caller already holds
+/// their answer: `element` is `module`'s own and a valid vector element — the
+/// element of a vector `module` interned, its `i1` or `ptr`, or the type of an
+/// integer or floating-point constant — and `lanes` is a [`NonZeroU32`].
 fn vector_type_with_scalability<'ctx, B: ModuleBrand + 'ctx, C: Capability, T>(
     module: ModuleRef<'ctx, B, C>,
     element: T,
-    lanes: u32,
+    lanes: NonZeroU32,
     scalable: bool,
 ) -> VectorType<'ctx, ElemDyn, LenDyn, B, C>
 where
     T: IrType<'ctx, B>,
 {
-    if scalable {
-        module.scalable_vector_type(element, lanes)
-    } else {
-        module.vector_type(element, lanes)
-    }
+    // Internal: `element` is `module`'s (see above).
+    let slot = element.as_type().slot_trusting_same_module();
+    VectorType::new(
+        module
+            .context()
+            .vector_type_with_scalability(slot, lanes, scalable),
+        module,
+    )
 }

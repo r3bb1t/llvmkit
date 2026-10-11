@@ -25,6 +25,7 @@
 //!   has no counterpart; llvmkit models no target.
 
 use core::iter::FusedIterator;
+use core::num::NonZeroU32;
 
 use crate::attributes::AttrKind;
 use crate::basic_block::BasicBlockData;
@@ -1063,7 +1064,7 @@ fn element_wise_bitcast_source<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 /// `getElementCount()` comparison upstream makes.
 fn vector_shape<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
-) -> Option<(u32, bool)> {
+) -> Option<(NonZeroU32, bool)> {
     value
         .ty()
         .data()

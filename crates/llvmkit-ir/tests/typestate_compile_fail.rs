@@ -103,6 +103,10 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/vec_binop_length_mismatch.rs");
     t.compile_fail("tests/compile_fail/vec_binop_element_mismatch.rs");
     t.compile_fail("tests/compile_fail/vec_insert_wrong_element.rs");
+    // `VectorType::of` takes only a `VectorElement`: a `void` element is E0277.
+    t.compile_fail("tests/compile_fail/vector_of_void_element.rs");
+    // `lanes::<0>()` is a const-evaluation error (needs this harness's build mode).
+    t.compile_fail("tests/compile_fail/lanes_zero.rs");
     // Slice 6: typed array ops make wrong-element inserts compile errors.
     t.compile_fail("tests/compile_fail/array_insert_wrong_element.rs");
     t.compile_fail("tests/compile_fail/typed_gep_bad_index.rs");

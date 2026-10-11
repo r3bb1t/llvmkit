@@ -21,7 +21,8 @@ use llvmkit_ir::{
     AddFlags, Align, AshrFlags, AttrIndex, AttrKind, Attribute, AttributeStorage, Dyn, DynBrand,
     FloatPredicate, FloatValue, FloatValueId, GepNoWrapFlags, IntPredicate, IntValue, IntValueId,
     IntrinsicId, IrBuilder, IrError, Linkage, LshrFlags, MemoryEffects, MulFlags, PointerValue,
-    PointerValueId, SdivFlags, ShlFlags, SubFlags, UdivFlags, VerifierRule, module_new,
+    PointerValueId, SdivFlags, ShlFlags, SubFlags, UdivFlags, VectorType, VerifierRule, lanes,
+    module_new,
 };
 
 fn abs_function_attrs_without_immarg() -> AttributeStorage {
@@ -762,7 +763,7 @@ fn verify_gep_into_scalable_struct_fails() -> Result<(), IrError> {
     let double_ty = m.f64_type();
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type();
-    let vscale_double = m.scalable_vector_type(double_ty.as_type(), 1);
+    let vscale_double = VectorType::scalable_of(double_ty, lanes::<1>());
     let struct_ty = m.struct_type([vscale_double.as_type(), vscale_double.as_type()]);
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
     let f = m.add_function_dyn("gep", fn_ty, Linkage::External)?;
@@ -813,8 +814,8 @@ fn verify_vector_gep_with_disagreeing_index_widths_fails() -> Result<(), IrError
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type();
     let array_ty = m.array_type(i8_ty, 4);
-    let vec2_i32 = m.vector_type(i32_ty.as_type(), 2);
-    let vec4_i32 = m.vector_type(i32_ty.as_type(), 4);
+    let vec2_i32 = VectorType::of(i32_ty, lanes::<2>());
+    let vec4_i32 = VectorType::of(i32_ty, lanes::<4>());
     let fn_ty = m.function_type(
         void_ty.as_type(),
         [ptr_ty.as_type(), vec2_i32.as_type(), vec4_i32.as_type()],

@@ -1227,12 +1227,9 @@ fn is_known_non_nan<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         // Upstream's `ConstantDataVector` arm, plus its `ConstantAggregateZero`
         // arm: llvmkit stores both as an aggregate of element constants.
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-            // Empty aggregates are excluded for the same reason as in
-            // `is_known_non_zero_float`: `all` over no elements is vacuously
-            // true, and upstream's `ConstantDataVector` always has at least
-            // one element, so answering "no lane is NaN" for a vector with no
-            // lanes is llvmkit inventing a fact.
-            if !value.ty().is_vector() || elements.is_empty() {
+            // `all` is never vacuous here, for the reason
+            // `is_known_non_zero_float` gives.
+            if !value.ty().is_vector() {
                 return false;
             }
             elements.iter().all(|element| {
@@ -1268,14 +1265,11 @@ fn is_known_non_zero_float<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         // `Float` check, and its early `return false` on a zero element is the
         // `all` below.
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-            // An empty aggregate must not answer "every lane is non-zero" by
-            // vacuous truth. Upstream cannot reach that case -- a
-            // `ConstantDataVector` always has at least one element -- so the
-            // guard has no upstream counterpart and exists because llvmkit's
-            // `Aggregate` is the wider representation. Without it this repeats,
-            // one function over, the width-0 `is_all_ones` defect that made
-            // `is_known_zero` answer `true` for a float.
-            if !value.ty().is_vector() || elements.is_empty() {
+            // `all` is never vacuous here, as it is not upstream: a
+            // `ConstantDataVector` has at least one element, and so does an
+            // llvmkit vector constant — its lane count is a `NonZeroU32`, and
+            // `VectorType::const_vector` takes exactly one element per lane.
+            if !value.ty().is_vector() {
                 return false;
             }
             // `float_constant` already answers `None` for any constant that is
@@ -1693,49 +1687,4 @@ fn value_from_slot<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     let module = anchor.module;
     let data = module.value_data(slot);
     Value::from_parts(slot, module, data.ty)
-}
-
-/// Upstream provenance: these exercise the two file-local `static` helpers
-/// ported from `ValueTracking.cpp`, which no integration test can reach
-/// because both are private to this module.
-#[cfg(test)]
-mod tests {
-    use super::{is_known_non_nan, is_known_non_zero_float};
-    use crate::{FastMathFlags, IrError, module_new};
-
-    /// llvmkit-specific (**no upstream counterpart**, by construction):
-    /// upstream's `static bool isKnownNonZero(const Value *V)` and
-    /// `isKnownNonNaN(V, FMF)` read a `ConstantDataVector`, which always has at
-    /// least one element, so neither can reach an empty vector. llvmkit stores
-    /// a constant vector as an aggregate of element constants — the wider
-    /// representation — and `elements.iter().all(..)` over an empty aggregate
-    /// is vacuously `true`.
-    ///
-    /// Without the guard both helpers claim a fact about a vector with no
-    /// lanes: "every lane is non-zero" and "no lane is NaN". That is the same
-    /// shape as the zero-width `ApInt` whose `is_all_ones` made
-    /// `is_known_zero` answer `true` for a float.
-    ///
-    /// This lives here rather than in `tests/` deliberately: an integration
-    /// test routed through `is_known_non_zero` passes with the guard removed,
-    /// because the int-or-pointer guard rejects a `<0 x float>` before these
-    /// helpers are ever consulted. It would pin nothing.
-    #[test]
-    fn an_empty_float_vector_proves_nothing() -> Result<(), IrError> {
-        let m = module_new!("sp-empty-vec")?;
-        let empty = m
-            .vector_type(m.f32_type(), 0)
-            .const_vector(Vec::<crate::ConstantFloatValue<f32, _>>::new())?;
-        let value = empty.as_erased();
-
-        assert!(
-            !is_known_non_zero_float(value),
-            "an empty vector has no lane to be non-zero"
-        );
-        assert!(
-            !is_known_non_nan(value, FastMathFlags::empty()),
-            "an empty vector has no lane to be non-NaN"
-        );
-        Ok(())
-    }
 }

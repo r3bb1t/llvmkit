@@ -27,6 +27,7 @@
 
 use core::fmt;
 use core::iter::FusedIterator;
+use core::num::NonZeroU32;
 use core::str::FromStr;
 
 use crate::align::{Align, MaybeAlign};
@@ -34,6 +35,7 @@ use crate::capability::Capability;
 use crate::error::DataLayoutError;
 use crate::module::{ModuleBrand, ModuleCore};
 use crate::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
+use crate::type_components::lanes;
 
 // --------------------------------------------------------------------------
 // Sub-records
@@ -706,11 +708,11 @@ impl DataLayout {
             TypeData::X86Fp80 => 80,
             TypeData::X86Amx => 8192,
             TypeData::FixedVector { elem, n } => {
-                u64::from(*n).saturating_mul(self.type_size_in_bits_inner(module, *elem))
+                u64::from(n.get()).saturating_mul(self.type_size_in_bits_inner(module, *elem))
             }
             TypeData::ScalableVector { elem, min } => {
                 // Mirrors upstream: getKnownMinValue path.
-                u64::from(*min).saturating_mul(self.type_size_in_bits_inner(module, *elem))
+                u64::from(min.get()).saturating_mul(self.type_size_in_bits_inner(module, *elem))
             }
             TypeData::TargetExt(_) => match target_ext_layout_type(module, id) {
                 Some(layout) => self.type_size_in_bits_inner(module, layout),
@@ -1545,8 +1547,10 @@ fn parse_addr_space_and_name(s: &str) -> Result<(u32, String), DataLayoutError> 
 
 /// Mirrors `getTargetTypeInfo(...).LayoutType` in `lib/IR/Type.cpp`.
 /// Returns the type id of the in-memory layout type for the given
-/// target-extension type, or `None` for unknown / void-equivalent
-/// extensions. The full upstream table covers SPIR-V, AArch64
+/// target-extension type. `None` for a type that is not a target extension
+/// type, and for a `riscv.vector.tuple` whose layout would be a zero-lane
+/// vector; an extension upstream's table does not name gets its `void`
+/// default, as upstream does. The full upstream table covers SPIR-V, AArch64
 /// (`aarch64.svcount`), RISC-V (`riscv.vector.tuple`), DirectX
 /// (`dx.*`), AMDGPU (`amdgcn.named.barrier`), and the test
 /// extension (`llvm.test.vectorelement`).
@@ -1590,7 +1594,7 @@ pub(crate) fn target_ext_layout_type(module: &ModuleCore, id: TypeSlot) -> Optio
     }
     // AArch64 svcount: <vscale x 16 x i1>.
     if name == "aarch64.svcount" {
-        return Some(ctx.scalable_vector_type(ctx.int_type(1), 16));
+        return Some(ctx.scalable_vector_type(ctx.int_type(1), lanes::<16>()));
     }
     // RISC-V vector tuple. Layout = <vscale x N x i8> where N is
     // computed from the tuple's first scalable-vector type parameter.
@@ -1600,9 +1604,13 @@ pub(crate) fn target_ext_layout_type(module: &ModuleCore, id: TypeSlot) -> Optio
     {
         // Upstream uses `RISCV::RVVBytesPerBlock` (== 8) as the floor.
         const RVV_BYTES_PER_BLOCK: u32 = 8;
-        let lanes = core::cmp::max(*min, RVV_BYTES_PER_BLOCK);
+        let lanes = core::cmp::max(min.get(), RVV_BYTES_PER_BLOCK);
         let count_factor = ext.int_params.first().copied().unwrap_or(0);
-        let total = lanes.saturating_mul(count_factor);
+        // Upstream's `getTargetTypeInfo` passes this product to
+        // `ScalableVectorType::get`, which asserts `MinNumElts > 0`; llvmkit
+        // has no zero-lane vector, so a zero-count tuple has no layout type
+        // and is unsized (`Type::isSizedDerivedType` asks the layout type).
+        let total = NonZeroU32::new(lanes.saturating_mul(count_factor))?;
         return Some(ctx.scalable_vector_type(ctx.int_type(8), total));
     }
     // DirectX padding.
@@ -1616,7 +1624,7 @@ pub(crate) fn target_ext_layout_type(module: &ModuleCore, id: TypeSlot) -> Optio
     }
     // AMDGPU named.barrier: <4 x i32>.
     if name == "amdgcn.named.barrier" {
-        return Some(ctx.fixed_vector_type(ctx.int_type(32), 4));
+        return Some(ctx.fixed_vector_type(ctx.int_type(32), lanes::<4>()));
     }
     // Vector-element test extension: i32.
     if name == "llvm.test.vectorelement" {

@@ -2420,8 +2420,11 @@ where
                         got: Type::new(*elem, v.module).rendered(),
                     });
                 }
-                if *n != N {
-                    return Err(IrError::OperandWidthMismatch { lhs: N, rhs: *n });
+                if n.get() != N {
+                    return Err(IrError::OperandWidthMismatch {
+                        lhs: N,
+                        rhs: n.get(),
+                    });
                 }
                 Ok(Self {
                     id: v.id,

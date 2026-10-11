@@ -1495,7 +1495,7 @@ fn shuffle_is_select<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     let Some((_, lanes, _)) = lhs.ty().data().as_vector() else {
         return false;
     };
-    let Ok(lane_count) = usize::try_from(lanes) else {
+    let Ok(lane_count) = usize::try_from(lanes.get()) else {
         return false;
     };
     // `!changesLength()`: the mask is exactly as wide as a source vector.
@@ -1512,7 +1512,7 @@ fn shuffle_is_select<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         };
         // The second disjunct is `lane == index + lanes`, written as a
         // subtraction so an oversized mask cannot overflow.
-        lane == index || lane.checked_sub(lanes) == Some(index)
+        lane == index || lane.checked_sub(lanes.get()) == Some(index)
     })
 }
 

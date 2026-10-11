@@ -328,7 +328,7 @@ pub fn find_scalar_element<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     let element_ty = Type::new(element_ty, value.module);
 
     // For fixed-length vector, return poison for out of range access.
-    if !scalable && element >= lanes {
+    if !scalable && element >= lanes.get() {
         return Some(element_ty.poison().as_constant().as_erased());
     }
 
@@ -369,12 +369,12 @@ pub fn find_scalar_element<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             let Some(&ShuffleMaskElem::Lane(selected)) = shuffle.mask.get(position) else {
                 return Some(element_ty.poison().as_constant().as_erased());
             };
-            return if selected < source_lanes {
+            return if selected < source_lanes.get() {
                 find_scalar_element(source, selected)
             } else {
                 find_scalar_element(
                     value_from_slot(value, shuffle.rhs.get()),
-                    selected.checked_sub(source_lanes)?,
+                    selected.checked_sub(source_lanes.get())?,
                 )
             };
         }
@@ -396,7 +396,7 @@ pub fn find_scalar_element<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     // If the vector is a splat then we can trivially find the scalar element.
     if scalable
         && let Some(splat) = splat_value(value)
-        && element < lanes
+        && element < lanes.get()
     {
         return Some(splat);
     }
@@ -645,8 +645,8 @@ fn constant_mask_lanes_satisfy<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         })
     };
     match quantifier {
-        MaskQuantifier::Every => (0..lanes).all(lane_qualifies),
-        MaskQuantifier::Any => (0..lanes).any(lane_qualifies),
+        MaskQuantifier::Every => (0..lanes.get()).all(lane_qualifies),
+        MaskQuantifier::Any => (0..lanes.get()).any(lane_qualifies),
     }
 }
 
@@ -671,10 +671,10 @@ pub fn possibly_demanded_elements_in_mask<'ctx, B: ModuleBrand + 'ctx, C: Capabi
     if scalable {
         return None;
     }
-    let mut demanded = ApInt::all_ones(lanes);
+    let mut demanded = ApInt::all_ones(lanes.get());
     if let ValueKindData::Constant(_) = &mask.data().kind {
         let constant = Constant::from_parts(mask);
-        for lane in 0..lanes {
+        for lane in 0..lanes.get() {
             // Upstream dereferences `getAggregateElement` without a null
             // check, which cannot fail for the `ConstantVector` its `dyn_cast`
             // admitted. An absent element here leaves the lane demanded, which

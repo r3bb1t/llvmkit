@@ -162,6 +162,7 @@ pub mod sync_scope;
 pub mod target_library_info;
 pub mod term_open_state;
 pub mod r#type;
+pub mod type_components;
 pub mod typed_pointer_type;
 pub mod typed_pointer_value;
 pub mod r#use;
@@ -260,7 +261,7 @@ pub use derived_types::{
 pub use dominator_tree::{DominatorTree, DominatorTreeAnalysis, DominatorTreeBlock};
 pub use error::{
     Blame, BrandError, DataLayoutError, InvalidValueNameReason, IrError, IrResult, RenderedType,
-    TypeKindLabel, ValueCategoryLabel, VerifierRule, VerifierSubject,
+    TypeKindLabel, TypePosition, ValueCategoryLabel, VerifierRule, VerifierSubject,
 };
 pub use fmf::FastMathFlags;
 pub use function::{FunctionBasicBlocks, FunctionBuilder, FunctionValue, IntoCallee};
@@ -385,6 +386,7 @@ pub use struct_schema::{
 pub use sync_scope::SyncScope;
 pub use target_library_info::{LibFunc, TargetLibraryInfo};
 pub use r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeKind};
+pub use type_components::{VectorElement, lanes};
 pub use typed_pointer_type::TypedPointerType;
 pub use typed_pointer_value::TypedPointerValue;
 pub use unnamed_addr::UnnamedAddr;

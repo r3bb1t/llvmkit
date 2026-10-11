@@ -44,7 +44,7 @@ use core::any::TypeId;
 use core::hash::{Hash, Hasher};
 use core::iter::FusedIterator;
 use core::marker::PhantomData;
-use core::num::NonZeroU64;
+use core::num::{NonZeroU32, NonZeroU64};
 use core::sync::atomic::{AtomicU64, Ordering};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -70,7 +70,7 @@ use super::derived_types::{
     TargetExtType, TokenType, VectorType, VoidType,
 };
 use super::element::{ElemDyn, StaticVecElem};
-use super::error::{BrandError, IrError, IrResult};
+use super::error::{BrandError, IrError, IrResult, TypePosition};
 use super::float_kind::{Bfloat, Fp128, Half, PpcFp128, X86Fp80};
 use super::function::FunctionData;
 use super::function::{FunctionBuilder, FunctionValue};
@@ -109,6 +109,7 @@ use super::struct_schema::StructSchema;
 use super::r#type::{
     IrType, MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeData, TypeSlot, TypeSlotAccess,
 };
+use super::type_components::{lanes, require_component};
 use super::typed_pointer_type::TypedPointerType;
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
@@ -819,19 +820,17 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
         ArrayType::new(id, self)
     }
 
-    /// Const-generic typed vector `<N x E>`; `N == 0` is a compile error.
+    /// Const-generic typed vector `<N x E>`; `N == 0` is a compile error
+    /// ([`lanes`]'s).
     pub(crate) fn vector_type_n<E, const N: u32>(self) -> VectorType<'ctx, E, Len<N>, B, C>
     where
         E: StaticVecElem<'ctx, B>,
     {
-        const {
-            assert!(N > 0, "vector length must be >= 1");
-        }
         let elem = E::element_ir_type(self);
         let id = self
             .core
             .ctx
-            .fixed_vector_type(elem.slot_trusting_same_module(), N);
+            .fixed_vector_type(elem.slot_trusting_same_module(), lanes::<N>());
         VectorType::new(id, self)
     }
 
@@ -861,35 +860,49 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
         )
     }
 
-    /// Fixed `<n x elem>` vector. Mirrors `FixedVectorType::get`.
-    pub(super) fn vector_type<T>(self, elem: T, n: u32) -> VectorType<'ctx, ElemDyn, LenDyn, B, C>
+    /// Fixed `<lanes x elem>` vector. Mirrors `FixedVectorType::get`: its
+    /// `NumElts > 0` assert is the [`NonZeroU32`], its `isValidElementType`
+    /// assert is [`require_component`]; a type from another module is refused
+    /// with [`IrError::ForeignType`] first.
+    pub(super) fn vector_type<T>(
+        self,
+        elem: T,
+        lanes: NonZeroU32,
+    ) -> IrResult<VectorType<'ctx, ElemDyn, LenDyn, B, C>>
     where
         T: IrType<'ctx, B>,
     {
-        // boundary (F1): refused by Task 26
-        let id = self
-            .core
-            .ctx
-            .fixed_vector_type(elem.as_type().slot_trusting_same_module(), n);
-        VectorType::new(id, self)
+        let elem = elem.as_type();
+        // Boundary: the caller's element type, admitted against this module.
+        let slot = elem.slot_in(self.id())?;
+        require_component(TypePosition::VectorElement, elem)?;
+        Ok(VectorType::new(
+            self.core.ctx.fixed_vector_type(slot, lanes),
+            self,
+        ))
     }
 
-    /// Scalable `<vscale x n x elem>` vector. Mirrors
-    /// `ScalableVectorType::get`.
+    /// Scalable `<vscale x min_lanes x elem>` vector. Mirrors
+    /// `ScalableVectorType::get`: its `MinNumElts > 0` assert is the
+    /// [`NonZeroU32`], its `isValidElementType` assert is
+    /// [`require_component`]; a type from another module is refused with
+    /// [`IrError::ForeignType`] first.
     pub(super) fn scalable_vector_type<T>(
         self,
         elem: T,
-        n: u32,
-    ) -> VectorType<'ctx, ElemDyn, LenDyn, B, C>
+        min_lanes: NonZeroU32,
+    ) -> IrResult<VectorType<'ctx, ElemDyn, LenDyn, B, C>>
     where
         T: IrType<'ctx, B>,
     {
-        // boundary (F1): refused by Task 26
-        let id = self
-            .core
-            .ctx
-            .scalable_vector_type(elem.as_type().slot_trusting_same_module(), n);
-        VectorType::new(id, self)
+        let elem = elem.as_type();
+        // Boundary: the caller's element type, admitted against this module.
+        let slot = elem.slot_in(self.id())?;
+        require_component(TypePosition::VectorElement, elem)?;
+        Ok(VectorType::new(
+            self.core.ctx.scalable_vector_type(slot, min_lanes),
+            self,
+        ))
     }
 
     /// Literal struct type, packed or not.
@@ -1639,27 +1652,59 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         self.read_only_ref().array_type_n::<E, N>()
     }
 
-    /// Fixed `<n x elem>` vector. Mirrors `FixedVectorType::get`.
+    /// Fixed `<lanes x elem>` vector, checked. Mirrors `FixedVectorType::get`.
+    ///
+    /// Refuses an `elem` from another module ([`IrError::ForeignType`]) and
+    /// one `VectorType::isValidElementType` rejects — anything but an
+    /// integer, a float, a pointer, or a target type that declares
+    /// `CanBeVectorElement` ([`IrError::InvalidTypeComponent`]). A zero lane
+    /// count is unspellable: `lanes` is a [`NonZeroU32`]. For a typed
+    /// integer, float or pointer handle, [`VectorType::of`] is the route that
+    /// cannot fail.
+    ///
+    /// ```
+    /// # use llvmkit_ir::{Module, lanes};
+    /// let m = Module::dynamic("doc");
+    /// let view = m.as_view();
+    /// let array = view.array_type_n::<i32, 2>();
+    /// assert!(view.vector_type(array, lanes::<4>()).is_err()); // <4 x [2 x i32]>
+    /// assert!(view.vector_type(view.i32_type(), lanes::<4>()).is_ok());
+    /// ```
     #[inline]
-    pub fn vector_type<T>(self, elem: T, n: u32) -> VectorType<'ctx, ElemDyn, LenDyn, B, ReadOnly>
+    pub fn vector_type<T>(
+        self,
+        elem: T,
+        lanes: NonZeroU32,
+    ) -> IrResult<VectorType<'ctx, ElemDyn, LenDyn, B, ReadOnly>>
     where
         T: IrType<'ctx, B>,
     {
-        self.read_only_ref().vector_type(elem, n)
+        self.read_only_ref().vector_type(elem, lanes)
     }
 
-    /// Scalable `<vscale x n x elem>` vector. Mirrors
+    /// Scalable `<vscale x min_lanes x elem>` vector, checked. Mirrors
     /// `ScalableVectorType::get`.
+    ///
+    /// Refuses what [`Self::vector_type`] refuses, for the same reasons;
+    /// [`VectorType::scalable_of`] is the route that cannot fail.
+    ///
+    /// ```
+    /// # use llvmkit_ir::{Module, lanes};
+    /// let m = Module::dynamic("doc");
+    /// let view = m.as_view();
+    /// assert!(view.scalable_vector_type(view.void_type(), lanes::<4>()).is_err());
+    /// assert!(view.scalable_vector_type(view.f32_type(), lanes::<4>()).is_ok());
+    /// ```
     #[inline]
     pub fn scalable_vector_type<T>(
         self,
         elem: T,
-        n: u32,
-    ) -> VectorType<'ctx, ElemDyn, LenDyn, B, ReadOnly>
+        min_lanes: NonZeroU32,
+    ) -> IrResult<VectorType<'ctx, ElemDyn, LenDyn, B, ReadOnly>>
     where
         T: IrType<'ctx, B>,
     {
-        self.read_only_ref().scalable_vector_type(elem, n)
+        self.read_only_ref().scalable_vector_type(elem, min_lanes)
     }
 
     /// Const-generic typed vector `<N x E>`. The element marker `E` projects
@@ -4322,25 +4367,55 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.capability_ref().array_type_n::<E, N>()
     }
 
-    /// Fixed `<n x elem>` vector. Mirrors `FixedVectorType::get`.
-    pub fn vector_type<T>(&'ctx self, elem: T, n: u32) -> VectorType<'ctx, ElemDyn, LenDyn, B>
+    /// Fixed `<lanes x elem>` vector, checked. Mirrors `FixedVectorType::get`.
+    ///
+    /// Refuses an `elem` from another module ([`IrError::ForeignType`]) and
+    /// one `VectorType::isValidElementType` rejects — anything but an
+    /// integer, a float, a pointer, or a target type that declares
+    /// `CanBeVectorElement` ([`IrError::InvalidTypeComponent`]). A zero lane
+    /// count is unspellable: `lanes` is a [`NonZeroU32`]. For a typed
+    /// integer, float or pointer handle, [`VectorType::of`] is the route that
+    /// cannot fail.
+    ///
+    /// ```
+    /// # use llvmkit_ir::{Module, lanes};
+    /// let m = Module::dynamic("doc");
+    /// let array = m.array_type_n::<i32, 2>();
+    /// assert!(m.vector_type(array, lanes::<4>()).is_err()); // <4 x [2 x i32]>
+    /// assert!(m.vector_type(m.i32_type(), lanes::<4>()).is_ok());
+    /// ```
+    pub fn vector_type<T>(
+        &'ctx self,
+        elem: T,
+        lanes: NonZeroU32,
+    ) -> IrResult<VectorType<'ctx, ElemDyn, LenDyn, B>>
     where
         T: IrType<'ctx, B>,
     {
-        self.capability_ref().vector_type(elem, n)
+        self.capability_ref().vector_type(elem, lanes)
     }
 
-    /// Scalable `<vscale x n x elem>` vector. Mirrors
+    /// Scalable `<vscale x min_lanes x elem>` vector, checked. Mirrors
     /// `ScalableVectorType::get`.
+    ///
+    /// Refuses what [`Self::vector_type`] refuses, for the same reasons;
+    /// [`VectorType::scalable_of`] is the route that cannot fail.
+    ///
+    /// ```
+    /// # use llvmkit_ir::{Module, lanes};
+    /// let m = Module::dynamic("doc");
+    /// assert!(m.scalable_vector_type(m.void_type(), lanes::<4>()).is_err());
+    /// assert!(m.scalable_vector_type(m.f32_type(), lanes::<4>()).is_ok());
+    /// ```
     pub fn scalable_vector_type<T>(
         &'ctx self,
         elem: T,
-        n: u32,
-    ) -> VectorType<'ctx, ElemDyn, LenDyn, B>
+        min_lanes: NonZeroU32,
+    ) -> IrResult<VectorType<'ctx, ElemDyn, LenDyn, B>>
     where
         T: IrType<'ctx, B>,
     {
-        self.capability_ref().scalable_vector_type(elem, n)
+        self.capability_ref().scalable_vector_type(elem, min_lanes)
     }
 
     /// Const-generic typed vector `<N x E>`. The element marker `E`

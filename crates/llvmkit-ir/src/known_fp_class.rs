@@ -613,7 +613,7 @@ fn vector_lanes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         .ty()
         .data()
         .as_vector()
-        .map(|(_, lanes, scalable)| (lanes, scalable))
+        .map(|(_, lanes, scalable)| (lanes.get(), scalable))
 }
 
 /// A constant, in-range lane index, if the operand is one.
