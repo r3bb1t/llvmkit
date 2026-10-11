@@ -228,6 +228,25 @@ struct ParamInfo<'ctx, B: ModuleBrand> {
     attrs: AttributeStorage,
 }
 
+/// What `LLParser::parseParameterList`'s `IsMustTailCall` and `InVarArgsFunc`
+/// parameters say about the call whose argument list is being read.
+///
+/// Upstream passes two adjacent `bool`s, but reads `InVarArgsFunc` only when
+/// `IsMustTailCall` holds: the ellipsis arm returns on `!IsMustTailCall`
+/// before testing `!InVarArgsFunc`, and the post-loop check is
+/// `IsMustTailCall && InVarArgsFunc`. So the enclosing function's variadic
+/// bit lives inside the musttail variant, and the two cannot be swapped.
+#[derive(Clone, Copy)]
+enum CallTail {
+    /// `IsMustTailCall = false` — every `invoke` and `callbr` (`parseInvoke`
+    /// and `parseCallBr` leave both parameters at their `false` defaults),
+    /// and a `call` whose tail kind is not `musttail`.
+    NotMustTail,
+    /// `IsMustTailCall = true`; `in_var_args_func` is upstream's
+    /// `InVarArgsFunc`, `PFS.getFunction().isVarArg()`.
+    MustTail { in_var_args_func: bool },
+}
+
 /// Whether `attrs` carries anything at `index`.
 ///
 /// `AttributeStorage::get` is private to `llvmkit-ir`, so ask the public
@@ -14287,16 +14306,21 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// `LLParser::parseParameterList`, the one routine `parseCall`,
     /// `parseInvoke` and `parseCallBr` share.
     ///
-    /// `is_must_tail_call` and `in_var_args_func` are upstream's
-    /// `IsMustTailCall` and `InVarArgsFunc`; `parseInvoke` and `parseCallBr`
-    /// leave both at their `false` defaults. A forwarding `...` adds no
-    /// argument and is not reported to the caller: upstream returns from
-    /// inside the loop once the `)` after it is eaten.
+    /// `tail` is upstream's `IsMustTailCall` / `InVarArgsFunc` pair as one
+    /// [`CallTail`]; `parseInvoke` and `parseCallBr` pass
+    /// [`CallTail::NotMustTail`]. A forwarding `...` adds no argument and is
+    /// not reported to the caller: upstream returns from inside the loop once
+    /// the `)` after it is eaten.
+    ///
+    /// Each diagnostic keeps `ParseError`'s split: the `parseToken` arms and
+    /// the post-loop `expected '...'` refusal begin with `expected `, so they
+    /// store the remainder in [`ParseError::Expected`]; the two ellipsis
+    /// refusals and the argument-type guard are whole sentences in
+    /// [`ParseError::Message`].
     fn parse_parameter_list(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        is_must_tail_call: bool,
-        in_var_args_func: bool,
+        tail: CallTail,
     ) -> ParseResult<Vec<ParamInfo<'ctx, B>>> {
         // `if (parseToken(lltok::lparen, "expected '(' in call")) return true;`
         // — the same text for an `invoke` and a `callbr`.
@@ -14316,15 +14340,24 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             // `Msg = "unexpected ellipsis in argument list for "`: a whole
             // sentence at the `...`, not an `expected …` production.
             if matches!(self.peek(), Token::DotDotDot) {
-                if !is_must_tail_call {
-                    return Err(
-                        self.message("unexpected ellipsis in argument list for non-musttail call")
-                    );
-                }
-                if !in_var_args_func {
-                    return Err(self.message(
-                        "unexpected ellipsis in argument list for musttail call in non-varargs function",
-                    ));
+                match tail {
+                    // `if (!IsMustTailCall) return tokError(…);`
+                    CallTail::NotMustTail => {
+                        return Err(self.message(
+                            "unexpected ellipsis in argument list for non-musttail call",
+                        ));
+                    }
+                    // `if (!InVarArgsFunc) return tokError(…);`
+                    CallTail::MustTail {
+                        in_var_args_func: false,
+                    } => {
+                        return Err(self.message(
+                            "unexpected ellipsis in argument list for musttail call in non-varargs function",
+                        ));
+                    }
+                    CallTail::MustTail {
+                        in_var_args_func: true,
+                    } => {}
                 }
                 // `Lex.Lex(); // Lex the '...', it is purely for readability.`
                 self.bump()?;
@@ -14373,10 +14406,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // '...' at end of argument list for musttail call in varargs
         // function");` — tested before the `)` is lexed, so it is anchored at
         // the `)` itself.
-        if is_must_tail_call && in_var_args_func {
-            return Err(self.message(
-                "expected '...' at end of argument list for musttail call in varargs function",
-            ));
+        if let CallTail::MustTail {
+            in_var_args_func: true,
+        } = tail
+        {
+            return Err(self
+                .expected("'...' at end of argument list for musttail call in varargs function"));
         }
 
         // `Lex.Lex(); // Lex the ')'.`
@@ -14444,11 +14479,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let parsed_callee = self.parse_direct_callee_ref(state, call_addr_space)?;
         // `parseParameterList(ArgList, PFS, TCK == CallInst::TCK_MustTail,
         // PFS.getFunction().isVarArg())`.
-        let arg_list = self.parse_parameter_list(
-            state,
-            matches!(tail_kind, llvmkit_ir::instr_types::TailCallKind::MustTail),
-            state.func.signature().is_var_arg(),
-        )?;
+        let tail = if matches!(tail_kind, llvmkit_ir::instr_types::TailCallKind::MustTail) {
+            CallTail::MustTail {
+                in_var_args_func: state.func.signature().is_var_arg(),
+            }
+        } else {
+            CallTail::NotMustTail
+        };
+        let arg_list = self.parse_parameter_list(state, tail)?;
         let (function_attrs, function_attr_groups) = self.parse_optional_fn_attrs()?;
         let operand_bundles = self.parse_optional_operand_bundles(state)?;
         // `resolveFunctionType`: an explicit function type is used as written;
@@ -15590,7 +15628,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // `parseParameterList(ArgList, PFS)` — `IsMustTailCall` and
         // `InVarArgsFunc` left at their `false` defaults, so a forwarding
         // `...` is the non-musttail refusal.
-        let arg_list = self.parse_parameter_list(state, false, false)?;
+        let arg_list = self.parse_parameter_list(state, CallTail::NotMustTail)?;
         let (function_attrs, function_attr_groups) = self.parse_optional_fn_attrs()?;
         let operand_bundles = self.parse_optional_operand_bundles(state)?;
         self.expect_keyword(Keyword::To, "'to' in invoke")?;
@@ -15713,7 +15751,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // `parseParameterList(ArgList, PFS)` — `IsMustTailCall` and
         // `InVarArgsFunc` left at their `false` defaults, so a forwarding
         // `...` is the non-musttail refusal.
-        let arg_list = self.parse_parameter_list(state, false, false)?;
+        let arg_list = self.parse_parameter_list(state, CallTail::NotMustTail)?;
         let (function_attrs, function_attr_groups) = self.parse_optional_fn_attrs()?;
         let operand_bundles = self.parse_optional_operand_bundles(state)?;
         self.expect_keyword(Keyword::To, "'to' in callbr")?;

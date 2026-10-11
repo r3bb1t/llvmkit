@@ -80,11 +80,11 @@ anchor is unchecked. Some rows pass while diverging in text —
 exactly right and the pin is a truncated `FileCheck` fragment.
 `musttail-invalid-1` was one until its `expected ` wrapper was removed;
 `parser_calls.rs::upstream_musttail_ellipsis_fixtures_report_upstreams_exact_text`
-now compares its text for equality. `target-type-properties.ll`'s `zeroinit-error` split was the worked
-example until its wrapper was removed; the row that hid it is unchanged, and
-what now pins that arm is a unit test asserting the `ParseError` variant and
-the column. See the corpus-oracle item in
-`docs/future-work.md`, which carries the derivation.
+now compares its text for equality. `target-type-properties.ll`'s
+`zeroinit-error` split was the worked example until its wrapper was removed;
+the row that hid it is unchanged, and what now pins that arm is a unit test
+asserting the `ParseError` variant and the column. See the corpus-oracle item
+in `docs/future-work.md`, which carries the derivation.
 
 **No manifest tallies are written here any more.** They were, in five figures,
 and every one of them was stale within a commit or two of being written — the

@@ -56,22 +56,32 @@ each as upstream:
   `...` in a non-varargs function is
   `unexpected ellipsis in argument list for musttail call in non-varargs function`.
   Both carried a leading `expected ` upstream never prints, and are now
-  `ParseError::Message` rather than `ParseError::Expected`.
+  `ParseError::Message` rather than `ParseError::Expected` — the only variant
+  change in this section. Every other `expected …` diagnostic of the routine
+  is still a `ParseError::Expected`, and the new argument-type refusal is a
+  `ParseError::Message`.
 - An argument after a forwarding `...` is `expected ')' at end of argument
   list`; it was `expected ')' to close call argument list`.
 - `expected '...' at end of argument list for musttail call in varargs
   function` is anchored at the `)`, which upstream tests before lexing it; it
-  pointed at the token after the `)`.
+  pointed at the token after the `)`. It stays a `ParseError::Expected`.
+- `parse_parameter_list` takes upstream's `IsMustTailCall` / `InVarArgsFunc`
+  pair as one `CallTail` value (`NotMustTail`, or `MustTail` carrying the
+  enclosing function's variadic bit), so the two cannot be swapped at a call
+  site.
 - Tests: `type_validity.rs::upstream_label_parameter_is_rejected` (now at
   upstream's anchor) and `::a_bare_void_is_refused_by_the_standalone_type_parser`;
-  in `parser_calls.rs`, the three ellipsis tests (now exact text and anchor),
+  in `parser_calls.rs`, the three ellipsis tests (now exact text, anchor and
+  `ParseError` variant),
   `::upstream_musttail_ellipsis_fixtures_report_upstreams_exact_text`,
   `::every_caller_reports_a_missing_open_paren_as_in_call`,
   `::a_missing_comma_between_arguments_is_reported_where_it_belongs`,
   `::a_forwarding_ellipsis_must_close_the_argument_list`,
   `::an_invoke_or_callbr_ellipsis_is_a_non_musttail_ellipsis`,
   `::upstream_label_call_argument_fixture_is_rejected_at_the_argument`,
-  `::every_caller_refuses_an_invalid_argument_type_at_the_type` and
+  `::every_caller_refuses_an_invalid_argument_type_at_the_type`,
+  `::every_caller_refuses_a_void_argument_before_the_type_guard` (a `void`
+  argument is refused by `parseType`'s `AllowVoid` check, not the guard) and
   `::a_metadata_argument_takes_no_parameter_attributes`; and `loc=` pins on the
   corpus rows for `musttail-invalid-1.ll` and `musttail-invalid-2.ll`. The
   musttail rows matched by containment, which is how `expected unexpected

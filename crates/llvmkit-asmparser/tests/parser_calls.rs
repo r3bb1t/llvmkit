@@ -549,8 +549,9 @@ fn musttail_varargs_forwarding_round_trips() {
 
 /// `LLParser::parseParameterList`: `...` in a non-musttail call's argument
 /// list is `tokError(Twine(Msg) + "non-musttail call")` — the whole sentence,
-/// at the `...`, with no `expected ` in front of it. No upstream fixture pins
-/// this arm (`rg -n -F "unexpected ellipsis in argument list for non-musttail call" llvm/test llvm/unittests`
+/// at the `...`, with no `expected ` in front of it, so it is a
+/// `ParseError::Message`. No upstream fixture pins this arm
+/// (`rg -n -F "unexpected ellipsis in argument list for non-musttail call" llvm/test llvm/unittests`
 /// finds nothing in the vendored `llvmorg-22.1.4` tree); the routine is the
 /// anchor (D11).
 #[test]
@@ -568,10 +569,15 @@ fn ellipsis_in_non_musttail_call_rejected() {
             (4, 27)
         )
     );
+    assert!(matches!(
+        parse_fixture_err("ellipsis_non_musttail", src.as_bytes()),
+        ParseError::Message { .. }
+    ));
 }
 
 /// `LLParser::parseParameterList`: a musttail `...` is rejected when the
-/// enclosing function is not varargs, by `tokError` at the `...`.
+/// enclosing function is not varargs, by `tokError` at the `...` — a whole
+/// sentence, so a `ParseError::Message`.
 /// `test/Assembler/musttail-invalid-1.ll` pins the text by containment only;
 /// [`upstream_musttail_ellipsis_fixtures_report_upstreams_exact_text`] holds
 /// it to equality.
@@ -591,6 +597,10 @@ fn musttail_ellipsis_in_non_varargs_function_rejected() {
             (4, 29)
         )
     );
+    assert!(matches!(
+        parse_fixture_err("musttail_non_varargs", src.as_bytes()),
+        ParseError::Message { .. }
+    ));
 }
 
 /// `LLParser::parseParameterList`'s reciprocal rule: a musttail call in a
@@ -598,6 +608,10 @@ fn musttail_ellipsis_in_non_varargs_function_rejected() {
 /// tests it after the loop and *before* `Lex.Lex(); // Lex the ')'`, so the
 /// `tokError` is anchored at the `)`, not at the token after it.
 /// `test/Assembler/musttail-invalid-2.ll` is the upstream fixture.
+///
+/// The message begins with `expected `, so `ParseError`'s split stores the
+/// remainder in `ParseError::Expected`. The rendered text is the same in
+/// either variant, which is why the variant is asserted on its own.
 #[test]
 fn musttail_in_varargs_without_ellipsis_rejected() {
     let src = "declare void @f(...)\n\
@@ -614,6 +628,11 @@ fn musttail_in_varargs_without_ellipsis_rejected() {
             (4, 29)
         )
     );
+    assert!(matches!(
+        parse_fixture_err("musttail_missing_ellipsis", src.as_bytes()),
+        ParseError::Expected { expected, .. }
+            if expected == "'...' at end of argument list for musttail call in varargs function"
+    ));
 }
 
 /// Ports `test/Assembler/musttail-invalid-1.ll` and
@@ -710,9 +729,11 @@ fn a_missing_comma_between_arguments_is_reported_where_it_belongs() {
 /// `LLParser::parseParameterList`'s ellipsis arm ends with
 /// `return parseToken(lltok::rparen, "expected ')' at end of argument list")`:
 /// the forwarding `...` must be the last thing in the list. llvmkit-specific:
-/// the vendored `llvmorg-22.1.4` tree pins this text only from
-/// `parseArgumentList`'s `...` (`rg -n -F "expected ')' at end of argument list" llvm/test llvm/unittests`
-/// finds nothing); the routine is the anchor (D11).
+/// `LLParser::parseArgumentList` raises the same text, and no upstream test
+/// pins it from either routine
+/// (`rg -uuu -n -F "expected ')' at end of argument list" test unittests`, run
+/// in the vendored `llvmorg-22.1.4` tree's `llvm/`, finds nothing); the
+/// routine is the anchor (D11).
 #[test]
 fn a_forwarding_ellipsis_must_close_the_argument_list() {
     let src = "declare void @f(...)\ndefine void @g(...) {\nentry:\n  musttail call void (...) @f(..., i32 1)\n  ret void\n}\n";
@@ -794,6 +815,44 @@ fn every_caller_refuses_an_invalid_argument_type_at_the_type() {
         assert_eq!(
             rejection_at(src),
             ("invalid type for function argument".to_owned(), at),
+            "{src}"
+        );
+    }
+}
+
+/// `LLParser::parseParameterList` reads each argument's type with
+/// `parseType(ArgTy, ArgLoc)`, leaving `AllowVoid` at its `false` default
+/// (`LLParser.h`), so a `void` argument never reaches the
+/// `isValidArgumentType` guard: `parseType`'s suffix loop refuses it first
+/// with `void type only allowed for function results`, at the `void`. The
+/// guard would refuse it too, with a different message at the same token —
+/// which is why the message is the half that tells the two orders apart.
+/// Through all three callers.
+///
+/// llvmkit-specific: no upstream test pins this arm.
+/// `rg -uuu -l -F "void type only allowed for function results" test unittests`,
+/// run in the vendored `llvmorg-22.1.4` tree's `llvm/`, finds only
+/// `test/Assembler/invalid-byval-type2.ll`, a `byval(void)` attribute; the
+/// routine is the anchor (D11).
+#[test]
+fn every_caller_refuses_a_void_argument_before_the_type_guard() {
+    for (src, at) in [
+        (
+            "declare void @f(...)\ndefine void @g() {\nentry:\n  call void (...) @f(void undef)\n  ret void\n}\n",
+            (4, 22),
+        ),
+        (
+            "declare void @f(...)\ndefine void @g() {\nentry:\n  invoke void (...) @f(void undef) to label %a unwind label %b\n}\n",
+            (4, 24),
+        ),
+        (
+            "declare void @f(...)\ndefine void @g() {\nentry:\n  callbr void (...) @f(void undef) to label %a []\n}\n",
+            (4, 24),
+        ),
+    ] {
+        assert_eq!(
+            rejection_at(src),
+            ("void type only allowed for function results".to_owned(), at),
             "{src}"
         );
     }
