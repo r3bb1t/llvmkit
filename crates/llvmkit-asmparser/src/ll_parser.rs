@@ -47,13 +47,14 @@ use std::collections::HashMap;
 
 use llvmkit_ir::{
     Align, AnyTypeEnum, ApFloat, ApFloatSemantics, ApFloatSign, ApInt, AtomicOrdering,
-    AtomicRmwBinOp, CallingConv, Constant, ConstantExprFlags, ConstantExprInRange,
+    AtomicRmwBinOp, CallingConv, CastOperation, Constant, ConstantExprFlags, ConstantExprInRange,
     ConstantExprOpcode, ConstantExprOptions, DllStorageClass, Dyn, FastMathFlags, FloatPredicate,
-    FpClassTest, GepNoWrapFlags, IntCastFlags, IntDyn, IntType, IntValue, IntrinsicNameResolution,
-    IrBuilder, IrError, IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue,
+    FpClassTest, GepNoWrapFlags, IntDyn, IntType, IntValue, IntrinsicNameResolution, IrBuilder,
+    IrError, IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue,
     Positioned, RoundingMode, SelectionKind, Signedness, StructType, SyncScope, ThreadLocalMode,
-    Type, TypeKind, UiToFpFlags, UnnamedAddr, Unverified, ValueCategory, VectorType, Visibility,
-    derived_types::PointerType, resolve_intrinsic_name, shufflevector_mask_from_constant,
+    TruncFlags, Type, TypeKind, UiToFpFlags, UnnamedAddr, Unverified, ValueCategory, VectorType,
+    Visibility, ZextFlags, derived_types::PointerType, resolve_intrinsic_name,
+    shufflevector_mask_from_constant,
 };
 use llvmkit_ir::{FunctionValue, IsValue};
 use llvmkit_macros::Branded;
@@ -12516,11 +12517,34 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Opcode::Or => self.parse_int_binop(state, b_ref, IntBinOp::Or, &result_name)?,
                 Opcode::Xor => self.parse_int_binop(state, b_ref, IntBinOp::Xor, &result_name)?,
                 Opcode::Icmp => self.parse_icmp(state, b_ref, &result_name)?,
-                Opcode::Trunc => self.parse_int_cast(state, b_ref, IntCast::Trunc, &result_name)?,
-                Opcode::Zext => self.parse_int_cast(state, b_ref, IntCast::Zext, &result_name)?,
-                Opcode::Sext => self.parse_int_cast(state, b_ref, IntCast::Sext, &result_name)?,
-                Opcode::PtrToInt => self.parse_ptr_to_int(state, b_ref, &result_name)?,
-                Opcode::IntToPtr => self.parse_int_to_ptr(state, b_ref, &result_name)?,
+                Opcode::Trunc => {
+                    // `kw_trunc`: `nuw` and `nsw` in either order.
+                    let mut nuw = self.eat_keyword(Keyword::Nuw)?;
+                    let nsw = self.eat_keyword(Keyword::Nsw)?;
+                    if !nuw {
+                        nuw = self.eat_keyword(Keyword::Nuw)?;
+                    }
+                    let flags = TruncFlags::new();
+                    let flags = if nuw { flags.nuw() } else { flags };
+                    let flags = if nsw { flags.nsw() } else { flags };
+                    self.parse_cast(state, b_ref, CastOperation::Trunc(flags), &result_name)?
+                }
+                Opcode::Zext => {
+                    // `kw_uitofp` / `kw_zext`: `NonNeg = EatIfPresent(lltok::kw_nneg)`.
+                    let flags = if self.eat_keyword(Keyword::Nneg)? {
+                        ZextFlags::new().nneg()
+                    } else {
+                        ZextFlags::new()
+                    };
+                    self.parse_cast(state, b_ref, CastOperation::Zext(flags), &result_name)?
+                }
+                Opcode::Sext => self.parse_cast(state, b_ref, CastOperation::Sext, &result_name)?,
+                Opcode::PtrToInt => {
+                    self.parse_cast(state, b_ref, CastOperation::PtrToInt, &result_name)?
+                }
+                Opcode::IntToPtr => {
+                    self.parse_cast(state, b_ref, CastOperation::IntToPtr, &result_name)?
+                }
                 Opcode::Fneg => self.parse_fneg(state, b_ref, &result_name)?,
                 Opcode::Fadd => self.parse_fp_binop(state, b_ref, FpBinOp::Add, &result_name)?,
                 Opcode::Fsub => self.parse_fp_binop(state, b_ref, FpBinOp::Sub, &result_name)?,
@@ -12533,22 +12557,41 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Opcode::GetElementPtr => self.parse_gep(state, b_ref, &result_name)?,
                 Opcode::Select => self.parse_select(state, b_ref, &result_name, opcode_loc)?,
                 Opcode::FpToUi => {
-                    self.parse_fp_to_int(state, b_ref, FpToInt::FpToUi, &result_name)?
+                    self.parse_cast(state, b_ref, CastOperation::FpToUi, &result_name)?
                 }
                 Opcode::FpToSi => {
-                    self.parse_fp_to_int(state, b_ref, FpToInt::FpToSi, &result_name)?
+                    self.parse_cast(state, b_ref, CastOperation::FpToSi, &result_name)?
                 }
                 Opcode::UiToFp => {
-                    self.parse_int_to_fp(state, b_ref, IntToFp::UiToFp, &result_name)?
+                    // `kw_uitofp` / `kw_zext`: `NonNeg = EatIfPresent(lltok::kw_nneg)`.
+                    let flags = if self.eat_keyword(Keyword::Nneg)? {
+                        UiToFpFlags::new().nneg()
+                    } else {
+                        UiToFpFlags::new()
+                    };
+                    self.parse_cast(state, b_ref, CastOperation::UiToFp(flags), &result_name)?
                 }
                 Opcode::SiToFp => {
-                    self.parse_int_to_fp(state, b_ref, IntToFp::SiToFp, &result_name)?
+                    self.parse_cast(state, b_ref, CastOperation::SiToFp, &result_name)?
                 }
-                Opcode::AddrSpaceCast => self.parse_addrspace_cast(state, b_ref, &result_name)?,
-                Opcode::BitCast => self.parse_bitcast(state, b_ref, &result_name)?,
-                Opcode::FpTrunc => self.parse_fptrunc(state, b_ref, &result_name)?,
-                Opcode::FpExt => self.parse_fpext(state, b_ref, &result_name)?,
-                Opcode::PtrToAddr => self.parse_ptrtoaddr(state, b_ref, &result_name)?,
+                Opcode::AddrSpaceCast => {
+                    self.parse_cast(state, b_ref, CastOperation::AddrSpaceCast, &result_name)?
+                }
+                Opcode::BitCast => {
+                    self.parse_cast(state, b_ref, CastOperation::BitCast, &result_name)?
+                }
+                // `kw_fptrunc` / `kw_fpext`: `EatFastMathFlagsIfPresent()`.
+                Opcode::FpTrunc => {
+                    let fmf = self.parse_optional_fmf()?;
+                    self.parse_cast(state, b_ref, CastOperation::FpTrunc(fmf), &result_name)?
+                }
+                Opcode::FpExt => {
+                    let fmf = self.parse_optional_fmf()?;
+                    self.parse_cast(state, b_ref, CastOperation::FpExt(fmf), &result_name)?
+                }
+                Opcode::PtrToAddr => {
+                    self.parse_cast(state, b_ref, CastOperation::PtrToAddr, &result_name)?
+                }
                 Opcode::ExtractElement => self.parse_extractelement(state, b_ref, &result_name)?,
                 Opcode::InsertElement => self.parse_insertelement(state, b_ref, &result_name)?,
                 Opcode::ShuffleVector => self.parse_shufflevector(state, b_ref, &result_name)?,
@@ -12960,135 +13003,34 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(b.view(r).as_erased())
     }
 
-    /// `trunc [nuw] [nsw] TYPE VALUE to TYPE` / `zext [nneg] TYPE VALUE to TYPE` / `sext TYPE VALUE to TYPE`.
-    /// Mirrors `LLParser::parseCast`'s integer-cast arm.
-    fn parse_int_cast(
+    /// Mirrors `LLParser::parseCast`, the one routine every cast instruction
+    /// goes through: `TypeAndValue 'to' Type`, then `CastInst::castIsValid`,
+    /// then `CastInst::Create`. The flags are eaten before it, by
+    /// `parseInstruction`'s cast arms, and arrive in `operation`.
+    fn parse_cast(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
         b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
-        op: IntCast,
+        operation: CastOperation,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        // nuw/nsw parse in either order (retry mirrors the kw_trunc arm,
-        // LLParser.cpp ~7405); print order is canonically `nuw nsw`.
-        let is_trunc = matches!(op, IntCast::Trunc);
-        let mut trunc_nuw = is_trunc && self.eat_keyword(Keyword::Nuw)?;
-        let trunc_nsw = is_trunc && self.eat_keyword(Keyword::Nsw)?;
-        if !trunc_nuw {
-            trunc_nuw = is_trunc && self.eat_keyword(Keyword::Nuw)?;
+        // `parseTypeAndValue(Op, Loc, PFS)`: `Loc` is taken before the type.
+        let loc = self.loc();
+        let (src_ty, src_v) = self.parse_type_and_value(state)?;
+        self.expect_keyword(Keyword::To, "'to' after cast value")?;
+        let dst_ty = self.parse_type(false)?;
+        if !llvmkit_ir::cast_is_valid(operation.opcode(), src_ty, dst_ty) {
+            return Err(ParseError::Message {
+                message: format!("invalid cast opcode for cast from '{src_ty}' to '{dst_ty}'")
+                    .into(),
+                loc,
+            });
         }
-        let zext_nneg = matches!(op, IntCast::Zext) && self.eat_keyword(Keyword::Nneg)?;
-        let src_ty = self.parse_type(false)?;
-        let src_v = self.parse_value(state, src_ty)?;
-        self.expect_keyword(
-            Keyword::To,
-            "'to' between cast operand and destination type",
-        )?;
-        let dst_ty = self.parse_type(false)?;
-
-        // Vector operands take the erased builder, as in `parse_int_binop`.
-        // The typed `*_dyn` cast family routes the source through
-        // `IntoIntValue<IntDyn>` and takes an `IntType` destination, both of
-        // which describe a *scalar* width, so `<N x iM>` converts to neither.
-        // Upstream has one path for both — `LLParser::parseCast` hands the
-        // operand straight to `CastInst::Create`.
-        if src_ty.is_vector() || dst_ty.is_vector() {
-            let flags = IntCastFlags::new();
-            let flags = if trunc_nuw { flags.nuw() } else { flags };
-            let flags = if trunc_nsw { flags.nsw() } else { flags };
-            let flags = if zext_nneg { flags.nneg() } else { flags };
-            let v = b
-                .int_cast_erased(op.cast_opcode(), src_v, dst_ty, flags, result_name.as_str())
-                .map_err(|e| self.builder_err(op.mnemonic(), e))?;
-            return Ok(b.view(v));
-        }
-
-        let src_int: IntValue<'ctx, IntDyn, B> = src_v
-            .try_into()
-            .map_err(|_| self.expected("integer-typed cast source"))?;
-        let dst_int = match dst_ty.into_type_enum() {
-            AnyTypeEnum::Int(t) => t,
-            _ => return Err(self.expected("integer destination type for trunc/zext/sext")),
-        };
-        let name = result_name.as_str();
-        let v = match op {
-            IntCast::Trunc => {
-                let flags = llvmkit_ir::instr_types::TruncFlags::new();
-                let flags = if trunc_nuw { flags.nuw() } else { flags };
-                let flags = if trunc_nsw { flags.nsw() } else { flags };
-                if trunc_nuw || trunc_nsw {
-                    b.trunc_with_flags_dyn(src_int, dst_int, flags, name)
-                } else {
-                    b.trunc_dyn(src_int, dst_int, name)
-                }
-                .map_err(|e| self.builder_err("trunc", e))?
-            }
-            IntCast::Zext => if zext_nneg {
-                b.zext_with_flags_dyn(
-                    src_int,
-                    dst_int,
-                    llvmkit_ir::instr_types::ZextFlags::new().nneg(),
-                    name,
-                )
-            } else {
-                b.zext_dyn(src_int, dst_int, name)
-            }
-            .map_err(|e| self.builder_err("zext", e))?,
-            IntCast::Sext => b
-                .sext_dyn(src_int, dst_int, name)
-                .map_err(|e| self.builder_err("sext", e))?,
-        };
-        Ok(b.view(v).as_erased())
-    }
-
-    /// `ptrtoint TYPE VALUE to TYPE`. Mirrors `LLParser::parseCast`
-    /// `Instruction::PtrToInt` arm.
-    fn parse_ptr_to_int(
-        &mut self,
-        state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
-        result_name: &LocalLhs,
-    ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        let src_ty = self.parse_type(false)?;
-        let src_v = self.parse_value(state, src_ty)?;
-        self.expect_keyword(Keyword::To, "'to' in ptrtoint")?;
-        let dst_ty = self.parse_type(false)?;
-        let src_ptr: PointerValue<'ctx, B> = src_v
-            .try_into()
-            .map_err(|_| self.expected("ptr-typed ptrtoint source"))?;
-        let dst_int = match dst_ty.into_type_enum() {
-            AnyTypeEnum::Int(t) => t,
-            _ => return Err(self.expected("integer destination type for ptrtoint")),
-        };
+        // `Inst = CastInst::Create((Instruction::CastOps)Opc, Op, DestTy);`
         let v = b
-            .ptr_to_int(src_ptr, dst_int, result_name.as_str())
-            .map_err(|e| self.builder_err("ptrtoint", e))?;
-        Ok(b.view(v).as_erased())
-    }
-
-    /// `inttoptr TYPE VALUE to TYPE`. Mirrors `LLParser::parseCast`
-    /// `Instruction::IntToPtr` arm.
-    fn parse_int_to_ptr(
-        &mut self,
-        state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
-        result_name: &LocalLhs,
-    ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        let src_ty = self.parse_type(false)?;
-        let src_v = self.parse_value(state, src_ty)?;
-        self.expect_keyword(Keyword::To, "'to' in inttoptr")?;
-        let dst_ty = self.parse_type(false)?;
-        let src_int: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B> = src_v
-            .try_into()
-            .map_err(|_| self.expected("integer-typed inttoptr source"))?;
-        let dst_ptr = match dst_ty.into_type_enum() {
-            AnyTypeEnum::Pointer(t) => t,
-            _ => return Err(self.expected("pointer destination type for inttoptr")),
-        };
-        let v = b
-            .int_to_ptr(src_int, dst_ptr, result_name.as_str())
-            .map_err(|e| self.builder_err("inttoptr", e))?;
-        Ok(b.view(v).as_erased())
+            .cast_erased(operation, src_v, dst_ty, result_name.as_str())
+            .map_err(|e| self.builder_err(operation.opcode().keyword(), e))?;
+        Ok(b.view(v))
     }
 
     /// `fneg [nnan ninf ...] TYPE VALUE`. Mirrors `LLParser::parseUnaryOp` for `Instruction::FNeg`.
@@ -13686,207 +13628,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(b.view(id))
     }
 
-    /// `fptosi`/`fptoui TYPE VALUE to TYPE`. Mirrors `LLParser::parseCast`
-    /// for `Instruction::FPToSI` / `FPToUI`.
-    fn parse_fp_to_int(
-        &mut self,
-        state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
-        op: FpToInt,
-        result_name: &LocalLhs,
-    ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        let src_ty = self.parse_type(false)?;
-        let src_v = self.parse_value(state, src_ty)?;
-        self.expect_keyword(Keyword::To, "'to' in fp->int cast")?;
-        let dst_ty = self.parse_type(false)?;
-        let src_fp: llvmkit_ir::FloatValue<'ctx, llvmkit_ir::FloatDyn, B> = src_v
-            .try_into()
-            .map_err(|_| self.expected("float-typed source for fp->int cast"))?;
-        let dst_int = match dst_ty.into_type_enum() {
-            AnyTypeEnum::Int(t) => t,
-            _ => return Err(self.expected("integer destination for fp->int cast")),
-        };
-        let name = result_name.as_str();
-        let v = match op {
-            FpToInt::FpToSi => b
-                .fp_to_si(src_fp, dst_int, name)
-                .map_err(|e| self.builder_err("fptosi", e))?,
-            FpToInt::FpToUi => b
-                .fp_to_ui(src_fp, dst_int, name)
-                .map_err(|e| self.builder_err("fptoui", e))?,
-        };
-        Ok(b.view(v).as_erased())
-    }
-
-    /// `sitofp`/`uitofp TYPE VALUE to TYPE`. Mirrors `LLParser::parseCast`
-    /// for `Instruction::SIToFP` / `UIToFP`.
-    fn parse_int_to_fp(
-        &mut self,
-        state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
-        op: IntToFp,
-        result_name: &LocalLhs,
-    ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        let nneg = matches!(op, IntToFp::UiToFp) && self.eat_keyword(Keyword::Nneg)?;
-        let src_ty = self.parse_type(false)?;
-        let src_v = self.parse_value(state, src_ty)?;
-        self.expect_keyword(Keyword::To, "'to' in int->fp cast")?;
-        let dst_ty = self.parse_type(false)?;
-        let src_int: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B> = src_v
-            .try_into()
-            .map_err(|_| self.expected("integer-typed source for int->fp cast"))?;
-        let dst_fp = match dst_ty.into_type_enum() {
-            AnyTypeEnum::Float(t) => t,
-            _ => return Err(self.expected("float destination for int->fp cast")),
-        };
-        let name = result_name.as_str();
-        let v = match op {
-            IntToFp::SiToFp => b
-                .si_to_fp(src_int, dst_fp, name)
-                .map_err(|e| self.builder_err("sitofp", e))?,
-            IntToFp::UiToFp => {
-                if nneg {
-                    b.ui_to_fp_with_flags_dyn(src_int, dst_fp, UiToFpFlags::new().nneg(), name)
-                        .map_err(|e| self.builder_err("uitofp", e))?
-                } else {
-                    b.ui_to_fp(src_int, dst_fp, name)
-                        .map_err(|e| self.builder_err("uitofp", e))?
-                }
-            }
-        };
-        Ok(b.view(v).as_erased())
-    }
-
-    /// `addrspacecast ptr VALUE to ptr`. Mirrors `LLParser::parseCast`
-    /// for `Instruction::AddrSpaceCast`.
-    fn parse_addrspace_cast(
-        &mut self,
-        state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
-        result_name: &LocalLhs,
-    ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        let src_ty = self.parse_type(false)?;
-        let src_v = self.parse_value(state, src_ty)?;
-        self.expect_keyword(Keyword::To, "'to' in addrspacecast")?;
-        let dst_ty = self.parse_type(false)?;
-        let src_ptr: llvmkit_ir::PointerValue<'ctx, B> = src_v
-            .try_into()
-            .map_err(|_| self.expected("ptr-typed source for addrspacecast"))?;
-        let dst_ptr = match dst_ty.into_type_enum() {
-            AnyTypeEnum::Pointer(t) => t,
-            _ => return Err(self.expected("ptr destination for addrspacecast")),
-        };
-        let v = b
-            .addrspace_cast(src_ptr, dst_ptr, result_name.as_str())
-            .map_err(|e| self.builder_err("addrspacecast", e))?;
-        Ok(b.view(v).as_erased())
-    }
-
     // ── S3.2: new opcode parsers ──────────────────────────────────────────
-
-    /// `bitcast <src-ty> <src-val> to <dst-ty>`. Mirrors `LLParser::parseCast`
-    /// `Instruction::BitCast` arm. Uses `bitcast_dyn` for the parser's
-    /// runtime-typed path.
-    ///
-    /// Upstream: `test/Assembler/bitcast.ll`.
-    fn parse_bitcast(
-        &mut self,
-        state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
-        result_name: &LocalLhs,
-    ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        let src_ty = self.parse_type(false)?;
-        let src_v = self.parse_value(state, src_ty)?;
-        self.expect_keyword(Keyword::To, "'to' in bitcast")?;
-        let dst_ty = self.parse_type(false)?;
-        let name = result_name.as_str();
-        let v = b
-            .bitcast_dyn(src_v, dst_ty, name)
-            .map_err(|e| self.builder_err("bitcast", e))?;
-        Ok(b.view(v))
-    }
-
-    /// `fptrunc <fp-ty> <val> to <fp-ty>`. Mirrors `LLParser::parseCast`
-    /// `Instruction::FPTrunc` arm. Uses `fp_trunc_dyn`.
-    ///
-    /// Upstream: `test/Assembler/fptrunc.ll`.
-    fn parse_fptrunc(
-        &mut self,
-        state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
-        result_name: &LocalLhs,
-    ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        // `LLParser::parseInstruction` eats fast-math flags for `fptrunc` and
-        // `fpext` -- the two cast opcodes that are `FPMathOperator`s -- before
-        // dispatching to `parseCast`.
-        let fmf = self.parse_optional_fmf()?;
-        let src_ty = self.parse_type(false)?;
-        let src_v = self.parse_value(state, src_ty)?;
-        self.expect_keyword(Keyword::To, "'to' in fptrunc")?;
-        let dst_ty = self.parse_type(false)?;
-        let sv: llvmkit_ir::FloatValue<'ctx, llvmkit_ir::FloatDyn, B> = src_v
-            .try_into()
-            .map_err(|_| self.expected("float-typed source for fptrunc"))?;
-        let df = match dst_ty.into_type_enum() {
-            AnyTypeEnum::Float(t) => t,
-            _ => return Err(self.expected("float destination type for fptrunc")),
-        };
-        let v = b
-            .fp_trunc_dyn_with_fmf(sv, df, fmf, result_name.as_str())
-            .map_err(|e| self.builder_err("fptrunc", e))?;
-        Ok(b.view(v).as_erased())
-    }
-
-    /// `fpext <fp-ty> <val> to <fp-ty>`. Mirrors `LLParser::parseCast`
-    /// `Instruction::FPExt` arm. Uses `fp_ext_dyn`.
-    ///
-    /// Upstream: `test/Assembler/fpext.ll`.
-    fn parse_fpext(
-        &mut self,
-        state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
-        result_name: &LocalLhs,
-    ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        // `LLParser::parseInstruction` eats fast-math flags for `fptrunc` and
-        // `fpext` -- the two cast opcodes that are `FPMathOperator`s -- before
-        // dispatching to `parseCast`.
-        let fmf = self.parse_optional_fmf()?;
-        let src_ty = self.parse_type(false)?;
-        let src_v = self.parse_value(state, src_ty)?;
-        self.expect_keyword(Keyword::To, "'to' in fpext")?;
-        let dst_ty = self.parse_type(false)?;
-        let sv: llvmkit_ir::FloatValue<'ctx, llvmkit_ir::FloatDyn, B> = src_v
-            .try_into()
-            .map_err(|_| self.expected("float-typed source for fpext"))?;
-        let df = match dst_ty.into_type_enum() {
-            AnyTypeEnum::Float(t) => t,
-            _ => return Err(self.expected("float destination type for fpext")),
-        };
-        let v = b
-            .fp_ext_dyn_with_fmf(sv, df, fmf, result_name.as_str())
-            .map_err(|e| self.builder_err("fpext", e))?;
-        Ok(b.view(v).as_erased())
-    }
-
-    /// `ptrtoaddr <ptr-or-vector-ty> <val> to <int-or-vector-ty>`. Mirrors
-    /// `LLParser::parseCast` for `Instruction::PtrToAddr`.
-    ///
-    /// Upstream: `test/Assembler/ptrtoaddr.ll`.
-    fn parse_ptrtoaddr(
-        &mut self,
-        state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
-        result_name: &LocalLhs,
-    ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        let src_ty = self.parse_type(false)?;
-        let src_v = self.parse_value(state, src_ty)?;
-        self.expect_keyword(Keyword::To, "'to' in ptrtoaddr")?;
-        let dst_ty = self.parse_type(false)?;
-        let v = b
-            .ptr_to_addr_dyn(src_v, dst_ty, result_name.as_str())
-            .map_err(|e| self.builder_err("ptrtoaddr", e))?;
-        Ok(b.view(v))
-    }
 
     /// `extractelement <vec-ty> <vec>, <idx-ty> <idx>`.
     /// Mirrors `LLParser::parseExtractElement`.
@@ -16962,49 +16704,12 @@ fn int_binop_flags(nuw: bool, nsw: bool, exact: bool, disjoint: bool) -> llvmkit
     flags
 }
 
-enum IntCast {
-    Trunc,
-    Zext,
-    Sext,
-}
-
-impl IntCast {
-    /// The IR opcode this spelling builds.
-    fn cast_opcode(&self) -> llvmkit_ir::instr_types::CastOpcode {
-        use llvmkit_ir::instr_types::CastOpcode;
-        match self {
-            Self::Trunc => CastOpcode::Trunc,
-            Self::Zext => CastOpcode::Zext,
-            Self::Sext => CastOpcode::Sext,
-        }
-    }
-
-    /// The keyword, for a builder error that names the instruction.
-    fn mnemonic(&self) -> &'static str {
-        match self {
-            Self::Trunc => "trunc",
-            Self::Zext => "zext",
-            Self::Sext => "sext",
-        }
-    }
-}
-
 enum FpBinOp {
     Add,
     Sub,
     Mul,
     Div,
     Rem,
-}
-
-enum FpToInt {
-    FpToSi,
-    FpToUi,
-}
-
-enum IntToFp {
-    SiToFp,
-    UiToFp,
 }
 
 /// Alias for the dyn-positioned, dyn-return IrBuilder we drive while

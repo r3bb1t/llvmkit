@@ -281,8 +281,8 @@ pub use inline_asm::{
 pub use inst_simplify::InstSimplifyPass;
 pub use instr_types::{
     AddFlags, AshrFlags, AtomicCmpXchgConfig, AtomicRmwConfig, AtomicRmwFlags, BinaryOpcode,
-    CallAttributeData, CastOpcode, CmpXchgFlags, ExactFlags, IcmpFlags, IntBinOpFlags,
-    IntCastFlags, LshrFlags, MulFlags, OperandBundleDef, OperandBundleTag, OperandBundleUse,
+    CallAttributeData, CastOpcode, CastOperation, CmpXchgFlags, ExactFlags, IcmpFlags,
+    IntBinOpFlags, LshrFlags, MulFlags, OperandBundleDef, OperandBundleTag, OperandBundleUse,
     OrFlags, OverflowFlags, SdivFlags, ShlFlags, ShuffleMaskElem, SubFlags, TailCallKind,
     TruncFlags, UdivFlags, UiToFpFlags, UnaryOpcode, ZextFlags,
 };

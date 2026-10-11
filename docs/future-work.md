@@ -1005,11 +1005,13 @@ counterpart of `IntBinOpFlags`, and the parser branches on
 Its integer-cast arm read widths through an integer-only accessor, so vector
 casts parsed and then failed verification. It now compares
 `getScalarSizeInBits` and checks the vector shapes separately, and the old
-scalar-only helper is gone rather than left behind. The shape check is
-`CastInst::castIsValid`'s rule, not the verifier's: upstream's
-`Verifier::visitTruncInst` / `visitZExtInst` / `visitSExtInst` compare only
-`isVectorTy()`, which `docs/divergences.md` records (the verifier `trunc` /
-`zext` / `sext` entry).
+scalar-only helper is gone rather than left behind. Its shape check compared
+element counts, which is `CastInst::castIsValid`'s rule, not the verifier's;
+since 2026-10-11 it compares only `isVectorTy()`, as upstream's
+`Verifier::visitTruncInst` / `visitZExtInst` / `visitSExtInst` do. The same
+day `int_cast_erased` and `IntCastFlags` were replaced by
+`IrBuilder::cast_erased` over a `CastOperation`, the one erased cast builder
+`LLParser::parseCast`'s port calls for every cast opcode.
 
 Two upstream cases returned to the `stripNullTest` port as a result; nothing in
 the analysis changed, because `strip_null_test` was already splat-aware.

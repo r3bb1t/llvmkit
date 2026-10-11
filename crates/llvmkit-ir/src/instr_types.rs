@@ -1631,56 +1631,92 @@ impl BinaryOpcode {
 // Cast-instruction flag types
 // --------------------------------------------------------------------------
 
-/// Every flag the three integer casts accept, in one record.
+/// A cast opcode together with the flags that opcode accepts: the input of
+/// [`IrBuilder::cast_erased`](crate::IrBuilder::cast_erased).
 ///
-/// The counterpart of [`IntBinOpFlags`] for the erased cast path: a caller
-/// holding a *runtime* `CastOpcode` cannot pick between [`TruncFlags`] and
-/// [`ZextFlags`] statically, so it supplies both and
-/// `IrBuilder::int_cast_erased` writes through whichever the opcode
-/// reads. `trunc` reads `nuw` / `nsw`, `zext` reads `nneg`, and `sext` reads
-/// none — a flag set for an opcode that does not accept it is dropped rather
-/// than rejected, matching the typed builders, which simply have no parameter
-/// for it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct IntCastFlags {
-    pub(crate) nuw: bool,
-    pub(crate) nsw: bool,
-    pub(crate) nneg: bool,
+/// Upstream builds a cast with `CastInst::Create(Opc, V, DestTy)` and sets its
+/// flags afterwards, each setter valid on some opcodes only:
+/// `LLParser::parseInstruction` calls `setHasNoUnsignedWrap` /
+/// `setHasNoSignedWrap` on a `trunc`, `setNonNeg` on a `zext` or `uitofp`,
+/// and `setFastMathFlags` on an `fptrunc` or `fpext` (the two casts that are
+/// `FPMathOperator`s). llvmkit passes the flags at construction, so each
+/// variant carries the flags its opcode accepts and no other: a `nneg`
+/// `trunc` cannot be spelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CastOperation {
+    /// `trunc`, with its `nuw` / `nsw` flags.
+    Trunc(TruncFlags),
+    /// `zext`, with its `nneg` flag.
+    Zext(ZextFlags),
+    /// `sext`.
+    Sext,
+    /// `fptrunc`, with its fast-math flags.
+    FpTrunc(FastMathFlags),
+    /// `fpext`, with its fast-math flags.
+    FpExt(FastMathFlags),
+    /// `fptoui`.
+    FpToUi,
+    /// `fptosi`.
+    FpToSi,
+    /// `uitofp`, with its `nneg` flag.
+    UiToFp(UiToFpFlags),
+    /// `sitofp`.
+    SiToFp,
+    /// `ptrtoaddr`.
+    PtrToAddr,
+    /// `ptrtoint`.
+    PtrToInt,
+    /// `inttoptr`.
+    IntToPtr,
+    /// `bitcast`.
+    BitCast,
+    /// `addrspacecast`.
+    AddrSpaceCast,
 }
 
-impl IntCastFlags {
-    /// No flags set.
-    #[inline]
-    pub const fn new() -> Self {
-        Self {
-            nuw: false,
-            nsw: false,
-            nneg: false,
+impl CastOperation {
+    /// The opcode, without its flags.
+    pub const fn opcode(self) -> CastOpcode {
+        match self {
+            Self::Trunc(_) => CastOpcode::Trunc,
+            Self::Zext(_) => CastOpcode::Zext,
+            Self::Sext => CastOpcode::Sext,
+            Self::FpTrunc(_) => CastOpcode::FpTrunc,
+            Self::FpExt(_) => CastOpcode::FpExt,
+            Self::FpToUi => CastOpcode::FpToUi,
+            Self::FpToSi => CastOpcode::FpToSi,
+            Self::UiToFp(_) => CastOpcode::UiToFp,
+            Self::SiToFp => CastOpcode::SiToFp,
+            Self::PtrToAddr => CastOpcode::PtrToAddr,
+            Self::PtrToInt => CastOpcode::PtrToInt,
+            Self::IntToPtr => CastOpcode::IntToPtr,
+            Self::BitCast => CastOpcode::BitCast,
+            Self::AddrSpaceCast => CastOpcode::AddrSpaceCast,
         }
     }
 
-    /// Set `nuw`, which only `trunc` reads.
-    #[inline]
-    #[must_use]
-    pub const fn nuw(mut self) -> Self {
-        self.nuw = true;
-        self
-    }
-
-    /// Set `nsw`, which only `trunc` reads.
-    #[inline]
-    #[must_use]
-    pub const fn nsw(mut self) -> Self {
-        self.nsw = true;
-        self
-    }
-
-    /// Set `nneg`, which only `zext` reads.
-    #[inline]
-    #[must_use]
-    pub const fn nneg(mut self) -> Self {
-        self.nneg = true;
-        self
+    /// Write this operation's flags onto a cast's payload. Each arm is one of
+    /// the setters `LLParser::parseInstruction` calls after `parseCast`.
+    pub(crate) fn write_flags(self, payload: &CastOpData) {
+        match self {
+            Self::Trunc(flags) => {
+                payload.nuw.set(flags.nuw);
+                payload.nsw.set(flags.nsw);
+            }
+            Self::Zext(ZextFlags { nneg }) | Self::UiToFp(UiToFpFlags { nneg }) => {
+                payload.nneg.set(nneg);
+            }
+            Self::FpTrunc(fmf) | Self::FpExt(fmf) => payload.fmf.set(fmf),
+            Self::Sext
+            | Self::FpToUi
+            | Self::FpToSi
+            | Self::SiToFp
+            | Self::PtrToAddr
+            | Self::PtrToInt
+            | Self::IntToPtr
+            | Self::BitCast
+            | Self::AddrSpaceCast => {}
+        }
     }
 }
 

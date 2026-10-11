@@ -18,7 +18,7 @@
 
 use core::fmt;
 
-use crate::instr_types::OperandBundleTag;
+use crate::instr_types::{CastOpcode, OperandBundleTag};
 
 /// Whether a failure indicates a bug in llvmkit.
 ///
@@ -1425,6 +1425,22 @@ pub enum IrError {
         len: usize,
     },
 
+    /// A cast whose operand and result types `CastInst::castIsValid` refuses
+    /// for its opcode — a `trunc` that widens, a `bitcast` between sizes, a
+    /// vector cast that changes the element count. Each cast class's
+    /// constructor (`TruncInst::TruncInst`, `BitCastInst::BitCastInst`, …,
+    /// `lib/IR/Instructions.cpp`) asserts it; `LLParser::parseCast` reports
+    /// it as `invalid cast opcode for cast from '…' to '…'`.
+    #[error("invalid {} cast from {src} to {dst}", .opcode.keyword())]
+    InvalidCast {
+        /// The cast's opcode.
+        opcode: CastOpcode,
+        /// The kind of the operand's type.
+        src: TypeKindLabel,
+        /// The kind of the result type.
+        dst: TypeKindLabel,
+    },
+
     /// A known-bits query was given a value whose type is neither an integer
     /// nor a pointer, nor a vector of either — so it has no bit pattern to
     /// reason about.
@@ -2105,6 +2121,7 @@ impl IrError {
             | Self::UnsizedType { .. }
             | Self::InvalidTypeComponent { .. }
             | Self::InvalidShuffleMaskLength { .. }
+            | Self::InvalidCast { .. }
             | Self::NotIntOrPointerType { .. }
             | Self::ValueCategoryMismatch { .. }
             | Self::ReturnTypeMismatch { .. }

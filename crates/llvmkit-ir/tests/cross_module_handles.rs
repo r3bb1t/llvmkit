@@ -21,9 +21,9 @@
 
 use llvmkit_ir::{
     Align, Analyses, AtomicOrdering, AtomicRmwBinOp, AtomicRmwConfig, BasicBlock, CallInst,
-    CallSiteConfig, CastOpcode, DominatorTreeAnalysis, Dyn, DynBrand, FastMathFlags, FloatDyn,
-    FloatValue, FnCx, FnReport, FunctionId, FunctionPass, GepNoWrapFlags, InlineAsmOptions,
-    InstructionView, IntCastFlags, IntDyn, IntValue, InvokeInst, IrBuilder, IrError, IrResult,
+    CallSiteConfig, CastOpcode, CastOperation, DominatorTreeAnalysis, Dyn, DynBrand, FastMathFlags,
+    FloatDyn, FloatValue, FnCx, FnReport, FunctionId, FunctionPass, GepNoWrapFlags,
+    InlineAsmOptions, InstructionView, IntDyn, IntValue, InvokeInst, IrBuilder, IrError, IrResult,
     IrStruct, Linkage, Module, OperandBundleDef, OperandBundleTag, OperandBundleUse, PatchBody,
     PointerValue, Positioned, ReshapeCfg, SsaBuilder, SsaState, StructSchema, SyncScope,
     TailCallKind, TruncFlags, Type, UiToFpFlags, Unterminated, Value, ValueId, ZextFlags,
@@ -1007,7 +1007,7 @@ fn target_ext_none_rejects_a_type_from_another_module() {
 /// before its folder or this module reads it: the typed `trunc`, `zext`,
 /// `sext`, their flag-carrying twins and `bitcast_int_to_int`, the
 /// runtime-width `trunc_dyn`, `trunc_with_flags_dyn`, `zext_dyn` / `sext_dyn`
-/// (one shared helper) and `zext_with_flags_dyn`, and `int_cast_erased`.
+/// (one shared helper) and `zext_with_flags_dyn`, and `cast_erased`.
 ///
 /// No upstream counterpart: `IRBuilderBase::CreateTrunc`, `CreateZExt`,
 /// `CreateSExt` and `CreateCast` (`IR/IRBuilder.h`) take a destination
@@ -1100,12 +1100,11 @@ fn an_integer_cast_rejects_a_destination_type_from_another_module() {
             .map(|_| ()),
         ),
         (
-            "int_cast_erased",
-            b.int_cast_erased(
-                CastOpcode::Zext,
+            "cast_erased",
+            b.cast_erased(
+                CastOperation::Zext(ZextFlags::new()),
                 narrow,
                 foreign.i64_type().as_type(),
-                IntCastFlags::new(),
                 "z",
             )
             .map(|_| ()),

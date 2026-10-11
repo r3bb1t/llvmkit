@@ -123,6 +123,63 @@ and the trybuild fixtures `vector_of_void_element.rs`, `lanes_zero.rs` and
 `type_validity.rs`'s agreement law drops its 28 vector and scalable-vector
 known disagreements.
 
+### Fixed (breaking) — every cast instruction is one port of `LLParser::parseCast`; the verifier's cast checks follow upstream's
+
+Each cast opcode had its own parser routine, with its own guards and its own
+messages (`expected 'to' in ptrtoint`, `expected integer-typed cast source`,
+`expected valid trunc: …`), and most of them built through a scalar-only typed
+builder. Upstream has one routine: `parseTypeAndValue`, `expected 'to' after
+cast value`, `parseType`, then `CastInst::castIsValid`, reported as
+`invalid cast opcode for cast from '…' to '…'` at the source type, then
+`CastInst::Create`. llvmkit's `parse_cast` is that routine, and every cast
+opcode reaches it; the flags (`nuw` / `nsw`, `nneg`, fast-math) are eaten
+before it, by the instruction's own arm, as `parseInstruction` does.
+
+- **Refused now** (accepts-invalid): an instruction cast `castIsValid`
+  refuses that a typed builder accepted, such as `bitcast <4 x ptr> %c to
+  <2 x ptr>` (`test/Assembler/invalid_cast3.ll`).
+- **Accepted now** (rejects-valid): a floating-point, integer-to-float,
+  float-to-integer or pointer cast over vectors, which the scalar-only
+  builders refused (`fpext <3 x float> … to <3 x double>` in
+  `test/Assembler/fast-math-flags.ll`); and a `ptrtoaddr` to an integer
+  narrower than the address, which now parses and fails verification, as
+  upstream's does.
+- Every refused cast reports upstream's `invalid cast opcode for cast from
+  '…' to '…'` at the source type; the invented messages are gone.
+- **Breaking: `IrBuilder::int_cast_erased` and `IntCastFlags` are removed.**
+  `IrBuilder::cast_erased(operation, src, dst_ty, name)` builds any cast on an
+  erased operand, a scalar or a vector; the new `CastOperation` names the
+  opcode and carries the flags that opcode accepts and no others
+  (`CastOperation::Trunc(TruncFlags)`, `Zext(ZextFlags)`, `UiToFp(UiToFpFlags)`,
+  `FpTrunc(FastMathFlags)`, `FpExt(FastMathFlags)`, and the flagless rest).
+- **Breaking: new `IrError::InvalidCast { opcode, src, dst }`**, which
+  `cast_erased` returns where `cast_is_valid` refuses the pair; each cast
+  constructor upstream asserts it. `IrError::blame` classes it as a usage
+  error.
+- The verifier's cast checks follow `Verifier::visitTruncInst` through
+  `visitFPToSIInst`: `trunc` / `zext` / `sext` compare only vector-ness, not
+  element counts (closing the `docs/divergences.md` entry that recorded it);
+  `fptrunc` / `fpext` accept floating-point vectors, measure each side's scalar
+  bits and check vector-ness with upstream's message; `fptoui` / `fptosi` /
+  `uitofp` / `sitofp` check vector-ness first and, between vectors, the element
+  counts, with upstream's messages.
+- Ported fixtures: `test/Assembler/2007-01-16-CrashOnBadCast.ll`,
+  `invalid_cast.ll`, `invalid_cast2.ll`, `invalid_cast3.ll` (each with its
+  location pinned), `fast-math-flags.ll`, and `ptrtoaddr-invalid.ll` (eight
+  parts as corpus rows; `dst_not_addr_size.ll` in
+  `parser_types.rs::a_ptrtoaddr_to_a_narrower_integer_parses_and_fails_verification`).
+  Gap G12 in `docs/fixture-coverage.md` is closed.
+
+| Before | After |
+|---|---|
+| `b.int_cast_erased(CastOpcode::Zext, v, ty, IntCastFlags::new().nneg(), "z")` | `b.cast_erased(CastOperation::Zext(ZextFlags::new().nneg()), v, ty, "z")` |
+| `b.int_cast_erased(CastOpcode::Trunc, v, ty, IntCastFlags::new().nuw(), "t")` | `b.cast_erased(CastOperation::Trunc(TruncFlags::new().nuw()), v, ty, "t")` |
+
+Tests: `verifier.rs::tests::the_integer_casts_compare_vector_ness_not_element_counts`,
+`verifier.rs::tests::the_fp_casts_measure_scalar_bits_and_check_vector_shapes`,
+`parser_types.rs::a_ptrtoaddr_to_a_narrower_integer_parses_and_fails_verification`,
+and the corpus rows above.
+
 ### Fixed — `CastInst::castIsValid` compares element counts with their scalability, and is asked, not copied
 
 `cast_is_valid` compared vectors' minimum lane counts alone, and the
@@ -153,9 +210,6 @@ hand-written copy of the rule. Upstream's `Verifier::visitBitCastInst` and its
   reported with upstream's `Invalid bitcast` for every `bitcast` `cast_is_valid`
   refuses; the verifier's three invented `Invalid bitcast (…)` messages are
   gone.
-- `docs/divergences.md` records that the verifier's `trunc` / `zext` / `sext`
-  arms compare element counts where upstream's compare only vector-ness
-  (unreachable today).
 - Tests: `medium_builder_cast.rs::cast_is_valid_answers_upstreams_cast_inst_assertions`
   (the `castIsValid` assertions of `TEST(InstructionsTest, CastInst)`),
   `verifier_basic.rs::verify_bitcast_asks_cast_is_valid`,

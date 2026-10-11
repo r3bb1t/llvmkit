@@ -75,14 +75,13 @@ use super::instr_types::FnegInstData;
 use super::instr_types::{
     AddFlags, AllocaFlags, AllocaInstData, AshrFlags, AtomicCmpXchgConfig, AtomicCmpXchgInstData,
     AtomicRmwConfig, AtomicRmwInstData, BranchInstData, BranchKind, CallBrInstData, CallInstData,
-    CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
+    CastOperation, CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
     CleanupReturnInstData, CmpInstData, ExtractElementInstData, ExtractValueInstData, FcmpInstData,
     FenceInstData, FreezeInstData, GepInstData, IcmpFlags, IndirectBrInstData,
-    InsertElementInstData, InsertValueInstData, IntBinOpFlags, IntCastFlags, InvokeInstData,
-    LandingPadInstData, LshrFlags, MulFlags, OrFlags, PhiData, ResumeInstData, SdivFlags,
-    SelectInstData, ShlFlags, ShuffleVectorInstData, SubFlags, SwitchInstData, TailCallKind,
-    TruncFlags, UdivFlags, UiToFpFlags, UnreachableInstData, VaArgInstData, WriteBinopFlags,
-    ZextFlags,
+    InsertElementInstData, InsertValueInstData, IntBinOpFlags, InvokeInstData, LandingPadInstData,
+    LshrFlags, MulFlags, OrFlags, PhiData, ResumeInstData, SdivFlags, SelectInstData, ShlFlags,
+    ShuffleVectorInstData, SubFlags, SwitchInstData, TailCallKind, TruncFlags, UdivFlags,
+    UiToFpFlags, UnreachableInstData, VaArgInstData, WriteBinopFlags, ZextFlags,
 };
 use super::instr_types::{
     BinaryOpData, BinaryOpcode, CallAttributeData, CallSiteParts, CastOpData, CastOpcode,
@@ -2352,85 +2351,59 @@ where
         }
     }
 
-    /// `trunc` / `zext` / `sext` on an erased operand — a scalar `iN` or an
-    /// integer vector — producing `dst_ty`.
+    /// Any cast, on an erased operand (a scalar or a vector) producing
+    /// `dst_ty`: `CastInst::Create(Opc, V, DestTy)` followed by the flag
+    /// setters `LLParser::parseInstruction` calls, which [`CastOperation`]
+    /// carries.
     ///
-    /// The erased counterpart of the `trunc_dyn` / `zext_dyn` /
-    /// `sext_dyn` family, whose `_dyn` means *dynamic width* (`IntDyn`)
-    /// rather than *erased value*: those route the source through the
-    /// scalar-only `IntoIntValue` and take an `IntType` destination, and a
-    /// `<N x iM>` is neither. This is the same split
-    /// [`Self::int_binop_erased`] and [`Self::int_cmp_erased`]
-    /// already make; upstream needs no such split because
-    /// `LLParser::parseCast` hands the operand straight to
-    /// `CastInst::Create`.
+    /// The erased counterpart of the typed cast family (`trunc_dyn`,
+    /// `fp_to_si`, `ptr_to_int`, …), whose operands are scalar-only handles:
+    /// an `IntValue<IntDyn>` or an `IntType` describes no `<N x iM>`. This is
+    /// the split [`Self::int_binop_erased`] and [`Self::int_cmp_erased`]
+    /// already make; upstream needs none, because `LLParser::parseCast` hands
+    /// the operand straight to `CastInst::Create`.
     ///
-    /// Validated against `CastInst::castIsValid`'s integer arm: source and
-    /// destination must both be integers or both integer vectors of the same
-    /// element count and scalability, and the *scalar* widths must narrow for
-    /// `trunc` and widen for `zext` / `sext`.
+    /// Refused with [`IrError::InvalidCast`] when `CastInst::castIsValid`
+    /// refuses the pair ([`cast_is_valid`](crate::cast_is_valid)): each
+    /// subclass constructor `CastInst::Create` reaches asserts it. Unlike
+    /// `IRBuilderBase::CreateCast` there is no same-type short-circuit — a
+    /// valid `bitcast i32 %x to i32` is built — because `parseCast` calls
+    /// `CastInst::Create`, which has none; the builder's folder still runs,
+    /// and the parser's is a `NoFolder`.
     ///
     /// Returns the erased [`ValueId`] rather than a typed id because the
-    /// result may be a vector, which no `IntWidth` marker describes.
-    pub fn int_cast_erased<Src, Name>(
+    /// result may be a vector, which no scalar marker describes.
+    pub fn cast_erased<Src, Name>(
         &self,
-        opcode: CastOpcode,
+        operation: CastOperation,
         src: Src,
         dst_ty: Type<'ctx, B, impl Capability>,
-        flags: IntCastFlags,
         name: Name,
     ) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
         Src: IntoErasedValue<'ctx, B>,
     {
-        if !matches!(
-            opcode,
-            CastOpcode::Trunc | CastOpcode::Zext | CastOpcode::Sext
-        ) {
-            return Err(IrError::InvalidOperation {
-                message: "opcode is not trunc, zext or sext",
-            });
-        }
         let src = src.into_erased_value(self.mutable_ref())?;
         // Boundary: the caller's destination type, admitted before the folder
         // or this module reads it.
         let dst_ty = dst_ty.admitted_at(self.mutable_ref())?;
         // Internal: admitted on the line above.
         let dst_slot = dst_ty.slot_trusting_same_module();
-        let src_ty = src.ty();
-
-        let (Some(src_bits), Some(dst_bits)) = (
-            self.integer_scalar_bit_width(src_ty),
-            self.integer_scalar_bit_width(dst_ty),
-        ) else {
-            return Err(IrError::InvalidOperation {
-                message: "trunc/zext/sext operand is neither an integer nor an integer vector",
-            });
-        };
-        if src_ty.data().element_count() != dst_ty.data().element_count() {
-            return Err(IrError::InvalidOperation {
-                message: "trunc/zext/sext changes the vector element count",
+        let opcode = operation.opcode();
+        if !crate::instructions::cast_is_valid(opcode, src.ty(), dst_ty) {
+            return Err(IrError::InvalidCast {
+                opcode,
+                src: src.ty().kind_label(),
+                dst: dst_ty.kind_label(),
             });
         }
-        // `castIsValid` requires a strict change in width for all three; equal
-        // widths would be a no-op cast, which upstream spells as no cast.
-        let widens = matches!(opcode, CastOpcode::Zext | CastOpcode::Sext);
-        if (widens && dst_bits <= src_bits) || (!widens && dst_bits >= src_bits) {
-            return Err(IrError::OperandWidthMismatch {
-                lhs: src_bits,
-                rhs: dst_bits,
-            });
-        }
-
         if let Some(folded) = self.folder.fold_cast_dyn(opcode, src, dst_ty)? {
             let folded = self.checked_folded_value(folded, dst_slot)?;
             return Ok(folded.id());
         }
         let payload = CastOpData::new(opcode, src.slot_trusting_same_module());
-        payload.nneg.set(flags.nneg);
-        payload.nuw.set(flags.nuw);
-        payload.nsw.set(flags.nsw);
+        operation.write_flags(&payload);
         let inst = self.append_instruction(dst_slot, InstructionKindData::Cast(payload), name);
         Ok(inst.to_erased().id())
     }

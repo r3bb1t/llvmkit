@@ -2762,10 +2762,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         let dst_ty = inst.ty().slot_trusting_same_module();
         match c.kind {
             CastOpcode::Trunc | CastOpcode::Zext | CastOpcode::Sext => {
-                // `CastInst::castIsValid` compares `getScalarSizeInBits`, so a
-                // vector is checked on its element and separately on its
-                // shape: both sides vectors of equal element count, or both
-                // scalars.
+                // `visitTruncInst` / `visitZExtInst` / `visitSExtInst`: both
+                // sides integers or integer vectors, `SrcTy->isVectorTy() ==
+                // DestTy->isVectorTy()`, then the scalar widths. Upstream
+                // compares only vector-ness here, not element counts, and
+                // calls no `castIsValid`: the element counts are the cast
+                // constructor's `castIsValid` assert, so they are checked
+                // where the cast is built, not here.
                 //
                 // The four literals are `visitTruncInst` / `visitZExtInst` /
                 // `visitSExtInst`'s, in their order. The `produces` verb is
@@ -2793,9 +2796,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 };
                 let src_w = self.scalar_int_width_or_err(f, bb, src_ty, source_message)?;
                 let dst_w = self.scalar_int_width_or_err(f, bb, dst_ty, result_message)?;
-                let src_shape = self.module.context().type_data(src_ty).element_count();
-                let dst_shape = self.module.context().type_data(dst_ty).element_count();
-                if src_shape != dst_shape {
+                let src_is_vector = self
+                    .module
+                    .context()
+                    .type_data(src_ty)
+                    .as_vector()
+                    .is_some();
+                let dst_is_vector = self
+                    .module
+                    .context()
+                    .type_data(dst_ty)
+                    .as_vector()
+                    .is_some();
+                if src_is_vector != dst_is_vector {
                     return Err(self.fail(
                         f,
                         bb,
@@ -2827,37 +2840,62 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 }
             }
             CastOpcode::FpTrunc | CastOpcode::FpExt => {
-                let (source_message, result_message, width_message) = match c.kind {
+                // `visitFPTruncInst` / `visitFPExtInst`: each side's
+                // `getScalarSizeInBits` (bits, so `fp128` and `ppc_fp128` are
+                // both 128, and a vector is measured on its element), both
+                // sides `isFPOrFPVectorTy`, `SrcTy->isVectorTy() ==
+                // DestTy->isVectorTy()`, then the widths. The four literals
+                // are upstream's, in its order.
+                let (source_message, result_message, shape_message, width_message) = match c.kind {
                     CastOpcode::FpTrunc => (
                         "FPTrunc only operates on FP",
                         "FPTrunc only produces an FP",
+                        "fptrunc source and destination must both be a vector or neither",
                         "DestTy too big for FPTrunc",
                     ),
                     _ => (
                         "FPExt only operates on FP",
                         "FPExt only produces an FP",
+                        "fpext source and destination must both be a vector or neither",
                         "DestTy too small for FPExt",
                     ),
                 };
-                let Some(s) = fp_rank(self.module, src_ty) else {
+                let src = Type::<B, ReadOnly>::new(src_ty, self.module);
+                let dst = Type::<B, ReadOnly>::new(dst_ty, self.module);
+                let s = src.scalar_size_in_bits();
+                let d = dst.scalar_size_in_bits();
+                if !is_float_or_float_vector(self.module, src_ty) {
                     return Err(self.fail(
                         f,
                         bb,
                         VerifierRule::CastTypeMismatch,
                         format!("{source_message} (got {})", self.type_label(src_ty)),
                     ));
-                };
-                let Some(d) = fp_rank(self.module, dst_ty) else {
+                }
+                if !is_float_or_float_vector(self.module, dst_ty) {
                     return Err(self.fail(
                         f,
                         bb,
                         VerifierRule::CastTypeMismatch,
                         format!("{result_message} (got {})", self.type_label(dst_ty)),
                     ));
-                };
+                }
+                if src.is_vector() != dst.is_vector() {
+                    return Err(self.fail(
+                        f,
+                        bb,
+                        VerifierRule::CastTypeMismatch,
+                        format!(
+                            "{shape_message} ({} from {} to {})",
+                            c.kind.keyword(),
+                            self.type_label(src_ty),
+                            self.type_label(dst_ty)
+                        ),
+                    ));
+                }
                 let ok = match c.kind {
-                    CastOpcode::FpTrunc => d < s,
-                    _ => d > s,
+                    CastOpcode::FpTrunc => s > d,
+                    _ => s < d,
                 };
                 if !ok {
                     return Err(self.fail(
@@ -2874,16 +2912,24 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 }
             }
             CastOpcode::FpToUi | CastOpcode::FpToSi => {
-                let (source_message, result_message) = match c.kind {
+                // `visitFPToUIInst` / `visitFPToSIInst`: vector-ness first,
+                // then the two kinds, then — both sides vectors — the element
+                // counts. The four literals are upstream's, in its order.
+                let (shape_message, source_message, result_message, length_message) = match c.kind {
                     CastOpcode::FpToUi => (
+                        "FPToUI source and dest must both be vector or scalar",
                         "FPToUI source must be FP or FP vector",
                         "FPToUI result must be integer or integer vector",
+                        "FPToUI source and dest vector length mismatch",
                     ),
                     _ => (
+                        "FPToSI source and dest must both be vector or scalar",
                         "FPToSI source must be FP or FP vector",
                         "FPToSI result must be integer or integer vector",
+                        "FPToSI source and dest vector length mismatch",
                     ),
                 };
+                self.check_int_fp_cast_shape(f, bb, c.kind, src_ty, dst_ty, shape_message)?;
                 if !is_float_or_float_vector(self.module, src_ty) {
                     return Err(self.fail(
                         f,
@@ -2900,18 +2946,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         format!("{result_message} (got {})", self.type_label(dst_ty)),
                     ));
                 }
+                self.check_int_fp_cast_lengths(f, bb, c.kind, src_ty, dst_ty, length_message)?;
             }
             CastOpcode::UiToFp | CastOpcode::SiToFp => {
-                let (source_message, result_message) = match c.kind {
+                // `visitUIToFPInst` / `visitSIToFPInst`: vector-ness first,
+                // then the two kinds, then — both sides vectors — the element
+                // counts. The four literals are upstream's, in its order.
+                let (shape_message, source_message, result_message, length_message) = match c.kind {
                     CastOpcode::UiToFp => (
+                        "UIToFP source and dest must both be vector or scalar",
                         "UIToFP source must be integer or integer vector",
                         "UIToFP result must be FP or FP vector",
+                        "UIToFP source and dest vector length mismatch",
                     ),
                     _ => (
+                        "SIToFP source and dest must both be vector or scalar",
                         "SIToFP source must be integer or integer vector",
                         "SIToFP result must be FP or FP vector",
+                        "SIToFP source and dest vector length mismatch",
                     ),
                 };
+                self.check_int_fp_cast_shape(f, bb, c.kind, src_ty, dst_ty, shape_message)?;
                 if !is_int_or_int_vector(self.module, src_ty) {
                     return Err(self.fail(
                         f,
@@ -2928,6 +2983,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         format!("{result_message} (got {})", self.type_label(dst_ty)),
                     ));
                 }
+                self.check_int_fp_cast_lengths(f, bb, c.kind, src_ty, dst_ty, length_message)?;
             }
             CastOpcode::PtrToAddr | CastOpcode::PtrToInt => {
                 let (source_message, result_message) = match c.kind {
@@ -7023,6 +7079,76 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             )),
         }
     }
+
+    /// The int/FP conversions' first check, `Check(SrcVec == DstVec, …)` in
+    /// `visitUIToFPInst` / `visitSIToFPInst` / `visitFPToUIInst` /
+    /// `visitFPToSIInst`.
+    fn check_int_fp_cast_shape(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        opcode: CastOpcode,
+        src_ty: TypeSlot,
+        dst_ty: TypeSlot,
+        message: &str,
+    ) -> IrResult<()> {
+        let src_is_vector = self
+            .module
+            .context()
+            .type_data(src_ty)
+            .as_vector()
+            .is_some();
+        let dst_is_vector = self
+            .module
+            .context()
+            .type_data(dst_ty)
+            .as_vector()
+            .is_some();
+        if src_is_vector == dst_is_vector {
+            return Ok(());
+        }
+        Err(self.fail(
+            f,
+            bb,
+            VerifierRule::CastTypeMismatch,
+            format!(
+                "{message} ({} from {} to {})",
+                opcode.keyword(),
+                self.type_label(src_ty),
+                self.type_label(dst_ty)
+            ),
+        ))
+    }
+
+    /// The int/FP conversions' last check: with both sides vectors,
+    /// `cast<VectorType>(SrcTy)->getElementCount() ==
+    /// cast<VectorType>(DestTy)->getElementCount()`.
+    fn check_int_fp_cast_lengths(
+        &self,
+        f: FunctionValue<'ctx, Dyn, B, ReadOnly>,
+        bb: &BasicBlock<'ctx, Dyn, Unterminated, B, BlockParamsDyn, ReadOnly>,
+        opcode: CastOpcode,
+        src_ty: TypeSlot,
+        dst_ty: TypeSlot,
+        message: &str,
+    ) -> IrResult<()> {
+        let src_count = self.module.context().type_data(src_ty).element_count();
+        let dst_count = self.module.context().type_data(dst_ty).element_count();
+        match (src_count, dst_count) {
+            (Some(src_count), Some(dst_count)) if src_count != dst_count => Err(self.fail(
+                f,
+                bb,
+                VerifierRule::CastTypeMismatch,
+                format!(
+                    "{message} ({} from {} to {})",
+                    opcode.keyword(),
+                    self.type_label(src_ty),
+                    self.type_label(dst_ty)
+                ),
+            )),
+            _ => Ok(()),
+        }
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -7255,25 +7381,6 @@ fn is_i1_vector(m: &ModuleCore, ty: TypeSlot) -> bool {
 
 fn is_i1_data(d: &TypeData) -> bool {
     matches!(d.as_integer(), Some(1))
-}
-
-/// Floating-point precision rank for `fpext` / `fptrunc` ordering.
-/// Mirrors LLVM's `Type::getFPMantissaWidth`-driven comparison.
-/// `bfloat` and `half` share a width but bfloat has fewer mantissa
-/// bits; LangRef accepts conversions in either direction so long as
-/// they are not the identity, which the per-opcode width check
-/// (`s != d`) catches separately.
-fn fp_rank(m: &ModuleCore, ty: TypeSlot) -> Option<u32> {
-    match m.context().type_data(ty) {
-        TypeData::Half => Some(16),
-        TypeData::Bfloat => Some(16),
-        TypeData::Float => Some(32),
-        TypeData::Double => Some(64),
-        TypeData::X86Fp80 => Some(80),
-        TypeData::Fp128 => Some(128),
-        TypeData::PpcFp128 => Some(128),
-        _ => None,
-    }
 }
 
 /// Bit width of a value-bearing type, or `None` if it has no defined
@@ -7927,5 +8034,128 @@ mod tests {
             }
             _ => panic!("expected verifier failure"),
         }
+    }
+
+    /// Mirrors `Verifier::visitTruncInst` / `visitZExtInst` /
+    /// `visitSExtInst`'s shape check, `SrcTy->isVectorTy() ==
+    /// DestTy->isVectorTy()`: a scalar cast to a vector is refused with
+    /// upstream's message, and two vectors that differ only in element count
+    /// pass this check, because upstream compares vector-ness here, not
+    /// element counts (the cast constructors' `castIsValid` assert owns
+    /// those). Both casts are fabricated, since every builder and the parser
+    /// refuse the second one before a verifier could see it.
+    ///
+    /// llvmkit-specific (rule anchor): no `test/Verifier` fixture pins these
+    /// messages (`rg -n "must both be a vector or neither"
+    /// llvm/test/Verifier llvm/test/Assembler` finds none at llvmorg-22.1.4).
+    #[test]
+    fn the_integer_casts_compare_vector_ness_not_element_counts() {
+        let m = crate::module_new!("t").expect("fresh module");
+        let void_ty = m.void_type().as_type();
+        let i32_ty = m.i32_type();
+        let lanes_4_of_i64 = crate::VectorType::of(m.i64_type(), crate::lanes::<4>()).as_type();
+        let lanes_2_of_i32 = crate::VectorType::of(i32_ty, crate::lanes::<2>()).as_type();
+
+        let (_f_id, bb_id) = skeleton(&m, void_ty, &[], "different_counts");
+        let source = ValueSlotAccess::slot_trusting_same_module(lanes_4_of_i64.poison());
+        fabricate_instruction(
+            &m,
+            bb_id,
+            lanes_2_of_i32.slot_trusting_same_module(),
+            InstructionKindData::Cast(CastOpData::new(CastOpcode::Trunc, source)),
+        );
+        append_ret_void(&m, bb_id);
+        m.verify_borrowed()
+            .expect("visitTruncInst compares vector-ness, not element counts");
+
+        let m = crate::module_new!("t").expect("fresh module");
+        let void_ty = m.void_type().as_type();
+        let lanes_2_of_i64 = crate::VectorType::of(m.i64_type(), crate::lanes::<2>()).as_type();
+        let (_f_id, bb_id) = skeleton(&m, void_ty, &[], "scalar_to_vector");
+        let source = ValueSlotAccess::slot_trusting_same_module(m.i32_type().as_type().poison());
+        fabricate_instruction(
+            &m,
+            bb_id,
+            lanes_2_of_i64.slot_trusting_same_module(),
+            InstructionKindData::Cast(CastOpData::new(CastOpcode::Zext, source)),
+        );
+        append_ret_void(&m, bb_id);
+        let err = m.verify_borrowed().unwrap_err();
+        assert_rule_and_check_line(
+            &err,
+            VerifierRule::CastTypeMismatch,
+            "zext source and destination must both be a vector or neither",
+        );
+    }
+
+    /// Mirrors `Verifier::visitFPExtInst` and `visitFPToUIInst`: an `fpext`
+    /// between two floating-point vectors verifies — upstream measures each
+    /// side's `getScalarSizeInBits` — while a scalar `fpext` to a vector is
+    /// refused with upstream's vector-ness message, and an `fptoui` between
+    /// vectors of different element counts with its length message. The two
+    /// refused casts are fabricated, since every builder and the parser
+    /// refuse them before a verifier could see them.
+    ///
+    /// llvmkit-specific (rule anchor): `test/Assembler/fast-math-flags.ll` is
+    /// the upstream fixture for a vector `fpext` and runs as a corpus row; no
+    /// `test/Verifier` or `test/Assembler` fixture pins the two messages
+    /// (`rg -n "fpext source and destination must both|FPToUI source and dest vector length" llvm/test/Verifier llvm/test/Assembler`
+    /// finds none at llvmorg-22.1.4).
+    #[test]
+    fn the_fp_casts_measure_scalar_bits_and_check_vector_shapes() {
+        let m = crate::module_new!("t").expect("fresh module");
+        let void_ty = m.void_type().as_type();
+        let floats = crate::VectorType::of(m.f32_type(), crate::lanes::<3>()).as_type();
+        let doubles = crate::VectorType::of(m.f64_type(), crate::lanes::<3>()).as_type();
+        let (_f_id, bb_id) = skeleton(&m, void_ty, &[], "vector_fpext");
+        let source = ValueSlotAccess::slot_trusting_same_module(floats.poison());
+        fabricate_instruction(
+            &m,
+            bb_id,
+            doubles.slot_trusting_same_module(),
+            InstructionKindData::Cast(CastOpData::new(CastOpcode::FpExt, source)),
+        );
+        append_ret_void(&m, bb_id);
+        m.verify_borrowed()
+            .expect("visitFPExtInst measures a vector on its element");
+
+        let m = crate::module_new!("t").expect("fresh module");
+        let void_ty = m.void_type().as_type();
+        let doubles = crate::VectorType::of(m.f64_type(), crate::lanes::<3>()).as_type();
+        let (_f_id, bb_id) = skeleton(&m, void_ty, &[], "scalar_to_vector");
+        let source = ValueSlotAccess::slot_trusting_same_module(m.f32_type().as_type().poison());
+        fabricate_instruction(
+            &m,
+            bb_id,
+            doubles.slot_trusting_same_module(),
+            InstructionKindData::Cast(CastOpData::new(CastOpcode::FpExt, source)),
+        );
+        append_ret_void(&m, bb_id);
+        let err = m.verify_borrowed().unwrap_err();
+        assert_rule_and_check_line(
+            &err,
+            VerifierRule::CastTypeMismatch,
+            "fpext source and destination must both be a vector or neither",
+        );
+
+        let m = crate::module_new!("t").expect("fresh module");
+        let void_ty = m.void_type().as_type();
+        let floats = crate::VectorType::of(m.f32_type(), crate::lanes::<4>()).as_type();
+        let ints = crate::VectorType::of(m.i32_type(), crate::lanes::<2>()).as_type();
+        let (_f_id, bb_id) = skeleton(&m, void_ty, &[], "different_counts");
+        let source = ValueSlotAccess::slot_trusting_same_module(floats.poison());
+        fabricate_instruction(
+            &m,
+            bb_id,
+            ints.slot_trusting_same_module(),
+            InstructionKindData::Cast(CastOpData::new(CastOpcode::FpToUi, source)),
+        );
+        append_ret_void(&m, bb_id);
+        let err = m.verify_borrowed().unwrap_err();
+        assert_rule_and_check_line(
+            &err,
+            VerifierRule::CastTypeMismatch,
+            "FPToUI source and dest vector length mismatch",
+        );
     }
 }
