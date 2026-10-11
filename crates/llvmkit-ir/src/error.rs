@@ -621,9 +621,11 @@ pub enum VerifierRule {
     /// `Verifier::visitLoadInst` / `visitStoreInst` ("Non-atomic load/store
     /// cannot have SynchronizationScope specified").
     NonAtomicWithSyncScope,
-    /// `bitcast` source and destination bit widths differ.
-    /// Mirrors `Verifier::visitBitCastInst`.
-    BitCastSizeMismatch,
+    /// A `bitcast` that `CastInst::castIsValid` refuses: differing bit
+    /// widths, a pointer cast to a non-pointer, differing address spaces, or
+    /// differing element counts. Mirrors `Verifier::visitBitCastInst`
+    /// ("Invalid bitcast").
+    InvalidBitCast,
     /// Cast opcode source/destination kind constraint failed
     /// (e.g. `zext` from a non-integer, `fptrunc` to an integer).
     /// Mirrors `Verifier::visit{Trunc,ZExt,SExt,FpTrunc,FpExt,FpToUI,
@@ -928,7 +930,7 @@ impl fmt::Display for VerifierRule {
             Self::NonAtomicWithSyncScope => {
                 "non-atomic load/store cannot have a non-default syncscope"
             }
-            Self::BitCastSizeMismatch => "bitcast source and destination have differing bit widths",
+            Self::InvalidBitCast => "invalid bitcast",
             Self::CastTypeMismatch => "cast source/destination kind constraint failed",
             Self::CastWidthMismatch => "cast width relationship is invalid",
             Self::SelfReference => "only PHI nodes may reference their own value",

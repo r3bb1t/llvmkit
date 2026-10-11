@@ -2232,6 +2232,32 @@ answered by `Constant::kind` as `ConstantKind::ForwardReference`
   initializer, removed when replaced), so `kind()` answers `GlobalValue` as
   upstream does — or keep the bare constant as deliberate and say so here.
 
+### 147. The verifier's `trunc` / `zext` / `sext` arms compare element counts where upstream compares only vector-ness
+
+*verifier — casts* — `crates/llvmkit-ir/src/verifier.rs` (the integer-cast arm of the cast check)
+
+- **LLVM:** `Verifier::visitTruncInst`, `visitZExtInst` and `visitSExtInst`
+  (`lib/IR/Verifier.cpp`) each check
+  `SrcTy->isVectorTy() == DestTy->isVectorTy()` ("… source and destination
+  must both be a vector or neither") and the scalar widths; none compares the
+  two vectors' element counts, and none calls `CastInst::castIsValid`.
+- **llvmkit:** the arm compares the two types' `ElementCount`s
+  (`TypeData::element_count`, count and scalability), under the same
+  message — stricter than upstream.
+- **Reachability:** none today. A cast whose operand and result disagree in
+  element count is refused before the verifier sees it: by the builder
+  (`IrBuilder::int_cast_erased` compares `element_count`, and the parser's
+  vector integer casts are built through it; the typed scalar casts cannot
+  disagree). Upstream refuses it earlier too: `LLParser::parseCast` and the
+  cast constructors ask `castIsValid`.
+- **Why not fixed now:** porting the verifier's cast arms one-for-one,
+  message for message, is its own parity task; this entry records the one
+  difference found while `CastInst::castIsValid`'s copies were being
+  replaced by calls to `cast_is_valid`.
+- **Found:** 2026-10-11, Task 2 fix round 1 of the type-constructor plan.
+  `rg -n "visitTruncInst|visitZExtInst|visitSExtInst|must both be a vector or neither" docs/divergences.md docs/future-work.md docs/fixture-coverage.md`
+  found no earlier entry.
+
 ## Coverage, tooling and provenance
 
 Nothing changes for a well-formed module; these are gaps in what is measured, guarded or recorded.

@@ -123,6 +123,45 @@ and the trybuild fixtures `vector_of_void_element.rs`, `lanes_zero.rs` and
 `type_validity.rs`'s agreement law drops its 28 vector and scalable-vector
 known disagreements.
 
+### Fixed — `CastInst::castIsValid` compares element counts with their scalability, and is asked, not copied
+
+`cast_is_valid` compared vectors' minimum lane counts alone, and the
+verifier's `bitcast` arm and the constant-expression builder each carried a
+hand-written copy of the rule. Upstream's `Verifier::visitBitCastInst` and its
+`ConstantExpr::get*` cast constructors call `castIsValid`; llvmkit's now call
+`cast_is_valid`.
+
+- **`cast_is_valid` answers `false` where it answered `true`** for a cast
+  between a fixed and a scalable vector of the same minimum count
+  (`bitcast <2 x i32>` to `<vscale x 2 x i32>`, `addrspacecast
+  <vscale x 4 x ptr addrspace(1)>` to `<4 x ptr>`), as `ElementCount`
+  equality includes scalability, and for a pointer bitcast between
+  `<vscale x 1 x ptr>` and `ptr`, which upstream allows only for
+  `ElementCount::getFixed(1)`. The parser now refuses such a
+  constant-expression cast at the cast, with `LLParser`'s
+  `invalid cast opcode for cast from '…' to '…'`; the constant-expression
+  builder refused it later, with its own message.
+- **Refused now** (accepts-invalid): a constant-expression `bitcast` between
+  scalable vectors of unequal size (`<vscale x 2 x i64>` to
+  `<vscale x 2 x i32>`), which the builder's copy accepted because it gave a
+  scalable vector no bit width.
+- **Accepted now** (rejects-valid): a `bitcast` instruction between scalable
+  vectors of equal size (`<vscale x 4 x i16>` to `<vscale x 2 x i32>`), which
+  the verifier's copy refused; and a constant-expression `bitcast` between a
+  vector and `x86_amx` of the same size, which the builder's copy refused.
+- **Breaking: `VerifierRule::BitCastSizeMismatch` is now `InvalidBitCast`**,
+  reported with upstream's `Invalid bitcast` for every `bitcast` `cast_is_valid`
+  refuses; the verifier's three invented `Invalid bitcast (…)` messages are
+  gone.
+- `docs/divergences.md` records that the verifier's `trunc` / `zext` / `sext`
+  arms compare element counts where upstream's compare only vector-ness
+  (unreachable today).
+- Tests: `medium_builder_cast.rs::cast_is_valid_answers_upstreams_cast_inst_assertions`
+  (the `castIsValid` assertions of `TEST(InstructionsTest, CastInst)`),
+  `verifier_basic.rs::verify_bitcast_asks_cast_is_valid`,
+  `constants_expr.rs::a_constant_bitcast_asks_cast_is_valid` and
+  `parser_types.rs::a_constexpr_cast_between_fixed_and_scalable_vectors_is_rejected`.
+
 ### Fixed — a call site's argument list is one port of `LLParser::parseParameterList`; the standalone type parser refuses a bare `void`
 
 `call`, `invoke` and `callbr` each carried an inline copy of the argument loop,

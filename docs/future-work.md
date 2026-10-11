@@ -1004,9 +1004,12 @@ counterpart of `IntBinOpFlags`, and the parser branches on
 **The verifier had the same scalar assumption and it was the harder half.**
 Its integer-cast arm read widths through an integer-only accessor, so vector
 casts parsed and then failed verification. It now compares
-`getScalarSizeInBits` and checks the vector shapes separately — which is what
-`CastInst::castIsValid` actually says — and the old scalar-only helper is gone
-rather than left behind.
+`getScalarSizeInBits` and checks the vector shapes separately, and the old
+scalar-only helper is gone rather than left behind. The shape check is
+`CastInst::castIsValid`'s rule, not the verifier's: upstream's
+`Verifier::visitTruncInst` / `visitZExtInst` / `visitSExtInst` compare only
+`isVectorTy()`, which `docs/divergences.md` records (the verifier `trunc` /
+`zext` / `sext` entry).
 
 Two upstream cases returned to the `stripNullTest` port as a result; nothing in
 the analysis changed, because `strip_null_test` was already splat-aware.

@@ -3011,54 +3011,20 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 }
             }
             CastOpcode::BitCast => {
-                // Bitcast must preserve bit width. Pointer-to-pointer
-                // bitcasts in the same address space are identity in
-                // LLVM 17+ (opaque pointers); LangRef accepts them.
-                // Cross-address-space pointer reinterpretation must use
-                // `addrspacecast` instead.
-                let src_data = self.module.context().type_data(src_ty);
-                let dst_data = self.module.context().type_data(dst_ty);
-                if src_ty == dst_ty {
-                    // Identity is always fine.
-                } else if let (Some(src_as), Some(dst_as)) =
-                    (src_data.as_pointer(), dst_data.as_pointer())
-                {
-                    if src_as != dst_as {
-                        return Err(self.fail(
-                            f,
-                            bb,
-                            VerifierRule::CastTypeMismatch,
-                            format!(
-                                "Invalid bitcast (across address spaces {src_as} -> {dst_as}; use addrspacecast)"
-                            ),
-                        ));
-                    }
-                } else {
-                    let src_bits = type_bit_width(self.module, src_ty);
-                    let dst_bits = type_bit_width(self.module, dst_ty);
-                    match (src_bits, dst_bits) {
-                        (Some(s), Some(d)) if s == d => {}
-                        (Some(s), Some(d)) => {
-                            return Err(self.fail(
-                                f,
-                                bb,
-                                VerifierRule::BitCastSizeMismatch,
-                                format!("Invalid bitcast ({s}-bit -> {d}-bit)"),
-                            ));
-                        }
-                        _ => {
-                            return Err(self.fail(
-                                f,
-                                bb,
-                                VerifierRule::CastTypeMismatch,
-                                format!(
-                                    "Invalid bitcast (requires sized scalar/vector/pointer types; got {} -> {})",
-                                    self.type_label(src_ty),
-                                    self.type_label(dst_ty)
-                                ),
-                            ));
-                        }
-                    }
+                // `Verifier::visitBitCastInst`: `Check(CastInst::castIsValid(
+                // Instruction::BitCast, I.getOperand(0), I.getType()),
+                // "Invalid bitcast", &I)` — the one predicate, not a copy.
+                if !crate::instructions::cast_is_valid(
+                    CastOpcode::BitCast,
+                    Type::<B, ReadOnly>::new(src_ty, self.module),
+                    Type::<B, ReadOnly>::new(dst_ty, self.module),
+                ) {
+                    return Err(self.fail(
+                        f,
+                        bb,
+                        VerifierRule::InvalidBitCast,
+                        "Invalid bitcast".to_owned(),
+                    ));
                 }
             }
             CastOpcode::AddrSpaceCast => {

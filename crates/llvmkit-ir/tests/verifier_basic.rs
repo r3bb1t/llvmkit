@@ -791,6 +791,60 @@ fn verify_gep_into_scalable_struct_fails() -> Result<(), IrError> {
     Ok(())
 }
 
+/// `Verifier::visitBitCastInst` is `Check(CastInst::castIsValid(BitCast, …),
+/// "Invalid bitcast")`, so a `bitcast` between two scalable vectors of equal
+/// size verifies (`<vscale x 4 x i16>` to `<vscale x 2 x i32>`), and one
+/// between unequal sizes is `VerifierRule::InvalidBitCast` with upstream's
+/// message (`<vscale x 2 x i64>` to `<vscale x 2 x i32>`).
+///
+/// llvmkit-specific regression (D10, D11): the verifier's hand-written copy
+/// gave a scalable vector no bit width, so it refused the valid cast. No
+/// upstream fixture verifies a scalable `bitcast`:
+/// `rg -n --no-ignore "bitcast <vscale x|bitcast \(<vscale x" llvm/test/Assembler llvm/test/Verifier`
+/// finds nothing in the vendored `llvmorg-22.1.4` tree.
+#[test]
+fn verify_bitcast_asks_cast_is_valid() -> Result<(), IrError> {
+    // `bitcast <vscale x 4 x i16> %0 to <vscale x 2 x i32>`: both 32 x vscale
+    // bits.
+    let m = module_new!("bitcast-ok")?;
+    let src = VectorType::scalable_of(m.i16_type(), lanes::<4>());
+    let dst = VectorType::scalable_of(m.i32_type(), lanes::<2>());
+    let fn_ty = m.function_type(dst.as_type(), [src.as_type()]);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let cast = b.bitcast_dyn(m.view(f).param(0)?, dst.as_type(), "c")?;
+    b.ret(m.view(cast))?;
+    m.verify_borrowed()?;
+
+    // `bitcast <vscale x 2 x i64> %0 to <vscale x 2 x i32>`: 128 x vscale bits
+    // against 64.
+    let m = module_new!("bitcast-bad")?;
+    let src = VectorType::scalable_of(m.i64_type(), lanes::<2>());
+    let dst = VectorType::scalable_of(m.i32_type(), lanes::<2>());
+    let fn_ty = m.function_type(dst.as_type(), [src.as_type()]);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let cast = b.bitcast_dyn(m.view(f).param(0)?, dst.as_type(), "c")?;
+    b.ret(m.view(cast))?;
+    let err = m
+        .verify_borrowed()
+        .expect_err("a bitcast between unequal sizes must fail verification");
+    assert!(
+        matches!(
+            &err,
+            IrError::VerifierFailure {
+                rule: VerifierRule::InvalidBitCast,
+                message,
+                ..
+            } if message == "Invalid bitcast"
+        ),
+        "got {err:?}"
+    );
+    Ok(())
+}
+
 /// **No upstream counterpart as a fixture.** The rule is upstream's --
 /// `Verifier::visitGetElementPtrInst`'s `Check(IndexWidth == GEPWidth,
 /// "Invalid GEP index vector width")` -- but `llvm/test/Verifier/` ships no

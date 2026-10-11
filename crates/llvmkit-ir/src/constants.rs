@@ -49,6 +49,7 @@ use super::error::{IrError, IrResult, TypeKindLabel};
 use super::function::FunctionValue;
 use super::instr_types::{BinaryOpcode, CastOpcode};
 use super::instruction::{rewrite_debug_record_value, rewrite_operand_cells};
+use super::instructions::cast_is_valid;
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{DynBrand, Module, ModuleBrand, ModuleCore, ModuleRef, Unverified};
 // `Type::getScalarType` / `isIntOrIntVectorTy` / `isPtrOrPtrVectorTy` are
@@ -2186,28 +2187,14 @@ pub(super) fn validate_constant_expr_data(
     validate_constant_expr_flags(data)?;
     match data.opcode {
         ConstantExprOpcode::Trunc => {
+            // Each cast arm asks `CastInst::castIsValid`, as each
+            // `ConstantExpr::get*` cast constructor asserts it.
             let [src_ty] = operand_tys.as_slice() else {
                 return Err(IrError::InvalidOperation {
                     message: "trunc constant expression expects one operand",
                 });
             };
-            let Some(src_bits) = scalar_int_bits(module, src_ty.slot_trusting_same_module()) else {
-                return Err(IrError::InvalidOperation {
-                    message: "invalid trunc constant expression",
-                });
-            };
-            let Some(dst_bits) = scalar_int_bits(module, result_ty.slot_trusting_same_module())
-            else {
-                return Err(IrError::InvalidOperation {
-                    message: "invalid trunc constant expression",
-                });
-            };
-            if !lane_shape_matches(
-                module,
-                src_ty.slot_trusting_same_module(),
-                result_ty.slot_trusting_same_module(),
-            ) || dst_bits >= src_bits
-            {
+            if !cast_is_valid(CastOpcode::Trunc, *src_ty, result_ty) {
                 return Err(IrError::InvalidOperation {
                     message: "invalid trunc constant expression",
                 });
@@ -2219,14 +2206,12 @@ pub(super) fn validate_constant_expr_data(
                     message: "ptrtoaddr/ptrtoint constant expression expects one operand",
                 });
             };
-            if !is_ptr_or_ptr_vector(module, src_ty.slot_trusting_same_module())
-                || !is_int_or_int_vector(module, result_ty.slot_trusting_same_module())
-                || !lane_shape_matches(
-                    module,
-                    src_ty.slot_trusting_same_module(),
-                    result_ty.slot_trusting_same_module(),
-                )
-            {
+            let opcode = if matches!(data.opcode, ConstantExprOpcode::PtrToAddr) {
+                CastOpcode::PtrToAddr
+            } else {
+                CastOpcode::PtrToInt
+            };
+            if !cast_is_valid(opcode, *src_ty, result_ty) {
                 return Err(IrError::InvalidOperation {
                     message: "invalid ptrtoaddr/ptrtoint constant expression",
                 });
@@ -2238,14 +2223,7 @@ pub(super) fn validate_constant_expr_data(
                     message: "inttoptr constant expression expects one operand",
                 });
             };
-            if !is_int_or_int_vector(module, src_ty.slot_trusting_same_module())
-                || !is_ptr_or_ptr_vector(module, result_ty.slot_trusting_same_module())
-                || !lane_shape_matches(
-                    module,
-                    src_ty.slot_trusting_same_module(),
-                    result_ty.slot_trusting_same_module(),
-                )
-            {
+            if !cast_is_valid(CastOpcode::IntToPtr, *src_ty, result_ty) {
                 return Err(IrError::InvalidOperation {
                     message: "invalid inttoptr constant expression",
                 });
@@ -2257,11 +2235,7 @@ pub(super) fn validate_constant_expr_data(
                     message: "bitcast constant expression expects one operand",
                 });
             };
-            if !valid_bitcast_constant(
-                module,
-                src_ty.slot_trusting_same_module(),
-                result_ty.slot_trusting_same_module(),
-            ) {
+            if !cast_is_valid(CastOpcode::BitCast, *src_ty, result_ty) {
                 return Err(IrError::InvalidOperation {
                     message: "invalid bitcast constant expression",
                 });
@@ -2273,21 +2247,7 @@ pub(super) fn validate_constant_expr_data(
                     message: "addrspacecast constant expression expects one operand",
                 });
             };
-            if !is_ptr_or_ptr_vector(module, src_ty.slot_trusting_same_module())
-                || !is_ptr_or_ptr_vector(module, result_ty.slot_trusting_same_module())
-                || !lane_shape_matches(
-                    module,
-                    src_ty.slot_trusting_same_module(),
-                    result_ty.slot_trusting_same_module(),
-                )
-                || pointer_address_space(
-                    module,
-                    scalar_type_slot(module, src_ty.slot_trusting_same_module()),
-                ) == pointer_address_space(
-                    module,
-                    scalar_type_slot(module, result_ty.slot_trusting_same_module()),
-                )
-            {
+            if !cast_is_valid(CastOpcode::AddrSpaceCast, *src_ty, result_ty) {
                 return Err(IrError::InvalidOperation {
                     message: "invalid addrspacecast constant expression",
                 });
@@ -2552,46 +2512,10 @@ fn scalar_int_bits(module: &ModuleCore, id: TypeSlot) -> Option<u32> {
     }
 }
 
-fn lane_shape_matches(module: &ModuleCore, lhs: TypeSlot, rhs: TypeSlot) -> bool {
-    module.context().type_data(lhs).element_count()
-        == module.context().type_data(rhs).element_count()
-}
-
-fn pointer_bitcast_shape_matches(module: &ModuleCore, src: TypeSlot, dst: TypeSlot) -> bool {
-    match (
-        module.context().type_data(src).element_count(),
-        module.context().type_data(dst).element_count(),
-    ) {
-        (None, None) => true,
-        (Some(src_shape), Some(dst_shape)) => src_shape == dst_shape,
-        (None, Some(count)) | (Some(count), None) => !count.scalable && count.min.get() == 1,
-    }
-}
-
 fn pointer_address_space(module: &ModuleCore, id: TypeSlot) -> Option<u32> {
     match module.context().type_data(id) {
         TypeData::Pointer { addr_space } => Some(*addr_space),
         _ => None,
-    }
-}
-
-fn valid_bitcast_constant(module: &ModuleCore, src: TypeSlot, dst: TypeSlot) -> bool {
-    let src_scalar = scalar_type_slot(module, src);
-    let dst_scalar = scalar_type_slot(module, dst);
-    let src_ptr = pointer_address_space(module, src_scalar);
-    let dst_ptr = pointer_address_space(module, dst_scalar);
-    match (src_ptr, dst_ptr) {
-        (Some(src_as), Some(dst_as)) => {
-            src_as == dst_as && pointer_bitcast_shape_matches(module, src, dst)
-        }
-        (Some(_), None) | (None, Some(_)) => false,
-        (None, None) => {
-            Type::<DynBrand, ReadOnly>::new(src_scalar, module).is_single_value()
-                && Type::<DynBrand, ReadOnly>::new(dst_scalar, module).is_single_value()
-                && !Type::<DynBrand, ReadOnly>::new(src_scalar, module).is_aggregate()
-                && !Type::<DynBrand, ReadOnly>::new(dst_scalar, module).is_aggregate()
-                && type_bit_width(module, src) == type_bit_width(module, dst)
-        }
     }
 }
 
@@ -2661,25 +2585,6 @@ pub(crate) fn is_constant_int_one(module: &ModuleCore, id: ValueSlot) -> bool {
         &module.context().value_data(id).kind,
         ValueKindData::Constant(ConstantData::Int(words)) if words.len() == 1 && words[0] == 1
     )
-}
-
-fn type_bit_width(module: &ModuleCore, id: TypeSlot) -> Option<u32> {
-    match module.context().type_data(id) {
-        TypeData::Half | TypeData::Bfloat => Some(16),
-        TypeData::Float => Some(32),
-        TypeData::Double => Some(64),
-        TypeData::X86Fp80 => Some(80),
-        TypeData::Fp128 | TypeData::PpcFp128 => Some(128),
-        TypeData::Integer { bits } => Some(*bits),
-        TypeData::Pointer { addr_space } => {
-            Some(module.data_layout().pointer_size_in_bits(*addr_space))
-        }
-        TypeData::FixedVector { elem, n } => {
-            type_bit_width(module, *elem).and_then(|bits| bits.checked_mul(n.get()))
-        }
-        TypeData::ScalableVector { .. } => None,
-        _ => None,
-    }
 }
 
 // Internal helpers

@@ -19,6 +19,51 @@ fn assert_line(text: &str, expected: &str) {
     panic!("missing line `{expected}` in:\n{text}");
 }
 
+/// `ConstantExpr::getBitCast` asserts `CastInst::castIsValid(BitCast, C, Ty)`,
+/// and the constant-expression builder asks the same predicate, so a bitcast
+/// between scalable vectors of unequal size is refused (`<vscale x 2 x i64>`
+/// is 128 x vscale bits, `<vscale x 2 x i32>` 64) and one between equal sizes
+/// (`<vscale x 4 x i16>`) builds.
+///
+/// llvmkit-specific regression (D10, D11): the builder's hand-written copy gave
+/// a scalable vector no bit width and compared the two missing widths as
+/// equal, so it accepted the first. No upstream fixture builds a scalable
+/// constant-expression cast; the search is named on
+/// `parser_types.rs::a_constexpr_cast_between_fixed_and_scalable_vectors_is_rejected`.
+#[test]
+fn a_constant_bitcast_asks_cast_is_valid() -> Result<(), IrError> {
+    let m = module_new!("constexpr-scalable-bitcast")?;
+    let wide = VectorType::scalable_of(m.i64_type(), lanes::<2>()).as_type();
+    let narrow = VectorType::scalable_of(m.i32_type(), lanes::<2>()).as_type();
+    let halves = VectorType::scalable_of(m.i16_type(), lanes::<4>()).as_type();
+    let refused = m.constant_expr(
+        narrow,
+        ConstantExprOpcode::BitCast,
+        [wide.poison().as_erased()],
+        [],
+        [],
+        ConstantExprFlags::none(),
+    );
+    assert!(
+        matches!(
+            refused,
+            Err(IrError::InvalidOperation {
+                message: "invalid bitcast constant expression"
+            })
+        ),
+        "{refused:?}"
+    );
+    m.constant_expr(
+        narrow,
+        ConstantExprOpcode::BitCast,
+        [halves.poison().as_erased()],
+        [],
+        [],
+        ConstantExprFlags::none(),
+    )?;
+    Ok(())
+}
+
 /// Port of `ConstantFold.cpp::ConstantFoldCastInstruction`: null operands fold
 /// to the destination null value before PPC double-double bitcast target checks
 /// can force the expression to remain unfolded.

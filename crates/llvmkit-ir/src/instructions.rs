@@ -79,7 +79,7 @@ use super::marker::{Dyn, Ptr, ReturnMarker};
 use super::module::{Module, ModuleBrand, ModuleRef, Unverified};
 use super::sync_scope::SyncScope;
 use super::term_open_state::{Closed as TermClosed, Open as TermOpen, TermOpenState};
-use super::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
+use super::r#type::{ElementCount, Type, TypeData, TypeSlot, TypeSlotAccess};
 #[cfg(test)]
 use super::value::IntoPointerValue;
 use super::value::{
@@ -4857,9 +4857,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, TermOpen, B> {
 /// The parser, the constant-expression path and the verifier all ask the
 /// same question, so there is one table.
 ///
-/// Element counts do the scalar/vector agreement work: a scalar counts as 0
-/// elements, so comparing counts also rejects scalar-to-vector and
-/// vector-to-scalar without a separate arm — upstream's own trick.
+/// Element counts do the scalar/vector agreement work: upstream gives a
+/// scalar `ElementCount::getFixed(0)`, so comparing counts also rejects
+/// scalar-to-vector and vector-to-scalar without a separate arm. The
+/// comparison includes scalability, so `<4 x i32>` and `<vscale x 4 x i32>`
+/// disagree.
 pub fn cast_is_valid<'ctx, B: ModuleBrand + 'ctx>(
     op: CastOpcode,
     src: Type<'ctx, B, impl Capability>,
@@ -4873,17 +4875,19 @@ pub fn cast_is_valid<'ctx, B: ModuleBrand + 'ctx>(
     let dst_is_vector = dst.is_vector();
     let src_scalar_bits = src.scalar_size_in_bits();
     let dst_scalar_bits = dst.scalar_size_in_bits();
-    let src_elements = if src_is_vector {
-        src.vector_element_count()
-    } else {
-        None
-    };
-    let dst_elements = if dst_is_vector {
-        dst.vector_element_count()
-    } else {
-        None
-    };
+    // `SrcEC` / `DstEC`: `cast<VectorType>(..)->getElementCount()` for a
+    // vector, `ElementCount::getFixed(0)` for a scalar. llvmkit's
+    // `ElementCount` cannot be zero, so a scalar is `None` here. That is the
+    // same comparison only because no vector has zero lanes: upstream's
+    // `getFixed(0)` equals no vector's count, and neither does `None`.
+    let src_elements = src.data().element_count();
+    let dst_elements = dst.data().element_count();
     let counts_agree = src_elements == dst_elements;
+    // `ElementCount::getFixed(1)` — fixed: a `<vscale x 1 x ptr>` is not it.
+    let one_fixed_lane = Some(ElementCount {
+        min: NonZeroU32::MIN,
+        scalable: false,
+    });
 
     match op {
         CastOpcode::Trunc => {
@@ -4931,16 +4935,27 @@ pub fn cast_is_valid<'ctx, B: ModuleBrand + 'ctx>(
             }
             let Some(src_space) = src_ptr else {
                 // Non-pointer: a no-op cast of type only, so the bit widths
-                // must match exactly.
-                return src.primitive_size_in_bits() == dst.primitive_size_in_bits();
+                // must match exactly. Upstream compares the two
+                // `getPrimitiveSizeInBits()` `TypeSize`s, whose equality
+                // includes scalability; `primitive_size_in_bits` is the known
+                // minimum, so the scalability is compared beside it.
+                let size = |elements: Option<ElementCount>, bits: u32| {
+                    (bits, elements.is_some_and(|count| count.scalable))
+                };
+                return size(src_elements, src.primitive_size_in_bits())
+                    == size(dst_elements, dst.primitive_size_in_bits());
             };
             if Some(src_space) != dst_ptr {
                 return false;
             }
+            // `if (SrcIsVec && DstIsVec) return SrcEC == DstEC;
+            //  if (SrcIsVec) return SrcEC == ElementCount::getFixed(1);
+            //  if (DstIsVec) return DstEC == ElementCount::getFixed(1);
+            //  return true;`
             match (src_is_vector, dst_is_vector) {
                 (true, true) => counts_agree,
-                (true, false) => src_elements == Some(NonZeroU32::MIN),
-                (false, true) => dst_elements == Some(NonZeroU32::MIN),
+                (true, false) => src_elements == one_fixed_lane,
+                (false, true) => dst_elements == one_fixed_lane,
                 (false, false) => true,
             }
         }
