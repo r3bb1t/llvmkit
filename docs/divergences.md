@@ -884,8 +884,12 @@ llvmkit accepts IR that LLVM rejects, so a malformed module survives into the re
 message at the wrong token when a later declaration happens to reject the type
 **Where:** `crates/llvmkit-asmparser/src/ll_parser.rs` — the inline
 call-argument loops of `Parser::parse_call`, `Parser::parse_invoke` and
-`Parser::parse_callbr`, the three places llvmkit spells
-`LLParser::parseParameterList`.
+`Parser::parse_callbr`, which is where llvmkit spells
+`LLParser::parseParameterList`. At `5ce065f`,
+`rg -n "unexpected ellipsis in argument list for non-musttail call" crates/llvmkit-asmparser/src/`
+(the ellipsis arm belongs only to `parseParameterList`) and
+`rg -n "let arg_ty = self\.parse_type\(false\)\?;" crates/llvmkit-asmparser/src/`
+each return three hits, one in each of those three functions.
 
 - **LLVM:** `LLParser::parseParameterList` runs
   `if (!FunctionType::isValidArgumentType(ArgTy)) return error(ArgLoc, "invalid type for function argument");`
@@ -904,8 +908,8 @@ call-argument loops of `Parser::parse_call`, `Parser::parse_invoke` and
   argument; and `test/Assembler/invalid-label-call-arg.ll` (a `label`
   argument to inline asm) reaches the inline-asm constraint check instead and
   reports `number of input constraints does not match number of parameters`.
-  `docs/fixture-coverage.md` classes the second under **G17** (wording); its
-  cause is this guard, not wording.
+  `docs/fixture-coverage.md` files the second under **G18** (the check does
+  not run) and cites this entry.
 - **Also in this routine, derived by reading and not probed:** upstream reads
   `parseOptionalParamAttrs` only on the non-`metadata` branch, where llvmkit
   reads the attributes before branching on `metadata`. The fix's arm table
@@ -917,8 +921,15 @@ call-argument loops of `Parser::parse_call`, `Parser::parse_invoke` and
   compared only the text, so it passed. That test now also asserts the
   `(line, column)` anchor, pinned to llvmkit's current one, so closing this
   entry fails it.
+  At `5ce065f`,
   `rg -n "invalid type for function argument" crates/llvmkit-asmparser/src/`
   finds the message once, in `parse_argument_list`; the call path has no site.
+  The gap had been named once before, without an entry:
+  `parser_module_level.rs::the_header_checks_its_argument_types` and its
+  `UPSTREAM.md` row said `invalid-label-call-arg.ll` reaches the message
+  "through a call's parameter list, which is W9b".
+  `git grep -n "W9b" 5ce065f -- '*.md' '*.rs'` finds only those two
+  mentions, so nothing tracked it. Both now cite this entry.
   Probes run through the `parse_file` example at `ab2e5a9`:
   `invalid-label-param.ll` reports its anchor at the `declare`, and the
   `call`, `invoke` and `callbr` probes above exit 0. Whether llvmkit's
@@ -933,8 +944,44 @@ call-argument loops of `Parser::parse_call`, `Parser::parse_invoke` and
   `metadata` / attribute branch), and call it from the `call`, `invoke` and
   `callbr` parsers. Then re-point
   `type_validity.rs::upstream_label_parameter_is_rejected` at the upstream
-  anchor and reclassify `invalid-label-call-arg.ll` in
-  `docs/fixture-coverage.md`.
+  anchor, port `invalid-label-call-arg.ll` into the corpus manifest, and
+  re-derive its `docs/fixture-coverage.md` row and the **G18** list.
+
+### 146. The standalone type parser accepts a bare `void`
+
+**Severity:** accepts-invalid (llvmkit's half probed by a test; upstream's
+half derived by reading — no upstream test exercises it)
+**Where:** `crates/llvmkit-asmparser/src/ll_parser.rs` —
+`Parser::parse_standalone_type` and `Parser::parse_type_at_beginning`. They
+serve the public `parse_type`, `parse_type_with_slots`,
+`parse_type_at_beginning` and `parse_type_at_beginning_with_slots` in
+`crates/llvmkit-asmparser/src/parser.rs`.
+
+- **LLVM:** `llvm::parseType` calls `llvm::parseTypeAtBeginning`, which runs
+  `LLParser::parseTypeAtBeginning`. That calls `parseType(Ty)`, and
+  `LLParser.h` declares `parseType`'s `AllowVoid` parameter as defaulting
+  to `false`. So for a bare `void`, the suffix loop's `default:` arm
+  reports `error(TypeLoc, "void type only allowed for function results")`,
+  and `llvm::parseType("void", …)` returns null.
+- **llvmkit:** both methods call `self.parse_type(true)`, so a bare `void`
+  parses and comes back as the `void` type.
+  `crates/llvmkit-asmparser/tests/type_validity.rs::a_bare_void_is_accepted_by_the_standalone_type_parser`
+  asserts that, so closing this entry fails that test.
+- **Found:** 2026-10-11, while writing
+  `type_validity.rs::each_element_spells_the_type_the_builder_builds`
+  (type-constructor-validity Task 1, review round). Its `void` row would
+  have passed only because of this divergence, so that test now reads
+  `void` back from `void ()` instead. Against the vendored `llvmorg-22.1.4`
+  tree,
+  `rg -n 'parseType(AtBeginning)?\("void' llvm/unittests llvm/lib llvm/tools`
+  finds nothing, so no upstream test pins the refusal. In this repo,
+  `rg -n -i "standalone.*void|void.*standalone|parse_standalone_type|allow_void" docs/divergences.md docs/future-work.md`
+  found no entry before this one.
+- **Why not in the same change:** the change that found it was scoped to
+  tests (no `src/` edits).
+- **Fix:** pass `false` from both methods, as `parseTypeAtBeginning` does.
+  Then turn the pinning test into one that asserts upstream's message,
+  anchored at the `void` token.
 
 ### 141. `Verifier::visitGlobalValue` and `visitGlobalAlias` are unported, and so is the `visitMDNode` call in `visitGlobalIFunc`'s attachment loop
 

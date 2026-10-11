@@ -171,8 +171,8 @@ Which fixture sits on which gap:
 - **G14**: `incomplete-ir-metadata.ll`
 - **G15**: `skip-value-numbers-globals.ll`
 - **G16**: `index-value-order.ll`, `thinlto-vtable-summary.ll`
-- **G17**: `2007-01-16-CrashOnBadCast.ll`, `invalid-disubrange-count-negative.ll`, `invalid-fp80hex.ll`, `invalid-label-call-arg.ll`, `invalid-metadata-function-local-attachments.ll`, `invalid-metadata-function-local-complex-1.ll`, `invalid-metadata-function-local-complex-2.ll`, `invalid-metadata-function-local-complex-3.ll`, `invalid_cast.ll`, `invalid_cast2.ll`, `nofpclass-invalid.ll`, `ptrtoaddr-invalid.ll`
-- **G18**: `attribute-builtin.ll`, `call-invalid-1.ll`, `captures-errors.ll`, `invalid-byval-type3.ll`, `invalid-diexpression-verify.ll`, `invalid-disubrange-count-large.ll`, `invalid-disubrange-count-node.ll`, `invalid-disubrange-lowerBound-max.ll`, `invalid-disubrange-lowerBound-min.ll`, `invalid_cast3.ll`, `ptrtoaddr-invalid-constexpr.ll`, `summary-parsing-error.ll`, `target-type-properties.ll`
+- **G17**: `2007-01-16-CrashOnBadCast.ll`, `invalid-disubrange-count-negative.ll`, `invalid-fp80hex.ll`, `invalid-metadata-function-local-attachments.ll`, `invalid-metadata-function-local-complex-1.ll`, `invalid-metadata-function-local-complex-2.ll`, `invalid-metadata-function-local-complex-3.ll`, `invalid_cast.ll`, `invalid_cast2.ll`, `nofpclass-invalid.ll`, `ptrtoaddr-invalid.ll`
+- **G18**: `attribute-builtin.ll`, `call-invalid-1.ll`, `captures-errors.ll`, `invalid-byval-type3.ll`, `invalid-diexpression-verify.ll`, `invalid-disubrange-count-large.ll`, `invalid-disubrange-count-node.ll`, `invalid-disubrange-lowerBound-max.ll`, `invalid-disubrange-lowerBound-min.ll`, `invalid-label-call-arg.ll`, `invalid_cast3.ll`, `ptrtoaddr-invalid-constexpr.ll`, `summary-parsing-error.ll`, `target-type-properties.ll`
 - **G19**: `2010-02-05-FunctionLocalMetadataBecomesNull.ll`, `DICommonBlock.ll`, `DIEnumerator.ll`, `dbg_declare_value.ll`, `debug-label-bitcode.ll`, `disubprogram-targetfuncname.ll`, `drop-debug-info-nonzero-alloca.ll`, `drop-debug-info.ll`, `export-symbol-anonymous-class.ll`, `metadata-use-uselistorder.ll`, `thinlto-vtable-summary2.ll`
 - **G20**: `MultipleReturnValueType.ll`, `anon-functions.ll`
 - **G21**: `thinlto-summary.ll`
@@ -622,7 +622,7 @@ collision.
 | `invalid-immarg5.ll` | blocked-model | **G3** — reported `expected unknown intrinsic`, upstream `(no CHECK text)` |
 | `invalid-inline-constraint.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-inttype.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
-| `invalid-label-call-arg.ll` | blocked-model | **G17** — reported `number of input constraints does not match number of parameters`, upstream `invalid type for function argument` |
+| `invalid-label-call-arg.ll` | blocked-model | **G18** — llvmkit does not run the call site's `isValidArgumentType` check at all (`docs/divergences.md` entry 145). This fixture is still rejected, by the later inline-asm constraint check: reported `number of input constraints does not match number of parameters`, upstream `invalid type for function argument` |
 | `invalid-label.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-landingpad.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `invalid-load-missing-explicit-type.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |

@@ -6,19 +6,11 @@
 //! for. Each `#[test]` cites the upstream anchor it ports.
 
 use llvmkit_asmparser::ll_parser::Parser;
-use llvmkit_asmparser::parse_error::ParseError;
 use llvmkit_ir::{AnyTypeEnum, Module, ModuleBrand, module_new};
 
 pub mod support;
 
-/// Project a rejected fixture's reported span back onto its source as
-/// `(line, column)`, the coordinates upstream's `SourceMgr` prints as
-/// `<stdin>:LINE:COL:`. Comparing only `ParseError`'s rendered text leaves a
-/// diagnostic free to carry upstream's exact message from the wrong token.
-fn reported_line_and_column(source: &[u8], err: &ParseError) -> (u32, u32) {
-    let start = err.loc().start;
-    support::line_and_column(source, usize::try_from(start).unwrap_or(usize::MAX))
-}
+use support::{rejection_at, reported_line_and_column};
 
 fn parse_into<B: ModuleBrand>(src: &str, m: &Module<B>) {
     Parser::new(src.as_bytes(), m)
@@ -1180,22 +1172,10 @@ fn unknown_top_level_entity_is_typed_error() {
 
 // ── parseFunctionHeader / parseArgumentList ───────────────────────────────
 
-/// The rendered message **and** the `(line, column)` upstream's `SourceMgr`
-/// would print. Text alone is what let a diagnostic carry upstream's exact
-/// wording from an unrelated token; a caller that cares about the anchor uses
-/// this, and [`header_err`] is the projection for the ones that do not.
-fn header_err_at(src: &str) -> (String, (u32, u32)) {
-    let m = llvmkit_ir::Module::dynamic("function_header");
-    let err = Parser::new(src.as_bytes(), &m)
-        .expect("lexer primes")
-        .parse_module()
-        .expect_err("malformed function header is rejected");
-    let at = reported_line_and_column(src.as_bytes(), &err);
-    (err.to_string(), at)
-}
-
+/// The rendered message of `src`'s rejection, for the callers that do not
+/// assert its anchor; the ones that do call [`rejection_at`] directly.
 fn header_err(src: &str) -> String {
-    header_err_at(src).0
+    rejection_at(src).0
 }
 
 /// `parseFunctionHeader` runs its checks in one fixed order, and the order is
@@ -1257,7 +1237,8 @@ fn the_header_checks_its_return_type() {
 /// is caught here rather than at `validateEndOfModule`.
 ///
 /// `test/Assembler/invalid-label-call-arg.ll` shares the message but reaches
-/// it through a call's parameter list, which is W9b.
+/// it through a call's parameter list, where llvmkit has not ported the guard
+/// (`docs/divergences.md` entry 145).
 #[test]
 fn the_header_checks_its_argument_types() {
     for fixture in [
@@ -1620,14 +1601,14 @@ fn uselistorder_directives_come_after_every_block() {
 fn a_block_may_not_take_a_local_value_name() {
     // `Val` from the function symbol table.
     assert_eq!(
-        header_err_at(
+        rejection_at(
             "define void @f() {\nentry:\n  %x = add i32 0, 0\n  ret void\nx:\n  ret void\n}\n"
         ),
         ("unable to create block named 'x'".to_owned(), (5, 1))
     );
     // `Val` from `ForwardRefVals`.
     assert_eq!(
-        header_err_at(
+        rejection_at(
             "define void @f() {\nentry:\n  %z = add i32 %y, 1\n  ret void\ny:\n  ret void\n}\n"
         ),
         ("unable to create block named 'y'".to_owned(), (5, 1))
@@ -1652,7 +1633,7 @@ fn a_block_may_not_take_a_local_value_name() {
 #[test]
 fn a_numbered_block_may_not_take_a_pending_local_value_slot() {
     assert_eq!(
-        header_err_at(
+        rejection_at(
             "define void @f() {\nentry:\n  %0 = add i32 %5, 1\n  ret void\n5:\n  ret void\n}\n"
         ),
         ("unable to create block numbered '5'".to_owned(), (5, 1))
@@ -1680,7 +1661,7 @@ fn a_numbered_block_may_not_take_a_pending_local_value_slot() {
 #[test]
 fn a_re_used_numbered_label_is_a_backwards_slot() {
     assert_eq!(
-        header_err_at("define void @f() {\n1:\n  br label %1\n1:\n  ret void\n}\n"),
+        rejection_at("define void @f() {\n1:\n  br label %1\n1:\n  ret void\n}\n"),
         (
             "label expected to be numbered '2' or greater".to_owned(),
             (4, 1)
@@ -1701,7 +1682,7 @@ fn a_re_used_numbered_label_is_a_backwards_slot() {
 #[test]
 fn a_label_reference_to_a_local_value_is_not_a_basic_block() {
     assert_eq!(
-        header_err_at(
+        rejection_at(
             "define void @f() {\nentry:\n  %x = add i32 0, 0\n  br label %x\nx:\n  ret void\n}\n"
         ),
         ("'%x' is not a basic block".to_owned(), (4, 12))
