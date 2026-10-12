@@ -2057,7 +2057,7 @@ impl DiFlags {
     /// Mirrors `DINode::getFlag`: the flag a `DIFlag*` spelling names, or
     /// [`Self::ZERO`] for one the table does not carry. Callers reject a zero
     /// result, which is how `DIFlagZero` itself is refused upstream.
-    pub fn get_flag(spelling: &str) -> Self {
+    pub fn flag(spelling: &str) -> Self {
         Self(flag_bit(crate::dwarf::di_flag, spelling))
     }
 
@@ -2161,7 +2161,7 @@ impl DispFlags {
     }
 
     /// Mirrors `DISubprogram::getFlag`.
-    pub fn get_flag(spelling: &str) -> Self {
+    pub fn flag(spelling: &str) -> Self {
         Self(flag_bit(crate::dwarf::disp_flag, spelling))
     }
 
@@ -3134,7 +3134,7 @@ pub(crate) struct MetadataStore {
 impl MetadataStore {
     /// Intern a string node. Returns an existing slot if an identical string
     /// was already inserted (mirrors `MDString::get`).
-    pub(crate) fn get_string<S>(&mut self, s: S) -> MetadataSlot
+    pub(crate) fn intern_string<S>(&mut self, s: S) -> MetadataSlot
     where
         S: Into<String>,
     {
@@ -3152,7 +3152,7 @@ impl MetadataStore {
     }
 
     /// Create a tuple node with explicit distinctness.
-    pub(crate) fn get_tuple_with_distinct(
+    pub(crate) fn push_tuple(
         &mut self,
         distinct: bool,
         operands: Vec<MetadataId<StoredBrand>>,
@@ -3163,14 +3163,14 @@ impl MetadataStore {
     }
 
     /// Store a typed constant metadata operand.
-    pub(crate) fn get_constant(&mut self, value: ValueId<StoredBrand>) -> MetadataSlot {
+    pub(crate) fn push_constant(&mut self, value: ValueId<StoredBrand>) -> MetadataSlot {
         let id = MetadataSlot(self.nodes.len());
         self.nodes.push(MetadataKind::Constant(value));
         id
     }
 
     /// Create a specialized `DI*` metadata node.
-    pub(crate) fn get_specialized(
+    pub(crate) fn push_specialized(
         &mut self,
         node: SpecializedMetadataNode<StoredBrand>,
     ) -> MetadataSlot {
@@ -3184,9 +3184,9 @@ impl MetadataStore {
     /// `DIArgList::get` uniques, but its operands may be function-local values,
     /// so two lists that look alike across functions are not the same node.
     /// This keeps them distinct by construction — the same choice
-    /// [`get_specialized`](Self::get_specialized) makes, and for the same
+    /// [`push_specialized`](Self::push_specialized) makes, and for the same
     /// reason.
-    pub(crate) fn get_arg_list(&mut self, arguments: Vec<ValueId<StoredBrand>>) -> MetadataSlot {
+    pub(crate) fn push_arg_list(&mut self, arguments: Vec<ValueId<StoredBrand>>) -> MetadataSlot {
         let id = MetadataSlot(self.nodes.len());
         self.nodes.push(MetadataKind::ArgList { arguments });
         id

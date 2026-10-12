@@ -1856,7 +1856,11 @@ where
         if name.is_empty() {
             continue;
         }
-        let (id, _) = module.module().context().get_or_create_named_struct(name);
+        let id = module
+            .module()
+            .context()
+            .get_or_create_named_struct(name)
+            .slot();
         return Ok(Some((Type::new(id, module), end + 3)));
     }
     Ok(None)

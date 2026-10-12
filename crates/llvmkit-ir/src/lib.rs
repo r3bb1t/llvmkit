@@ -469,13 +469,13 @@ pub use value_tracking::{
     compute_known_bits_from_context, compute_max_significant_bits, compute_num_sign_bits,
     compute_overflow_for_signed_add, compute_overflow_for_signed_mul,
     compute_overflow_for_signed_sub, compute_overflow_for_unsigned_add,
-    compute_overflow_for_unsigned_mul, compute_overflow_for_unsigned_sub, get_vscale_range,
-    have_no_common_bits_set, implies_poison, is_known_inversion, is_known_negation,
-    is_known_negative, is_known_non_equal, is_known_non_negative, is_known_non_zero,
-    is_known_not_poison, is_known_not_undef, is_known_not_undef_or_poison, is_known_one,
-    is_known_positive, is_known_to_be_a_power_of_two, is_known_zero,
-    is_only_used_in_zero_comparison, is_only_used_in_zero_equality_comparison, is_sign_bit_check,
-    known_bits_from_operator, masked_value_is_zero, propagates_poison, strip_null_test,
+    compute_overflow_for_unsigned_mul, compute_overflow_for_unsigned_sub, have_no_common_bits_set,
+    implies_poison, is_known_inversion, is_known_negation, is_known_negative, is_known_non_equal,
+    is_known_non_negative, is_known_non_zero, is_known_not_poison, is_known_not_undef,
+    is_known_not_undef_or_poison, is_known_one, is_known_positive, is_known_to_be_a_power_of_two,
+    is_known_zero, is_only_used_in_zero_comparison, is_only_used_in_zero_equality_comparison,
+    is_sign_bit_check, known_bits_from_operator, masked_value_is_zero, propagates_poison,
+    strip_null_test, vscale_range,
 };
 pub use vec_len::{Len, LenDyn, StaticVecLen, VecLen};
 pub use vector_utils::{

@@ -56,10 +56,16 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --no-deps --all-features
 
+      # The test suite is most of the run's minutes, so a push to `dev` gets the
+      # fast checks above (format, licenses, examples, lint, docs) and skips it;
+      # a push to `master`, a pull request, the merge queue and the weekly
+      # schedule run it.
       - name: Test
+        if: github.event_name != 'push' || github.ref == 'refs/heads/master'
         run: cargo test --workspace --all-targets --all-features
 
       - name: Test doc examples
+        if: github.event_name != 'push' || github.ref == 'refs/heads/master'
         run: cargo test --workspace --doc --all-features
 
       - name: Install cargo-audit

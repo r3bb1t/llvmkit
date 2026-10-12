@@ -19,6 +19,36 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed (breaking) — no `get_` getters (C-GETTER)
+
+The naming law — lookups are bare nouns, `get_` only in the std-consistent
+`get_or_insert_*` entry points — had three public exceptions and one
+crate-private one. Renamed, with every call site found by rust-analyzer's
+references:
+
+| Before | After |
+|---|---|
+| `DiFlags::get_flag(spelling)` | `DiFlags::flag(spelling)` |
+| `DispFlags::get_flag(spelling)` | `DispFlags::flag(spelling)` |
+| `llvmkit_ir::get_vscale_range(function, bit_width)` (`value_tracking`) | `llvmkit_ir::vscale_range(function, bit_width)` |
+
+Eleven internal helpers that ported an upstream `getX` under a `get_` name were
+the outliers against the tree's own precedent — a search at `0d0f708` for doc
+comments reading "Mirrors / Ports" followed by a bare backticked upstream
+`getX` name, collecting the `fn` that follows in the IR and parser sources,
+finds 125 functions, and 124 of them drop the `get` (the one that keeps it is
+`get_or_insert_named_metadata`) — and are renamed too: `MetadataStore`'s
+`get_string` / `get_tuple_with_distinct` / `get_constant` / `get_specialized` /
+`get_arg_list` are `intern_string` / `push_tuple` / `push_constant` /
+`push_specialized` / `push_arg_list`; the parser's `get_val`,
+`get_val_as_block_named` / `_numbered` and `get_basic_block_named` / `_numbered`
+are `local_value`, `label_value_named` / `_numbered` and `basic_block_named` /
+`_numbered`; `known_bits`'s `get_max_shift_amount` is `max_shift_amount`. The
+upstream names stay in their "Mirrors" doc comments. What keeps `get_` does so
+on purpose: `MetadataStore::get` / `get_mut` are C-GETTER's own keyed-lookup
+exception, `get_or_create_*` is the get-or-insert shape, and test names repeat
+upstream's `TEST` names.
+
 ### Changed (breaking) — type constructors refuse what LLVM forbids
 
 LLVM's vector constructors `assert` two rules — `FixedVectorType::get` and

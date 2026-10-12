@@ -800,8 +800,11 @@ The CI gate is a *subset* of that list, in this order
 copy of the root `LICENSE`); `check --workspace --examples`; `clippy`; `doc`
 under `RUSTDOCFLAGS=-D warnings`; `test --workspace --all-targets
 --all-features`; `test --workspace --doc --all-features`; `cargo audit`. The
-plain `build` / `build --release` / `test <name>` lines above are local
-convenience, not gates. Reproduce the gate before pushing. Baseline on the pin:
+two `test` steps run on a push to `master`, a pull request, the merge queue and
+the weekly schedule, and are skipped on a push to `dev` (they are most of a
+run's minutes), so a green `dev` run means the fast checks passed, not the
+suite. The plain `build` / `build --release` / `test <name>` lines above are
+local convenience, not gates. Reproduce the gate before pushing. Baseline on the pin:
 **zero failures, zero warnings, zero trybuild mismatches** — no totals given,
 because they moved on nearly every commit and were stale more often than not.
 

@@ -29,6 +29,25 @@ use crate::instr_types::{CallAttributeData, CallAttributesSlot};
 use crate::r#type::{StructBody, TypeData, TypeSlot};
 use crate::value::{ValueData, ValueKindData, ValueSlot};
 
+/// What [`Context::get_or_create_named_struct`] answered with: the identified
+/// struct already registered under the name, or the bodiless one it created.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NamedStructSlot {
+    /// A struct of that name was already registered; its body may be set.
+    Existing(TypeSlot),
+    /// No struct had that name; this one was just created, with no body.
+    Created(TypeSlot),
+}
+
+impl NamedStructSlot {
+    /// The struct's slot, whichever way it was obtained.
+    pub(crate) const fn slot(self) -> TypeSlot {
+        match self {
+            Self::Existing(slot) | Self::Created(slot) => slot,
+        }
+    }
+}
+
 pub(crate) struct Context {
     /// Backing arena. `&TypeData` borrows are stable for the lifetime of
     /// the owning module thanks to `boxcar::Vec`'s segmented storage.
@@ -426,9 +445,13 @@ impl Context {
         id
     }
 
-    pub(crate) fn get_or_create_named_struct(&self, name: &str) -> (TypeSlot, bool) {
+    /// The identified struct type named `name`: the one already registered,
+    /// or a fresh one with no body. The variant says which, so a caller that
+    /// cares (`Module::opaque_struct`, which refuses a name whose struct
+    /// already has a body) cannot misread a positional flag.
+    pub(crate) fn get_or_create_named_struct(&self, name: &str) -> NamedStructSlot {
         if let Some(&id) = self.named_struct_types.borrow().get(name) {
-            return (id, true);
+            return NamedStructSlot::Existing(id);
         }
         let id = self.push(TypeData::Struct(crate::r#type::StructTypeData {
             identity: crate::r#type::StructIdentity::Identified {
@@ -440,7 +463,7 @@ impl Context {
             .borrow_mut()
             .insert(name.to_owned(), id);
         self.named_struct_order.borrow_mut().push(id);
-        (id, false)
+        NamedStructSlot::Created(id)
     }
 
     /// An identified struct with no name — what `%0 = type { i32 }` is.
@@ -481,7 +504,7 @@ impl Context {
         None
     }
 
-    pub(crate) fn get_named_struct(&self, name: &str) -> Option<TypeSlot> {
+    pub(crate) fn named_struct(&self, name: &str) -> Option<TypeSlot> {
         self.named_struct_types.borrow().get(name).copied()
     }
 

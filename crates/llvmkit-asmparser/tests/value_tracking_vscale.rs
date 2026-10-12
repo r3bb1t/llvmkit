@@ -33,7 +33,7 @@
 use llvmkit_asmparser::parser;
 use llvmkit_ir::{
     ApInt, ConstantRange, DynBrand, Module, Unverified, ValueTrackingQuery, compute_known_bits,
-    get_vscale_range, is_known_to_be_a_power_of_two,
+    is_known_to_be_a_power_of_two, vscale_range,
 };
 
 const SOURCE: &str = "\
@@ -71,7 +71,7 @@ fn range(module: &Module<DynBrand, Unverified>, name: &str, bit_width: u32) -> C
         .find(|f| f.name().as_deref() == Some(name))
         .unwrap_or_else(|| panic!("fixture defines @{name}"))
         .id();
-    get_vscale_range(module.view(id), bit_width).expect("the fixture's ranges are all well-formed")
+    vscale_range(module.view(id), bit_width).expect("the fixture's ranges are all well-formed")
 }
 
 fn width_32(low: u64, high: u64) -> ConstantRange {
