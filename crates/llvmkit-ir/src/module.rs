@@ -89,7 +89,7 @@ use super::intrinsics::{
     IntrinsicDescriptor, IntrinsicId, IntrinsicNameResolution, descriptor_for_name,
     resolve_intrinsic_name,
 };
-use super::llvm_context::Context;
+use super::llvm_context::{Context, NamedStructSlot};
 use super::marker::Dyn;
 use super::marker::ReturnMarker;
 use super::metadata::{
@@ -950,7 +950,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
         self,
         name: &str,
     ) -> StructType<'ctx, StructBodyDyn, B, C> {
-        let (id, _existed) = self.core.ctx.get_or_create_named_struct(name);
+        let id = self.core.ctx.get_or_create_named_struct(name).slot();
         StructType::new(id, self)
     }
 
@@ -986,7 +986,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
             .iter()
             .map(|t| t.slot_trusting_same_module())
             .collect();
-        let (id, _existed) = self.core.ctx.get_or_create_named_struct(S::NAME);
+        let id = self.core.ctx.get_or_create_named_struct(S::NAME).slot();
         let data = self
             .core
             .ctx
@@ -4461,8 +4461,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     }
 
     pub fn opaque_struct(&'ctx self, name: &str) -> IrResult<StructType<'ctx, Opaque, B>> {
-        let (id, existed) = self.core().ctx.get_or_create_named_struct(name);
-        if existed {
+        let found = self.core().ctx.get_or_create_named_struct(name);
+        if let NamedStructSlot::Existing(id) = found {
             let s = self
                 .core()
                 .ctx
@@ -4475,7 +4475,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
                 });
             }
         }
-        Ok(StructType::new(id, self.capability_ref()))
+        Ok(StructType::new(found.slot(), self.capability_ref()))
     }
 
     /// Look up an existing identified struct type by name. Delegates to
