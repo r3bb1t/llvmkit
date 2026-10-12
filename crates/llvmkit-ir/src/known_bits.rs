@@ -1520,7 +1520,7 @@ fn low_u32(value: &ApInt) -> u32 {
     u32::try_from(value.zext_or_trunc(32).try_zext_u64().unwrap_or(0)).unwrap_or(0)
 }
 
-fn get_max_shift_amount(max_value: &ApInt, bit_width: u32) -> u32 {
+fn max_shift_amount(max_value: &ApInt, bit_width: u32) -> u32 {
     if bit_width == 0 {
         return 0;
     }
@@ -1562,7 +1562,7 @@ fn compute_for_shl(
         }
         return known;
     }
-    let mut max_shift = get_max_shift_amount(&rhs.max_value(), bit_width);
+    let mut max_shift = max_shift_amount(&rhs.max_value(), bit_width);
     if nuw && nsw {
         max_shift = max_shift.min(lhs.count_max_leading_zeros().saturating_sub(1));
     }
@@ -1642,7 +1642,7 @@ fn compute_for_lshr(
         known.zero.set_high_bits(min_shift);
         return known;
     }
-    let mut max_shift = get_max_shift_amount(&rhs.max_value(), bit_width);
+    let mut max_shift = max_shift_amount(&rhs.max_value(), bit_width);
     if exact {
         let first_one = lhs.count_max_trailing_zeros();
         if first_one < min_shift {
@@ -1698,7 +1698,7 @@ fn compute_for_ashr(
         }
         return known;
     }
-    let mut max_shift = get_max_shift_amount(&rhs.max_value(), bit_width);
+    let mut max_shift = max_shift_amount(&rhs.max_value(), bit_width);
     if exact {
         let first_one = lhs.count_max_trailing_zeros();
         if first_one < min_shift {

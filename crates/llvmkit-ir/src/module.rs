@@ -2929,7 +2929,7 @@ impl<'ctx> ModuleCore {
         B: ModuleBrand,
         S: Into<String>,
     {
-        let slot = self.metadata.borrow_mut().get_string(s);
+        let slot = self.metadata.borrow_mut().intern_string(s);
         MetadataId::from_raw(self.id, slot)
     }
 
@@ -2961,10 +2961,7 @@ impl<'ctx> ModuleCore {
             .iter()
             .map(|id| id.into_stored(self.id))
             .collect::<IrResult<Vec<_>>>()?;
-        let slot = self
-            .metadata
-            .borrow_mut()
-            .get_tuple_with_distinct(distinct, operands);
+        let slot = self.metadata.borrow_mut().push_tuple(distinct, operands);
         Ok(MetadataId::from_raw(self.id, slot))
     }
 
@@ -2977,7 +2974,7 @@ impl<'ctx> ModuleCore {
         B: ModuleBrand,
     {
         let node = node.into_stored(self.id)?;
-        let slot = self.metadata.borrow_mut().get_specialized(node);
+        let slot = self.metadata.borrow_mut().push_specialized(node);
         Ok(MetadataId::from_raw(self.id, slot))
     }
 
@@ -2990,14 +2987,13 @@ impl<'ctx> ModuleCore {
         let (slot, value_use) = {
             let mut store = self.metadata.borrow_mut();
             match kind {
-                MetadataKind::String(s) => (store.get_string(s), Vec::new()),
-                MetadataKind::Tuple { distinct, operands } => (
-                    store.get_tuple_with_distinct(distinct, operands),
-                    Vec::new(),
-                ),
-                MetadataKind::Specialized(node) => (store.get_specialized(node), Vec::new()),
+                MetadataKind::String(s) => (store.intern_string(s), Vec::new()),
+                MetadataKind::Tuple { distinct, operands } => {
+                    (store.push_tuple(distinct, operands), Vec::new())
+                }
+                MetadataKind::Specialized(node) => (store.push_specialized(node), Vec::new()),
                 MetadataKind::Constant(value_id) => {
-                    let slot = store.get_constant(value_id);
+                    let slot = store.push_constant(value_id);
                     (slot, vec![value_id.slot_trusting_same_module()])
                 }
                 MetadataKind::Ref(id) => (id.slot_trusting_same_module(), Vec::new()),
@@ -3013,7 +3009,7 @@ impl<'ctx> ModuleCore {
                         .iter()
                         .map(|id| id.slot_trusting_same_module())
                         .collect();
-                    let slot = store.get_arg_list(arguments);
+                    let slot = store.push_arg_list(arguments);
                     (slot, uses)
                 }
             }
@@ -3108,7 +3104,7 @@ impl<'ctx> ModuleCore {
         let slot = self
             .metadata
             .borrow_mut()
-            .get_constant(ValueId::from_raw(self.id, value_id));
+            .push_constant(ValueId::from_raw(self.id, value_id));
         self.register_metadata_value_use(slot, value_id);
         MetadataId::from_raw(self.id, slot)
     }
