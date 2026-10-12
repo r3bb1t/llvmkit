@@ -2057,7 +2057,7 @@ impl DiFlags {
     /// Mirrors `DINode::getFlag`: the flag a `DIFlag*` spelling names, or
     /// [`Self::ZERO`] for one the table does not carry. Callers reject a zero
     /// result, which is how `DIFlagZero` itself is refused upstream.
-    pub fn get_flag(spelling: &str) -> Self {
+    pub fn flag(spelling: &str) -> Self {
         Self(flag_bit(crate::dwarf::di_flag, spelling))
     }
 
@@ -2161,7 +2161,7 @@ impl DispFlags {
     }
 
     /// Mirrors `DISubprogram::getFlag`.
-    pub fn get_flag(spelling: &str) -> Self {
+    pub fn flag(spelling: &str) -> Self {
         Self(flag_bit(crate::dwarf::disp_flag, spelling))
     }
 

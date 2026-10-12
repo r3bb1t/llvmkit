@@ -372,7 +372,7 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
         "getUnderlyingObjectsForCodeGen",
         "underlying_objects_for_code_gen",
     ),
-    ("getVScaleRange", "get_vscale_range"),
+    ("getVScaleRange", "vscale_range"),
     ("haveNoCommonBitsSet", "have_no_common_bits_set"),
     ("impliesPoison", "implies_poison"),
     ("intrinsicPropagatesPoison", "intrinsic_propagates_poison"),
@@ -740,13 +740,13 @@ fn exercises_every_modeled_value_tracking_entry_point() {
         compute_max_significant_bits, compute_num_sign_bits, compute_overflow_for_signed_add,
         compute_overflow_for_signed_mul, compute_overflow_for_signed_sub,
         compute_overflow_for_unsigned_add, compute_overflow_for_unsigned_mul,
-        compute_overflow_for_unsigned_sub, get_vscale_range, have_no_common_bits_set,
-        implies_poison, is_known_inversion, is_known_negation, is_known_negative,
-        is_known_non_equal, is_known_non_negative, is_known_non_zero, is_known_not_poison,
-        is_known_not_undef, is_known_not_undef_or_poison, is_known_one, is_known_positive,
+        compute_overflow_for_unsigned_sub, have_no_common_bits_set, implies_poison,
+        is_known_inversion, is_known_negation, is_known_negative, is_known_non_equal,
+        is_known_non_negative, is_known_non_zero, is_known_not_poison, is_known_not_undef,
+        is_known_not_undef_or_poison, is_known_one, is_known_positive,
         is_known_to_be_a_power_of_two, is_known_zero, is_only_used_in_zero_comparison,
         is_only_used_in_zero_equality_comparison, is_sign_bit_check, masked_value_is_zero,
-        propagates_poison,
+        propagates_poison, vscale_range,
     };
 
     let _compute_known_bits = compute_known_bits::<DynBrand, ReadOnly>;
@@ -770,7 +770,7 @@ fn exercises_every_modeled_value_tracking_entry_point() {
     let _compute_overflow_for_unsigned_sub =
         compute_overflow_for_unsigned_sub::<DynBrand, ReadOnly>;
     // Takes a `FunctionValue<R, B>`, so both markers have to be named.
-    let _get_vscale_range = get_vscale_range::<llvmkit_ir::Dyn, DynBrand, ReadOnly>;
+    let _vscale_range = vscale_range::<llvmkit_ir::Dyn, DynBrand, ReadOnly>;
     let _is_known_non_zero = is_known_non_zero::<DynBrand, ReadOnly>;
     let _masked_value_is_zero = masked_value_is_zero::<DynBrand, ReadOnly>;
     let _have_no_common_bits_set = have_no_common_bits_set::<DynBrand, ReadOnly>;

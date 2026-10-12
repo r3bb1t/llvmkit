@@ -966,7 +966,7 @@ is the honest record.
 | expose-only | 2 | `matchSimpleRecurrence` and `computeKnownBitsFromRangeMetadata` already exist as crate-private helpers |
 | ~~`getInverseMinMaxIntrinsic`~~ | 0 | **done** — all ten arms, see below |
 | sibling | 1 | `matchSimpleBinaryIntrinsicRecurrence` |
-| ~~blocked~~ | 0 | **done** — `getVScaleRange` is `value_tracking::get_vscale_range`; the "blocked" reason was false, see item 3 below |
+| ~~blocked~~ | 0 | **done** — `getVScaleRange` is `value_tracking::vscale_range`; the "blocked" reason was false, see item 3 below |
 
 ### Found while porting tranche 4b: three sites inherited one false premise — **closed 2026-08-04**
 
@@ -1200,7 +1200,7 @@ because nothing re-derives a blocker before it is used to schedule.
    parser. All three clauses were false: the list is empty, the payload is
    `Attribute::VScaleRange { min: u32, max: Option<u32> }`, and
    `parser_attribute_matrix.rs` round-trips `vscale_range(1, 16)`. It is ported
-   as `value_tracking::get_vscale_range`.)
+   as `value_tracking::vscale_range`.)
 4. **`analyzeKnownFPClassFromSelect` (1)** never closes: there is no upstream
    definition to port. It is recorded, not scheduled.
 
@@ -1442,7 +1442,7 @@ sequenced:
    | 3d-iv ✅ | 8 | **done 2026-08-02**: the saturating family. Six share one frame (`saturating_pairwise`); `smul_sat` needs all four corners and `sshl_sat` picks its shift by endpoint sign. |
    | 3d-v ✅ | 3 | **done 2026-08-02**: `ctlz`, `cttz`, `ctpop` (`abs` landed in 3d-ii). |
    | 3d-vi ✅ | 8 | **done 2026-08-02**: `binary_op`, `overflowing_binary_op`, `intrinsic`, `is_intrinsic_supported`, `add_with_no_wrap`, `sub_with_no_wrap`, `multiply_with_no_wrap`, `smul_fast`. **`shlWithNoWrap` is not ported** — it is three helper functions (`computeShlNUW`, `computeShlNSWWithNNegLHS`, `computeShlNSWWithNegLHS`) plus a dispatcher, and no llvmkit caller needs it yet; `overflowing_binary_op` sends `shl` to the plain `shl`, which is sound and only weaker. |
-   | ~~**3e**~~ ✅ | 8 | **done 2026-08-02**: `compute_constant_range`, `compute_constant_range_including_known_bits`, and all six `compute_overflow_for_*`. Also added the five `ConstantRange` overflow predicates (`unsigned_add_may_overflow` and siblings) that an earlier count missed — the real public surface is **83**, not 78; those five span two lines in the header and the extraction grep skipped them. `getVScaleRange` was recorded here as unported and blocked on `vscale_range`'s "packed `(min, max)` pair" against a "single-`u64` payload" on `attribute_td_drift.rs`'s `NOT_YET_MODELED` list; every clause of that was already false when written, and it is now ported as `value_tracking::get_vscale_range`. |
+   | ~~**3e**~~ ✅ | 8 | **done 2026-08-02**: `compute_constant_range`, `compute_constant_range_including_known_bits`, and all six `compute_overflow_for_*`. Also added the five `ConstantRange` overflow predicates (`unsigned_add_may_overflow` and siblings) that an earlier count missed — the real public surface is **83**, not 78; those five span two lines in the header and the extraction grep skipped them. `getVScaleRange` was recorded here as unported and blocked on `vscale_range`'s "packed `(min, max)` pair" against a "single-`u64` payload" on `attribute_td_drift.rs`'s `NOT_YET_MODELED` list; every clause of that was already false when written, and it is now ported as `value_tracking::vscale_range`. |
 
    `ConstantRangeTest.cpp` (~2800 lines) is the test source throughout; its
    exhaustive-over-4-bit-ranges harness ports directly and is the right

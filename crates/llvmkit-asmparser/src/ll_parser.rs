@@ -6639,7 +6639,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Err(self.expected("debug info flag"));
         };
         let spelling = (*spelling).to_owned();
-        let value = DiFlags::get_flag(&spelling);
+        let value = DiFlags::flag(&spelling);
         if value == DiFlags::ZERO {
             return Err(ParseError::InvalidMetadataFieldValue {
                 what: MetadataKeywordFamily::DebugInfoFlag,
@@ -6678,7 +6678,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Err(self.expected("debug info flag"));
         };
         let spelling = (*spelling).to_owned();
-        let value = DispFlags::get_flag(&spelling);
+        let value = DispFlags::flag(&spelling);
         if value == DispFlags::ZERO {
             return Err(ParseError::InvalidMetadataFieldValue {
                 what: MetadataKeywordFamily::SubprogramDebugInfoFlag,

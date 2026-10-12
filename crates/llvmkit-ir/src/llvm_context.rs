@@ -481,7 +481,7 @@ impl Context {
         None
     }
 
-    pub(crate) fn get_named_struct(&self, name: &str) -> Option<TypeSlot> {
+    pub(crate) fn named_struct(&self, name: &str) -> Option<TypeSlot> {
         self.named_struct_types.borrow().get(name).copied()
     }
 

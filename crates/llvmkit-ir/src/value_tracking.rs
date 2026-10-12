@@ -1337,7 +1337,7 @@ fn intrinsic_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             let Some(function) = enclosing_function(anchor) else {
                 return Ok(KnownBits::unknown(width));
             };
-            Ok(get_vscale_range(function, width)?.to_known_bits())
+            Ok(vscale_range(function, width)?.to_known_bits())
         }
         _ => Ok(KnownBits::unknown(width)),
     }
@@ -1358,7 +1358,7 @@ fn intrinsic_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 /// `ConstantRange` constructor and llvmkit returns the error instead. The one
 /// input that can trip it is a `vscale_range(min, max)` with `max + 1 == min`,
 /// which the verifier rejects.
-pub fn get_vscale_range<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability>(
+pub fn vscale_range<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability>(
     function: FunctionValue<'ctx, R, B, C>,
     bit_width: u32,
 ) -> IrResult<ConstantRange> {

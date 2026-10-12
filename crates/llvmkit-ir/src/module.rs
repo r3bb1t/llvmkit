@@ -965,7 +965,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
     pub(super) fn named_struct(self, name: &str) -> Option<StructType<'ctx, StructBodyDyn, B, C>> {
         self.core
             .ctx
-            .get_named_struct(name)
+            .named_struct(name)
             .map(|id| StructType::new(id, self))
     }
 

@@ -19,6 +19,24 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed (breaking) — no `get_` getters (C-GETTER)
+
+The naming law — lookups are bare nouns, `get_` only in the std-consistent
+`get_or_insert_*` entry points — had three public exceptions and one
+crate-private one. Renamed, with every call site found by rust-analyzer's
+references:
+
+| Before | After |
+|---|---|
+| `DiFlags::get_flag(spelling)` | `DiFlags::flag(spelling)` |
+| `DispFlags::get_flag(spelling)` | `DispFlags::flag(spelling)` |
+| `llvmkit_ir::get_vscale_range(function, bit_width)` (`value_tracking`) | `llvmkit_ir::vscale_range(function, bit_width)` |
+
+The `get_`-named functions that remain are not getters: the metadata uniquing
+constructors and the parser's `get_val` / `get_basic_block_*` port upstream's
+create-or-reuse `MDString::get` / `LLParser::getVal` / `getBB`, `get_mut` and
+`get_or_*` follow std, and test names follow upstream's `TEST` names.
+
 ### Changed (breaking) — type constructors refuse what LLVM forbids
 
 LLVM's vector constructors `assert` two rules — `FixedVectorType::get` and
