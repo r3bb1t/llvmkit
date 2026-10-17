@@ -183,10 +183,29 @@ and printed.
   whose element is first-class yet no array element (`[x86_amx undef, x86_amx
   undef]`, `[token none, token none]`) — which upstream's
   `LLParser::parseValID` hands to the asserting `ArrayType::get` — is refused
-  at its first element as `expected array constant: invalid array element
-  type: x86_amx`; llvmkit built the array and then reported
+  where that assert fires, before the element-agreement loop, with the arm's
+  own diagnostic at its first element: `invalid array element type: x86_amx`
+  (`docs/divergences.md` D18). llvmkit built the array and then reported
   `constant expression type mismatch` against the demanded type, as a release
-  build of upstream does.
+  build of upstream does. The arm's `isFirstClassType` guard moved out of the
+  shared element-agreement helper into the arm, in upstream's order.
+- **Intrinsic names (rejects-valid, parser included).** A known intrinsic's
+  declaration — `Module::get_or_insert_intrinsic_declaration_by_name`, and the
+  parser's `declare` — is checked against the descriptor its name demangles
+  to, and the demangler refused two names upstream writes. It read no
+  zero-length array: the `llvm.ssa.copy.a0i32` that the mangler writes for a
+  `[0 x i32]` overload, as `getMangledTypeStr` does, was a signature mismatch.
+  And its `taarch64.svcountt` arm reported the length of the text after the
+  spelling as the length it read, so
+  `test/CodeGen/AArch64/sve-intrinsics-reinterpret.ll`'s
+  `declare <vscale x 16 x i1> @llvm.aarch64.sve.convert.to.svbool.taarch64.svcountt(target("aarch64.svcount"))`
+  did not parse. Both read now. The mangler no longer invents spellings
+  `getMangledTypeStr` does not have — it wrote `token`, `label`, and `p0` for a
+  typed pointer (which is no `PointerType` upstream), where upstream reaches
+  `llvm_unreachable("Unhandled type")`; an overload of one of those types is
+  now `IrError::IntrinsicSignatureMismatch`. The demangler reads `exnref`,
+  which the mangler spells for llvmkit's own `exnref` type
+  (`docs/divergences.md` entry 103).
 - Call sites: rust-analyzer `findReferences` at `bb7e518` found 48 calls of
   `Module::array_type` (45 in tests, 3 in the parser) and 1 of
   `ModuleView::array_type`; 38 moved to `ArrayType::of`, the rest check with
@@ -200,9 +219,16 @@ and printed.
 
 Tests: `type_components.rs` (`a_typed_array_takes_any_valid_element`,
 `an_erased_array_refuses_an_invalid_element`,
-`an_intrinsic_name_cannot_spell_an_invalid_array`),
+`an_intrinsic_name_cannot_spell_an_invalid_array`,
+`an_intrinsic_name_can_spell_a_zero_length_array`),
 `cross_module_handles.rs::the_array_constructors_reject_an_element_from_another_module`,
 `intrinsics.rs::tests::the_array_helper_refuses_an_invalid_element_as_a_mismatch`,
+`intrinsics.rs::tests::every_mangled_type_demangles_to_itself` (the
+mangler/demangler round trip whose absence let the zero-length array and the
+`svcount` length through),
+the whole-file corpus rows for `test/CodeGen/AArch64/sve-intrinsics-reinterpret.ll`
+and `test/CodeGen/SPIRV/hlsl-resources/test_counters.ll` (which declares four
+intrinsics over a `spirv.VulkanBuffer` of `[0 x float]`, spelled `a0f32`),
 `type_validity.rs::an_array_constant_of_a_non_array_element_is_refused_at_its_first_element`
 and the trybuild fixture `array_of_label_element.rs`. `type_validity.rs`'s
 agreement law drops its 6 array known disagreements: the cells built but not

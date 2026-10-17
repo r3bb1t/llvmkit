@@ -696,7 +696,12 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IntrinsicDescriptor<'ctx, B, C>
         let mut name = self.id.base_name().to_owned();
         for overload in &self.overloads {
             name.push('.');
-            append_mangled_type(*overload, &mut name)?;
+            append_mangled_type(*overload, &mut name).map_err(|why| match why {
+                Unmangleable::UnnamedStruct => IrError::InvalidOperation {
+                    message: "unnamed intrinsic overload type requires unique module naming",
+                },
+                Unmangleable::Unhandled => intrinsic_mismatch_for_id(self.id),
+            })?;
         }
         Ok(name)
     }
@@ -920,11 +925,28 @@ fn ap_int_from_i64(bits: u32, value: i64) -> IrResult<crate::ApInt> {
     )
 }
 
+/// Why [`append_mangled_type`] has no spelling for an overload type.
+enum Unmangleable {
+    /// An unnamed struct without a body. `getMangledTypeStr` marks an unnamed
+    /// struct `HasUnnamedType` and leaves the module to give the intrinsic a
+    /// unique name, which llvmkit does not do.
+    UnnamedStruct,
+    /// A type `getMangledTypeStr` reaches its `llvm_unreachable("Unhandled
+    /// type")` arm with: `token`, `label`, and a typed pointer, which is not a
+    /// `PointerType` and has no arm of its own.
+    Unhandled,
+}
+
+/// Mirrors `getMangledTypeStr` (`lib/IR/Intrinsics.cpp`), refusing what it
+/// cannot spell rather than reaching its `llvm_unreachable`.
 fn append_mangled_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     ty: Type<'ctx, B, C>,
     out: &mut String,
-) -> IrResult<()> {
+) -> Result<(), Unmangleable> {
     match ty.data() {
+        TypeData::Token | TypeData::Label | TypeData::TypedPointer { .. } => {
+            return Err(Unmangleable::Unhandled);
+        }
         TypeData::Void => out.push_str("isVoid"),
         TypeData::Half => out.push_str("f16"),
         TypeData::Bfloat => out.push_str("bf16"),
@@ -936,17 +958,11 @@ fn append_mangled_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         TypeData::X86Amx => out.push_str("x86amx"),
         TypeData::WasmExnRef => out.push_str("exnref"),
         TypeData::Metadata => out.push_str("Metadata"),
-        TypeData::Token => out.push_str("token"),
-        TypeData::Label => out.push_str("label"),
         TypeData::Integer { bits } => {
             out.push('i');
             out.push_str(&bits.to_string());
         }
         TypeData::Pointer { addr_space } => {
-            out.push('p');
-            out.push_str(&addr_space.to_string());
-        }
-        TypeData::TypedPointer { addr_space, .. } => {
             out.push('p');
             out.push_str(&addr_space.to_string());
         }
@@ -988,9 +1004,7 @@ fn append_mangled_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                 return Ok(());
             }
             let Some(body) = data.body.borrow().clone() else {
-                return Err(IrError::InvalidOperation {
-                    message: "unnamed intrinsic overload type requires unique module naming",
-                });
+                return Err(Unmangleable::UnnamedStruct);
             };
             out.push_str("sl_");
             for elem in &body.elements {
@@ -1665,6 +1679,12 @@ where
         ),
         ("Metadata", metadata_type(module)),
         ("isVoid", void_type(module)),
+        // llvmkit-only, like the type (`docs/divergences.md` entry 103):
+        // `append_mangled_type` spells it, so it reads back.
+        (
+            "exnref",
+            Type::new(module.module().context().wasm_exnref(), module),
+        ),
         (
             "bf16",
             Type::new(module.module().context().bfloat(), module),
@@ -1683,8 +1703,12 @@ where
         }
     }
 
-    if let Some(consumed) = text.strip_prefix("taarch64.svcountt").map(str::len) {
-        return Ok((target_ext_type(module, "aarch64.svcount", [], []), consumed));
+    const SVCOUNT: &str = "taarch64.svcountt";
+    if text.starts_with(SVCOUNT) {
+        return Ok((
+            target_ext_type(module, "aarch64.svcount", [], []),
+            SVCOUNT.len(),
+        ));
     }
 
     if let Some(parsed) = parse_function_type_prefix(module, text)? {
@@ -1713,7 +1737,9 @@ where
     // `"a"` arm after them: an array is spelled `"a" + utostr(NumElements)`
     // from an array that exists, so an element no array may hold (`x86amx`,
     // `isVoid` and `Metadata` all demangle above) is refused by
-    // `array_type`, as `ArrayType::get` asserts.
+    // `array_type`, as `ArrayType::get` asserts. A zero length is no such
+    // case: `ArrayType::get` takes one, so `[0 x i32]` is spelled `a0i32`
+    // (`append_mangled_type` writes it too) and `parse_prefixed_u64` reads it.
     if let Some((min, consumed)) = parse_prefixed_lanes(text, "nxv") {
         let (elem, elem_consumed) = parse_mangled_type_prefix(module, &text[consumed..])?;
         return Ok((
@@ -1728,7 +1754,7 @@ where
             consumed + elem_consumed,
         ));
     }
-    if let Some((elements, consumed)) = parse_prefixed_u64(text, "a", false) {
+    if let Some((elements, consumed)) = parse_prefixed_u64(text, "a") {
         let (elem, elem_consumed) = parse_mangled_type_prefix(module, &text[consumed..])?;
         return Ok((
             array_type(module, elem, elements)?,
@@ -1954,16 +1980,15 @@ fn parse_prefixed_lanes(text: &str, prefix: &str) -> Option<(NonZeroU32, usize)>
     Some((NonZeroU32::new(count)?, consumed))
 }
 
-fn parse_prefixed_u64(text: &str, prefix: &str, allow_zero: bool) -> Option<(u64, usize)> {
+/// An array's element count after `prefix`. Zero is a count: `ArrayType::get`
+/// takes one, and `getMangledTypeStr` spells `[0 x i32]` as `a0i32`.
+fn parse_prefixed_u64(text: &str, prefix: &str) -> Option<(u64, usize)> {
     let digits = text.strip_prefix(prefix)?;
     let len = digits.bytes().take_while(u8::is_ascii_digit).count();
     if len == 0 {
         return None;
     }
     let value = digits.get(..len)?.parse().ok()?;
-    if !allow_zero && value == 0 {
-        return None;
-    }
     Some((value, prefix.len() + len))
 }
 
@@ -2799,6 +2824,110 @@ mod tests {
         assert_eq!(array_type(module_ref, void, 2), Err(intrinsic_mismatch()));
         let i32_ty = module.i32_type().as_type();
         array_type(module_ref, i32_ty, 2)?;
+        Ok(())
+    }
+
+    /// Every type `append_mangled_type` spells demangles back to itself and
+    /// consumes its whole spelling — one row per arm of the mangler, with the
+    /// zero-length array and nested shapes among them — and the types
+    /// `getMangledTypeStr` (`lib/IR/Intrinsics.cpp`) has no spelling for are
+    /// refused rather than spelled. The one collision is upstream's own: a
+    /// literal struct is spelled `sl_…s` whether or not it is packed, so a
+    /// packed one demangles to its unpacked twin.
+    ///
+    /// llvmkit-specific law (D10), no upstream counterpart: upstream names a
+    /// declaration from its types and never reads a name back. Its absence let
+    /// the demangler refuse the `a0i32` the mangler writes for `[0 x i32]`,
+    /// let the mangler write `token`, `label` and a typed pointer's `p0`,
+    /// which `getMangledTypeStr` reaches `llvm_unreachable` with, and an
+    /// `exnref` the demangler did not read, and let the demangler's
+    /// `taarch64.svcountt` arm report the length of the text after the
+    /// spelling as the length it read — so the
+    /// `llvm.aarch64.sve.convert.to.svbool.taarch64.svcountt` that
+    /// `test/CodeGen/AArch64/sve-intrinsics-reinterpret.ll` declares did not
+    /// demangle.
+    #[test]
+    fn every_mangled_type_demangles_to_itself() -> IrResult<()> {
+        let module = crate::module_new!("intrinsic-mangling")?;
+        let module_ref = module.capability_ref();
+        let context = module_ref.module().context();
+        let i32_ty = module.i32_type().as_type();
+        let f32_ty = module.f32_type().as_type();
+        let ptr_ty = ptr_type(module_ref, 0);
+        let spelled = [
+            void_type(module_ref),
+            metadata_type(module_ref),
+            module.half_type().as_type(),
+            module.bfloat_type().as_type(),
+            f32_ty,
+            module.f64_type().as_type(),
+            module.x86_fp80_type().as_type(),
+            module.fp128_type().as_type(),
+            module.ppc_fp128_type().as_type(),
+            Type::new(context.x86_amx(), module_ref),
+            Type::new(context.wasm_exnref(), module_ref),
+            module.i1_type().as_type(),
+            i32_ty,
+            int_type(module_ref, 128),
+            ptr_ty,
+            ptr_type(module_ref, 3),
+            array_type(module_ref, i32_ty, 0)?,
+            array_type(module_ref, i32_ty, 2)?,
+            array_type(module_ref, array_type(module_ref, f32_ty, 3)?, 2)?,
+            fixed_vector_type(module_ref, i32_ty, lanes::<4>())?,
+            fixed_vector_type(module_ref, ptr_ty, lanes::<2>())?,
+            scalable_vector_type(module_ref, module.i64_type().as_type(), lanes::<2>())?,
+            array_type(
+                module_ref,
+                fixed_vector_type(module_ref, f32_ty, lanes::<4>())?,
+                2,
+            )?,
+            fn_type_with_var_arg(module_ref, i32_ty, [i32_ty, ptr_ty], false)?.as_type(),
+            fn_type_with_var_arg(module_ref, void_type(module_ref), [i32_ty], true)?.as_type(),
+            module.struct_type([i32_ty, ptr_ty]).as_type(),
+            module.opaque_struct("named")?.as_type(),
+            target_ext_type(module_ref, "aarch64.svcount", [], []),
+            target_ext_type(module_ref, "spirv.Image", [void_type(module_ref)], [0, 1]),
+        ];
+        for ty in spelled {
+            let mut name = String::new();
+            assert!(
+                append_mangled_type(ty, &mut name).is_ok(),
+                "`{ty}` has a spelling"
+            );
+            let (back, consumed) = parse_mangled_type_prefix(module_ref, &name)?;
+            assert_eq!((back, consumed), (ty, name.len()), "`{name}` spells `{ty}`");
+            // As one overload of several: the prefix ends where the spelling
+            // does, which is what the overload-list demangler slices on.
+            let followed = format!("{name}.i32");
+            let (back, consumed) = parse_mangled_type_prefix(module_ref, &followed)?;
+            assert_eq!(
+                (back, consumed),
+                (ty, name.len()),
+                "`{followed}` starts with `{ty}`"
+            );
+        }
+
+        let packed = module.packed_struct_type([i32_ty]).as_type();
+        let mut name = String::new();
+        assert!(append_mangled_type(packed, &mut name).is_ok());
+        assert_eq!(name, "sl_i32s");
+        let (back, _) = parse_mangled_type_prefix(module_ref, &name)?;
+        assert_eq!(back, module.struct_type([i32_ty]).as_type());
+
+        for ty in [
+            Type::new(context.token(), module_ref),
+            Type::new(context.label(), module_ref),
+            module.typed_pointer_type(i32_ty, 0).as_type(),
+        ] {
+            assert!(
+                matches!(
+                    append_mangled_type(ty, &mut String::new()),
+                    Err(Unmangleable::Unhandled)
+                ),
+                "`{ty}` has no `getMangledTypeStr` spelling"
+            );
+        }
         Ok(())
     }
 

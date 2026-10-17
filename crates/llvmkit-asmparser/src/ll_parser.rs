@@ -8323,19 +8323,28 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     // element type to derive, so the check is deferred.
                     return Ok(ValIdKind::EmptyArray);
                 }
-                self.check_aggregate_elements(&values, "array", first_elt_loc)?;
                 let element_ty = values[0].ty();
+                let invalid_element = || ParseError::Message {
+                    message: format!("invalid array element type: {element_ty}").into(),
+                    loc: first_elt_loc,
+                };
+                if !element_ty.is_first_class() {
+                    return Err(invalid_element());
+                }
                 let len = u64::try_from(values.len()).unwrap_or(u64::MAX);
-                // Upstream calls `ArrayType::get` here, and its
-                // `isValidElementType` assert is the only check an element
-                // that is first-class yet no array element (`token none`,
-                // `x86_amx undef`) meets. The builder refuses it instead, and
-                // the refusal is reported at the first element, where the
-                // `isFirstClassType` diagnostic is anchored.
-                let c = self
-                    .module
-                    .array_type(element_ty, len)
-                    .map_err(|e| self.builder_err_at(first_elt_loc, "array constant", e))?
+                // `ArrayType::get`, whose `isValidElementType` assert is the
+                // only check an element that is first-class yet no array
+                // element (`token none`, `x86_amx undef`) meets. The checked
+                // constructor refuses it here, before the element loop as the
+                // assert fires, and the refusal is the guard's own diagnostic
+                // (`docs/divergences.md`, D18).
+                let array_ty = match self.module.array_type(element_ty, len) {
+                    Ok(array_ty) => array_ty,
+                    Err(IrError::InvalidTypeComponent { .. }) => return Err(invalid_element()),
+                    Err(e) => return Err(self.builder_err_at(first_elt_loc, "array constant", e)),
+                };
+                self.check_aggregate_elements(&values, "array", first_elt_loc)?;
+                let c = array_ty
                     .const_array(values)
                     .map_err(|e| self.builder_err("array constant", e))?;
                 Ok(ValIdKind::Constant(c.as_constant()))
@@ -8728,12 +8737,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Ok(());
         };
         let element_ty = first.ty();
-        if what == "array" && !element_ty.is_first_class() {
-            return Err(ParseError::Message {
-                message: format!("invalid array element type: {element_ty}").into(),
-                loc: first_elt_loc,
-            });
-        }
         for (index, value) in values.iter().enumerate() {
             if value.ty() != element_ty {
                 return Err(ParseError::Message {

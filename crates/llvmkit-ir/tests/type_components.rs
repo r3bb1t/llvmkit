@@ -2,8 +2,8 @@
 //! them, and the erased routes that refuse to.
 
 use llvmkit_ir::{
-    ArrLenDyn, ArrayType, ConstantFolder, Dyn, ElemDyn, IrBuilder, IrBuilderFolder, IrError,
-    LenDyn, Linkage, Module, ShuffleMaskElem, TypeKindLabel, TypePosition, VectorType,
+    ArrLenDyn, ArrayType, ConstantFolder, Dyn, ElemDyn, IntrinsicId, IrBuilder, IrBuilderFolder,
+    IrError, LenDyn, Linkage, Module, ShuffleMaskElem, TypeKindLabel, TypePosition, VectorType,
     constant_fold_shuffle_vector_instruction, lanes,
 };
 
@@ -220,6 +220,28 @@ fn an_intrinsic_name_cannot_spell_an_invalid_array() {
     }
     m.get_or_insert_intrinsic_declaration_by_name("llvm.ssa.copy.a2i32")
         .expect("`[2 x i32]` is an overload of `llvm.ssa.copy`");
+}
+
+/// An intrinsic name whose overload suffix spells a zero-length array
+/// demangles, and names the declaration the same overload gets by id.
+/// `ArrayType::get` takes a zero length, and `getMangledTypeStr`
+/// (`lib/IR/Intrinsics.cpp`) spells `[0 x i32]` as `"a" + utostr(0) + "i32"`
+/// — which is the name llvmkit's own mangling gives the by-id declaration.
+/// llvmkit-specific regression (D10): the demangler refused a zero count, so
+/// `llvm.ssa.copy.a0i32` was refused as a signature mismatch and the by-name
+/// entry could not read back the name the by-id entry wrote. The `a2i32`
+/// overload in `an_intrinsic_name_cannot_spell_an_invalid_array` is the
+/// nonzero control.
+#[test]
+fn an_intrinsic_name_can_spell_a_zero_length_array() -> Result<(), IrError> {
+    let m = Module::dynamic("components");
+    let ssa_copy = IntrinsicId::lookup("llvm.ssa.copy").expect("`llvm.ssa.copy` is an intrinsic");
+    let empty = ArrayType::of(m.i32_type(), 0).as_type();
+    let by_id = m.get_or_insert_intrinsic_declaration_by_id(ssa_copy, [empty])?;
+    assert_eq!(m.view(by_id).name().as_deref(), Some("llvm.ssa.copy.a0i32"));
+    let by_name = m.get_or_insert_intrinsic_declaration_by_name("llvm.ssa.copy.a0i32")?;
+    assert_eq!(by_name, by_id);
+    Ok(())
 }
 
 /// The builder's `shuffle_vector` refuses an empty mask, whose result would be

@@ -599,6 +599,52 @@ records the difference; it does not schedule work.
 
 ---
 
+## Type constructors
+
+### D18 — An array constant of a non-array element is refused where upstream asserts
+
+**Severity:** wrong-message, against a release build of upstream; an
+assertions build aborts instead.
+**Where:** `crates/llvmkit-asmparser/src/ll_parser.rs` — the `Token::LSquare`
+arm of the value parser, which ports `LLParser::parseValID`'s `lsquare` arm.
+
+**LLVM:** the `lsquare` arm refuses a first element that is not
+`isFirstClassType` with `invalid array element type: <ty>` at the first
+element, then calls `ArrayType::get(Elts[0]->getType(), Elts.size())`, whose
+first statement asserts `isValidElementType`, and only then checks each element
+against element 0. `Type::isFirstClassType` (`lib/IR/Type.cpp`) is false only
+for function types, `void` and opaque structs, so `x86_amx` and `token` pass the
+guard while `ArrayType::isValidElementType` refuses both — `[x86_amx undef,
+x86_amx undef]` and `[token none, token none]` reach the assert. An assertions
+build aborts there. A release build makes `[2 x x86_amx]`, the agreement loop
+passes, and `convertValIDToValue`'s `t_Constant` arm reports `constant
+expression type mismatch: got type '[2 x x86_amx]' but expected '…'` at the
+constant, because no demanded type can be an array that no `.ll` spells
+(derived from the source; no assertions-off LLVM was run).
+
+**llvmkit:** refuses where the assert fires — after the first-class guard,
+before the agreement loop — with the guard's own diagnostic at the same
+anchor: `invalid array element type: x86_amx` at the first element.
+`ModuleRef::array_type` refuses the element with
+`IrError::InvalidTypeComponent`, and the arm reports that refusal as the
+guard's message. So `[x86_amx undef, i32 1]` is refused for its element type
+too, where a release build of upstream reports the loop's `array element #1 is
+not of type 'x86_amx`.
+
+**Why:** llvmkit's array constructor cannot build `[2 x x86_amx]`, a type that
+no parser reads back (Doctrine D10, `README.md`), and llvmkit takes no crash in
+place of an assert.
+The arm must refuse, and the guard's message at the guard's anchor is the
+nearest diagnostic upstream has for an element no array may hold.
+
+**Fix:** none owed — this is hardening of an assert, as D17 is. The entry
+records the message, which no upstream build prints for this input.
+
+**Guarded by:**
+`crates/llvmkit-asmparser/tests/type_validity.rs::an_array_constant_of_a_non_array_element_is_refused_at_its_first_element`.
+
+---
+
 ---
 
 # Inventory
@@ -1087,7 +1133,11 @@ llvmkit-only remainder as attribute keywords.
   silently losing an operand type; `llvmkit-ir` carries `TypeData::WasmExnRef`
   with `Display` printing `exnref`; and the lexer matches `exnref` as a
   `TYPEKEYWORD` so that printed output re-parses. `declare exnref
-  @llvm.wasm.ref.null.exn()` therefore parses here and does not upstream.
+  @llvm.wasm.ref.null.exn()` therefore parses here and does not upstream. For
+  the same reason the intrinsic name mangler (`append_mangled_type`,
+  `crates/llvmkit-ir/src/intrinsics.rs`) spells an `exnref` overload `exnref`
+  and its demangler (`parse_mangled_type_prefix`) reads that back;
+  `intrinsics.rs::tests::every_mangled_type_demangles_to_itself` pins the pair.
 - **Why:** deliberate, and kept as a unit. Dropping the *keyword* alone would
   leave `llvmkit-ir` printing a type `llvmkit-asmparser` cannot read — a
   print-but-not-parse hole in the parser/printer contract, which is worse than

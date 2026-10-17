@@ -105,12 +105,15 @@ fn upstream_target_type_with_the_vector_property_verifies() {
 }
 
 /// An array constant whose elements are first-class yet no array element —
-/// `x86_amx undef`, `token none` — is refused at its first element by the
-/// checked array constructor, reported as a builder error.
+/// `x86_amx undef`, `token none` — is refused at its first element, with the
+/// `lsquare` arm's own `invalid array element type` diagnostic, before the
+/// element-agreement loop runs: a later element of another type does not
+/// change the answer.
 ///
-/// llvmkit-specific regression (D10): `LLParser::parseValID`'s `lsquare` arm
-/// checks only `isFirstClassType` before calling `ArrayType::get`, whose
-/// `isValidElementType` assert is the only check these elements meet; a
+/// llvmkit-specific regression (Doctrine D10; `docs/divergences.md` entry D18):
+/// `LLParser::parseValID`'s `lsquare` arm checks only `isFirstClassType`
+/// before calling `ArrayType::get`, whose `isValidElementType` assert is the
+/// only check these elements meet, and runs its agreement loop after it; a
 /// release build makes `[2 x x86_amx]` and then reports
 /// `convertValIDToValue`'s `constant expression type mismatch`, which is what
 /// llvmkit reported too until its array constructor refused the element. No
@@ -123,11 +126,15 @@ fn an_array_constant_of_a_non_array_element_is_refused_at_its_first_element() {
     for (source, message) in [
         (
             "@g = global i32 [x86_amx undef, x86_amx undef]\n",
-            "expected array constant: invalid array element type: x86_amx",
+            "invalid array element type: x86_amx",
         ),
         (
             "@g = global i32 [token none, token none]\n",
-            "expected array constant: invalid array element type: token",
+            "invalid array element type: token",
+        ),
+        (
+            "@g = global i32 [x86_amx undef, i32 1]\n",
+            "invalid array element type: x86_amx",
         ),
     ] {
         assert_eq!(
