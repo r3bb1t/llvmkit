@@ -37,6 +37,7 @@ use super::r#type::{Type, TypeData, TypeKind, TypeSlot, TypeSlotAccess};
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
+use super::addr_space::{AddrSpace, Space, SpaceDyn};
 use super::array_len::{ArrLenDyn, ArrayLen};
 use super::element::{ElemDyn, VecElem};
 use super::float_kind::{Bfloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
@@ -130,12 +131,160 @@ decl_type_handle!(
 );
 // `IntType<'ctx, W>` is hand-written below to carry the width marker;
 // `FloatType<'ctx, K>` similarly carries the IEEE-kind marker.
-decl_type_handle!(
-    /// Opaque pointer (`ptr`, `ptr addrspace(N)`). Mirrors `PointerType`
-    /// (`DerivedTypes.h`).
-    PointerType, Pointer,
-    predicate |d| matches!(d, TypeData::Pointer { .. })
-);
+/// Opaque pointer (`ptr`, `ptr addrspace(N)`). Mirrors `PointerType`
+/// (`DerivedTypes.h`).
+///
+/// The `A: AddrSpace` marker carries the address space at the type level:
+/// `PointerType<'ctx, Space<0>>` is `ptr`, `PointerType<'ctx, Space<3>>` is
+/// `ptr addrspace(3)`, and `PointerType<'ctx, SpaceDyn>` is a pointer type whose
+/// address space only run-time data knows (one made from a run-time number, or
+/// parsed). Hand-written rather than `decl_type_handle!`, as [`IntType`] is, to
+/// carry the marker.
+pub struct PointerType<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability = Mutable> {
+    id: TypeSlot,
+    pub(super) module: ModuleRef<'ctx, B, C>,
+    _a: PhantomData<A>,
+}
+
+// Manual impls, as for `IntType`: a `derive` would bound `A`.
+impl<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability> Clone for PointerType<'ctx, A, B, C> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability> Copy for PointerType<'ctx, A, B, C> {}
+impl<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability> PartialEq for PointerType<'ctx, A, B, C> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.module == other.module
+    }
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability> Eq for PointerType<'ctx, A, B, C> {}
+impl<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability> Hash for PointerType<'ctx, A, B, C> {
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        self.id.hash(h);
+        self.module.hash(h);
+    }
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability> fmt::Debug for PointerType<'ctx, A, B, C> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PointerType")
+            .field("id", &self.id)
+            .field("space", &A::static_space())
+            .finish()
+    }
+}
+impl<A: AddrSpace, B: ModuleBrand, C: Capability> CapabilityOf for PointerType<'_, A, B, C> {
+    type Capability = C;
+}
+
+impl<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability> PointerType<'ctx, A, B, C> {
+    #[inline]
+    pub(super) fn new<M>(id: TypeSlot, module: M) -> Self
+    where
+        M: Into<ModuleRef<'ctx, B, C>>,
+    {
+        Self {
+            id,
+            module: module.into(),
+            _a: PhantomData,
+        }
+    }
+
+    /// Widen to the erased [`Type`] handle.
+    #[inline]
+    pub fn as_type(self) -> Type<'ctx, B, C> {
+        Type::new(self.id, self.module)
+    }
+
+    /// Drop to [`ReadOnly`](crate::ReadOnly). Always sound: reading is a
+    /// subset of mutating.
+    #[inline]
+    pub fn read_only(self) -> PointerType<'ctx, A, B, crate::ReadOnly> {
+        PointerType::new(self.id, self.module.read_only())
+    }
+
+    /// Forget the static address space: the same pointer type, marked
+    /// [`SpaceDyn`]. Never implicit (the no-silent-erasure rule).
+    #[inline]
+    pub fn as_dyn(self) -> PointerType<'ctx, SpaceDyn, B, C> {
+        PointerType::new(self.id, self.module)
+    }
+
+    /// Crate-internal: this pointer type admitted at `module` and re-minted
+    /// at its capability. See `Type::admitted_at`.
+    #[inline]
+    pub(crate) fn admitted_at<C2: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, C2>,
+    ) -> IrResult<PointerType<'ctx, A, B, C2>> {
+        Ok(PointerType::new(self.slot_in(module.id())?, module))
+    }
+}
+
+impl<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability> sealed::Sealed
+    for PointerType<'ctx, A, B, C>
+{
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability> IrType<'ctx, B>
+    for PointerType<'ctx, A, B, C>
+{
+    #[inline]
+    fn as_type(self) -> Type<'ctx, B, C> {
+        self.as_type()
+    }
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability> fmt::Display
+    for PointerType<'ctx, A, B, C>
+{
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        <Type<'ctx, B, C> as fmt::Display>::fmt(&self.as_type(), f)
+    }
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability> From<PointerType<'ctx, A, B, C>>
+    for Type<'ctx, B, C>
+{
+    #[inline]
+    fn from(t: PointerType<'ctx, A, B, C>) -> Self {
+        t.as_type()
+    }
+}
+
+/// A pointer type of any address space for [`SpaceDyn`]; for `Space<N>`, only
+/// one in address space `N` (`IrError::AddressSpaceMismatch` otherwise).
+impl<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability> TryFrom<Type<'ctx, B, C>>
+    for PointerType<'ctx, A, B, C>
+{
+    type Error = IrError;
+    fn try_from(t: Type<'ctx, B, C>) -> IrResult<Self> {
+        let Some(got) = t.data().as_pointer() else {
+            return Err(IrError::TypeMismatch {
+                expected: TypeKindLabel::Pointer,
+                got: t.kind_label(),
+            });
+        };
+        if let Some(expected) = A::static_space()
+            && expected != got
+        {
+            return Err(IrError::AddressSpaceMismatch { expected, got });
+        }
+        Ok(Self::new(t.slot_trusting_same_module(), t.module))
+    }
+}
+
+/// Narrow a run-time-space pointer type to `Space<N>`, checking its address
+/// space.
+impl<'ctx, const N: u32, B: ModuleBrand, C: Capability> TryFrom<PointerType<'ctx, SpaceDyn, B, C>>
+    for PointerType<'ctx, Space<N>, B, C>
+{
+    type Error = IrError;
+    #[inline]
+    fn try_from(t: PointerType<'ctx, SpaceDyn, B, C>) -> IrResult<Self> {
+        Self::try_from(t.as_type())
+    }
+}
 // `ArrayType<'ctx, E, L>` is hand-written below: the `E: VecElem` /
 // `L: ArrayLen` markers pin the element type and element count at the type
 // level, mirroring `VectorType<'ctx, E, L>` (arrays differ only in the
@@ -633,17 +782,6 @@ impl<'ctx, B: ModuleBrand, C: Capability> FunctionType<'ctx, B, C> {
     }
 }
 
-impl<'ctx, B: ModuleBrand, C: Capability> PointerType<'ctx, B, C> {
-    /// Crate-internal: this pointer type admitted at `module` and re-minted
-    /// at its capability. See `Type::admitted_at`.
-    #[inline]
-    pub(crate) fn admitted_at<C2: Capability>(
-        self,
-        module: ModuleRef<'ctx, B, C2>,
-    ) -> IrResult<PointerType<'ctx, B, C2>> {
-        Ok(PointerType::new(self.slot_in(module.id())?, module))
-    }
-}
 decl_type_handle!(
     /// `label`. Mirrors `Type::getLabelTy`.
     LabelType, Label,
@@ -1082,8 +1220,9 @@ impl_float_type_static_to_dyn!(PpcFp128);
 // PointerType — address-space accessor
 // --------------------------------------------------------------------------
 
-impl<'ctx, B: ModuleBrand, C: Capability> PointerType<'ctx, B, C> {
-    /// Address space; `0` is the default flat space.
+impl<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability> PointerType<'ctx, A, B, C> {
+    /// Address space; `0` is the default flat space. Answers the run-time
+    /// address space for both markers.
     #[inline]
     pub fn address_space(self) -> u32 {
         self.module
@@ -1441,7 +1580,7 @@ pub enum AnyTypeEnum<'ctx, B: ModuleBrand, C: Capability = Mutable> {
     Void(VoidType<'ctx, B, C>),
     Int(IntType<'ctx, IntDyn, B, C>),
     Float(FloatType<'ctx, FloatDyn, B, C>),
-    Pointer(PointerType<'ctx, B, C>),
+    Pointer(PointerType<'ctx, SpaceDyn, B, C>),
     Array(ArrayType<'ctx, ElemDyn, ArrLenDyn, B, C>),
     Struct(StructType<'ctx, StructBodyDyn, B, C>),
     Vector(VectorType<'ctx, ElemDyn, LenDyn, B, C>),
@@ -1600,7 +1739,7 @@ impl<'ctx, B: ModuleBrand, C: Capability> fmt::Display for SizedType<'ctx, B, C>
 pub enum BasicTypeEnum<'ctx, B: ModuleBrand, C: Capability = Mutable> {
     Int(IntType<'ctx, IntDyn, B, C>),
     Float(FloatType<'ctx, FloatDyn, B, C>),
-    Pointer(PointerType<'ctx, B, C>),
+    Pointer(PointerType<'ctx, SpaceDyn, B, C>),
     Array(ArrayType<'ctx, ElemDyn, ArrLenDyn, B, C>),
     Struct(StructType<'ctx, StructBodyDyn, B, C>),
     Vector(VectorType<'ctx, ElemDyn, LenDyn, B, C>),
@@ -1686,7 +1825,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> fmt::Display for BasicTypeEnum<
 pub enum BasicMetadataTypeEnum<'ctx, B: ModuleBrand, C: Capability = Mutable> {
     Int(IntType<'ctx, IntDyn, B, C>),
     Float(FloatType<'ctx, FloatDyn, B, C>),
-    Pointer(PointerType<'ctx, B, C>),
+    Pointer(PointerType<'ctx, SpaceDyn, B, C>),
     Array(ArrayType<'ctx, ElemDyn, ArrLenDyn, B, C>),
     Struct(StructType<'ctx, StructBodyDyn, B, C>),
     Vector(VectorType<'ctx, ElemDyn, LenDyn, B, C>),

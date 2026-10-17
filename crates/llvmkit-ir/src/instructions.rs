@@ -26,6 +26,7 @@ use core::fmt;
 use core::iter::FusedIterator;
 use core::num::NonZeroU32;
 
+use super::addr_space::AddrSpace;
 use super::align::Align;
 use super::atomic_ordering::AtomicOrdering;
 use super::atomicrmw_binop::AtomicRmwBinOp;
@@ -531,7 +532,7 @@ impl<W: IntWidth, B: ModuleBrand, C: Capability> CapabilityOf for PhiInst<'_, W,
 impl<K: FloatKind, B: ModuleBrand, C: Capability> CapabilityOf for FpPhiInst<'_, K, B, C> {
     type Capability = C;
 }
-impl<B: ModuleBrand, C: Capability> CapabilityOf for PointerPhiInst<'_, B, C> {
+impl<A: AddrSpace, B: ModuleBrand, C: Capability> CapabilityOf for PointerPhiInst<'_, A, B, C> {
     type Capability = C;
 }
 impl<P: TermOpenState, B: ModuleBrand, W: IntWidth, C: Capability> CapabilityOf
@@ -635,7 +636,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> LoadInst<'ctx, B, C> {
     }
     /// Pointer operand. Statically a pointer for this opcode, so returned
     /// as [`PointerValue`] rather than the erased [`Value`].
-    pub fn pointer(self) -> PointerValue<'ctx, B, C> {
+    pub fn pointer(self) -> PointerValue<'ctx, crate::SpaceDyn, B, C> {
         let id = self.payload().ptr.get();
         let module = self.module.module();
         let data = module.context().value_data(id);
@@ -699,7 +700,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> StoreInst<'ctx, B, C> {
     }
     /// Pointer operand. Statically a pointer for this opcode, so returned
     /// as [`PointerValue`] rather than the erased [`Value`].
-    pub fn pointer(self) -> PointerValue<'ctx, B, C> {
+    pub fn pointer(self) -> PointerValue<'ctx, crate::SpaceDyn, B, C> {
         let id = self.payload().ptr.get();
         let module = self.module.module();
         let data = module.context().value_data(id);
@@ -791,7 +792,7 @@ pub enum Callee<'ctx, B: ModuleBrand, C: Capability = Mutable> {
     /// A direct call to a known function global.
     Direct(FunctionValue<'ctx, Dyn, B, C>),
     /// An indirect call through a function pointer.
-    Indirect(PointerValue<'ctx, B, C>),
+    Indirect(PointerValue<'ctx, crate::SpaceDyn, B, C>),
 }
 
 /// `call` instruction. Mirrors `CallInst` (`Instructions.h`).
@@ -1223,10 +1224,15 @@ macro_rules! call_inst_float_return {
 }
 call_inst_float_return!(f32, f64, Half, Bfloat, Fp128, X86Fp80, PpcFp128, FloatDyn,);
 
-impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> CallInst<'ctx, Ptr, B, C> {
-    /// Typed result handle for a pointer-returning call.
+impl<'ctx, const AS: u32, B: ModuleBrand + 'ctx, C: Capability> CallInst<'ctx, Ptr<AS>, B, C> {
+    /// Typed result handle for a pointer-returning call, in the address space
+    /// its `Ptr<AS>` marker names. The marker is the callee's — a typed
+    /// declaration builds its return type from it, and a lookup or re-typing
+    /// checks the exact address space — and a call-site type override is
+    /// offered only on the `Dyn` builder, so the result is a
+    /// `ptr addrspace(AS)`.
     #[inline]
-    pub fn return_pointer_value(self) -> PointerValue<'ctx, B, C> {
+    pub fn return_pointer_value(self) -> PointerValue<'ctx, crate::Space<AS>, B, C> {
         PointerValue::from_value_unchecked(Value::from_parts(self.id, self.module, self.ty))
     }
 }
@@ -1496,8 +1502,9 @@ macro_rules! decl_cast_handle {
         impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> $name<'ctx, B, C> {
             /// Source operand of the cast. Statically a pointer for this
             /// opcode, so returned as [`PointerValue`] rather than the
-            /// erased [`Value`].
-            pub fn src(self) -> PointerValue<'ctx, B, C> {
+            /// erased [`Value`]; its address space is run-time data, so
+            /// [`SpaceDyn`](crate::SpaceDyn).
+            pub fn src(self) -> PointerValue<'ctx, crate::SpaceDyn, B, C> {
                 let id = self.payload().src.get();
                 let module = self.module.module();
                 let data = module.context().value_data(id);
@@ -2315,21 +2322,23 @@ impl<'ctx, K: FloatKind, B: ModuleBrand, C: Capability> core::hash::Hash
 }
 
 // --------------------------------------------------------------------------
-// PointerPhiInst<'ctx, P> -- pointer phi handle
+// PointerPhiInst<'ctx, A> -- pointer phi handle
 // --------------------------------------------------------------------------
 
-/// `phi` node whose result type is a pointer. Pointers carry no
-/// element-kind type parameter (only addrspace, which is encoded in
-/// the type id), so the handle carries no marker beyond the brand.
+/// `phi` node whose result type is a pointer. The address-space marker `A`
+/// is the result's: `Space<N>` when the builder that made the phi fixed it,
+/// [`SpaceDyn`](crate::SpaceDyn) when the phi was read back from the
+/// instruction stream.
 #[derive(Branded)]
 #[branded(Debug, Clone, Copy)]
-pub struct PointerPhiInst<'ctx, B: ModuleBrand, C: Capability = Mutable> {
+pub struct PointerPhiInst<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability = Mutable> {
     id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B, C>,
     ty: TypeSlot,
+    _a: core::marker::PhantomData<fn() -> A>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> PointerPhiInst<'ctx, B, C> {
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> PointerPhiInst<'ctx, A, B, C> {
     #[inline]
     pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
@@ -2339,6 +2348,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> PointerPhiInst<'ctx, B, C> {
             id,
             module: module.into(),
             ty,
+            _a: core::marker::PhantomData,
         }
     }
 
@@ -2376,13 +2386,14 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> PointerPhiInst<'ctx, B, C> {
 
     /// Storable, module-tagged [`PointerPhiInstId`] for this phi.
     #[inline]
-    pub fn id(&self) -> PointerPhiInstId<B> {
+    pub fn id(&self) -> PointerPhiInstId<A, B> {
         PointerPhiInstId::from_raw(self.module.id(), self.id)
     }
 
-    /// Result handle for the phi, narrowed to a [`PointerValue`].
+    /// Result handle for the phi, narrowed to a [`PointerValue`] in the phi's
+    /// address space.
     #[inline]
-    pub fn as_pointer_value(&self) -> PointerValue<'ctx, B, C> {
+    pub fn as_pointer_value(&self) -> PointerValue<'ctx, A, B, C> {
         let v = Value::from_parts(self.id, self.module, self.ty);
         PointerValue::from_value_unchecked(v)
     }
@@ -2423,7 +2434,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> PointerPhiInst<'ctx, B, C> {
     ) -> impl ExactSizeIterator<Item = (Value<'ctx, B, C>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
-    + use<'ctx, B, C> {
+    + use<'ctx, A, B, C> {
         let module = self.module.module();
         let module_ref = self.module;
         let entries: Vec<(ValueSlot, ValueSlot)> = self
@@ -2459,7 +2470,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> PointerPhiInst<'ctx, B, C> {
 }
 
 #[cfg(test)]
-impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, A, B> {
     /// Append `(value, block)` to the incoming list. Rejects a second entry
     /// for the same block with a different value
     /// ([`IrError::AmbiguousPhiIncoming`](crate::IrError::AmbiguousPhiIncoming));
@@ -2506,13 +2517,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand, C: Capability> PartialEq for PointerPhiInst<'ctx, B, C> {
+impl<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability> PartialEq
+    for PointerPhiInst<'ctx, A, B, C>
+{
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.ty == other.ty
     }
 }
-impl<'ctx, B: ModuleBrand, C: Capability> Eq for PointerPhiInst<'ctx, B, C> {}
-impl<'ctx, B: ModuleBrand, C: Capability> core::hash::Hash for PointerPhiInst<'ctx, B, C> {
+impl<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability> Eq for PointerPhiInst<'ctx, A, B, C> {}
+impl<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability> core::hash::Hash
+    for PointerPhiInst<'ctx, A, B, C>
+{
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.id.hash(h);
         self.module.hash(h);
@@ -2754,7 +2769,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> VaArgInst<'ctx, B, C> {
     /// `va_list` pointer operand.
     /// Pointer operand (the `va_list`). Statically a pointer, so returned
     /// as [`PointerValue`] rather than the erased [`Value`].
-    pub fn pointer(self) -> PointerValue<'ctx, B, C> {
+    pub fn pointer(self) -> PointerValue<'ctx, crate::SpaceDyn, B, C> {
         let id = self.payload().src.get();
         let module = self.module.module();
         let data = module.context().value_data(id);
@@ -3180,7 +3195,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> AtomicCmpXchgInst<'ctx, B, C> {
     }
     /// Pointer operand. Statically a pointer for this opcode, so returned
     /// as [`PointerValue`] rather than the erased [`Value`].
-    pub fn pointer(self) -> PointerValue<'ctx, B, C> {
+    pub fn pointer(self) -> PointerValue<'ctx, crate::SpaceDyn, B, C> {
         let id = self.payload().ptr.get();
         let module = self.module.module();
         let data = module.context().value_data(id);
@@ -3245,7 +3260,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> AtomicRmwInst<'ctx, B, C> {
     }
     /// Pointer operand. Statically a pointer for this opcode, so returned
     /// as [`PointerValue`] rather than the erased [`Value`].
-    pub fn pointer(self) -> PointerValue<'ctx, B, C> {
+    pub fn pointer(self) -> PointerValue<'ctx, crate::SpaceDyn, B, C> {
         let id = self.payload().ptr.get();
         let module = self.module.module();
         let data = module.context().value_data(id);

@@ -55,9 +55,11 @@
 
 use crate::Branded;
 use crate::capability::Capability;
+use core::marker::PhantomData;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
+use super::addr_space::AddrSpace;
 use super::basic_block::BasicBlock;
 use super::block_state::Unterminated;
 use super::constants::ConstantIntValue;
@@ -246,23 +248,25 @@ impl<K: FloatKind, B: ModuleBrand> FloatVariable<K, B> {
     }
 }
 
-/// Typed SSA variable of pointer category (any address space).
+/// Typed SSA variable of pointer category, in the address space its marker
+/// `A` names (`SpaceDyn` when the space is run-time data).
 /// Lifetime-free for the same reason as [`IntVariable`].
-pub struct PointerVariable<B: ModuleBrand> {
+pub struct PointerVariable<A: AddrSpace, B: ModuleBrand> {
     index: u32,
     owner: SsaBuilderId,
     ty: TypeSlot,
+    _a: PhantomData<fn() -> A>,
     _b: Invariant<B>,
 }
 
-impl<B: ModuleBrand> Clone for PointerVariable<B> {
+impl<A: AddrSpace, B: ModuleBrand> Clone for PointerVariable<A, B> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<B: ModuleBrand> Copy for PointerVariable<B> {}
-impl<B: ModuleBrand> core::fmt::Debug for PointerVariable<B> {
+impl<A: AddrSpace, B: ModuleBrand> Copy for PointerVariable<A, B> {}
+impl<A: AddrSpace, B: ModuleBrand> core::fmt::Debug for PointerVariable<A, B> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("PointerVariable")
             .field("index", &self.index)
@@ -270,14 +274,14 @@ impl<B: ModuleBrand> core::fmt::Debug for PointerVariable<B> {
             .finish()
     }
 }
-impl<B: ModuleBrand> PartialEq for PointerVariable<B> {
+impl<A: AddrSpace, B: ModuleBrand> PartialEq for PointerVariable<A, B> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.index == other.index && self.owner == other.owner && self.ty == other.ty
     }
 }
-impl<B: ModuleBrand> Eq for PointerVariable<B> {}
-impl<B: ModuleBrand> core::hash::Hash for PointerVariable<B> {
+impl<A: AddrSpace, B: ModuleBrand> Eq for PointerVariable<A, B> {}
+impl<A: AddrSpace, B: ModuleBrand> core::hash::Hash for PointerVariable<A, B> {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.index.hash(h);
         self.owner.hash(h);
@@ -285,7 +289,7 @@ impl<B: ModuleBrand> core::hash::Hash for PointerVariable<B> {
     }
 }
 
-impl<B: ModuleBrand> PointerVariable<B> {
+impl<A: AddrSpace, B: ModuleBrand> PointerVariable<A, B> {
     /// The [`SsaBuilder`] that declared this variable.
     #[inline]
     pub fn owner(&self) -> SsaBuilderId {
@@ -819,7 +823,10 @@ where
 
     /// Declare a strict pointer variable in the default address space
     /// (addrspace 0).
-    pub fn declare_pointer_var<Name: Into<String>>(&mut self, name: Name) -> PointerVariable<B> {
+    pub fn declare_pointer_var<Name: Into<String>>(
+        &mut self,
+        name: Name,
+    ) -> PointerVariable<crate::Space<0>, B> {
         let ty = self.module.ptr_type(0).slot_trusting_same_module();
         self.declare_var_raw(ty, name, VarCategory::Pointer, false)
             .into()
@@ -829,19 +836,19 @@ where
     pub fn declare_pointer_var_poison<Name: Into<String>>(
         &mut self,
         name: Name,
-    ) -> PointerVariable<B> {
+    ) -> PointerVariable<crate::Space<0>, B> {
         let ty = self.module.ptr_type(0).slot_trusting_same_module();
         self.declare_var_raw(ty, name, VarCategory::Pointer, true)
             .into()
     }
 
     /// Declare a strict pointer variable in a caller-specified address
-    /// space.
-    pub fn declare_pointer_var_in_addrspace<Name: Into<String>>(
+    /// space, keeping the type's address-space marker.
+    pub fn declare_pointer_var_in_addrspace<A: AddrSpace, Name: Into<String>>(
         &mut self,
-        ty: PointerType<'ctx, B, impl Capability>,
+        ty: PointerType<'ctx, A, B, impl Capability>,
         name: Name,
-    ) -> PointerVariable<B> {
+    ) -> PointerVariable<A, B> {
         // `ty` may belong to another module; this infallible entry cannot
         // refuse it.
         // boundary (F1): refused by Task 26
@@ -855,11 +862,11 @@ where
     }
 
     /// Poison twin of [`Self::declare_pointer_var_in_addrspace`].
-    pub fn declare_pointer_var_in_addrspace_poison<Name: Into<String>>(
+    pub fn declare_pointer_var_in_addrspace_poison<A: AddrSpace, Name: Into<String>>(
         &mut self,
-        ty: PointerType<'ctx, B, impl Capability>,
+        ty: PointerType<'ctx, A, B, impl Capability>,
         name: Name,
-    ) -> PointerVariable<B> {
+    ) -> PointerVariable<A, B> {
         // `ty` may belong to another module; this infallible entry cannot
         // refuse it.
         // boundary (F1): refused by Task 26
@@ -1213,9 +1220,13 @@ where
     /// now share `Type::require_match` with its twins instead of spelling
     /// its own compare (`pointer_var_wrong_addrspace_def_rejected`,
     /// `tests/ssa_builder.rs`, names both address spaces).
-    pub fn def_pointer_var<V>(&mut self, var: PointerVariable<B>, value: V) -> IrResult<()>
+    pub fn def_pointer_var<A: AddrSpace, V>(
+        &mut self,
+        var: PointerVariable<A, B>,
+        value: V,
+    ) -> IrResult<()>
     where
-        V: IntoPointerValue<'ctx, B>,
+        V: IntoPointerValue<'ctx, B, Space = A>,
     {
         self.check_owner_var(var.owner)?;
         let v = value.into_pointer_value(self.module_ref())?;
@@ -1226,7 +1237,10 @@ where
     }
 
     /// Pointer twin of [`Self::use_int_var`].
-    pub fn use_pointer_var(&mut self, var: PointerVariable<B>) -> IrResult<PointerValue<'ctx, B>> {
+    pub fn use_pointer_var<A: AddrSpace>(
+        &mut self,
+        var: PointerVariable<A, B>,
+    ) -> IrResult<PointerValue<'ctx, A, B>> {
         self.check_owner_var(var.owner)?;
         let block = self.current_block_id()?;
         let id = self.read_variable_in(var.index, block)?;
@@ -1441,13 +1455,14 @@ struct VarHandle<B: ModuleBrand> {
     _b: Invariant<B>,
 }
 
-impl<B: ModuleBrand> From<VarHandle<B>> for PointerVariable<B> {
+impl<A: AddrSpace, B: ModuleBrand> From<VarHandle<B>> for PointerVariable<A, B> {
     #[inline]
     fn from(h: VarHandle<B>) -> Self {
         PointerVariable {
             index: h.index,
             owner: h.owner,
             ty: h.ty,
+            _a: core::marker::PhantomData,
             _b: core::marker::PhantomData,
         }
     }
@@ -1509,7 +1524,7 @@ where
             builder.view(phi).slot_trusting_same_module()
         }
         VarCategory::Pointer => {
-            let ptr_ty = PointerType::<B>::new(ty, module);
+            let ptr_ty = PointerType::<crate::SpaceDyn, B>::new(ty, module);
             let phi = builder.pointer_phi_in_addrspace(ptr_ty, name)?;
             builder.view(phi).slot_trusting_same_module()
         }
@@ -2503,7 +2518,7 @@ mod tests {
         let p = b.declare_pointer_var("p");
 
         b.switch_to_block(entry)?;
-        let forged: PointerValue<'_, _> =
+        let forged: PointerValue<'_, crate::Space<0>, _> =
             PointerValue::from_value_unchecked(m.i32_type().const_zero().as_erased());
 
         let err = b

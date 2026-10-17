@@ -789,7 +789,8 @@ fn pointer_var_wrong_addrspace_def_rejected() -> Result<(), IrError> {
     // The parameter is a pointer in addrspace 1; `px` was declared
     // in addrspace 0. Narrowing to `PointerValue` succeeds (it is a
     // pointer); the address-space mismatch is caught by `def_pointer_var`.
-    let wrong_addrspace_ptr: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let wrong_addrspace_ptr: PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(0)?.try_into()?;
     let err = b
         .def_pointer_var(px, wrong_addrspace_ptr)
         .expect_err("a wrong-address-space def must be rejected");
@@ -1031,7 +1032,7 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
     b.switch_to_block(entry)?;
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let fparam: FloatValue<'_, f64, _> = m.view(f).param(1)?.try_into()?;
-    let pparam: PointerValue<'_, _> = m.view(f).param(2)?.try_into()?;
+    let pparam: PointerValue<'_, llvmkit_ir::Space<0>, _> = m.view(f).param(2)?.try_into()?;
     b.def_float_var(fx, fparam)?;
     b.def_pointer_var(px, pparam)?;
     let case0 = 0_i32;

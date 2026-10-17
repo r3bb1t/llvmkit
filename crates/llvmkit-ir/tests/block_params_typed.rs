@@ -32,7 +32,10 @@ fn append_block_typed_yields_typed_params_from_head_phis() -> Result<(), IrError
     // Split into per-binding annotations so each named type stays simple.
     let (head, params) = b.append_block_typed::<(i32, Ptr), _, _>(m.view(f), "head")?;
     let head: BasicBlock<'_, (), Unterminated, _, (i32, Ptr)> = head;
-    let (p0, p1): (IntValue<'_, i32, _>, PointerValue<'_, _>) = params;
+    let (p0, p1): (
+        IntValue<'_, i32, _>,
+        PointerValue<'_, llvmkit_ir::Space<0>, _>,
+    ) = params;
 
     // Runtime: each handle's IR type matches its schema position, and both
     // are sourced from the freshly built head-phis.

@@ -295,8 +295,8 @@ fn mem_intrinsic_wrapper_narrows_generated_memory_call() -> Result<(), IrError> 
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let dst: PointerValue<'_, _> = m.view(caller).param(0)?.try_into()?;
-    let src: PointerValue<'_, _> = m.view(caller).param(1)?.try_into()?;
+    let dst: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(caller).param(0)?.try_into()?;
+    let src: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(caller).param(1)?.try_into()?;
     let len: IntValue<'_, i64, _> = m.view(caller).param(2)?.try_into()?;
     let view = b.intrinsic_call(
         &descriptor,
@@ -334,8 +334,8 @@ fn mem_intrinsic_wrapper_narrows_generated_inline_memory_calls() -> Result<(), I
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let dst: PointerValue<'_, _> = m.view(caller).param(0)?.try_into()?;
-    let src: PointerValue<'_, _> = m.view(caller).param(1)?.try_into()?;
+    let dst: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(caller).param(0)?.try_into()?;
+    let src: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(caller).param(1)?.try_into()?;
     let len: IntValue<'_, i64, _> = m.view(caller).param(2)?.try_into()?;
 
     let memcpy_inline =
@@ -388,7 +388,7 @@ fn lifetime_intrinsic_wrapper_narrows_generated_lifetime_call() -> Result<(), Ir
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let ptr: PointerValue<'_, _> = m.view(caller).param(0)?.try_into()?;
+    let ptr: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(caller).param(0)?.try_into()?;
     let view = b.intrinsic_call(&descriptor, &[ptr.as_erased()], "")?;
 
     let view = b.view(view);
@@ -631,7 +631,7 @@ fn asm_writer_prints_generated_intrinsic_immediate_argument_comments() -> Result
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let ptr: PointerValue<'_, _> = m.view(caller).param(0)?.try_into()?;
+    let ptr: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(caller).param(0)?.try_into()?;
     b.intrinsic_call(
         &descriptor,
         &[ptr.as_erased(), i32_ty.const_int(1_i32).as_erased()],

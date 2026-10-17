@@ -2159,8 +2159,11 @@ moves to `Constant::kind`.
     `generic_const_exprs` (unstable)**, the same wall as the integer `WiderThan`
     relations below.
   - **Scalable vectors** — always `Dyn` (**scoped out** this cycle).
-  - **Pointer-element vectors** — **scoped out**, blocked on address-space
-    markers (see the address-space-typed-pointers bullet below).
+  - **Pointer-element vectors** — **open, no longer blocked**: pointers carry
+    their address space as a marker (`PointerValue<'ctx, A, B, C>`, commit
+    `feat(ir)!: pointers carry their address space in the type`), so a
+    `VecElem` marker for a `Space<N>` pointer element is unbuilt rather than
+    blocked.
   - **Composite-element arrays** (`[N x {..}]` / `[N x [..]]` / `[N x <..>]`) — a
     scalar element marker can't name a composite element (**scoped out**).
   - **Float / div / rem vector binops and vector `icmp`/`fcmp`** — **scoped out**;
@@ -2198,8 +2201,6 @@ moves to `Constant::kind`.
   own rustdoc, `int_width.rs`); revisit when `generic_const_exprs` stabilizes.
 - Aggregate variable categories for auto-SSA (currently ships int/float/pointer
   only).
-- Address-space-typed pointers (`PointerValue` currently erases address
-  space; audit item from infra report).
 - **Infallible statically-sized aggregate constants** — open, and not
   blocked for literal elements. The statically typed receivers exist:
   `Module::vector_type_n::<E, N>()` / `array_type_n::<E, N>()` return
@@ -2224,10 +2225,11 @@ Items this session's own workstreams punted, beyond the plan's original
 future-work list above. Each cites the source file/design decision that
 deferred it.
 
-- **Typed `fold_gep`/`fold_select` hooks** -- blocked on address-space-carrying
-  pointer markers; `PointerValue` doesn't pin the address space and vector
-  element typing is deferred to T4, so `fold_gep_dyn`/`fold_select_dyn` stay
-  erased + runtime-checked (documented in `ir_builder/folder.rs` trait
+- **Typed `fold_gep`/`fold_select` hooks** -- open, no longer blocked on
+  pointers: a pointer now carries its address-space marker, so a typed hook
+  could return `PointerValue<A>` in its operand's space. Unbuilt; vector
+  element typing is still deferred to T4, so `fold_gep_dyn`/`fold_select_dyn`
+  stay erased + runtime-checked (documented in `ir_builder/folder.rs` trait
   rustdoc).
 - **`[F; N]` `IrField` arrays** -- fixed-size array fields in `#[derive(IrStruct)]`
   schemas; would let derived structs model `[i32; 4]`-shaped LLVM array
@@ -2238,10 +2240,10 @@ deferred it.
   `gep_with_flags`, `field_gep`) still takes a scalar `IntoPointerValue` base
   and `IntoIntValue<IntDyn>` indices; a `VectorValue`-shaped typed door on top
   of `gep_erased` is mechanical follow-up.
-- **Derive-generated field-index consts** -- `field_gep::<S, I>` takes
+- **Derive-generated field-index consts** -- `field_gep::<S, _, I, _>` takes
   the field index as a bare `const I: u32`; the derive macro could emit named
-  constants (e.g. `Point::X_INDEX`) so call sites read `field_gep::<Point,
-  { Point::X_INDEX }>` instead of a magic number.
+  constants (e.g. `Point::X_INDEX`) so call sites read `field_gep::<Point, _,
+  { Point::X_INDEX }, _>` instead of a magic number.
 - **`TypedInvokeInst<Ret>` schema wrapper** -- `invoke` returns
   `InvokeInst<Ret::Marker>` today; a `TypedCallInst`-style wrapper carrying
   the full `Ret: FunctionReturn` schema (not just the derived marker) is

@@ -142,7 +142,7 @@ fn freeze_int_and_pointer_print_forms() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let iop: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let pop: PointerValue<'_, _> = m.view(f).param(1)?.try_into()?;
+    let pop: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(1)?.try_into()?;
     let _ = b.freeze(iop, "")?;
     let _ = b.freeze(pop, "")?;
     b.ret_void()?;
@@ -190,7 +190,7 @@ fn va_arg_int_round_trip() -> Result<(), IrError> {
     let f = m.add_function_dyn("get_i32", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let ap: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let ap: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let v = b.va_arg(ap, i32_ty.as_type(), "tmp")?;
     let asv: IntValue<'_, i32, _> = b.view(v).to_erased().try_into()?;
     b.ret(asv)?;
@@ -213,7 +213,7 @@ fn va_arg_print_keyword_and_destination_type() -> Result<(), IrError> {
     let f = m.add_function_dyn("h", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let ap: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let ap: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let v = b.va_arg(ap, i32_ty.as_type(), "va_arg_result")?;
     let _ = ap; // silence unused-variable lint when `pop` accessor changes.
     // `va_arg` hands back a `VaArgInstId`, so one view recovers the
@@ -237,7 +237,7 @@ fn verifier_accepts_va_arg_pointer_source() -> Result<(), IrError> {
     let f = m.add_function_dyn("foo", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let ap: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let ap: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let _ = b.va_arg(ap, i8_ty.as_type(), "argval")?;
     b.ret_void()?;
     m.verify_borrowed()?;

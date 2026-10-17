@@ -159,8 +159,9 @@ fn indirect_call_rejects_wrong_return_marker() -> Result<(), IrError> {
     let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let callee_ptr =
-        llvmkit_ir::PointerValue::try_from(m.view(host).param(0).expect("callee ptr"))?;
+    let callee_ptr = llvmkit_ir::PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(
+        m.view(host).param(0).expect("callee ptr"),
+    )?;
     let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let err = b
         .indirect_call_dyn::<i64, _, _, _, _>(

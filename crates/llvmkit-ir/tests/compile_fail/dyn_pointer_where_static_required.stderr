@@ -1,0 +1,10 @@
+error[E0308]: mismatched types
+ --> tests/compile_fail/dyn_pointer_where_static_required.rs:9:43
+  |
+9 |     let _: PointerType<'_, Space<0>, _> = m.ptr_type(0);
+  |            ----------------------------   ^^^^^^^^^^^^^ expected `PointerType<'_, Space<0>, _>`, found `PointerType<'_, SpaceDyn, DynBrand>`
+  |            |
+  |            expected due to this
+  |
+  = note: expected struct `PointerType<'_, llvmkit_ir::Space<0>, _>`
+             found struct `PointerType<'_, SpaceDyn, DynBrand>`

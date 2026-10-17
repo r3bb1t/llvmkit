@@ -708,7 +708,7 @@ struct ParsedInlineAsm {
 enum ParsedCallee<'ctx, B: ModuleBrand> {
     Function(llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn, B>),
     InlineAsm(llvmkit_ir::InlineAsm<'ctx, B>),
-    Indirect(llvmkit_ir::PointerValue<'ctx, B>),
+    Indirect(llvmkit_ir::PointerValue<'ctx, llvmkit_ir::SpaceDyn, B>),
 }
 
 impl<'ctx, B: ModuleBrand> ParsedCallee<'ctx, B> {
@@ -7157,7 +7157,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         } else {
                             0
                         };
-                        let ptr_ty: PointerType<'ctx, B> = self.module.ptr_type(addr_space);
+                        let ptr_ty: PointerType<'ctx, llvmkit_ir::SpaceDyn, B> =
+                            self.module.ptr_type(addr_space);
                         if matches!(self.peek(), Token::Star) {
                             return Err(self.message("ptr* is invalid - use ptr instead"));
                         }
@@ -9175,7 +9176,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         &self,
         loc: Span,
         r: GlobalRef<'ctx, B>,
-    ) -> ParseResult<llvmkit_ir::PointerValue<'ctx, B>> {
+    ) -> ParseResult<llvmkit_ir::PointerValue<'ctx, llvmkit_ir::SpaceDyn, B>> {
         llvmkit_ir::PointerValue::try_from(self.global_ref_to_constant(r).as_erased())
             .map_err(|e| self.builder_err_at(loc, "global value as a pointer", e))
     }
@@ -9189,7 +9190,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         &self,
         loc: Span,
         c: llvmkit_ir::Constant<'ctx, B>,
-    ) -> ParseResult<llvmkit_ir::PointerValue<'ctx, B>> {
+    ) -> ParseResult<llvmkit_ir::PointerValue<'ctx, llvmkit_ir::SpaceDyn, B>> {
         llvmkit_ir::PointerValue::try_from(c.as_erased())
             .map_err(|e| self.builder_err_at(loc, "forward-referenced callee as a pointer", e))
     }
@@ -13327,12 +13328,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let align = self.parse_optional_comma_align_strict()?;
 
         // `parseLoad`'s checks, in its order and at its anchors.
-        let ptr: llvmkit_ir::PointerValue<'ctx, B> = ptr_v.try_into().map_err(|_| {
-            self.message_at(
-                operand_loc,
-                "load operand must be a pointer to a first class type",
-            )
-        })?;
+        let ptr: llvmkit_ir::PointerValue<'ctx, llvmkit_ir::SpaceDyn, B> =
+            ptr_v.try_into().map_err(|_| {
+                self.message_at(
+                    operand_loc,
+                    "load operand must be a pointer to a first class type",
+                )
+            })?;
         if !ty.is_first_class() {
             return Err(self.message_at(
                 operand_loc,
@@ -13408,7 +13410,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
         // `parseStore`'s checks, in its order. Note the anchors differ: the
         // pointer rule reports at `PtrLoc`, everything else at the *value*.
-        let ptr: llvmkit_ir::PointerValue<'ctx, B> = ptr_v
+        let ptr: llvmkit_ir::PointerValue<'ctx, llvmkit_ir::SpaceDyn, B> = ptr_v
             .try_into()
             .map_err(|_| self.message_at(ptr_loc, "store operand must be a pointer"))?;
         if !val_ty.is_first_class() {
@@ -14775,9 +14777,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         let list_ty = self.parse_type(false)?;
         let list_v = self.parse_value(state, list_ty)?;
-        let list_ptr: llvmkit_ir::PointerValue<'ctx, B> = list_v
-            .try_into()
-            .map_err(|_| self.expected("ptr-typed va_arg list operand"))?;
+        let list_ptr: llvmkit_ir::PointerValue<'ctx, llvmkit_ir::SpaceDyn, B> =
+            list_v
+                .try_into()
+                .map_err(|_| self.expected("ptr-typed va_arg list operand"))?;
         self.expect_punct(PunctKind::Comma, "',' after vaarg operand")?;
         let result_type_loc = self.loc();
         let result_ty = self.parse_type(false)?;
@@ -14891,7 +14894,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // As in `parseSwitch`, the `[` is demanded before the address type is
         // checked.
         self.expect_punct(PunctKind::LSquare, "'[' with indirectbr")?;
-        let addr: PointerValue<'ctx, B> = addr_v
+        let addr: PointerValue<'ctx, llvmkit_ir::SpaceDyn, B> = addr_v
             .try_into()
             .map_err(|_| self.message_at(addr_loc, "indirectbr address must have pointer type"))?;
         let (_, mut ibr) = b
@@ -14981,7 +14984,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if !cmpxchg_failure_ordering_is_valid(failure_ord) {
             return Err(self.message("invalid cmpxchg failure ordering"));
         }
-        let ptr: llvmkit_ir::PointerValue<'ctx, B> = ptr_v
+        let ptr: llvmkit_ir::PointerValue<'ctx, llvmkit_ir::SpaceDyn, B> = ptr_v
             .try_into()
             .map_err(|_| self.message_at(ptr_loc, "cmpxchg operand must be a pointer"))?;
         if cmp_ty != new_ty {
@@ -15037,7 +15040,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if ordering == AtomicOrdering::Unordered {
             return Err(self.message("atomicrmw cannot be unordered"));
         }
-        let ptr: llvmkit_ir::PointerValue<'ctx, B> = ptr_v
+        let ptr: llvmkit_ir::PointerValue<'ctx, llvmkit_ir::SpaceDyn, B> = ptr_v
             .try_into()
             .map_err(|_| self.message_at(ptr_loc, "atomicrmw operand must be a pointer"))?;
         if val_ty.is_scalable() {

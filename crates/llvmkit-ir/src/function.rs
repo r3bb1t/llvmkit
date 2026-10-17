@@ -1463,7 +1463,9 @@ pub(super) fn signature_matches_marker<R: ReturnMarker>(ret: &TypeData) -> bool 
     match R::expected_kind() {
         ExpectedRetKind::Dyn => true,
         ExpectedRetKind::Void => matches!(ret, TypeData::Void),
-        ExpectedRetKind::Ptr => matches!(ret, TypeData::Pointer { .. }),
+        ExpectedRetKind::Ptr(space) => {
+            matches!(ret, TypeData::Pointer { addr_space } if *addr_space == space)
+        }
         ExpectedRetKind::IntStatic(b) => matches!(ret, TypeData::Integer { bits } if *bits == b),
         ExpectedRetKind::IntDyn => matches!(ret, TypeData::Integer { .. }),
         // One equality against the crate's single `TypeData` -> label map.

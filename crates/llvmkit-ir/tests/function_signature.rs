@@ -30,7 +30,9 @@ fn typed_function_facade_builds_signature_and_params() -> Result<(), IrError> {
     Ok(())
 }
 
-fn expect_pointer<'ctx, B: ModuleBrand + 'ctx>(v: PointerValue<'ctx, B>) -> PointerValue<'ctx, B> {
+fn expect_pointer<'ctx, B: ModuleBrand + 'ctx>(
+    v: PointerValue<'ctx, llvmkit_ir::Space<0>, B>,
+) -> PointerValue<'ctx, llvmkit_ir::Space<0>, B> {
     v
 }
 
@@ -149,7 +151,7 @@ fn extern_system_signature_alias_builds_pointer_return_function() -> Result<(), 
     let m = module_new!("winapi")?;
     let f = m.add_typed_function_of::<WinApiSig, _>("call_window_proc", Linkage::External)?;
     let (hwnd, code, scale) = m.view(f).params();
-    let _: PointerValue<'_, _> = hwnd;
+    let _: PointerValue<'_, llvmkit_ir::Space<0>, _> = hwnd;
     let _: IntValue<'_, i32, _> = code;
     let _: FloatValue<'_, f32, _> = scale;
     assert_eq!(

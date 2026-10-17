@@ -30,7 +30,7 @@
 use llvmkit_ir::{
     Argument, ArrLenDyn, ArrayValue, Constant, ConstantFloatValue, ConstantIntValue, DynBrand,
     ElemDyn, FloatDyn, FloatValue, IntDyn, IntValue, LenDyn, Module, PointerValue, ReadOnly,
-    SetName, StructValue, UndefValue, VectorValue,
+    SetName, SpaceDyn, StructValue, UndefValue, VectorValue,
 };
 
 fn main() {
@@ -71,7 +71,7 @@ fn main() {
                     SetName::set_name(float, &other, "renamed");
                     SetName::clear_name(float, &other);
                 }
-                if let Ok(pointer) = PointerValue::try_from(value) {
+                if let Ok(pointer) = PointerValue::<SpaceDyn, DynBrand, ReadOnly>::try_from(value) {
                     SetName::set_name(pointer, &other, "renamed");
                     SetName::clear_name(pointer, &other);
                 }

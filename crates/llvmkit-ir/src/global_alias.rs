@@ -101,7 +101,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GlobalAlias<'ctx, B, C> {
     }
 
     #[inline]
-    pub fn ty(self) -> PointerType<'ctx, B, C> {
+    pub fn ty(self) -> PointerType<'ctx, crate::SpaceDyn, B, C> {
         crate::PointerType::new(self.ty, self.module)
     }
 

@@ -775,9 +775,15 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
         IntType::new(self.core.ctx.int_type(N), self)
     }
 
-    /// Opaque pointer in address space `addr_space` (`0` = default).
-    pub(crate) fn ptr_type(self, addr_space: u32) -> PointerType<'ctx, B, C> {
+    /// Opaque pointer in address space `addr_space` (`0` = default). The space
+    /// is a run-time number, so the type is marked [`SpaceDyn`](crate::SpaceDyn).
+    pub(crate) fn ptr_type(self, addr_space: u32) -> PointerType<'ctx, crate::SpaceDyn, B, C> {
         PointerType::new(self.core.ctx.ptr_type(addr_space), self)
+    }
+
+    /// Opaque pointer in address space `N`, marked [`Space<N>`](crate::Space).
+    pub(crate) fn ptr_type_in<const N: u32>(self) -> PointerType<'ctx, crate::Space<N>, B, C> {
+        PointerType::new(self.core.ctx.ptr_type(N), self)
     }
 
     /// Legacy typed pointer `T*` in address space `addr_space`.
@@ -1103,7 +1109,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariableView<'ctx, B> {
     }
 
     #[inline]
-    pub fn ty(self) -> PointerType<'ctx, B, ReadOnly> {
+    pub fn ty(self) -> PointerType<'ctx, crate::SpaceDyn, B, ReadOnly> {
         self.global.ty()
     }
 
@@ -1216,7 +1222,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasView<'ctx, B> {
     }
 
     #[inline]
-    pub fn ty(self) -> PointerType<'ctx, B, ReadOnly> {
+    pub fn ty(self) -> PointerType<'ctx, crate::SpaceDyn, B, ReadOnly> {
         self.alias.ty()
     }
 
@@ -1294,7 +1300,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfuncView<'ctx, B> {
     }
 
     #[inline]
-    pub fn ty(self) -> PointerType<'ctx, B, ReadOnly> {
+    pub fn ty(self) -> PointerType<'ctx, crate::SpaceDyn, B, ReadOnly> {
         self.ifunc.ty()
     }
 
@@ -1620,10 +1626,24 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         self.read_only_ref().int_type_n::<N>()
     }
 
-    /// Opaque pointer in address space `addr_space` (`0` = default).
+    /// Opaque pointer in address space `addr_space` (`0` = default). The space
+    /// is a run-time number, so the type is marked [`SpaceDyn`](crate::SpaceDyn);
+    /// [`ptr_type_in`](Self::ptr_type_in) names a static one.
     #[inline]
-    pub fn ptr_type(self, addr_space: u32) -> PointerType<'ctx, B, ReadOnly> {
+    pub fn ptr_type(self, addr_space: u32) -> PointerType<'ctx, crate::SpaceDyn, B, ReadOnly> {
         self.read_only_ref().ptr_type(addr_space)
+    }
+
+    /// Opaque pointer in address space `N`, marked [`Space<N>`](crate::Space).
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// assert_eq!(m.as_view().ptr_type_in::<3>().to_string(), "ptr addrspace(3)");
+    /// ```
+    #[inline]
+    pub fn ptr_type_in<const N: u32>(self) -> PointerType<'ctx, crate::Space<N>, B, ReadOnly> {
+        self.read_only_ref().ptr_type_in::<N>()
     }
 
     /// Legacy typed pointer `T*` in address space `addr_space`.
@@ -2309,7 +2329,7 @@ impl<'ctx> ModuleCore {
     pub fn ptr_type<B: ModuleBrand + 'ctx>(
         &'ctx self,
         addr_space: u32,
-    ) -> PointerType<'ctx, B, ReadOnly> {
+    ) -> PointerType<'ctx, crate::SpaceDyn, B, ReadOnly> {
         PointerType::new(self.ctx.ptr_type(addr_space), self)
     }
 
@@ -4354,8 +4374,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.capability_ref().int_type_n::<N>()
     }
 
-    pub fn ptr_type(&'ctx self, addr_space: u32) -> PointerType<'ctx, B> {
+    /// Opaque pointer in address space `addr_space` (`0` = default). The space
+    /// is a run-time number, so the type is marked [`SpaceDyn`](crate::SpaceDyn);
+    /// [`ptr_type_in`](Self::ptr_type_in) names a static one.
+    pub fn ptr_type(&'ctx self, addr_space: u32) -> PointerType<'ctx, crate::SpaceDyn, B> {
         self.capability_ref().ptr_type(addr_space)
+    }
+
+    /// Opaque pointer in address space `N`, marked [`Space<N>`](crate::Space).
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// assert_eq!(m.ptr_type_in::<0>().to_string(), "ptr");
+    /// ```
+    pub fn ptr_type_in<const N: u32>(&'ctx self) -> PointerType<'ctx, crate::Space<N>, B> {
+        self.capability_ref().ptr_type_in::<N>()
     }
 
     pub fn typed_pointer_type<T>(

@@ -20,7 +20,7 @@ fn main() -> IrResult<()> {
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
-    let word: PointerValue<_> = m.view(f).param(0)?.try_into()?;
+    let word: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let twelve = i32_ty.const_int(12_i32);
     let armw = b.atomicrmw(
         AtomicRmwBinOp::Xchg,

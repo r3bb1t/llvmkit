@@ -2268,7 +2268,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> CastKind<'ctx, B, C> {
 pub enum PhiKind<'ctx, B: ModuleBrand, C: Capability = Mutable> {
     Int(PhiInst<'ctx, IntDyn, B, C>),
     Fp(FpPhiInst<'ctx, FloatDyn, B, C>),
-    Ptr(PointerPhiInst<'ctx, B, C>),
+    Ptr(PointerPhiInst<'ctx, crate::SpaceDyn, B, C>),
     Other(OtherPhiInst<'ctx, B, C>),
 }
 

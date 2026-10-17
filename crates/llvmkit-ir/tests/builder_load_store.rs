@@ -21,7 +21,8 @@ fn load_plain() -> Result<(), IrError> {
     let f = m.add_function_dyn("ld", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let p: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(0)?.try_into()?;
     let r = b.int_load::<i32, _, _>(p, "v")?;
     b.ret(r)?;
     let text = format!("{m}");
@@ -43,7 +44,8 @@ fn load_aligned() -> Result<(), IrError> {
     let f = m.add_function_dyn("ld", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let p: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(0)?.try_into()?;
     let r = b.int_load_with_align::<i32, _, _>(p, Align::new(4)?, "v")?;
     b.ret(r)?;
     let text = format!("{m}");
@@ -69,7 +71,8 @@ fn store_plain() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let v: llvmkit_ir::IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(1)?.try_into()?;
+    let p: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(1)?.try_into()?;
     b.store(v, p)?;
     b.ret_void()?;
     let text = format!("{m}");
@@ -95,7 +98,8 @@ fn store_aligned() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let v: llvmkit_ir::IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(1)?.try_into()?;
+    let p: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(1)?.try_into()?;
     b.store_with_align(v, p, Align::new(4)?)?;
     b.ret_void()?;
     let text = format!("{m}");
@@ -118,7 +122,8 @@ fn load_add_store_round_trip() -> Result<(), IrError> {
     let f = m.add_function_dyn("inc", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let p: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(0)?.try_into()?;
     let v = b.int_load::<i32, _, _>(p, "v")?;
     let n = b.int_add(v, 1_i32, "n")?;
     b.store(n, p)?;

@@ -42,9 +42,9 @@ use crate::value::{FloatValue, IntValue, Typed, ValueSlotAccess};
 ///   `TypeSlot`, so a folder that only overrides the erased surface keeps
 ///   today's semantics.
 ///   Pointer-, vector-, and aggregate-result folds (`fold_gep_dyn`,
-///   `fold_select_dyn`, ...) deliberately stay erased: `PointerValue`
-///   does not statically pin the address space and vector element
-///   typing is deferred (T4).
+///   `fold_select_dyn`, ...) stay erased: a typed pointer hook could now
+///   return a `PointerValue` in its operand's address space, but none is
+///   built yet, and vector element typing is deferred (T4).
 pub trait IrBuilderFolder<'ctx, B: ModuleBrand + 'ctx> {
     fn fold_bin_op_dyn(
         &self,

@@ -149,7 +149,7 @@ fn indirectbr_cfg_edges_are_listed_destinations() -> Result<(), IrError> {
             .ret_void()?;
     }
 
-    let addr: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let addr: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let (_sealed, ibr) = IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
         .indirectbr(addr, "")?;

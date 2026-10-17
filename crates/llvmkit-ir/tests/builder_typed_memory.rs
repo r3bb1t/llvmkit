@@ -72,7 +72,7 @@ fn field_gep_projects_field_type_at_compile_time() -> IrResult<()> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = m.view(f).builder(&m).position_at_end(entry);
     let cpu = b.typed_alloca::<CpuState, _>("cpu")?;
-    let pc_ptr = b.field_gep::<CpuState, 1, _>(cpu, "pc.ptr")?; // TypedPointerValue<i64>
+    let pc_ptr = b.field_gep::<CpuState, _, 1, _>(cpu, "pc.ptr")?; // TypedPointerValue<i64, SpaceDyn>
     let pc = b.typed_load(pc_ptr, "pc")?; // IntValue<'_, i64, _>
     b.ret(pc)?;
     let printed = format!("{m}");

@@ -72,7 +72,7 @@ fn block_call_convenience_two_params_verifies() -> Result<(), IrError> {
     // entry: br head(%a, %ptr) — seed both head-phis, in schema order.
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let ptr: PointerValue<'_, _> = m.view(f).param(1)?.try_into()?;
+    let ptr: PointerValue<'_, llvmkit_ir::Space<0>, _> = m.view(f).param(1)?.try_into()?;
     // `block.call((..))` borrows `head`, so it stays usable below.
     b.br_call(head.call((a, ptr)))?;
 

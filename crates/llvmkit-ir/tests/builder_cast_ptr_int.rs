@@ -21,7 +21,8 @@ fn ptrtoint_emits_canonical_form() -> Result<(), IrError> {
     let f = m.add_function_dyn("p2i", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let arg: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let arg: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(0)?.try_into()?;
     let r = b.ptr_to_int(arg, i64_ty, "y")?;
     b.ret(r)?;
     let text = format!("{m}");
@@ -62,7 +63,8 @@ fn addrspacecast_emits_canonical_form() -> Result<(), IrError> {
     let f = m.add_function_dyn("ac", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let arg: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let arg: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(0)?.try_into()?;
     let r = b.addrspace_cast(arg, ptr1, "y")?;
     b.ret(r)?;
     let text = format!("{m}");

@@ -281,7 +281,7 @@ fn a_pointer_operand_rejects_a_value_from_another_module() {
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
     let foreign_null = foreign.ptr_type(0).const_null();
-    let foreign_pointer: PointerValue<'_, DynBrand> = foreign_null
+    let foreign_pointer: PointerValue<'_, llvmkit_ir::SpaceDyn, DynBrand> = foreign_null
         .as_erased()
         .try_into()
         .expect("a pointer value");
@@ -326,7 +326,7 @@ fn a_select_arm_rejects_a_value_from_another_module() {
         .as_erased()
         .try_into()
         .expect("an f32 value");
-    let pointer_arm: PointerValue<'_, DynBrand> = foreign
+    let pointer_arm: PointerValue<'_, llvmkit_ir::SpaceDyn, DynBrand> = foreign
         .ptr_type(0)
         .const_null()
         .as_erased()
@@ -1271,7 +1271,8 @@ fn a_pointer_cast_rejects_a_destination_type_from_another_module() {
     let foreign = Module::dynamic("foreign");
     let (b, [_, wide, _, _, pointer]) = builder_with_parameters(&home, "f");
     let wide_typed: IntValue<'_, i64, DynBrand> = wide.try_into().expect("an i64");
-    let pointer_typed: PointerValue<'_, DynBrand> = pointer.try_into().expect("a pointer");
+    let pointer_typed: PointerValue<'_, llvmkit_ir::SpaceDyn, DynBrand> =
+        pointer.try_into().expect("a pointer");
     let before = format!("{home}");
 
     let outcomes = vec![
@@ -1282,7 +1283,7 @@ fn a_pointer_cast_rejects_a_destination_type_from_another_module() {
         ),
         (
             "int_to_ptr",
-            b.int_to_ptr::<i64, _, _>(wide_typed, foreign.ptr_type(0), "c")
+            b.int_to_ptr::<i64, _, _, _>(wide_typed, foreign.ptr_type(0), "c")
                 .map(|_| ()),
         ),
         (
@@ -1326,7 +1327,8 @@ fn a_memory_entry_rejects_a_type_from_another_module() {
     let foreign = Module::dynamic("foreign");
     let (b, [_, wide, _, _, pointer]) = builder_with_parameters(&home, "f");
     let wide_dyn: IntValue<'_, IntDyn, DynBrand> = wide.try_into().expect("an integer");
-    let pointer_typed: PointerValue<'_, DynBrand> = pointer.try_into().expect("a pointer");
+    let pointer_typed: PointerValue<'_, llvmkit_ir::SpaceDyn, DynBrand> =
+        pointer.try_into().expect("a pointer");
     let align = Align::new(4).expect("a power of two");
     let before = format!("{home}");
 
@@ -1418,7 +1420,8 @@ fn a_phi_pad_or_va_arg_rejects_a_type_from_another_module() {
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
     let (b, [.., pointer]) = builder_with_parameters(&home, "f");
-    let pointer_typed: PointerValue<'_, DynBrand> = pointer.try_into().expect("a pointer");
+    let pointer_typed: PointerValue<'_, llvmkit_ir::SpaceDyn, DynBrand> =
+        pointer.try_into().expect("a pointer");
     let before = format!("{home}");
 
     let outcomes = vec![
@@ -3054,7 +3057,8 @@ fn an_operand_or_clause_setter_rejects_a_handle_from_another_module() {
     let foreign_null = foreign.ptr_type(0).const_null();
     let (b, [narrow, _, _, _, pointer]) = builder_with_parameters(&home, "f");
     let narrow: IntValue<'_, i32, DynBrand> = narrow.try_into().expect("an i32");
-    let pointer: PointerValue<'_, DynBrand> = pointer.try_into().expect("a pointer");
+    let pointer: PointerValue<'_, llvmkit_ir::SpaceDyn, DynBrand> =
+        pointer.try_into().expect("a pointer");
     let rmw = b
         .atomicrmw(
             AtomicRmwBinOp::Add,

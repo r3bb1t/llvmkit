@@ -75,8 +75,10 @@ fn select_pointer_arms() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let cond: llvmkit_ir::IntValue<'_, bool, _> = m.view(f).param(0)?.try_into()?;
-    let t: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(1)?.try_into()?;
-    let fl: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(2)?.try_into()?;
+    let t: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(1)?.try_into()?;
+    let fl: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(2)?.try_into()?;
     let r = b.select(cond, t, fl, "v")?;
     b.ret(r)?;
     let text = format!("{m}");

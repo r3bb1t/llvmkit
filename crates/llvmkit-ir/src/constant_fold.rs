@@ -2752,7 +2752,7 @@ fn null_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         let zero = crate::ApFloat::zero(float_ty.semantics(), ApFloatSign::Positive);
         return Ok(Some(float_ty.const_ap_float(&zero)?.as_constant()));
     }
-    if let Ok(ptr_ty) = PointerType::try_from(ty) {
+    if let Ok(ptr_ty) = PointerType::<crate::SpaceDyn, _, _>::try_from(ty) {
         return Ok(Some(ptr_ty.const_null().as_constant()));
     }
     if let Some((element_ty, lanes, scalable)) = ty.data().as_vector() {

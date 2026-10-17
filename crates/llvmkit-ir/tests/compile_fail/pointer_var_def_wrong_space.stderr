@@ -1,0 +1,18 @@
+error[E0271]: type mismatch resolving `<PointerValue<'_, Space<1>, __LlvmkitGeneratedBrand> as IntoPointerValue<'_, __LlvmkitGeneratedBrand>>::Space == Space<0>`
+  --> tests/compile_fail/pointer_var_def_wrong_space.rs:18:29
+   |
+18 |     b.def_pointer_var(zero, p)?;
+   |       ---------------       ^ expected `0`, found `1`
+   |       |
+   |       required by a bound introduced by this call
+   |
+   = note: expected struct `llvmkit_ir::Space<0>`
+              found struct `llvmkit_ir::Space<1>`
+note: required by a bound in `SsaBuilder::<'s, 'ctx, B, F, R>::def_pointer_var`
+  --> src/ssa_builder.rs
+   |
+   |     pub fn def_pointer_var<A: AddrSpace, V>(
+   |            --------------- required by a bound in this associated function
+...
+   |         V: IntoPointerValue<'ctx, B, Space = A>,
+   |                                      ^^^^^^^^^ required by this bound in `SsaBuilder::<'s, 'ctx, B, F, R>::def_pointer_var`

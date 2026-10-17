@@ -111,6 +111,14 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/len_zero_static_len.rs");
     // `ArrayType::of` takes only an `ArrayElement`: a `label` element is E0277.
     t.compile_fail("tests/compile_fail/array_of_label_element.rs");
+    // A `select` takes one arm type: address spaces 0 and 1 cannot be its arms.
+    t.compile_fail("tests/compile_fail/pointer_select_mixed_spaces.rs");
+    // A pointer comparison takes one address space for both operands.
+    t.compile_fail("tests/compile_fail/pointer_cmp_mixed_spaces.rs");
+    // A pointer variable takes values in its own address space only.
+    t.compile_fail("tests/compile_fail/pointer_var_def_wrong_space.rs");
+    // `ptr_type(n)` is `SpaceDyn`, never silently a `Space<0>` type.
+    t.compile_fail("tests/compile_fail/dyn_pointer_where_static_required.rs");
     // Slice 6: typed array ops make wrong-element inserts compile errors.
     t.compile_fail("tests/compile_fail/array_insert_wrong_element.rs");
     t.compile_fail("tests/compile_fail/typed_gep_bad_index.rs");

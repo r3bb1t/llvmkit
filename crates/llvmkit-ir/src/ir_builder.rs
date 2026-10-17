@@ -1365,7 +1365,7 @@ where
     ///
     /// The reused `Params` schema is the one that also drives typed function
     /// signatures ([`FunctionParamList`]); a block marked `(i32, Ptr)` yields
-    /// `(IntValue<'_, i32, B>, PointerValue<'_, B>)`. The parameter types are
+    /// `(IntValue<'_, i32, B>, PointerValue<'_, Space<0>, B>)`. The parameter types are
     /// built before the block is appended, so a construction failure leaves no
     /// half-built block behind.
     ///
@@ -4516,7 +4516,7 @@ where
     // Every cast builder in this file (integer casts here, the float casts and
     // pointer casts further down) returns a *storable id* rather than a
     // borrowing handle: `IntValueId<W, B>` / `FloatValueId<K, B>` /
-    // `PointerValueId<B>` per the result kind, and `ValueId<B>` for the two
+    // `PointerValueId<A, B>` per the result kind, and `ValueId<B>` for the two
     // fully-erased forms (`bitcast_dyn`, `ptr_to_addr_dyn`) whose
     // result may be a vector. The source operand is taken by an `Into*Value`
     // bound, so a returned id feeds straight into the next cast without being
@@ -4920,11 +4920,17 @@ where
         self.module.data_layout().alloca_addr_space()
     }
 
-    /// Produce `alloca <ty>`. Mirrors `IRBuilder::CreateAlloca`.
-    /// The result is a `ptr` in the DataLayout's alloca address space, with
-    /// the type's preferred alignment materialised, named by the storable
-    /// [`PointerValueId<B>`](crate::PointerValueId).
-    pub fn alloca<T, Name>(&self, ty: T, name: Name) -> IrResult<PointerValueId<B>>
+    /// Produce `alloca <ty>` in address space `N`, marked
+    /// [`Space<N>`](crate::Space). Mirrors `IRBuilder::CreateAlloca`'s
+    /// explicit-address-space form. The verifier still refuses an alloca
+    /// outside the DataLayout's alloca address space
+    /// (`Verifier::visitAllocaInst`), so `N` should be that space — `0` for
+    /// the default DataLayout.
+    pub fn alloca_in<const N: u32, T, Name>(
+        &self,
+        ty: T,
+        name: Name,
+    ) -> IrResult<PointerValueId<crate::Space<N>, B>>
     where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
@@ -4934,7 +4940,29 @@ where
             ty.slot_in(self.module.id())?,
             None,
             MaybeAlign::NONE,
-            self.alloca_addr_space(),
+            self.mutable_ref().ptr_type_in::<N>(),
+            AllocaFlags::none(),
+            name,
+        )
+    }
+
+    /// Produce `alloca <ty>`. Mirrors `IRBuilder::CreateAlloca`.
+    /// The result is a `ptr` in the DataLayout's alloca address space, with
+    /// the type's preferred alignment materialised, named by the storable
+    /// [`PointerValueId<SpaceDyn, B>`](crate::PointerValueId). That address space is
+    /// run-time data, so the id is [`SpaceDyn`](crate::SpaceDyn);
+    /// [`Self::alloca_in`] names a static one.
+    pub fn alloca<T, Name>(&self, ty: T, name: Name) -> IrResult<PointerValueId<crate::SpaceDyn, B>>
+    where
+        Name: AsRef<str>,
+        T: IrType<'ctx, B>,
+    {
+        self.alloca_inner(
+            // Boundary: the caller's allocated type.
+            ty.slot_in(self.module.id())?,
+            None,
+            MaybeAlign::NONE,
+            self.mutable_ref().ptr_type(self.alloca_addr_space()),
             AllocaFlags::none(),
             name,
         )
@@ -4947,7 +4975,7 @@ where
         ty: T,
         num_elements: N,
         name: Name,
-    ) -> IrResult<PointerValueId<B>>
+    ) -> IrResult<PointerValueId<crate::SpaceDyn, B>>
     where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
@@ -4959,7 +4987,7 @@ where
             ty.slot_in(self.module.id())?,
             Some(n.slot_trusting_same_module()),
             MaybeAlign::NONE,
-            self.alloca_addr_space(),
+            self.mutable_ref().ptr_type(self.alloca_addr_space()),
             AllocaFlags::none(),
             name,
         )
@@ -4973,7 +5001,7 @@ where
         num_elements: N,
         align: Align,
         name: Name,
-    ) -> IrResult<PointerValueId<B>>
+    ) -> IrResult<PointerValueId<crate::SpaceDyn, B>>
     where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
@@ -4985,7 +5013,7 @@ where
             ty.slot_in(self.module.id())?,
             Some(n.slot_trusting_same_module()),
             MaybeAlign::new(align),
-            self.alloca_addr_space(),
+            self.mutable_ref().ptr_type(self.alloca_addr_space()),
             AllocaFlags::none(),
             name,
         )
@@ -4998,7 +5026,7 @@ where
         ty: T,
         align: Align,
         name: Name,
-    ) -> IrResult<PointerValueId<B>>
+    ) -> IrResult<PointerValueId<crate::SpaceDyn, B>>
     where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
@@ -5008,24 +5036,28 @@ where
             ty.slot_in(self.module.id())?,
             None,
             MaybeAlign::new(align),
-            self.alloca_addr_space(),
+            self.mutable_ref().ptr_type(self.alloca_addr_space()),
             AllocaFlags::none(),
             name,
         )
     }
 
-    fn alloca_inner<N>(
+    /// The alloca's result pointer type `ptr_ty` names its address space; the
+    /// payload's address space is read back from it, so the result's marker
+    /// and the instruction cannot disagree.
+    fn alloca_inner<A: crate::AddrSpace, N>(
         &self,
         allocated_ty: TypeSlot,
         num_elements: Option<ValueSlot>,
         align: MaybeAlign,
-        addr_space: u32,
+        ptr_ty: PointerType<'ctx, A, B>,
         flags: AllocaFlags,
         name: N,
-    ) -> IrResult<PointerValueId<B>>
+    ) -> IrResult<PointerValueId<A, B>>
     where
         N: AsRef<str>,
     {
+        let addr_space = ptr_ty.address_space();
         // Materialise the DataLayout preferred alignment when omitted, like
         // upstream — every alloca funnels through here
         // (`computeAllocaDefaultAlign`).
@@ -5036,7 +5068,6 @@ where
         };
         let payload =
             AllocaInstData::new_with_flags(allocated_ty, num_elements, align, addr_space, flags);
-        let ptr_ty = self.mutable_ref().ptr_type(addr_space);
         Ok(self
             .append_ptr(ptr_ty, InstructionKindData::Alloca(payload), name)
             .id())
@@ -5095,8 +5126,13 @@ where
     /// pointee schema `T` is Rust-side bookkeeping only -- the emitted
     /// IR is identical to [`Self::alloca`] with `T::ir_type`.
     /// Mirrors `IRBuilder::CreateAlloca` + the Rust-side
-    /// [`TypedPointerValue`] overlay.
-    pub fn typed_alloca<T, Name>(&self, name: Name) -> IrResult<TypedPointerValue<'ctx, T, B>>
+    /// [`TypedPointerValue`] overlay. The pointer is [`SpaceDyn`](crate::SpaceDyn),
+    /// as [`Self::alloca`]'s is: the DataLayout's alloca address space is
+    /// run-time data.
+    pub fn typed_alloca<T, Name>(
+        &self,
+        name: Name,
+    ) -> IrResult<TypedPointerValue<'ctx, T, crate::SpaceDyn, B>>
     where
         T: IrField,
         Name: AsRef<str>,
@@ -5259,16 +5295,33 @@ where
         self.append_fp_load(ty, payload, name).map(|v| v.id())
     }
 
-    /// Pointer-typed load: `load ptr, ptr <ptr>`. Pointer types are
-    /// uniform (only address space varies); the loaded ptr is in the
-    /// default address space. Use [`Self::load`] erased form for
-    /// other address spaces.
-    pub fn pointer_load<P, Name>(&self, ptr: P, name: Name) -> IrResult<PointerValueId<B>>
+    /// Pointer-typed load: `load ptr, ptr <ptr>`. The loaded pointer is in
+    /// the default address space, so its id is [`Space<0>`](crate::Space);
+    /// [`Self::pointer_load_in`] loads one in another address space.
+    pub fn pointer_load<P, Name>(
+        &self,
+        ptr: P,
+        name: Name,
+    ) -> IrResult<PointerValueId<crate::Space<0>, B>>
     where
         Name: AsRef<str>,
         P: IntoPointerValue<'ctx, B>,
     {
-        let ty = self.mutable_ref().ptr_type(0);
+        self.pointer_load_in::<0, P, Name>(ptr, name)
+    }
+
+    /// Pointer-typed load of a `ptr addrspace(N)`: `load ptr addrspace(N),
+    /// ptr <ptr>`, marked [`Space<N>`](crate::Space).
+    pub fn pointer_load_in<const N: u32, P, Name>(
+        &self,
+        ptr: P,
+        name: Name,
+    ) -> IrResult<PointerValueId<crate::Space<N>, B>>
+    where
+        Name: AsRef<str>,
+        P: IntoPointerValue<'ctx, B>,
+    {
+        let ty = self.mutable_ref().ptr_type_in::<N>();
         let p = ptr.into_pointer_value(self.mutable_ref())?;
         let payload = LoadInstData::new(
             ty.as_type().slot_trusting_same_module(),
@@ -5309,13 +5362,14 @@ where
     /// Typed `load`: the result type is derived from the pointer's
     /// schema `T`. Mirrors `IRBuilder::CreateLoad` + the Rust-side
     /// [`TypedPointerValue`] overlay.
-    pub fn typed_load<T, Name>(
+    pub fn typed_load<T, A, Name>(
         &self,
-        ptr: TypedPointerValue<'ctx, T, B>,
+        ptr: TypedPointerValue<'ctx, T, A, B>,
         name: Name,
     ) -> IrResult<T::Value<'ctx, B, Mutable>>
     where
         T: IrField,
+        A: crate::AddrSpace,
         Name: AsRef<str>,
     {
         let ty = self.schema_ir_type::<T>()?;
@@ -5324,14 +5378,15 @@ where
     }
 
     /// Same as [`Self::typed_load`] plus an explicit alignment.
-    pub fn typed_load_with_align<T, Name>(
+    pub fn typed_load_with_align<T, A, Name>(
         &self,
-        ptr: TypedPointerValue<'ctx, T, B>,
+        ptr: TypedPointerValue<'ctx, T, A, B>,
         align: Align,
         name: Name,
     ) -> IrResult<T::Value<'ctx, B, Mutable>>
     where
         T: IrField,
+        A: crate::AddrSpace,
         Name: AsRef<str>,
     {
         let ty = self.schema_ir_type::<T>()?;
@@ -5379,7 +5434,8 @@ where
     /// let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     /// let entry = m.view(f).append_basic_block(&m, "entry");
     /// let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    /// let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    /// let p: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+    ///     m.view(f).param(0)?.try_into()?;
     ///
     /// // Every terminal picks the result shape; the knobs are shared.
     /// let n = b
@@ -5462,13 +5518,14 @@ where
     /// Typed `store`: the value lifts through the schema's
     /// [`IntoIrField`]. Mirrors `IRBuilder::CreateStore` + the
     /// Rust-side [`TypedPointerValue`] overlay.
-    pub fn typed_store<T, V>(
+    pub fn typed_store<T, A, V>(
         &self,
         value: V,
-        ptr: TypedPointerValue<'ctx, T, B>,
+        ptr: TypedPointerValue<'ctx, T, A, B>,
     ) -> IrResult<StoreInst<'ctx, B>>
     where
         T: IrField,
+        A: crate::AddrSpace,
         V: IntoIrField<'ctx, T, B>,
     {
         let v = value.into_ir_field(self.mutable_ref())?;
@@ -5476,14 +5533,15 @@ where
     }
 
     /// Same as [`Self::typed_store`] plus an explicit alignment slot.
-    pub fn typed_store_with_align<T, V>(
+    pub fn typed_store_with_align<T, A, V>(
         &self,
         value: V,
-        ptr: TypedPointerValue<'ctx, T, B>,
+        ptr: TypedPointerValue<'ctx, T, A, B>,
         align: Align,
     ) -> IrResult<StoreInst<'ctx, B>>
     where
         T: IrField,
+        A: crate::AddrSpace,
         V: IntoIrField<'ctx, T, B>,
     {
         let v = value.into_ir_field(self.mutable_ref())?;
@@ -5513,7 +5571,8 @@ where
     /// let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     /// let entry = m.view(f).append_basic_block(&m, "entry");
     /// let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    /// let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    /// let p: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+    ///     m.view(f).param(0)?.try_into()?;
     ///
     /// b.store_to(i32_ty.const_int(7_i32), p)
     ///     .volatile()
@@ -6202,7 +6261,7 @@ where
         ptr: P,
         indices: I,
         name: Name,
-    ) -> IrResult<PointerValueId<B>>
+    ) -> IrResult<PointerValueId<P::Space, B>>
     where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
@@ -6221,7 +6280,7 @@ where
         ptr: P,
         indices: I,
         name: Name,
-    ) -> IrResult<PointerValueId<B>>
+    ) -> IrResult<PointerValueId<P::Space, B>>
     where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
@@ -6244,7 +6303,7 @@ where
         ptr: P,
         idx: u32,
         name: Name,
-    ) -> IrResult<PointerValueId<B>>
+    ) -> IrResult<PointerValueId<P::Space, B>>
     where
         Name: AsRef<str>,
         P: IntoPointerValue<'ctx, B>,
@@ -6270,13 +6329,14 @@ where
     /// out-of-range `I` fails to compile (no [`StructFieldAt<I>`] impl).
     /// Mirrors `IRBuilder::CreateStructGEP` + the Rust-side
     /// [`TypedPointerValue`] overlay.
-    pub fn field_gep<S, const I: u32, Name>(
+    pub fn field_gep<S, A, const I: u32, Name>(
         &self,
-        ptr: TypedPointerValue<'ctx, S, B>,
+        ptr: TypedPointerValue<'ctx, S, A, B>,
         name: Name,
-    ) -> IrResult<TypedPointerValue<'ctx, FieldOf<S, I>, B>>
+    ) -> IrResult<TypedPointerValue<'ctx, FieldOf<S, I>, A, B>>
     where
         S: StructSchema,
+        A: crate::AddrSpace,
         S::FieldParams: StructFieldAt<I>,
         Name: AsRef<str>,
     {
@@ -6289,14 +6349,15 @@ where
     /// the pointee schema is preserved. Mirrors the 1-index
     /// `IRBuilder::CreateGEP` + the Rust-side [`TypedPointerValue`]
     /// overlay.
-    pub fn element_gep<T, W, Idx, Name>(
+    pub fn element_gep<T, A, W, Idx, Name>(
         &self,
-        ptr: TypedPointerValue<'ctx, T, B>,
+        ptr: TypedPointerValue<'ctx, T, A, B>,
         index: Idx,
         name: Name,
-    ) -> IrResult<TypedPointerValue<'ctx, T, B>>
+    ) -> IrResult<TypedPointerValue<'ctx, T, A, B>>
     where
         T: IrField,
+        A: crate::AddrSpace,
         W: IntWidth,
         Idx: IntoIntValue<'ctx, W, B>,
         Name: AsRef<str>,
@@ -6315,14 +6376,15 @@ where
     /// `getelementptr inbounds T, ptr %p, <idx>`. Mirrors the 1-index
     /// `IRBuilder::CreateInBoundsGEP` + the Rust-side
     /// [`TypedPointerValue`] overlay.
-    pub fn inbounds_element_gep<T, W, Idx, Name>(
+    pub fn inbounds_element_gep<T, A, W, Idx, Name>(
         &self,
-        ptr: TypedPointerValue<'ctx, T, B>,
+        ptr: TypedPointerValue<'ctx, T, A, B>,
         index: Idx,
         name: Name,
-    ) -> IrResult<TypedPointerValue<'ctx, T, B>>
+    ) -> IrResult<TypedPointerValue<'ctx, T, A, B>>
     where
         T: IrField,
+        A: crate::AddrSpace,
         W: IntWidth,
         Idx: IntoIntValue<'ctx, W, B>,
         Name: AsRef<str>,
@@ -6348,7 +6410,7 @@ where
         indices: I,
         flags: GepNoWrapFlags,
         name: Name,
-    ) -> IrResult<PointerValueId<B>>
+    ) -> IrResult<PointerValueId<P::Space, B>>
     where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
@@ -6496,7 +6558,7 @@ where
         indices: I,
         flags: GepNoWrapFlags,
         name: N,
-    ) -> IrResult<PointerValueId<B>>
+    ) -> IrResult<PointerValueId<P::Space, B>>
     where
         T: IrType<'ctx, B>,
         P: IntoPointerValue<'ctx, B>,
@@ -7001,16 +7063,17 @@ where
 
     /// Produce `inttoptr <value> to <dst>`. Mirrors
     /// `IRBuilder::CreateIntToPtr`.
-    pub fn int_to_ptr<W, V, Name>(
+    pub fn int_to_ptr<W, V, D, Name>(
         &self,
         value: V,
-        dst_ty: PointerType<'ctx, B, impl Capability>,
+        dst_ty: PointerType<'ctx, D, B, impl Capability>,
         name: Name,
-    ) -> IrResult<PointerValueId<B>>
+    ) -> IrResult<PointerValueId<D, B>>
     where
         Name: AsRef<str>,
         W: IntWidth,
         V: IntoIntValue<'ctx, W, B>,
+        D: crate::AddrSpace,
     {
         let value = value.into_int_value(self.mutable_ref())?;
         // Boundary: admit the caller's destination type before the folder sees it.
@@ -7243,15 +7306,16 @@ where
 
     /// Produce `addrspacecast <value> to <dst>`. Mirrors
     /// `IRBuilder::CreateAddrSpaceCast`.
-    pub fn addrspace_cast<P, Name>(
+    pub fn addrspace_cast<P, D, Name>(
         &self,
         value: P,
-        dst_ty: PointerType<'ctx, B, impl Capability>,
+        dst_ty: PointerType<'ctx, D, B, impl Capability>,
         name: Name,
-    ) -> IrResult<PointerValueId<B>>
+    ) -> IrResult<PointerValueId<D, B>>
     where
         Name: AsRef<str>,
         P: IntoPointerValue<'ctx, B>,
+        D: crate::AddrSpace,
     {
         let value = value.into_pointer_value(self.mutable_ref())?;
         // Boundary: admit the caller's destination type before the folder sees it.
@@ -7277,15 +7341,16 @@ where
     /// instruction) and `addrspacecast` when address spaces differ.
     /// Mirrors `IRBuilder::CreatePointerBitCastOrAddrSpaceCast`
     /// (`IRBuilder.h`), which dispatches the same way.
-    pub fn pointer_cast<P, Name>(
+    pub fn pointer_cast<P, D, Name>(
         &self,
         value: P,
-        dst_ty: PointerType<'ctx, B, impl Capability>,
+        dst_ty: PointerType<'ctx, D, B, impl Capability>,
         name: Name,
-    ) -> IrResult<PointerValueId<B>>
+    ) -> IrResult<PointerValueId<D, B>>
     where
         Name: AsRef<str>,
         P: IntoPointerValue<'ctx, B>,
+        D: crate::AddrSpace,
     {
         let value = value.into_pointer_value(self.mutable_ref())?;
         // Boundary: admit the caller's destination type before anything reads it.
@@ -7355,6 +7420,11 @@ where
     /// our typed [`Self::int_cmp`] is integer-only. This helper
     /// covers the pointer arm directly (used by `is_null` /
     /// `is_not_null`).
+    ///
+    /// Both operands share one address-space marker, so comparing a
+    /// `Space<0>` pointer with a `Space<1>` one is a type error; a `SpaceDyn`
+    /// pair in different address spaces is left to the verifier's
+    /// same-type check on `icmp`, as before.
     pub fn pointer_cmp<L, R2, Name>(
         &self,
         pred: super::cmp_predicate::IntPredicate,
@@ -7365,7 +7435,7 @@ where
     where
         Name: AsRef<str>,
         L: IntoPointerValue<'ctx, B>,
-        R2: IntoPointerValue<'ctx, B>,
+        R2: IntoPointerValue<'ctx, B, Space = L::Space>,
     {
         let lhs = lhs.into_pointer_value(self.mutable_ref())?;
         let rhs = rhs.into_pointer_value(self.mutable_ref())?;
@@ -7463,7 +7533,7 @@ where
         ptr: P,
         offset: O,
         name: Name,
-    ) -> IrResult<PointerValueId<B>>
+    ) -> IrResult<PointerValueId<P::Space, B>>
     where
         Name: AsRef<str>,
         P: IntoPointerValue<'ctx, B>,
@@ -7484,7 +7554,7 @@ where
         ptr: P,
         offset: O,
         name: Name,
-    ) -> IrResult<PointerValueId<B>>
+    ) -> IrResult<PointerValueId<P::Space, B>>
     where
         Name: AsRef<str>,
         P: IntoPointerValue<'ctx, B>,
@@ -7925,7 +7995,7 @@ where
 
     /// Pointer-typed phi in the default address space (addrspace 0).
     /// Mirrors `IRBuilder::CreatePHI(PointerType::getUnqual(...), ...)`.
-    /// Returns the storable [`PointerPhiInstId<B>`](crate::PointerPhiInstId).
+    /// Returns the storable [`PointerPhiInstId<Space<0>, B>`](crate::PointerPhiInstId).
     /// Inserted at the block's phi head regardless of cursor position, so
     /// phi placement is correct by construction.
     /// Crate-internal since slice 7 — block arguments
@@ -7934,7 +8004,10 @@ where
     /// `dead_code` is allowed in non-test builds; the in-crate raw-phi tests
     /// exercise it.
     #[cfg(test)]
-    pub(crate) fn pointer_phi<Name>(&self, name: Name) -> IrResult<PointerPhiInstId<B>>
+    pub(crate) fn pointer_phi<Name>(
+        &self,
+        name: Name,
+    ) -> IrResult<PointerPhiInstId<crate::Space<0>, B>>
     where
         Name: AsRef<str>,
     {
@@ -7953,17 +8026,18 @@ where
 
     /// Pointer-typed phi in a caller-specified address space. Mirrors
     /// `IRBuilder::CreatePHI(PointerType::get(Ctx, AS), ...)`. Returns the
-    /// storable [`PointerPhiInstId<B>`](crate::PointerPhiInstId). Inserted at
-    /// the block's phi head regardless of cursor position, so phi
-    /// placement is correct by construction.
+    /// storable [`PointerPhiInstId<A, B>`](crate::PointerPhiInstId), in the
+    /// type's address-space marker. Inserted at the block's phi head
+    /// regardless of cursor position, so phi placement is correct by
+    /// construction.
     /// Internal contract shared with the in-tree `.ll` parser (hence
     /// `#[doc(hidden)]`); block arguments are the public phi-authoring surface.
     #[doc(hidden)]
-    pub fn pointer_phi_in_addrspace<Name>(
+    pub fn pointer_phi_in_addrspace<A: crate::AddrSpace, Name>(
         &self,
-        ty: PointerType<'ctx, B, impl Capability>,
+        ty: PointerType<'ctx, A, B, impl Capability>,
         name: Name,
-    ) -> IrResult<PointerPhiInstId<B>>
+    ) -> IrResult<PointerPhiInstId<A, B>>
     where
         Name: AsRef<str>,
     {
@@ -10057,12 +10131,12 @@ where
     /// `ptr_ty` supplies. The sanctioned constructor for pointer-result builders
     /// (alloca / GEP / int→ptr / addrspacecast / pointer bitcast); removes the
     /// `from_value_unchecked` assertion (docs/design/unforgeable-markers-design.md, census pattern 6).
-    fn append_ptr<N: AsRef<str>>(
+    fn append_ptr<A: crate::AddrSpace, N: AsRef<str>>(
         &self,
-        ptr_ty: PointerType<'ctx, B>,
+        ptr_ty: PointerType<'ctx, A, B>,
         kind: InstructionKindData,
         name: N,
-    ) -> PointerValue<'ctx, B> {
+    ) -> PointerValue<'ctx, A, B> {
         // Internal: every caller mints `ptr_ty`, derives it from an admitted
         // operand, or admits a caller's type at its own entry.
         let inst = self.append_instruction(ptr_ty.slot_trusting_same_module(), kind, name);
@@ -10072,12 +10146,12 @@ where
     /// Pointer load: build+append a `load` whose pointee is `ptr_ty`, routed through
     /// [`Self::load_inner`] so the default-align fill is preserved (a raw append would
     /// emit `align 0`). Re-stamps `payload.pointee_ty = ptr_ty` — structural.
-    fn append_ptr_load<N: AsRef<str>>(
+    fn append_ptr_load<A: crate::AddrSpace, N: AsRef<str>>(
         &self,
-        ptr_ty: PointerType<'ctx, B>,
+        ptr_ty: PointerType<'ctx, A, B>,
         mut payload: LoadInstData,
         name: N,
-    ) -> IrResult<PointerValue<'ctx, B>> {
+    ) -> IrResult<PointerValue<'ctx, A, B>> {
         payload.pointee_ty = ptr_ty.slot_trusting_same_module();
         let inst = self.load_inner(payload, name)?;
         Ok(PointerValue::from_value_unchecked(inst.to_erased()))
@@ -10379,10 +10453,11 @@ macro_rules! impl_into_return_value_float {
 }
 impl_into_return_value_float!(f32, f64, Half, Bfloat, Fp128, X86Fp80, PpcFp128, FloatDyn,);
 
-// Pointer-marker impl: `Ptr` accepts any pointer-valued operand source.
-impl<'ctx, B: ModuleBrand + 'ctx, V> IntoReturnValue<'ctx, Ptr, B> for V
+// Pointer-marker impl: `Ptr<AS>` accepts any pointer-valued operand source in
+// address space `AS`, by type.
+impl<'ctx, B: ModuleBrand + 'ctx, V, const AS: u32> IntoReturnValue<'ctx, Ptr<AS>, B> for V
 where
-    V: IntoPointerValue<'ctx, B>,
+    V: IntoPointerValue<'ctx, B, Space = crate::Space<AS>>,
 {
     #[inline]
     fn into_return_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
@@ -11179,9 +11254,9 @@ where
     /// address spaces go through [`erased`](Self::erased) with the
     /// matching pointer type, exactly as
     /// [`crate::IrBuilder::pointer_load`] documents.
-    pub fn pointer(self, name: &str) -> IrResult<PointerValueId<B>> {
+    pub fn pointer(self, name: &str) -> IrResult<PointerValueId<crate::Space<0>, B>> {
         let parent = self.parent;
-        let ty = parent.mutable_ref().ptr_type(0);
+        let ty = parent.mutable_ref().ptr_type_in::<0>();
         let payload = self.payload(ty.as_type().slot_trusting_same_module())?;
         parent.append_ptr_load(ty, payload, name).map(|v| v.id())
     }
@@ -11448,15 +11523,16 @@ where
     }
 
     /// Emit the alloca, named by the storable
-    /// [`PointerValueId<B>`](crate::PointerValueId).
-    pub fn build(self) -> IrResult<PointerValueId<B>> {
+    /// [`PointerValueId<SpaceDyn, B>`](crate::PointerValueId): its address
+    /// space is the builder's run-time setting.
+    pub fn build(self) -> IrResult<PointerValueId<crate::SpaceDyn, B>> {
         let allocated_ty = self.allocated_ty?;
         let num_elements = self.num_elements?;
         self.parent.alloca_inner(
             allocated_ty,
             num_elements,
             self.align,
-            self.addr_space,
+            self.parent.mutable_ref().ptr_type(self.addr_space),
             self.flags,
             &self.name,
         )
@@ -11501,7 +11577,8 @@ pub use select_narrow_token::SelectNarrow;
 /// arm category, so `b.select(cond, a, b)` on `IntValue<W>` arms
 /// yields an [`IntValueId<W, B>`](crate::IntValueId), on `FloatValue<K>`
 /// arms a [`FloatValueId<K, B>`](crate::FloatValueId), and on
-/// [`PointerValue`] arms a [`PointerValueId<B>`](crate::PointerValueId).
+/// [`PointerValue<A>`] arms a [`PointerValueId<A, B>`](crate::PointerValueId),
+/// in the arms' shared address space.
 /// The narrowing itself is unchanged — only the currency the builder hands
 /// back. Mirrors LangRef's invariant that the two arms must have identical
 /// IR types.
@@ -11535,11 +11612,11 @@ mod select_arm_sealed {
 
     impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> Sealed for IntValue<'ctx, W, B> {}
     impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> Sealed for FloatValue<'ctx, K, B> {}
-    impl<'ctx, B: ModuleBrand + 'ctx> Sealed for PointerValue<'ctx, B> {}
+    impl<'ctx, A: crate::AddrSpace, B: ModuleBrand + 'ctx> Sealed for PointerValue<'ctx, A, B> {}
 
     impl<W: IntWidth, B: ModuleBrand> Sealed for IntValueId<W, B> {}
     impl<K: FloatKind, B: ModuleBrand> Sealed for FloatValueId<K, B> {}
-    impl<B: ModuleBrand> Sealed for PointerValueId<B> {}
+    impl<A: crate::AddrSpace, B: ModuleBrand> Sealed for PointerValueId<A, B> {}
 }
 
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for IntValue<'ctx, W, B> {
@@ -11570,8 +11647,11 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for FloatValu
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for PointerValue<'ctx, B> {
-    type Output = PointerValueId<B>;
+// Both arms are one Rust type, so they share `A`, and the result keeps it.
+impl<'ctx, A: crate::AddrSpace, B: ModuleBrand + 'ctx> SelectArm<'ctx, B>
+    for PointerValue<'ctx, A, B>
+{
+    type Output = PointerValueId<A, B>;
     #[inline]
     fn from_select_value(v: Value<'ctx, B>, _narrow: &SelectNarrow<'_>) -> Self::Output {
         PointerValue::from_value_unchecked(v).id()
@@ -11608,8 +11688,8 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for FloatValu
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for PointerValueId<B> {
-    type Output = PointerValueId<B>;
+impl<'ctx, A: crate::AddrSpace, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for PointerValueId<A, B> {
+    type Output = PointerValueId<A, B>;
     #[inline]
     fn from_select_value(v: Value<'ctx, B>, _narrow: &SelectNarrow<'_>) -> Self::Output {
         PointerValue::from_value_unchecked(v).id()

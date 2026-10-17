@@ -54,6 +54,7 @@
 use core::marker::PhantomData;
 
 use crate::Branded;
+use crate::addr_space::{AddrSpace, SpaceDyn};
 use crate::basic_block::BasicBlockLabel;
 use crate::block_params::{BlockParams, BlockParamsDyn};
 use crate::capability::Capability;
@@ -254,8 +255,9 @@ decl_value_id! {
 
 decl_value_id! {
     /// Storable, module-tagged id for a pointer value, resolved into a
-    /// [`PointerValue`].
-    PointerValueId
+    /// [`PointerValue<A>`](crate::PointerValue). The address-space marker `A`
+    /// is preserved on the id and re-attached on view.
+    PointerValueId [A: AddrSpace => _a]
 }
 
 decl_value_id! {
@@ -483,8 +485,9 @@ decl_value_id! {
 
 decl_value_id! {
     /// Storable, module-tagged id for a pointer-typed `phi`, resolved into a
-    /// [`PointerPhiInst`].
-    PointerPhiInstId
+    /// [`PointerPhiInst<A>`](crate::PointerPhiInst). The address-space marker
+    /// `A` is preserved on the id and re-attached on view.
+    PointerPhiInstId [A: AddrSpace => _a]
 }
 
 decl_value_id! {
@@ -539,6 +542,7 @@ macro_rules! impl_as_dyn_for_id {
 impl_as_dyn_for_id!(
     IntValueId[W: IntWidth => IntDyn]("IntValue::as_dyn"),
     FloatValueId[K: FloatKind => FloatDyn]("FloatValue::as_dyn"),
+    PointerValueId[A: AddrSpace => SpaceDyn]("PointerValue::as_dyn"),
     FunctionId[R: ReturnMarker => Dyn]("FunctionValue::as_dyn"),
     CallInstId[R: ReturnMarker => Dyn]("CallInst::as_dyn"),
 );
@@ -707,9 +711,9 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FloatValueId
     }
 }
 
-impl<B: ModuleBrand> sealed::Sealed for PointerValueId<B> {}
-impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PointerValueId<B> {
-    type View<C: Capability> = PointerValue<'ctx, B, C>;
+impl<A: AddrSpace, B: ModuleBrand> sealed::Sealed for PointerValueId<A, B> {}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PointerValueId<A, B> {
+    type View<C: Capability> = PointerValue<'ctx, A, B, C>;
 
     #[inline]
     fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
@@ -723,6 +727,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PointerValueId<B> {
         debug_assert!(
             matches!(module.type_data(ty), TypeData::Pointer { .. }),
             "PointerValueId points at a non-pointer arena type at its slot",
+        );
+        debug_assert!(
+            A::static_space().is_none_or(|space| module.type_data(ty).as_pointer() == Some(space)),
+            "PointerValueId's address-space marker disagrees with its arena type",
         );
         Some(PointerValue::from_value_unchecked(Value::from_parts(
             slot, module, ty,
@@ -1083,9 +1091,9 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FpPhiInstId<
     }
 }
 
-impl<B: ModuleBrand> sealed::Sealed for PointerPhiInstId<B> {}
-impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PointerPhiInstId<B> {
-    type View<C: Capability> = PointerPhiInst<'ctx, B, C>;
+impl<A: AddrSpace, B: ModuleBrand> sealed::Sealed for PointerPhiInstId<A, B> {}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PointerPhiInstId<A, B> {
+    type View<C: Capability> = PointerPhiInst<'ctx, A, B, C>;
 
     #[inline]
     fn id_from_raw(tag: ModuleId, slot: SealedValueSlot) -> Self {
@@ -1096,8 +1104,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PointerPhiInstId<B> {
     fn resolve_in<C: Capability>(self, module: ModuleRef<'ctx, B, C>) -> Option<Self::View<C>> {
         let ty = phi_result_type_in(self.tag, self.slot, module)?;
         debug_assert!(
-            matches!(module.type_data(ty), TypeData::Pointer { .. }),
-            "PointerPhiInstId points at a non-pointer phi result type at its slot",
+            matches!(
+                module.type_data(ty),
+                TypeData::Pointer { addr_space }
+                    if A::static_space().is_none_or(|space| space == *addr_space)
+            ),
+            "PointerPhiInstId points at a phi whose result is not a pointer in its address space",
         );
         Some(PointerPhiInst::from_raw(self.slot, module, ty))
     }
@@ -1146,13 +1158,15 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IntoFloatValue<'ctx, K, B> for F
     }
 }
 
-impl<B: ModuleBrand> into_pointer_value_sealed::Sealed for PointerValueId<B> {}
-impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for PointerValueId<B> {
+impl<A: AddrSpace, B: ModuleBrand> into_pointer_value_sealed::Sealed for PointerValueId<A, B> {}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for PointerValueId<A, B> {
+    type Space = A;
+
     #[inline]
     fn into_pointer_value<ModuleCapability: Capability>(
         self,
         module: ModuleRef<'ctx, B, ModuleCapability>,
-    ) -> IrResult<PointerValue<'ctx, B, ModuleCapability>> {
+    ) -> IrResult<PointerValue<'ctx, A, B, ModuleCapability>> {
         self.resolve_in(module).ok_or(IrError::ForeignValueId)
     }
 }
@@ -1214,7 +1228,7 @@ impl_into_erased_value_for_id!(
     ValueId,
     IntValueId[W: IntWidth],
     FloatValueId[K: FloatKind],
-    PointerValueId,
+    PointerValueId[A: AddrSpace],
     FunctionId[R: ReturnMarker],
     GlobalId,
     GlobalAliasId,
@@ -1259,7 +1273,7 @@ impl_into_erased_value_for_instruction_id!(
     AtomicCmpXchgInstId,
     PhiInstId[W: IntWidth],
     FpPhiInstId[K: FloatKind],
-    PointerPhiInstId,
+    PointerPhiInstId[A: AddrSpace],
     OtherPhiInstId,
 );
 

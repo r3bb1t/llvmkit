@@ -36,8 +36,8 @@ fn handles_round_trip_through_to_id_and_view() -> Result<(), IrError> {
     assert_eq!(m.view(a_id), a, "IntValue did not survive id/view");
 
     // Pointer value (the second argument).
-    let p: PointerValue<'_, _> = m.view(f).param(1)?.try_into()?;
-    let p_id: PointerValueId<_> = p.id();
+    let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(1)?.try_into()?;
+    let p_id: PointerValueId<llvmkit_ir::SpaceDyn, _> = p.id();
     assert_eq!(m.view(p_id), p, "PointerValue did not survive id/view");
 
     // Function value.
@@ -134,7 +134,7 @@ fn ids_are_copy_and_send() {
         assert_copy_send::<ValueId<B>>();
         assert_copy_send::<IntValueId<i32, B>>();
         assert_copy_send::<FloatValueId<f64, B>>();
-        assert_copy_send::<PointerValueId<B>>();
+        assert_copy_send::<PointerValueId<llvmkit_ir::SpaceDyn, B>>();
         assert_copy_send::<FunctionId<Dyn, B>>();
         assert_copy_send::<GlobalId<B>>();
         assert_copy_send::<BlockId<Dyn, B>>();
@@ -229,7 +229,7 @@ fn builder_view_agrees_with_module_view() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
 
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let p: PointerValue<'_, _> = m.view(f).param(1)?.try_into()?;
+    let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(1)?.try_into()?;
     let v: Value<'_, _> = a.as_erased();
 
     let b = IrBuilder::new(&m);
@@ -275,7 +275,7 @@ fn typed_ids_lift_at_operand_positions() -> Result<(), IrError> {
 
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let x: FloatValue<'_, f32, _> = m.view(f).param(1)?.try_into()?;
-    let p: PointerValue<'_, _> = m.view(f).param(2)?.try_into()?;
+    let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(2)?.try_into()?;
 
     // A reference reached through the module's read view is `ReadOnly`, and
     // a lift comes back at its reference's capability, so each lifted handle
@@ -321,10 +321,10 @@ fn typed_ids_are_call_args() -> Result<(), IrError> {
         FloatValueId<f32, B>: IntoCallArg<'ctx, f32, B>,
     {
     }
-    fn assert_ptr_call_arg<'ctx, B>(_: &PointerValueId<B>)
+    fn assert_ptr_call_arg<'ctx, B>(_: &PointerValueId<llvmkit_ir::Space<0>, B>)
     where
         B: ModuleBrand + 'ctx,
-        PointerValueId<B>: IntoCallArg<'ctx, llvmkit_ir::Ptr, B>,
+        PointerValueId<llvmkit_ir::Space<0>, B>: IntoCallArg<'ctx, llvmkit_ir::Ptr, B>,
     {
     }
 
@@ -339,7 +339,7 @@ fn typed_ids_are_call_args() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let x: FloatValue<'_, f32, _> = m.view(f).param(1)?.try_into()?;
-    let p: PointerValue<'_, _> = m.view(f).param(2)?.try_into()?;
+    let p: PointerValue<'_, llvmkit_ir::Space<0>, _> = m.view(f).param(2)?.try_into()?;
     assert_int_call_arg(&a.id());
     assert_float_call_arg(&x.id());
     assert_ptr_call_arg(&p.id());
@@ -419,7 +419,8 @@ fn every_id_is_an_erased_operand() {
 
     let a: IntValue<'_, i32, _> = m.view(f).param(0).unwrap().try_into().unwrap();
     let x: FloatValue<'_, f32, _> = m.view(f).param(1).unwrap().try_into().unwrap();
-    let p: PointerValue<'_, _> = m.view(f).param(2).unwrap().try_into().unwrap();
+    let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(2).unwrap().try_into().unwrap();
 
     assert_erased_operand(&a.as_erased().id());
     assert_erased_operand(&a.id());
@@ -455,7 +456,7 @@ fn ids_drive_erased_operand_slots_without_a_view() -> Result<(), IrError> {
     let f = m.add_function_dyn("inc", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
 
     let v = b.int_load::<i32, _, _>(p, "v")?;
     // `int_add` already hands back a storable id (cycle B1a).

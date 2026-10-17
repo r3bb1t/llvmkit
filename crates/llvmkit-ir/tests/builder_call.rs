@@ -89,7 +89,8 @@ fn call_builder_mixed_arg_types() -> Result<(), IrError> {
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let p: llvmkit_ir::PointerValue<'_, _> = m.view(caller).param(0)?.try_into()?;
+    let p: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(caller).param(0)?.try_into()?;
     // Mixed-type args: an `IntValue<i32>` and a `PointerValue` go into
     // the same call. The builder pattern accepts each via a
     // monomorphised `arg<V: IsValue>` call.
@@ -301,8 +302,9 @@ fn typed_build_indirect_call_derives_function_type_from_schema() -> Result<(), I
     let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let callee_ptr =
-        llvmkit_ir::PointerValue::try_from(m.view(host).param(0).expect("callee ptr"))?;
+    let callee_ptr = llvmkit_ir::PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(
+        m.view(host).param(0).expect("callee ptr"),
+    )?;
     let x = m.i32_type().const_int(7_i32);
     let call = b.indirect_call::<fn(i32) -> i32, _, _, _>(callee_ptr, (x,), "r")?;
     let r = b.view(call).result();
@@ -437,8 +439,9 @@ fn indirect_call_rejects_too_many_arguments() -> Result<(), IrError> {
     let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let callee_ptr =
-        llvmkit_ir::PointerValue::try_from(m.view(host).param(0).expect("callee ptr"))?;
+    let callee_ptr = llvmkit_ir::PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(
+        m.view(host).param(0).expect("callee ptr"),
+    )?;
     let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let extra_arg = i32_ty.const_int(1_i32);
     let err = b
@@ -556,7 +559,8 @@ fn call_erased_carries_the_call_site_configuration_for_every_callee_shape() -> R
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let fp = llvmkit_ir::PointerValue::try_from(m.view(caller).param(0)?)?;
+    let fp =
+        llvmkit_ir::PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(m.view(caller).param(0)?)?;
     let v = m.view(caller).param(1)?;
 
     // One configuration, reused verbatim on all three callee shapes: `fastcc`

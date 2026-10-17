@@ -360,7 +360,7 @@ fn verify_casts_full() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
     let x: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let y: FloatValue<'_, f32, _> = m.view(f).param(1)?.try_into()?;
-    let p: PointerValue<'_, _> = m.view(f).param(2)?.try_into()?;
+    let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(2)?.try_into()?;
     let s: IntValue<'_, i8, _> = m.view(f).param(3)?.try_into()?;
     let t: IntValueId<i32, _> = b.trunc(x, i32_ty, "t")?;
     let e: IntValueId<i64, _> = b.sext(t, i64_ty, "e")?;
@@ -372,10 +372,10 @@ fn verify_casts_full() -> Result<(), IrError> {
     let _is: FloatValueId<f32, _> = b.si_to_fp(x, f32_ty, "is")?;
     let _iu: FloatValueId<f32, _> = b.ui_to_fp(x, f32_ty, "iu")?;
     let pi: IntValueId<i64, _> = b.ptr_to_int(p, i64_ty, "pi")?;
-    let _ip: PointerValueId<_> = b.int_to_ptr(pi, ptr_ty, "ip")?;
+    let _ip: PointerValueId<llvmkit_ir::SpaceDyn, _> = b.int_to_ptr(pi, ptr_ty, "ip")?;
     // `addrspacecast` (identity here -- both ptrs in addr space 0 --
     // is a no-op, but exercises the builder + verifier path).
-    let _ac: PointerValueId<_> = b.addrspace_cast(p, ptr_ty, "ac")?;
+    let _ac: PointerValueId<llvmkit_ir::SpaceDyn, _> = b.addrspace_cast(p, ptr_ty, "ac")?;
     let sum = b.int_add(e, z, "sum")?;
     let total = b.int_add(sum, fi, "total")?;
     b.ret(total)?;
@@ -403,7 +403,7 @@ fn verify_memory_gep_select_control() -> Result<(), IrError> {
     let else_label = else_bb.id();
     let join_label = join.id();
 
-    let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let v: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

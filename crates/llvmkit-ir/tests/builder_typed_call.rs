@@ -105,7 +105,7 @@ fn typed_call_pointer_result_feeds_ret() -> Result<(), IrError> {
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Ptr>(&m).position_at_end(entry);
     let call = b.call(callee, (), "p")?;
-    let p: PointerValue<'_, _> = b.view(call).result();
+    let p: PointerValue<'_, llvmkit_ir::Space<0>, _> = b.view(call).result();
     b.ret(p)?;
     let text = format!("{m}");
     assert!(text.contains("%p = call ptr @alloc_ptr()"), "got:\n{text}");
@@ -319,7 +319,8 @@ fn typed_indirect_call_full_module_print_equals_dyn_indirect_call_full_module_pr
         let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
         let entry = m.view(host).append_basic_block(m, "entry");
         let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
-        let callee_ptr = PointerValue::try_from(m.view(host).param(0)?)?;
+        let callee_ptr =
+            PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(m.view(host).param(0)?)?;
         let x = i32_ty.const_int(7_i32);
         let call = b.indirect_call::<fn(i32) -> i32, _, _, _>(callee_ptr, (x,), "r")?;
         let ret_val = b.view(call).result();
@@ -333,7 +334,8 @@ fn typed_indirect_call_full_module_print_equals_dyn_indirect_call_full_module_pr
         let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
         let entry = m.view(host).append_basic_block(m, "entry");
         let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
-        let callee_ptr = PointerValue::try_from(m.view(host).param(0)?)?;
+        let callee_ptr =
+            PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(m.view(host).param(0)?)?;
         let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
         let x = i32_ty.const_int(7_i32);
         let inst =
@@ -461,7 +463,7 @@ fn build_indirect_call_dyn_int_marker_against_void_fn_type_reports_asymmetric_mi
     let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let callee_ptr = PointerValue::try_from(m.view(host).param(0)?)?;
+    let callee_ptr = PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(m.view(host).param(0)?)?;
     // The asserted callee function type returns `void`, but `R2 =
     // i32` asserts an integer result -- a mismatch.
     let void_fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());

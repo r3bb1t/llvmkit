@@ -250,7 +250,7 @@ fn indirectbr_single_destination() -> Result<(), IrError> {
         let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(dest);
         bb_b.ret_void()?;
     }
-    let addr: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let addr: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let (_sealed, ibr) = b.indirectbr(addr, "")?;
     let _closed = ibr.add_destination(dest_label)?.finish();
@@ -283,7 +283,7 @@ fn indirectbr_multiple_destinations() -> Result<(), IrError> {
         let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
         bb_b.ret_void()?;
     }
-    let addr: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let addr: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let (_sealed, ibr) = b.indirectbr(addr, "")?;
     let _closed = ibr
@@ -316,7 +316,7 @@ fn indirectbr_typed_pointer_address_builds_and_verifies() -> Result<(), IrError>
         bb_b.ret_void()?;
     }
     // A typed pointer handle: accepted by the identity `IntoPointerValue`.
-    let addr: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let addr: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let (_sealed, ibr) = b.indirectbr(addr, "")?;
     let _closed = ibr.add_destination(dest_label)?.finish();
@@ -352,7 +352,8 @@ fn indirectbr_erased_value_pointer_address_builds_and_verifies() -> Result<(), I
     // lift, so an erased param must be narrowed to `PointerValue`
     // explicitly (a runtime-checked `try_into`) before it can fill the
     // pointer-typed `indirectbr` operand.
-    let addr: PointerValue<'_, _> = m.view(f).param(0)?.as_erased().try_into()?;
+    let addr: PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(0)?.as_erased().try_into()?;
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let (_sealed, ibr) = b.indirectbr(addr, "")?;
     let _closed = ibr.add_destination(dest_label)?.finish();

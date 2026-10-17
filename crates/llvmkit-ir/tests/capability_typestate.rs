@@ -374,7 +374,7 @@ struct InstructionIds {
     intrinsic: IntrinsicInstId<Dyn, DynBrand>,
     int_phi: PhiInstId<IntDyn, DynBrand>,
     fp_phi: FpPhiInstId<FloatDyn, DynBrand>,
-    pointer_phi: PointerPhiInstId<DynBrand>,
+    pointer_phi: PointerPhiInstId<llvmkit_ir::SpaceDyn, DynBrand>,
     other_phi: OtherPhiInstId<DynBrand>,
     freeze: FreezeInstId<DynBrand>,
     va_arg: VaArgInstId<DynBrand>,
@@ -535,7 +535,7 @@ fn a_verified_modules_blocks_and_instructions_are_read_only() -> Result<(), IrEr
     )?;
     let block = join.id();
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let pointer: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let pointer: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let call = b.call_dyn(callee.as_function(), Vec::<Value<'_, _>>::new(), "c")?;
     let typed_call = b.call(callee, (), "t")?;
     let intrinsic = b.intrinsic_call_by_id(

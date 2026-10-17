@@ -19,6 +19,84 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed (breaking) — pointers carry their address space
+
+An LLVM pointer type carries its address space (`ptr addrspace(3)`); llvmkit's
+pointer handles did not carry it in their Rust type. So a `select` of a `ptr`
+and a `ptr addrspace(1)` compiled and was refused only by the verifier, and a
+typed `Ptr` signature accepted a pointer in any address space. Every pointer
+handle now carries an address-space marker — `Space<N>` where the call fixes
+the space, `SpaceDyn` where only run-time data knows it — the way integers
+carry `Width<N>` / `IntDyn` and vectors `Len<N>` / `LenDyn`.
+
+- **Added: `AddrSpace`, `Space<const N: u32>` and `SpaceDyn`** (module
+  `addr_space`, re-exported at the crate root). `AddrSpace::static_space()` is
+  `Some(N)` for `Space<N>` and `None` for `SpaceDyn`.
+- **Breaking: every pointer handle gains the marker, second and without a
+  default**: `PointerType<'ctx, A, B, C>`, `PointerValue<'ctx, A, B, C>`,
+  `PointerValueId<A, B>`, `ConstantPointerNull<'ctx, A, B, C>`,
+  `PointerPhiInst<'ctx, A, B, C>` / `PointerPhiInstId<A, B>`,
+  `PointerVariable<A, B>` and `TypedPointerValue<'ctx, T, A, B, C>`. `as_dyn()`
+  erases the marker of a pointer type, value, id, null constant or typed
+  pointer to `SpaceDyn`; `TryFrom` narrows a `SpaceDyn` handle — or an
+  erased `Value`, `Argument`, `Constant` or `Instruction` — to `Space<N>`,
+  refusing another address space with `IrError::AddressSpaceMismatch { expected,
+  got }`. `IntoPointerValue` names its input's marker as the associated type
+  `Space`.
+- **Breaking: `ptr_type(n)` returns a `SpaceDyn` type**, on `Module` and
+  `ModuleView` alike; the new `ptr_type_in::<N>()` returns a `Space<N>` one.
+- Where a pointer's marker comes from: the GEPs (`gep`, `inbounds_gep`,
+  `struct_gep`, `gep_with_flags`, `ptr_add`, `inbounds_ptr_add`, `field_gep`,
+  `element_gep`, `inbounds_element_gep`) keep the base pointer's; `int_to_ptr`,
+  `addrspace_cast` and `pointer_cast` take their destination type's; `select`
+  and a pointer phi take their operands'; a call to a `Ptr<N>`-returning callee
+  and a `Ptr<N>` parameter are `Space<N>`; a `null` constant is its type's; an
+  SSA pointer variable is its declaration's. The parser, the instruction
+  accessors (`LoadInst::pointer`, a cast's `src`, …), `PhiKind::Ptr` and the
+  erased lifts answer `SpaceDyn`.
+- **Breaking: `pointer_load` and `LoadBuilder::pointer` return `Space<0>` ids**
+  — they load a `ptr`, which is address space 0 — and the new
+  `pointer_load_in::<N>` loads a `ptr addrspace(N)` as `Space<N>`.
+- **Breaking: the default alloca builders (`alloca`, `alloca_with_align`,
+  `array_alloca*`, `AllocaBuilder::build`, `typed_alloca`) return `SpaceDyn`
+  pointers**: the DataLayout's alloca address space is run-time data. The new
+  `alloca_in::<N>` returns `Space<N>`.
+- **Breaking: `select`, `pointer_cmp` and `def_pointer_var` take one marker for
+  both of their pointers**, so pointers in address spaces 0 and 1 are a type
+  error there (trybuild fixtures `pointer_select_mixed_spaces.rs`,
+  `pointer_cmp_mixed_spaces.rs`, `pointer_var_def_wrong_space.rs`). Two
+  `SpaceDyn` pointers in different spaces are still refused at run time, as
+  before: by `select`'s own `IrError::TypeIdentityMismatch`, by
+  `def_pointer_var`'s `IrError::AddressSpaceMismatch`, and, for `pointer_cmp`,
+  which does not compare them itself, by the verifier's `icmp` same-type check.
+- **Breaking: `Ptr` is `Ptr<const AS: u32 = 0>`.** Plain `Ptr` is address
+  space 0 and `Ptr<N>` address space `N` — in signatures, struct fields and
+  return markers — and every check of one requires that address space exactly:
+  `m.function::<Ptr>(name)` accepted a function returning `ptr addrspace(1)`,
+  and now refuses it. `ExpectedRetKind::Ptr` carries the space (`Ptr(u32)`).
+  `CallInst<Ptr<AS>>::return_pointer_value` returns a `Space<AS>` pointer; it
+  returned an unmarked one, and only for `Ptr<0>`.
+- **Breaking: `field_gep`'s generics are `<S, A, const I: u32, Name>`** (and
+  `element_gep` / `inbounds_element_gep` / `typed_load` / `typed_store` gain an
+  `A` after their schema), so `field_gep::<S, I, _>` is now
+  `field_gep::<S, _, I, _>`.
+- **Added: `Ptr::new`, `Ptr::null` and `Ptr::as_ptr`.** `Ptr` had no public
+  constructor, so the Rust value of a `#[derive(IrStruct)]` struct with a
+  pointer field could not be built outside llvmkit, and rustc reported that
+  struct's pointer fields as never read.
+- `TypedPointerValue::with_pointee` keeps the pointer's marker; it erased it
+  without saying so.
+
+| Before | After |
+|---|---|
+| `PointerValue<'ctx, B>` | `PointerValue<'ctx, Space<0>, B>` for a `Ptr` value, `PointerValue<'ctx, SpaceDyn, B>` for one whose space is run-time data |
+| `PointerValueId<B>` | `PointerValueId<Space<0>, B>` / `PointerValueId<SpaceDyn, B>` |
+| `PointerType<'ctx, B>` | `PointerType<'ctx, SpaceDyn, B>` (from `ptr_type(n)`) / `PointerType<'ctx, Space<N>, B>` (from `ptr_type_in::<N>()`) |
+| `m.ptr_type(3)` where the space is a constant | `m.ptr_type_in::<3>()` |
+| `PointerValue::try_from(value)` | `PointerValue::<SpaceDyn, _, _>::try_from(value)`, or the `Space<N>` you expect |
+| `Ptr` (any address space) | `Ptr` (address space 0) / `Ptr<N>` |
+| `field_gep::<S, I, _>` | `field_gep::<S, _, I, _>` |
+
 ### Changed (breaking) — no `get_` getters (C-GETTER)
 
 The naming law — lookups are bare nouns, `get_` only in the std-consistent

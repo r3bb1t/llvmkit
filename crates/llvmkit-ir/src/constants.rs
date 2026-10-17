@@ -20,6 +20,7 @@
 //! pointer-based identity in our own code.
 
 use super::DebugLoc;
+use super::addr_space::{AddrSpace, SpaceDyn};
 use super::ap_float::{ApFloat, ApFloatSemantics, LosesInfo, RoundingMode};
 use super::ap_int::ApInt;
 use super::array_len::ArrayLen;
@@ -190,11 +191,208 @@ macro_rules! decl_constant_handle {
 
 // `ConstantIntValue<'ctx, W>` and `ConstantFloatValue<'ctx, K>` are
 // hand-written below to carry their width/kind markers.
-decl_constant_handle!(
-    /// `null` constant for a pointer type.
-    ConstantPointerNull, Pointer,
-    type_predicate |d| matches!(d, TypeData::Pointer { .. })
-);
+/// `null` constant for a pointer type. Carries the pointer type's
+/// address-space marker `A` (see [`PointerValue`](crate::PointerValue)), so a
+/// `null` of a `Space<0>` type is a `Space<0>` pointer operand. Hand-written
+/// rather than `decl_constant_handle!` to carry the marker.
+pub struct ConstantPointerNull<'ctx, A: AddrSpace, B: ModuleBrand, Cap: Capability = Mutable> {
+    id: ValueSlot,
+    pub(super) module: ModuleRef<'ctx, B, Cap>,
+    ty: TypeSlot,
+    _a: core::marker::PhantomData<A>,
+}
+
+impl<A: AddrSpace, B: ModuleBrand, Cap: Capability> CapabilityOf
+    for ConstantPointerNull<'_, A, B, Cap>
+{
+    type Capability = Cap;
+}
+
+// Manual impls: a `derive` would bound `A`.
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, Cap: Capability> Clone
+    for ConstantPointerNull<'ctx, A, B, Cap>
+{
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, Cap: Capability> Copy
+    for ConstantPointerNull<'ctx, A, B, Cap>
+{
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, Cap: Capability> PartialEq
+    for ConstantPointerNull<'ctx, A, B, Cap>
+{
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.module == other.module && self.ty == other.ty
+    }
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, Cap: Capability> Eq
+    for ConstantPointerNull<'ctx, A, B, Cap>
+{
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, Cap: Capability> core::hash::Hash
+    for ConstantPointerNull<'ctx, A, B, Cap>
+{
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.id.hash(h);
+        self.module.hash(h);
+        self.ty.hash(h);
+    }
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, Cap: Capability> core::fmt::Debug
+    for ConstantPointerNull<'ctx, A, B, Cap>
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ConstantPointerNull")
+            .field("id", &self.id)
+            .field("ty", &self.ty)
+            .field("space", &A::static_space())
+            .finish()
+    }
+}
+
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, Cap: Capability>
+    ConstantPointerNull<'ctx, A, B, Cap>
+{
+    #[inline]
+    pub(super) fn from_parts(c: Constant<'ctx, B, Cap>) -> Self {
+        Self {
+            id: c.slot_trusting_same_module(),
+            module: c.module,
+            ty: c.ty().slot_trusting_same_module(),
+            _a: core::marker::PhantomData,
+        }
+    }
+
+    /// Widen to the erased [`Constant`] handle, at the same capability.
+    #[inline]
+    pub fn as_constant(self) -> Constant<'ctx, B, Cap> {
+        Constant::from_parts(Value::from_parts(self.id, self.module, self.ty))
+    }
+
+    /// Widen to the erased [`Value`] handle, at the same capability.
+    #[inline]
+    pub fn as_erased(self) -> Value<'ctx, B, Cap> {
+        Value::from_parts(self.id, self.module, self.ty)
+    }
+
+    /// Forget the static address space. Never implicit.
+    #[inline]
+    pub fn as_dyn(self) -> ConstantPointerNull<'ctx, SpaceDyn, B, Cap> {
+        ConstantPointerNull {
+            id: self.id,
+            module: self.module,
+            ty: self.ty,
+            _a: core::marker::PhantomData,
+        }
+    }
+}
+
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, Cap: Capability> core::fmt::Display
+    for ConstantPointerNull<'ctx, A, B, Cap>
+{
+    /// Print the operand form `<type> null`, identical to what the erased
+    /// [`Value`] handle from `as_erased` prints.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&Self::as_erased(*self), f)
+    }
+}
+
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, Cap: Capability> sealed::Sealed
+    for ConstantPointerNull<'ctx, A, B, Cap>
+{
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, Cap: Capability> IsValue<'ctx, B>
+    for ConstantPointerNull<'ctx, A, B, Cap>
+{
+    #[inline]
+    fn as_erased(self) -> Value<'ctx, B, Cap> {
+        Self::as_erased(self)
+    }
+}
+crate::value::impl_into_erased_value_for_handle!(ConstantPointerNull [A: AddrSpace]);
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, Cap: Capability> IsConstant<'ctx, B>
+    for ConstantPointerNull<'ctx, A, B, Cap>
+{
+    #[inline]
+    fn as_constant(self) -> Constant<'ctx, B, Cap> {
+        Self::as_constant(self)
+    }
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, Cap: Capability> Typed<'ctx, B>
+    for ConstantPointerNull<'ctx, A, B, Cap>
+{
+    #[inline]
+    fn ty(self) -> Type<'ctx, B, Cap> {
+        Type::new(self.ty, self.module)
+    }
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, Cap: Capability> HasName<'ctx, B>
+    for ConstantPointerNull<'ctx, A, B, Cap>
+{
+    #[inline]
+    fn name(self) -> Option<String> {
+        self.as_erased().name()
+    }
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, Cap: CanMutate> SetName<'ctx, B>
+    for ConstantPointerNull<'ctx, A, B, Cap>
+{
+    #[inline]
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
+    where
+        Name: Into<String>,
+    {
+        self.as_erased().set_name(module_token, name)
+    }
+    #[inline]
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
+        self.as_erased().clear_name(module_token);
+    }
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, Cap: Capability> HasDebugLoc
+    for ConstantPointerNull<'ctx, A, B, Cap>
+{
+    #[inline]
+    fn debug_loc(self) -> Option<DebugLoc> {
+        self.as_erased().debug_loc()
+    }
+}
+
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, Cap: Capability>
+    From<ConstantPointerNull<'ctx, A, B, Cap>> for Constant<'ctx, B, Cap>
+{
+    #[inline]
+    fn from(c: ConstantPointerNull<'ctx, A, B, Cap>) -> Self {
+        c.as_constant()
+    }
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, Cap: Capability>
+    From<ConstantPointerNull<'ctx, A, B, Cap>> for Value<'ctx, B, Cap>
+{
+    #[inline]
+    fn from(c: ConstantPointerNull<'ctx, A, B, Cap>) -> Self {
+        c.as_erased()
+    }
+}
+
+/// A `null` of any pointer type for [`SpaceDyn`]; for `Space<N>`, only one in
+/// address space `N`.
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, Cap: Capability> TryFrom<Constant<'ctx, B, Cap>>
+    for ConstantPointerNull<'ctx, A, B, Cap>
+{
+    type Error = IrError;
+    fn try_from(c: Constant<'ctx, B, Cap>) -> IrResult<Self> {
+        // As the `decl_constant_handle!` form did: the pointer type is
+        // checked (and, for `Space<N>`, its address space); the constant's
+        // kind is not.
+        PointerType::<A, B, Cap>::try_from(c.ty())?;
+        Ok(Self::from_parts(c))
+    }
+}
 decl_constant_handle!(
     /// `undef <type>` marker. Mirrors `UndefValue`.
     UndefValue, Integer,  // type-label is overridden in the constructor
@@ -935,15 +1133,16 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx, Cap: Capability>
 // PointerType: null
 // --------------------------------------------------------------------------
 
-impl<'ctx, B: ModuleBrand + 'ctx, Cap: Capability> PointerType<'ctx, B, Cap> {
-    /// `ptr null`. Mirrors `ConstantPointerNull::get`.
-    pub fn const_null(self) -> ConstantPointerNull<'ctx, B, Cap> {
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, Cap: Capability> PointerType<'ctx, A, B, Cap> {
+    /// `ptr null`. Mirrors `ConstantPointerNull::get`. The constant keeps the
+    /// type's address-space marker.
+    pub fn const_null(self) -> ConstantPointerNull<'ctx, A, B, Cap> {
         intern_pointer_null(self)
     }
 
     /// Same as [`Self::const_null`]; mirrors inkwell's `const_zero`.
     #[inline]
-    pub fn const_zero(self) -> ConstantPointerNull<'ctx, B, Cap> {
+    pub fn const_zero(self) -> ConstantPointerNull<'ctx, A, B, Cap> {
         self.const_null()
     }
 }
@@ -2645,9 +2844,9 @@ fn intern_float_constant<'ctx, K: FloatKind, B: ModuleBrand + 'ctx, Cap: Capabil
     ConstantFloatValue::from_parts_typed(constant_handle(id, module, ty_id))
 }
 
-fn intern_pointer_null<'ctx, B: ModuleBrand + 'ctx, Cap: Capability>(
-    ty: PointerType<'ctx, B, Cap>,
-) -> ConstantPointerNull<'ctx, B, Cap> {
+fn intern_pointer_null<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, Cap: Capability>(
+    ty: PointerType<'ctx, A, B, Cap>,
+) -> ConstantPointerNull<'ctx, A, B, Cap> {
     let module = ty.module;
     let slot = ty.slot_trusting_same_module();
     let id = module.module().context().intern_constant_null(slot);

@@ -77,14 +77,14 @@ help: the trait `CanMutate` is implemented for `Mutable`
    |
    | impl CanMutate for Mutable {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^
-note: required by a bound in `PointerPhiInst::<'ctx, B, C>::remove_incoming`
+note: required by a bound in `PointerPhiInst::<'ctx, A, B, C>::remove_incoming`
   --> src/instructions.rs
    |
    |     pub fn remove_incoming(
    |            --------------- required by a bound in this associated function
 ...
    |         C: CanMutate,
-   |            ^^^^^^^^^ required by this bound in `PointerPhiInst::<'ctx, B, C>::remove_incoming`
+   |            ^^^^^^^^^ required by this bound in `PointerPhiInst::<'ctx, A, B, C>::remove_incoming`
 
 error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
   --> tests/compile_fail/verified_phi_incoming_removal_is_read_only.rs:46:37

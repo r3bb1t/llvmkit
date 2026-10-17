@@ -18,7 +18,8 @@ fn main() {
     // longer lifts into a typed pointer position, and this fixture's
     // subject is the retained-`Open`-handle lifecycle below, not the
     // operand typing.
-    let addr: PointerValue<'_, _> = m.view(f).param(0).unwrap().try_into().unwrap();
+    let addr: PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(0).unwrap().try_into().unwrap();
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let (_sealed, ibr) = b.indirectbr(addr, "").unwrap();
 

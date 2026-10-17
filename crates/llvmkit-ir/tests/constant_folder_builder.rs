@@ -433,7 +433,8 @@ fn constant_folder_folds_is_null_of_constant_null_without_instruction() -> Resul
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let null = PointerValue::try_from(ptr_ty.const_null().as_erased())?;
+    let null =
+        PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(ptr_ty.const_null().as_erased())?;
 
     let result = b.is_null(null, "isn")?;
 
@@ -457,7 +458,8 @@ fn constant_folder_folds_is_not_null_of_constant_null_without_instruction() -> R
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let null = PointerValue::try_from(ptr_ty.const_null().as_erased())?;
+    let null =
+        PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(ptr_ty.const_null().as_erased())?;
 
     let result = b.is_not_null(null, "ok")?;
 
@@ -480,7 +482,9 @@ fn constant_folder_folds_pointer_cmp_global_vs_null_without_instruction() -> Res
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
     let g = m.add_global("g", i32_ty.const_zero())?;
-    let gp = PointerValue::try_from(m.view(g).as_global_constant_ptr().as_erased())?;
+    let gp = PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(
+        m.view(g).as_global_constant_ptr().as_erased(),
+    )?;
     let fn_ty = m.function_type_no_parameters(bool_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -665,7 +669,7 @@ fn no_folder_emits_ptrtoaddr_instruction_with_address_type() -> Result<(), IrErr
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let ptr: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let ptr: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
 
     let result = b.ptr_to_addr(ptr, "addr")?;
     let instruction = InstructionView::try_from(b.view(result).as_erased())?;
@@ -676,7 +680,7 @@ fn no_folder_emits_ptrtoaddr_instruction_with_address_type() -> Result<(), IrErr
     };
 
     assert_eq!(cast.opcode(), CastOpcode::PtrToAddr);
-    let src: PointerValue<'_, _> = cast.src();
+    let src: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = cast.src();
     assert_eq!(src.as_erased(), ptr.as_erased());
     let typed_result: IntValueId<IntDyn, _> = result;
     assert_eq!(b.view(typed_result).ty().bit_width(), 32);

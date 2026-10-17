@@ -11,6 +11,7 @@
 
 use core::num::NonZeroU32;
 
+use crate::addr_space::AddrSpace;
 use crate::array_len::{ArrLenDyn, ArrayLen};
 use crate::capability::Capability;
 use crate::derived_types::{
@@ -131,13 +132,19 @@ impl<'ctx, const N: u32, B: ModuleBrand + 'ctx, C: Capability> ArrayElement<'ctx
     type Elem = ElemDyn;
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> sealed::Sealed for PointerType<'ctx, B, C> {}
-impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> VectorElement<'ctx, B>
-    for PointerType<'ctx, B, C>
+// A pointer in any address space is a vector and an array element.
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> sealed::Sealed
+    for PointerType<'ctx, A, B, C>
+{
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> VectorElement<'ctx, B>
+    for PointerType<'ctx, A, B, C>
 {
     type Elem = ElemDyn;
 }
-impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ArrayElement<'ctx, B> for PointerType<'ctx, B, C> {
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> ArrayElement<'ctx, B>
+    for PointerType<'ctx, A, B, C>
+{
     type Elem = ElemDyn;
 }
 

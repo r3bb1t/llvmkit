@@ -14,10 +14,12 @@ use core::marker::PhantomData;
 
 use super::value_id::ViewIn;
 use crate::CrateOnly;
+use crate::addr_space::Space;
 use crate::argument::Argument;
 use crate::basic_block::BasicBlock;
 use crate::block_state::Unterminated;
 use crate::capability::{CanMutate, Capability, CapabilityOf, Mutable, ReadOnly};
+use crate::derived_types::PointerType;
 use crate::error::{IrError, IrResult, TypeKindLabel};
 use crate::float_kind::{Bfloat, Fp128, Half, IntoFloatValue, PpcFp128, X86Fp80};
 use crate::function::{FunctionValue, IntoCallee};
@@ -777,23 +779,24 @@ impl FunctionReturn for () {
     }
 }
 
-impl FunctionReturn for Ptr {
-    type Marker = Ptr;
+impl<const AS: u32> FunctionReturn for Ptr<AS> {
+    type Marker = Ptr<AS>;
 
     #[inline]
     fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
     where
         B: ModuleBrand + 'ctx,
     {
-        Ok(module.ptr_type(0).as_type())
+        Ok(module.ptr_type_in::<AS>().as_type())
     }
 
+    /// A pointer in address space `AS` exactly.
     #[inline]
     fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
-        matches!(ty.kind(), TypeKind::Pointer { .. })
+        PointerType::<Space<AS>, B, C>::try_from(ty).is_ok()
     }
 
     #[inline]
@@ -801,7 +804,8 @@ impl FunctionReturn for Ptr {
         TypeKindLabel::Pointer
     }
 
-    type CallResult<'ctx, B: ModuleBrand + 'ctx, C: Capability> = PointerValue<'ctx, B, C>;
+    type CallResult<'ctx, B: ModuleBrand + 'ctx, C: Capability> =
+        PointerValue<'ctx, Space<AS>, B, C>;
 
     #[inline]
     fn call_result_from_value<'ctx, B, C: Capability>(
@@ -815,23 +819,24 @@ impl FunctionReturn for Ptr {
     }
 }
 
-impl FunctionParam for Ptr {
-    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = PointerValue<'ctx, B, C>;
+impl<const AS: u32> FunctionParam for Ptr<AS> {
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = PointerValue<'ctx, Space<AS>, B, C>;
 
     #[inline]
     fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
     where
         B: ModuleBrand + 'ctx,
     {
-        Ok(module.ptr_type(0).as_type())
+        Ok(module.ptr_type_in::<AS>().as_type())
     }
 
+    /// A pointer in address space `AS` exactly.
     #[inline]
     fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
-        matches!(ty.kind(), TypeKind::Pointer { .. })
+        PointerType::<Space<AS>, B, C>::try_from(ty).is_ok()
     }
 
     #[inline]
@@ -839,7 +844,7 @@ impl FunctionParam for Ptr {
     where
         B: ModuleBrand + 'ctx,
     {
-        PointerValue::<B, ReadOnly>::try_from(arg).map(|_| ())
+        PointerValue::<Space<AS>, B, ReadOnly>::try_from(arg).map(|_| ())
     }
 
     #[inline]
@@ -1451,10 +1456,11 @@ macro_rules! impl_into_call_arg_float {
 }
 impl_into_call_arg_float!(f32, f64, Half, Bfloat, Fp128, X86Fp80, PpcFp128);
 
-impl<'ctx, B, V> IntoCallArg<'ctx, Ptr, B> for V
+// A `Ptr<AS>` argument takes a pointer in address space `AS`, by type.
+impl<'ctx, B, V, const AS: u32> IntoCallArg<'ctx, Ptr<AS>, B> for V
 where
     B: ModuleBrand + 'ctx,
-    V: IntoPointerValue<'ctx, B>,
+    V: IntoPointerValue<'ctx, B, Space = Space<AS>>,
 {
     #[inline]
     fn into_call_arg(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {

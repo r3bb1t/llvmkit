@@ -17,6 +17,6 @@ fn main() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = m.view(f).builder(&m).position_at_end(entry);
     let cpu = b.typed_alloca::<CpuState, _>("cpu")?;
-    let _bad = b.field_gep::<CpuState, 7, _>(cpu, "x")?;
+    let _bad = b.field_gep::<CpuState, _, 7, _>(cpu, "x")?;
     Ok(())
 }

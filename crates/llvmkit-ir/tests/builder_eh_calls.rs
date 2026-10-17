@@ -213,7 +213,7 @@ fn an_indirect_invoke_refuses_a_return_marker_its_type_does_not_have() -> Result
     let second = m.view(caller).append_basic_block(&m, "second");
     let normal = m.view(caller).append_basic_block(&m, "normal");
     let unwind = m.view(caller).append_basic_block(&m, "unwind");
-    let fp = PointerValue::try_from(m.view(caller).param(0)?)?;
+    let fp = PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(m.view(caller).param(0)?)?;
 
     let before = format!("{m}");
     let refused = IrBuilder::new_for::<Dyn>(&m)
@@ -273,7 +273,7 @@ fn the_indirect_and_inline_asm_call_sites_honour_a_call_site_type_override() -> 
     let asm = m.inline_asm(fallback, "nop", "", InlineAsmOptions::new());
     let caller_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type(), i32_ty.as_type()]);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-    let fp = PointerValue::try_from(m.view(caller).param(0)?)?;
+    let fp = PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(m.view(caller).param(0)?)?;
     let v = m.view(caller).param(1)?;
     let function = m.view(caller);
     let (e0, e1, e2, e3) = (
