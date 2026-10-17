@@ -18,11 +18,11 @@
 //! marked accordingly.
 
 use llvmkit_ir::{
-    AddFlags, Align, AshrFlags, AttrIndex, AttrKind, Attribute, AttributeStorage, Dyn, DynBrand,
-    FloatPredicate, FloatValue, FloatValueId, GepNoWrapFlags, IntPredicate, IntValue, IntValueId,
-    IntrinsicId, IrBuilder, IrError, Linkage, LshrFlags, MemoryEffects, MulFlags, PointerValue,
-    PointerValueId, SdivFlags, ShlFlags, SubFlags, UdivFlags, VectorType, VerifierRule, lanes,
-    module_new,
+    AddFlags, Align, ArrayType, AshrFlags, AttrIndex, AttrKind, Attribute, AttributeStorage, Dyn,
+    DynBrand, FloatPredicate, FloatValue, FloatValueId, GepNoWrapFlags, IntPredicate, IntValue,
+    IntValueId, IntrinsicId, IrBuilder, IrError, Linkage, LshrFlags, MemoryEffects, MulFlags,
+    PointerValue, PointerValueId, SdivFlags, ShlFlags, SubFlags, UdivFlags, VectorType,
+    VerifierRule, lanes, module_new,
 };
 
 fn abs_function_attrs_without_immarg() -> AttributeStorage {
@@ -411,7 +411,7 @@ fn verify_memory_gep_select_control() -> Result<(), IrError> {
     b.store_with_align(v, slot, Align::new(4)?)?;
     let loaded: IntValue<'_, i32, _> = b.view(b.int_load::<i32, _, _>(p, "ld")?);
     let cmp = b.int_cmp(IntPredicate::Slt, loaded, 0_i32, "cmp")?;
-    let arr_ty = m.array_type(i32_ty, 4);
+    let arr_ty = ArrayType::of(i32_ty, 4);
     let v_dyn: IntValue<'_, llvmkit_ir::IntDyn, _> = v.into();
     let _gep = b.inbounds_gep(arr_ty, p, [v_dyn], "ix")?;
     b.cond_br(cmp, then_label, else_label)?;
@@ -867,7 +867,7 @@ fn verify_vector_gep_with_disagreeing_index_widths_fails() -> Result<(), IrError
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type();
-    let array_ty = m.array_type(i8_ty, 4);
+    let array_ty = ArrayType::of(i8_ty, 4);
     let vec2_i32 = VectorType::of(i32_ty, lanes::<2>());
     let vec4_i32 = VectorType::of(i32_ty, lanes::<4>());
     let fn_ty = m.function_type(

@@ -2,8 +2,8 @@
 //! them, and the erased routes that refuse to.
 
 use llvmkit_ir::{
-    ConstantFolder, Dyn, ElemDyn, IrBuilder, IrBuilderFolder, IrError, LenDyn, Linkage, Module,
-    ShuffleMaskElem, TypeKindLabel, TypePosition, VectorType,
+    ArrLenDyn, ArrayType, ConstantFolder, Dyn, ElemDyn, IrBuilder, IrBuilderFolder, IrError,
+    LenDyn, Linkage, Module, ShuffleMaskElem, TypeKindLabel, TypePosition, VectorType,
     constant_fold_shuffle_vector_instruction, lanes,
 };
 
@@ -128,6 +128,98 @@ fn an_intrinsic_name_cannot_spell_an_invalid_vector() {
     }
     m.get_or_insert_intrinsic_declaration_by_name("llvm.vector.reduce.add.v4i32")
         .expect("`<4 x i32>` is a vector overload of `llvm.vector.reduce.add`");
+}
+
+/// `ArrayType::of` keeps the element marker and takes every element kind
+/// `ArrayType::isValidElementType` admits that has a typed handle.
+/// llvmkit-specific (D3).
+#[test]
+fn a_typed_array_takes_any_valid_element() {
+    let m = Module::dynamic("components");
+    let a: ArrayType<'_, f64, ArrLenDyn, _, _> = ArrayType::of(m.f64_type(), 3);
+    assert_eq!(a.to_string(), "[3 x double]");
+    let nested = ArrayType::of(a, 2);
+    assert_eq!(nested.to_string(), "[2 x [3 x double]]");
+    let of_vectors = ArrayType::of(VectorType::of(m.i8_type(), lanes::<4>()), 0);
+    assert_eq!(of_vectors.to_string(), "[0 x <4 x i8>]");
+}
+
+/// The erased array constructor refuses what `ArrayType::isValidElementType`
+/// refuses — `x86_amx` included, which a struct accepts. Mirrors
+/// `ArrayType::get`'s `assert`; llvmkit-specific (D10).
+///
+/// The `ModuleView` half below runs the same refusals through the view's
+/// constructor, as `an_erased_vector_refuses_an_invalid_element` does for the
+/// vector ones.
+#[test]
+fn an_erased_array_refuses_an_invalid_element() {
+    let m = Module::dynamic("components");
+    for (element, kind) in [
+        (m.label_type().as_type(), TypeKindLabel::Label),
+        (m.x86_amx_type(), TypeKindLabel::X86Amx),
+        (m.token_type().as_type(), TypeKindLabel::Token),
+    ] {
+        let refused = m.array_type(element, 2);
+        assert!(
+            matches!(
+                refused,
+                Err(IrError::InvalidTypeComponent { position: TypePosition::ArrayElement, kind: k }) if k == kind
+            ),
+            "{refused:?}"
+        );
+    }
+    m.array_type(m.ptr_type(0), 2)
+        .expect("a pointer is an array element");
+
+    assert_eq!(
+        m.array_type(m.x86_amx_type(), 2)
+            .expect_err("`x86_amx` is no array element")
+            .to_string(),
+        "invalid array element type: x86_amx"
+    );
+
+    let view = m.as_view();
+    for (element, kind) in [
+        (view.label_type().as_type(), TypeKindLabel::Label),
+        (view.x86_amx_type(), TypeKindLabel::X86Amx),
+        (view.token_type().as_type(), TypeKindLabel::Token),
+    ] {
+        let refused = view.array_type(element, 2);
+        assert!(
+            matches!(
+                refused,
+                Err(IrError::InvalidTypeComponent { position: TypePosition::ArrayElement, kind: k }) if k == kind
+            ),
+            "{refused:?}"
+        );
+    }
+    view.array_type(view.ptr_type(0), 2)
+        .expect("a pointer is an array element");
+}
+
+/// An intrinsic name whose overload suffix spells an array of an element
+/// `ArrayType::isValidElementType` refuses does not demangle. Upstream's
+/// `getMangledTypeStr` (`lib/IR/Intrinsics.cpp`) spells only types that exist,
+/// so no upstream name reads `a2x86amx`, `a2isVoid` or `a2Metadata`.
+/// llvmkit-specific regression (D10): the demangler built `[2 x x86_amx]`
+/// straight into the arena and declared `llvm.ssa.copy` (whose one overload is
+/// `llvm_any_ty`) over it. `a2i32` is the positive control.
+#[test]
+fn an_intrinsic_name_cannot_spell_an_invalid_array() {
+    let m = Module::dynamic("components");
+    for name in [
+        "llvm.ssa.copy.a2x86amx",
+        "llvm.ssa.copy.a2isVoid",
+        "llvm.ssa.copy.a2Metadata",
+    ] {
+        let refused = m.get_or_insert_intrinsic_declaration_by_name(name);
+        assert!(
+            matches!(refused, Err(IrError::IntrinsicSignatureMismatch { .. })),
+            "{name}: {refused:?}"
+        );
+    }
+    m.get_or_insert_intrinsic_declaration_by_name("llvm.ssa.copy.a2i32")
+        .expect("`[2 x i32]` is an overload of `llvm.ssa.copy`");
 }
 
 /// The builder's `shuffle_vector` refuses an empty mask, whose result would be

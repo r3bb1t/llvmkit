@@ -112,7 +112,7 @@ fn struct_sizedness_follows_the_scalable_vector_rule() -> Result<(), IrError> {
 
     // `Type::isScalableTy` walks array elements; `isSized` then refuses the
     // struct that holds the array.
-    let array = m.array_type(scalable, 2).as_type();
+    let array = m.array_type(scalable, 2)?.as_type();
     let wrapped = m.set_struct_body(m.opaque_struct("wrapped")?, [array], false)?;
     assert!(wrapped.as_type().is_scalable());
     assert!(!wrapped.as_type().is_sized());

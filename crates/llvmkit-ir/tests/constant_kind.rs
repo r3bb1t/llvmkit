@@ -8,9 +8,9 @@
 //! anchors after them pin the branches no upstream test isolates.
 
 use llvmkit_ir::{
-    ApFloat, ApFloatSign, Constant, ConstantAggregateKind, ConstantDataKind, ConstantExprOpcode,
-    ConstantKind, ConstantSequentialKind, DynBrand, IrResult, Linkage, Module, Type, UnaryOpcode,
-    Undefined, VectorType, constant_fold_unary_instruction, lanes,
+    ApFloat, ApFloatSign, ArrayType, Constant, ConstantAggregateKind, ConstantDataKind,
+    ConstantExprOpcode, ConstantKind, ConstantSequentialKind, DynBrand, IrResult, Linkage, Module,
+    Type, UnaryOpcode, Undefined, VectorType, constant_fold_unary_instruction, lanes,
 };
 
 /// The class of a two-element fixed vector of `elements`.
@@ -27,7 +27,7 @@ fn array_kind<'m>(
     m: &'m Module<DynBrand>,
     elements: [Constant<'m, DynBrand>; 2],
 ) -> IrResult<ConstantKind<'m, DynBrand>> {
-    let ty = m.array_type(elements[0].ty(), 2);
+    let ty = m.array_type(elements[0].ty(), 2)?;
     Ok(ty.const_array(elements)?.as_constant().kind())
 }
 
@@ -185,7 +185,7 @@ fn an_all_null_element_list_is_a_constant_aggregate_zero() -> IrResult<()> {
     assert!(aggregate_zero(
         pair.const_struct([zero, zero])?.as_constant().kind()
     ));
-    let empty = m.array_type(m.i32_type(), 0);
+    let empty = ArrayType::of(m.i32_type(), 0);
     assert!(aggregate_zero(
         empty
             .const_array(Vec::<Constant<'_, DynBrand>>::new())?
@@ -455,7 +455,7 @@ fn token_none_and_target_none_are_null_values() -> IrResult<()> {
     ));
     assert!(none.is_null_value());
     let pair = m
-        .array_type(target, 2)
+        .array_type(target, 2)?
         .const_array([none, none])?
         .as_constant();
     assert!(pair.is_null_value());
@@ -546,11 +546,11 @@ fn nested_and_empty_lists_are_classified_through_their_class() -> IrResult<()> {
     let undef = i32_ty.as_type().undef().as_constant();
     let zero = i32_ty.const_int(0_i32).as_constant();
     let one = i32_ty.const_int(1_i32).as_constant();
-    let inner = m.array_type(i32_ty, 2);
+    let inner = ArrayType::of(i32_ty, 2);
 
     let undef_inner = inner.const_array([undef, undef])?.as_constant();
     let undef_outer = m
-        .array_type(undef_inner.ty(), 2)
+        .array_type(undef_inner.ty(), 2)?
         .const_array([undef_inner, undef_inner])?
         .as_constant();
     assert!(matches!(
@@ -560,7 +560,7 @@ fn nested_and_empty_lists_are_classified_through_their_class() -> IrResult<()> {
 
     let zero_inner = inner.const_array([zero, zero])?.as_constant();
     let zero_outer = m
-        .array_type(zero_inner.ty(), 2)
+        .array_type(zero_inner.ty(), 2)?
         .const_array([zero_inner, zero_inner])?
         .as_constant();
     assert!(matches!(
@@ -570,7 +570,7 @@ fn nested_and_empty_lists_are_classified_through_their_class() -> IrResult<()> {
 
     let simple_inner = inner.const_array([zero, one])?.as_constant();
     let mixed_outer = m
-        .array_type(simple_inner.ty(), 2)
+        .array_type(simple_inner.ty(), 2)?
         .const_array([simple_inner, zero_inner])?
         .as_constant();
     assert!(matches!(
@@ -606,7 +606,7 @@ fn an_aggregate_zero_list_prints_as_zeroinitializer() -> IrResult<()> {
         .as_type();
     let none = m.target_ext_none(target)?;
     let pair = m
-        .array_type(target, 2)
+        .array_type(target, 2)?
         .const_array([none, none])?
         .as_constant();
     assert!(matches!(
@@ -618,8 +618,7 @@ fn an_aggregate_zero_list_prints_as_zeroinitializer() -> IrResult<()> {
         "[2 x target(\"spirv.foo\")] zeroinitializer"
     );
     let zero_byte = m.i8_type().const_int(0_i8).as_constant();
-    let zero_bytes = m
-        .array_type(m.i8_type(), 2)
+    let zero_bytes = ArrayType::of(m.i8_type(), 2)
         .const_array([zero_byte, zero_byte])?
         .as_constant();
     assert_eq!(zero_bytes.to_string(), "[2 x i8] zeroinitializer");

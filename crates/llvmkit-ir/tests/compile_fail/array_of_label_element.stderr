@@ -1,0 +1,25 @@
+error[E0277]: `LabelType<'_, DynBrand>` cannot be an array element
+  --> tests/compile_fail/array_of_label_element.rs:10:27
+   |
+10 |     let _ = ArrayType::of(m.label_type(), 2);
+   |             ------------- ^^^^^^^^^^^^^^ LLVM arrays cannot hold void, label, metadata, function, token or x86_amx types
+   |             |
+   |             required by a bound introduced by this call
+   |
+   = help: the trait `llvmkit_ir::ArrayElement<'_, _>` is not implemented for `LabelType<'_, DynBrand>`
+   = note: a runtime `Type` goes through `array_type(ty, len)?`, which checks it (`ArrayType::isValidElementType`)
+   = help: the following other types implement trait `llvmkit_ir::ArrayElement<'ctx, B>`:
+             ArrayType<'ctx, E, L, B, C>
+             FloatType<'ctx, FloatDyn, B, C>
+             FloatType<'ctx, f32, B, C>
+             FloatType<'ctx, f64, B, C>
+             FloatType<'ctx, llvmkit_ir::Bfloat, B, C>
+             FloatType<'ctx, llvmkit_ir::Fp128, B, C>
+             FloatType<'ctx, llvmkit_ir::Half, B, C>
+             FloatType<'ctx, llvmkit_ir::PpcFp128, B, C>
+           and $N others
+note: required by a bound in `type_components::<impl ArrayType<'ctx, ElemDyn, ArrLenDyn, B>>::of`
+  --> src/type_components.rs
+   |
+   |     pub fn of<T: ArrayElement<'ctx, B>>(
+   |                  ^^^^^^^^^^^^^^^^^^^^^ required by this bound in `type_components::<impl ArrayType<'ctx, ElemDyn, ArrLenDyn, B>>::of`

@@ -56,7 +56,7 @@ use llvmkit_ir::{
     Visibility, ZextFlags, derived_types::PointerType, resolve_intrinsic_name,
     shufflevector_mask_from_constant,
 };
-use llvmkit_ir::{FunctionValue, IsValue};
+use llvmkit_ir::{ArrayType, FunctionValue, IsValue};
 use llvmkit_macros::Branded;
 use llvmkit_support::{Span, Spanned};
 
@@ -7367,7 +7367,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             if !elem.is_valid_array_element() {
                 return Err(self.message_at(elem_loc, "invalid array element type"));
             }
-            let arr = self.module.array_type(elem, n);
+            let arr = self
+                .module
+                .array_type(elem, n)
+                .map_err(|e| self.builder_err_at(elem_loc, "array type", e))?;
             Ok(arr.as_type())
         }
     }
@@ -8323,9 +8326,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.check_aggregate_elements(&values, "array", first_elt_loc)?;
                 let element_ty = values[0].ty();
                 let len = u64::try_from(values.len()).unwrap_or(u64::MAX);
+                // Upstream calls `ArrayType::get` here, and its
+                // `isValidElementType` assert is the only check an element
+                // that is first-class yet no array element (`token none`,
+                // `x86_amx undef`) meets. The builder refuses it instead, and
+                // the refusal is reported at the first element, where the
+                // `isFirstClassType` diagnostic is anchored.
                 let c = self
                     .module
                     .array_type(element_ty, len)
+                    .map_err(|e| self.builder_err_at(first_elt_loc, "array constant", e))?
                     .const_array(values)
                     .map_err(|e| self.builder_err("array constant", e))?;
                 Ok(ValIdKind::Constant(c.as_constant()))
@@ -8391,9 +8401,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .iter()
                     .map(|byte| i8_ty.const_int(*byte).as_constant())
                     .collect();
-                let c = self
-                    .module
-                    .array_type(i8_ty, u64::try_from(values.len()).unwrap_or(u64::MAX))
+                let c = ArrayType::of(i8_ty, u64::try_from(values.len()).unwrap_or(u64::MAX))
                     .const_array(values)
                     .map_err(|e| self.builder_err("c\"...\" constant", e))?;
                 Ok(ValIdKind::Constant(c.as_constant()))

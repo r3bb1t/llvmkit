@@ -11,9 +11,9 @@
 //! are tagged `llvmkit-specific:` with the closest functional reference.
 
 use llvmkit_ir::{
-    AggregateType, AnyTypeEnum, BasicTypeEnum, DynBrand, IntDyn, IntType, IrError, IrType,
-    MAX_INT_BITS, MIN_INT_BITS, SizedType, Type, TypeKind, TypeKindLabel, VectorType, lanes,
-    module_new,
+    AggregateType, AnyTypeEnum, ArrayType, BasicTypeEnum, DynBrand, IntDyn, IntType, IrError,
+    IrType, MAX_INT_BITS, MIN_INT_BITS, SizedType, Type, TypeKind, TypeKindLabel, VectorType,
+    lanes, module_new,
 };
 
 /// llvmkit-specific: primitive type interning has no dedicated upstream `TEST`;
@@ -79,8 +79,8 @@ fn integer_width_validation() {
 fn array_and_vector_intern() {
     let m = module_new!("t").expect("fresh module");
     let i32 = m.i32_type();
-    let a1 = m.array_type(i32, 8);
-    let a2 = m.array_type(i32, 8);
+    let a1 = ArrayType::of(i32, 8);
+    let a2 = ArrayType::of(i32, 8);
     assert_eq!(a1.as_type(), a2.as_type());
     assert_eq!(a1.element(), i32.as_type());
     assert_eq!(a1.len(), 8);
@@ -207,7 +207,7 @@ fn sized_refinement_accepts_sized_rejects_unsized() {
     let m = module_new!("t").expect("fresh module");
     let i32 = m.i32_type();
     let f64 = m.f64_type();
-    let arr = m.array_type(i32, 4);
+    let arr = ArrayType::of(i32, 4);
 
     // i32, f64, [4 x i32] are sized.
     assert!(SizedType::try_from(i32.as_type()).is_ok());
@@ -305,7 +305,7 @@ fn basic_type_enum_classifies_first_class() {
 fn aggregate_excludes_vector() {
     let m = module_new!("t").expect("fresh module");
     let i32 = m.i32_type();
-    let arr = m.array_type(i32, 4);
+    let arr = ArrayType::of(i32, 4);
     let vec = VectorType::of(i32, lanes::<4>());
     let lit = m.struct_type([i32.as_type()]);
 
@@ -320,7 +320,7 @@ fn aggregate_excludes_vector() {
 fn any_type_enum_widens_every_kind() {
     let m = module_new!("t").expect("fresh module");
     let i32 = m.i32_type();
-    let arr = m.array_type(i32, 2);
+    let arr = ArrayType::of(i32, 2);
 
     let any: AnyTypeEnum<'_, _> = m.void_type().as_type().into();
     assert!(matches!(any, AnyTypeEnum::Void(_)));

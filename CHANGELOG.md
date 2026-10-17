@@ -56,8 +56,8 @@ LLVM's vector constructors `assert` two rules — `FixedVectorType::get` and
 `VectorType::isValidElementType` admits — and an `assert` is compiled out of a
 release build. llvmkit's builder accepted both, so a module built in Rust could
 hold `<4 x void>`, `<2 x [2 x i32]>` or `<0 x i32>` and print text no parser
-reads back. This section covers the vector family; the other constructors
-follow.
+reads back. This section covers the vector and array families; the other
+constructors follow.
 
 - **Breaking: `Module::vector_type` / `Module::scalable_vector_type`, and the
   same two on `ModuleView`, take `lanes: NonZeroU32` / `min_lanes: NonZeroU32`
@@ -152,6 +152,62 @@ and the trybuild fixtures `vector_of_void_element.rs`, `lanes_zero.rs` and
 `len_zero_static_len.rs`.
 `type_validity.rs`'s agreement law drops its 28 vector and scalable-vector
 known disagreements.
+
+**Arrays.** `ArrayType::get` asserts `ArrayType::isValidElementType`, which
+refuses `void`, `label`, `metadata`, a function type, `token` and `x86_amx`;
+llvmkit's array constructor accepted all six, so `[2 x label]` could be built
+and printed.
+
+- **Breaking: `Module::array_type` and `ModuleView::array_type` return
+  `IrResult`.** They refuse an element from another module with
+  `IrError::ForeignType`, checked first, and an element
+  `ArrayType::isValidElementType` refuses with
+  `IrError::InvalidTypeComponent { position: TypePosition::ArrayElement, kind }`
+  (`invalid array element type: x86_amx`). Both took the element's slot
+  unchecked. A zero length is allowed, as in LLVM; `array_type_n` is
+  unchanged.
+- **Added: `ArrayType::of`**, the route that cannot fail: it takes a sealed
+  `ArrayElement` — an integer, float, pointer, array, struct (any body
+  state), vector or target-type handle — and a `u64` length, builds in the
+  element's own module, and keeps a scalar element marker
+  (`ArrayType::of(m.f64_type(), 3)` is an `ArrayType<'_, f64, ArrLenDyn, _>`).
+  Handing it a `void`, `label`, `metadata`, function or `token` handle is a
+  compile error carrying `ArrayElement`'s own message; `x86_amx`, which has no
+  typed handle, and any runtime `Type` go through `array_type(ty, len)?`.
+- An intrinsic name whose overload suffix spells an array of an invalid
+  element (`llvm.ssa.copy.a2x86amx`) is `IrError::IntrinsicSignatureMismatch`;
+  the demangler built `[2 x x86_amx]` and the intrinsic was declared over it.
+- The parser builds array types and array constants through the checked
+  constructor after its own checks, and `c"…"` constants through
+  `ArrayType::of`; its array-type diagnostics are unchanged. An array constant
+  whose element is first-class yet no array element (`[x86_amx undef, x86_amx
+  undef]`, `[token none, token none]`) — which upstream's
+  `LLParser::parseValID` hands to the asserting `ArrayType::get` — is refused
+  at its first element as `expected array constant: invalid array element
+  type: x86_amx`; llvmkit built the array and then reported
+  `constant expression type mismatch` against the demanded type, as a release
+  build of upstream does.
+- Call sites: rust-analyzer `findReferences` at `bb7e518` found 48 calls of
+  `Module::array_type` (45 in tests, 3 in the parser) and 1 of
+  `ModuleView::array_type`; 38 moved to `ArrayType::of`, the rest check with
+  `?` (or `expect` in a test that returns nothing). No trybuild fixture calls
+  either (`rg -l '\.array_type\(' crates/llvmkit-ir/tests/compile_fail` prints
+  nothing at `bb7e518`).
+
+| Before | After |
+|---|---|
+| `m.array_type(ty, n)` | `m.array_type(ty, n)?`, or `ArrayType::of(handle, n)` for a typed handle |
+
+Tests: `type_components.rs` (`a_typed_array_takes_any_valid_element`,
+`an_erased_array_refuses_an_invalid_element`,
+`an_intrinsic_name_cannot_spell_an_invalid_array`),
+`cross_module_handles.rs::the_array_constructors_reject_an_element_from_another_module`,
+`intrinsics.rs::tests::the_array_helper_refuses_an_invalid_element_as_a_mismatch`,
+`type_validity.rs::an_array_constant_of_a_non_array_element_is_refused_at_its_first_element`
+and the trybuild fixture `array_of_label_element.rs`. `type_validity.rs`'s
+agreement law drops its 6 array known disagreements: the cells built but not
+parsed go from 18 to 12, measured as its module doc says, with
+`KNOWN_DISAGREEMENTS` emptied, over `bb7e518`.
 
 ### Fixed (breaking) — every cast instruction is one port of `LLParser::parseCast`; the verifier's cast checks follow upstream's
 

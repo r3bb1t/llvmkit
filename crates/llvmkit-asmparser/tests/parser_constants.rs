@@ -5,8 +5,8 @@
 //! `UPSTREAM.md`.
 
 use llvmkit_asmparser::{ll_parser::Parser, parse_error::ParseError, parser};
-use llvmkit_ir::Module;
 use llvmkit_ir::module_new;
+use llvmkit_ir::{ArrayType, Module};
 
 pub mod support;
 
@@ -693,7 +693,7 @@ fn a_standalone_constant_value_accepts_only_upstreams_kinds() {
     assert_eq!(err.to_string(), "expected a constant value");
 
     // Nor is `t_EmptyArray`, at any type.
-    let empty_array = module.array_type(module.i32_type(), 0).as_type();
+    let empty_array = ArrayType::of(module.i32_type(), 0).as_type();
     let err = parser::parse_constant_value(b"[]", &module, empty_array)
         .expect_err("an empty array is not a constant value here");
     assert_eq!(err.to_string(), "expected a constant value");

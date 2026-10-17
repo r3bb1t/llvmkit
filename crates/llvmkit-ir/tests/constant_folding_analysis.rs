@@ -22,7 +22,7 @@ use llvmkit_ir::{
     constant_offset_from_global, is_constant_offset_from_global, lossless_inv_cast,
     lossless_signed_trunc, lossless_unsigned_trunc, module_new,
 };
-use llvmkit_ir::{VectorType, lanes};
+use llvmkit_ir::{ArrayType, VectorType, lanes};
 
 /// llvmkit-specific subset of `ConstantFolding.cpp::ConstantFoldLoadFromConstPtr`:
 /// byte extraction from constant globals uses the module `DataLayout` endianness.
@@ -32,7 +32,7 @@ fn load_from_const_ptr_uses_little_endian_layout() -> Result<(), IrError> {
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let i8_ty = m.i8_type();
     let i16_ty = m.i16_type();
-    let arr_ty = m.array_type(i8_ty.as_type(), 2);
+    let arr_ty = ArrayType::of(i8_ty, 2);
     let init = arr_ty.const_array::<ConstantIntValue<'_, i8, _>, _>([
         i8_ty.const_int(0x34_i8),
         i8_ty.const_int(0x12_i8),
@@ -60,7 +60,7 @@ fn load_from_const_ptr_oob_returns_poison() -> Result<(), IrError> {
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
-    let arr_ty = m.array_type(i8_ty.as_type(), 1);
+    let arr_ty = ArrayType::of(i8_ty, 1);
     let init = arr_ty.const_array::<ConstantIntValue<'_, i8, _>, _>([i8_ty.const_int(7_i8)])?;
     let g = m.add_global_constant("one", init)?;
 
@@ -462,7 +462,7 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
     let i16_ty = m.i16_type();
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
-    let arr_ty = m.array_type(i8_ty.as_type(), 1);
+    let arr_ty = ArrayType::of(i8_ty, 1);
     let init = arr_ty.const_array::<ConstantIntValue<'_, i8, _>, _>([i8_ty.const_int(0_i8)])?;
     let g = m.add_global_constant("api_bytes", init)?;
     let c2_i = i32_ty.const_int(2_i32);
@@ -643,7 +643,7 @@ fn recursive_gep_load_through_bitcast_from_global_folds() -> Result<(), IrError>
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
     let f32_ty = m.f32_type();
-    let arr_ty = m.array_type(i32_ty.as_type(), 2);
+    let arr_ty = ArrayType::of(i32_ty, 2);
     let init = arr_ty.const_array::<ConstantIntValue<'_, i32, _>, _>([
         i32_ty.const_int(0x3f80_0000_i32),
         i32_ty.const_int(0x4000_0000_i32),

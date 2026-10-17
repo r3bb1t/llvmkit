@@ -44,7 +44,10 @@ fn a_type_minted_through_a_module_view_is_read_only() {
     let m = Module::dynamic("m");
     assert_eq!(capability(m.i32_type()), TypeId::of::<Mutable>());
     assert_eq!(capability(m.as_view().i32_type()), TypeId::of::<ReadOnly>());
-    let array = m.as_view().array_type(m.i32_type(), 4);
+    let array = m
+        .as_view()
+        .array_type(m.i32_type(), 4)
+        .expect("an integer is an array element");
     assert_eq!(capability(array), TypeId::of::<ReadOnly>());
     assert_eq!(capability(array.element()), TypeId::of::<ReadOnly>());
 }

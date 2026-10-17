@@ -797,14 +797,22 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
         )
     }
 
-    /// `[n x elem]`.
-    pub(crate) fn array_type<T>(self, elem: T, n: u64) -> ArrayType<'ctx, ElemDyn, ArrLenDyn, B, C>
+    /// `[len x elem]`. Mirrors `ArrayType::get`: its `isValidElementType`
+    /// assert is [`require_component`]; a type from another module is refused
+    /// with [`IrError::ForeignType`] first.
+    pub(crate) fn array_type<T>(
+        self,
+        elem: T,
+        len: u64,
+    ) -> IrResult<ArrayType<'ctx, ElemDyn, ArrLenDyn, B, C>>
     where
         T: IrType<'ctx, B>,
     {
-        // boundary (F1): refused by Task 26
-        let elem_id = elem.as_type().slot_trusting_same_module();
-        ArrayType::new(self.core.ctx.array_type(elem_id, n), self)
+        let elem = elem.as_type();
+        // Boundary: the caller's element type, admitted against this module.
+        let slot = elem.slot_in(self.id())?;
+        require_component(TypePosition::ArrayElement, elem)?;
+        Ok(ArrayType::new(self.core.ctx.array_type(slot, len), self))
     }
 
     /// Const-generic typed array `[N x E]`; `N == 0` is permitted.
@@ -1631,13 +1639,32 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         self.read_only_ref().typed_pointer_type(pointee, addr_space)
     }
 
-    /// `[n x elem]`.
+    /// `[len x elem]` array, checked. Mirrors `ArrayType::get`.
+    ///
+    /// Refuses an `elem` from another module ([`IrError::ForeignType`]) and
+    /// one `ArrayType::isValidElementType` rejects — `void`, `label`,
+    /// `metadata`, a function type, `token` or `x86_amx`
+    /// ([`IrError::InvalidTypeComponent`]). A zero `len` is allowed, as in
+    /// LLVM. For a typed handle, [`ArrayType::of`] is the route that cannot
+    /// fail.
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// let view = m.as_view();
+    /// assert!(view.array_type(view.label_type(), 2).is_err()); // [2 x label]
+    /// assert!(view.array_type(view.i32_type(), 2).is_ok());
+    /// ```
     #[inline]
-    pub fn array_type<T>(self, elem: T, n: u64) -> ArrayType<'ctx, ElemDyn, ArrLenDyn, B, ReadOnly>
+    pub fn array_type<T>(
+        self,
+        elem: T,
+        len: u64,
+    ) -> IrResult<ArrayType<'ctx, ElemDyn, ArrLenDyn, B, ReadOnly>>
     where
         T: IrType<'ctx, B>,
     {
-        self.read_only_ref().array_type(elem, n)
+        self.read_only_ref().array_type(elem, len)
     }
 
     /// Const-generic typed array `[N x E]`. The element marker `E` projects
@@ -4343,11 +4370,30 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
             .typed_pointer_type(pointee, addr_space)
     }
 
-    pub fn array_type<T>(&'ctx self, elem: T, n: u64) -> ArrayType<'ctx, ElemDyn, ArrLenDyn, B>
+    /// `[len x elem]` array, checked. Mirrors `ArrayType::get`.
+    ///
+    /// Refuses an `elem` from another module ([`IrError::ForeignType`]) and
+    /// one `ArrayType::isValidElementType` rejects — `void`, `label`,
+    /// `metadata`, a function type, `token` or `x86_amx`
+    /// ([`IrError::InvalidTypeComponent`]). A zero `len` is allowed, as in
+    /// LLVM. For a typed handle, [`ArrayType::of`] is the route that cannot
+    /// fail.
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// assert!(m.array_type(m.label_type(), 2).is_err()); // [2 x label]
+    /// assert!(m.array_type(m.i32_type(), 2).is_ok());
+    /// ```
+    pub fn array_type<T>(
+        &'ctx self,
+        elem: T,
+        len: u64,
+    ) -> IrResult<ArrayType<'ctx, ElemDyn, ArrLenDyn, B>>
     where
         T: IrType<'ctx, B>,
     {
-        self.capability_ref().array_type(elem, n)
+        self.capability_ref().array_type(elem, len)
     }
 
     /// Const-generic typed array `[N x E]`. The element marker `E` projects

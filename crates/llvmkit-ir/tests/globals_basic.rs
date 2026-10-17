@@ -15,7 +15,7 @@ use llvmkit_ir::{
     IrBuilder, IrError, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, Type, UnnamedAddr,
     VerifierRule, VerifierSubject, constant_fold_constant, module_new,
 };
-use llvmkit_ir::{VectorType, lanes};
+use llvmkit_ir::{ArrayType, VectorType, lanes};
 
 fn module_text<B: ModuleBrand, S>(m: &Module<B, S>) -> String {
     format!("{m}")
@@ -652,7 +652,7 @@ fn const_struct_initializer() {
 fn const_array_i32_initializer() {
     let m = module_new!("m").expect("fresh module");
     let i32_ty = m.i32_type();
-    let arr = m.array_type(i32_ty.as_type(), 3);
+    let arr = ArrayType::of(i32_ty, 3);
     let zero = i32_ty.const_int(0i32);
     let one = i32_ty.const_int(1i32);
     let a = arr
@@ -673,7 +673,7 @@ fn const_array_i32_initializer() {
 fn const_array_i8_prints_as_cstring() {
     let m = module_new!("m").expect("fresh module");
     let i8_ty = m.i8_type();
-    let arr = m.array_type(i8_ty.as_type(), 3);
+    let arr = ArrayType::of(i8_ty, 3);
     let zero = i8_ty.const_int(0i8);
     let one = i8_ty.const_int(1i8);
     let a = arr
@@ -694,7 +694,7 @@ fn const_array_i8_prints_as_cstring() {
 fn appending_global_cstring() {
     let m = module_new!("m").expect("fresh module");
     let i8_ty = m.i8_type();
-    let arr = m.array_type(i8_ty.as_type(), 4);
+    let arr = ArrayType::of(i8_ty, 4);
     let bytes: [llvmkit_ir::ConstantIntValue<'_, i8, _>; 4] = [
         i8_ty.const_int(b't' as i8),
         i8_ty.const_int(b'e' as i8),
@@ -767,7 +767,7 @@ fn function_pointer_aggregate_initializer_prints_ptr_base() -> Result<(), IrErro
     let ptr_ty = m.ptr_type(0);
     let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
-    let arr_ty = m.array_type(ptr_ty.as_type(), 1);
+    let arr_ty = ArrayType::of(ptr_ty, 1);
     let elem = m.view(callee).as_aggregate_ptr(0);
     let init = arr_ty.const_array([elem])?;
     m.add_global_constant("table", init)?;

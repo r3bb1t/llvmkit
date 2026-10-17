@@ -1709,7 +1709,11 @@ where
     // upstream name spells zero lanes. `parse_prefixed_lanes` reads no zero
     // count, so `v0…` falls through to the mismatch any other spelling no type
     // mangles to reaches; an element no vector may hold is refused by the
-    // constructor below, as `VectorType::get` asserts.
+    // constructor below, as `VectorType::get` asserts. The same holds for the
+    // `"a"` arm after them: an array is spelled `"a" + utostr(NumElements)`
+    // from an array that exists, so an element no array may hold (`x86amx`,
+    // `isVoid` and `Metadata` all demangle above) is refused by
+    // `array_type`, as `ArrayType::get` asserts.
     if let Some((min, consumed)) = parse_prefixed_lanes(text, "nxv") {
         let (elem, elem_consumed) = parse_mangled_type_prefix(module, &text[consumed..])?;
         return Ok((
@@ -1726,7 +1730,10 @@ where
     }
     if let Some((elements, consumed)) = parse_prefixed_u64(text, "a", false) {
         let (elem, elem_consumed) = parse_mangled_type_prefix(module, &text[consumed..])?;
-        return Ok((array_type(module, elem, elements), consumed + elem_consumed));
+        return Ok((
+            array_type(module, elem, elements)?,
+            consumed + elem_consumed,
+        ));
     }
     Err(intrinsic_mismatch())
 }
@@ -2355,21 +2362,27 @@ where
     ))
 }
 
+/// `ArrayType::get`, for the demangler here: its `isValidElementType` assert
+/// — `ArrayType::isValidElementType` — is checked and refused as a mismatch,
+/// for the reasons [`fixed_vector_type`] gives.
 fn array_type<'ctx, B, C: Capability>(
     module: ModuleRef<'ctx, B, C>,
     elem: Type<'ctx, B, C>,
     n: u64,
-) -> Type<'ctx, B, C>
+) -> IrResult<Type<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
 {
-    Type::new(
+    if !elem.is_valid_array_element() {
+        return Err(intrinsic_mismatch());
+    }
+    Ok(Type::new(
         module
             .module()
             .context()
             .array_type(elem.slot_trusting_same_module(), n),
         module,
-    )
+    ))
 }
 
 fn target_ext_type<'ctx, B, C, Types, Ints>(
@@ -2762,6 +2775,30 @@ mod tests {
         let i32_ty = module.i32_type().as_type();
         fixed_vector_type(module_ref, i32_ty, lanes::<4>())?;
         scalable_vector_type(module_ref, i32_ty, lanes::<4>())?;
+        Ok(())
+    }
+
+    /// The decoders' array helper refuses an element
+    /// `ArrayType::isValidElementType` refuses — the assert in
+    /// `ArrayType::get` (`llvm/lib/IR/Type.cpp`) — as this file's signature
+    /// mismatch, as the vector helpers do. `x86_amx`, which a struct accepts
+    /// and an array does not, and `void` are refused; `i32` is the positive
+    /// control.
+    ///
+    /// llvmkit-specific (D10): upstream asserts.
+    #[test]
+    fn the_array_helper_refuses_an_invalid_element_as_a_mismatch() -> IrResult<()> {
+        let module = crate::module_new!("intrinsic-array-helper")?;
+        let module_ref = module.capability_ref();
+        let x86_amx = Type::new(module_ref.module().context().x86_amx(), module_ref);
+        assert_eq!(
+            array_type(module_ref, x86_amx, 2),
+            Err(intrinsic_mismatch())
+        );
+        let void = void_type(module_ref);
+        assert_eq!(array_type(module_ref, void, 2), Err(intrinsic_mismatch()));
+        let i32_ty = module.i32_type().as_type();
+        array_type(module_ref, i32_ty, 2)?;
         Ok(())
     }
 

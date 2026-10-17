@@ -20,9 +20,9 @@
 //! llvmkit gives each module its own type arena.
 
 use llvmkit_ir::{
-    Align, Analyses, AtomicOrdering, AtomicRmwBinOp, AtomicRmwConfig, BasicBlock, CallInst,
-    CallSiteConfig, CastOpcode, CastOperation, DominatorTreeAnalysis, Dyn, DynBrand, FastMathFlags,
-    FloatDyn, FloatValue, FnCx, FnReport, FunctionId, FunctionPass, GepNoWrapFlags,
+    Align, Analyses, ArrayType, AtomicOrdering, AtomicRmwBinOp, AtomicRmwConfig, BasicBlock,
+    CallInst, CallSiteConfig, CastOpcode, CastOperation, DominatorTreeAnalysis, Dyn, DynBrand,
+    FastMathFlags, FloatDyn, FloatValue, FnCx, FnReport, FunctionId, FunctionPass, GepNoWrapFlags,
     InlineAsmOptions, InstructionView, IntDyn, IntValue, InvokeInst, IrBuilder, IrError, IrResult,
     IrStruct, Linkage, Module, OperandBundleDef, OperandBundleTag, OperandBundleUse, PatchBody,
     PointerValue, Positioned, ReshapeCfg, SsaBuilder, SsaState, StructSchema, SyncScope,
@@ -451,7 +451,7 @@ fn a_branch_target_rejects_a_block_from_another_module() {
 fn a_constant_operand_rejects_a_constant_from_another_module() {
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
-    let array = home.array_type(home.i32_type(), 1);
+    let array = ArrayType::of(home.i32_type(), 1);
 
     let before = format!("{home}");
     let result = array.const_array([foreign.i32_type().const_int(1i32)]);
@@ -678,6 +678,43 @@ fn the_vector_constructors_reject_an_element_from_another_module() {
         (
             "view.scalable_vector_type(void)",
             without_value(view.scalable_vector_type(foreign_void, lanes::<2>())),
+        ),
+    ]);
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+/// The array constructor — on `Module` and on `ModuleView` — rejects an
+/// element type from another module: its slot would name a different type in
+/// this module's arena. The second list hands each the other module's `void`,
+/// which is also no array element, and still expects `ForeignType`: the module
+/// check runs before the element check.
+///
+/// No upstream counterpart: `ArrayType::get` takes a `Type *`, uniqued per
+/// `LLVMContext`.
+#[test]
+fn the_array_constructors_reject_an_element_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let view = home.as_view();
+    let element = foreign.i32_type().as_type();
+    let problems = not_refused(vec![
+        ("array_type", without_value(home.array_type(element, 2))),
+        (
+            "view.array_type",
+            without_value(view.array_type(element, 2)),
+        ),
+    ]);
+    assert!(problems.is_empty(), "{problems:#?}");
+
+    let foreign_void = foreign.void_type().as_type();
+    let problems = not_refused(vec![
+        (
+            "array_type(void)",
+            without_value(home.array_type(foreign_void, 2)),
+        ),
+        (
+            "view.array_type(void)",
+            without_value(view.array_type(foreign_void, 2)),
         ),
     ]);
     assert!(problems.is_empty(), "{problems:#?}");

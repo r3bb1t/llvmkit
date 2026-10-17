@@ -1,9 +1,9 @@
 //! Constant-expression, blockaddress, and token-none tests.
 
 use llvmkit_ir::{
-    ApInt, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, Dyn, GepNoWrapFlags,
-    IrBuilder, IrError, Linkage, Module, ModuleBrand, OverflowingConstantExprFlags, VectorType,
-    lanes, module_new,
+    ApInt, ArrayType, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, Dyn,
+    GepNoWrapFlags, IrBuilder, IrError, Linkage, Module, ModuleBrand, OverflowingConstantExprFlags,
+    VectorType, lanes, module_new,
 };
 
 fn module_text<B: ModuleBrand, S>(m: &Module<B, S>) -> String {
@@ -598,7 +598,7 @@ fn invalid_gep_constant_expr_scalable_aggregate_source_is_rejected() -> Result<(
     let m = module_new!("constexpr_scalable_gep_source")?;
     let i8_ty = m.i8_type();
     let scalable = VectorType::scalable_of(i8_ty, lanes::<1>());
-    let source_ty = m.array_type(scalable.as_type(), 2);
+    let source_ty = ArrayType::of(scalable, 2);
     let ptr = m.ptr_type(0).const_null();
     let one = m.i64_type().const_int(1i64);
 
@@ -658,7 +658,7 @@ fn vector_gep_scalar_sequential_indices_are_splatted_before_interning() -> Resul
     let m = module_new!("constexpr_vector_gep_splat")?;
     let i8_ty = m.i8_type();
     let i64_ty = m.i64_type();
-    let source_ty = m.array_type(i8_ty.as_type(), 4);
+    let source_ty = ArrayType::of(i8_ty, 4);
     let ptr = m.ptr_type(0).const_null();
     let zero = i64_ty.const_zero();
     let one = i64_ty.const_int(1i64);

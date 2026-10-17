@@ -109,6 +109,8 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/lanes_zero.rs");
     // `Len<0>`'s `STATIC_LEN` goes through `lanes`, so it fails the same way.
     t.compile_fail("tests/compile_fail/len_zero_static_len.rs");
+    // `ArrayType::of` takes only an `ArrayElement`: a `label` element is E0277.
+    t.compile_fail("tests/compile_fail/array_of_label_element.rs");
     // Slice 6: typed array ops make wrong-element inserts compile errors.
     t.compile_fail("tests/compile_fail/array_insert_wrong_element.rs");
     t.compile_fail("tests/compile_fail/typed_gep_bad_index.rs");

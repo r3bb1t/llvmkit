@@ -19,7 +19,7 @@ use llvmkit_ir::{
     constant_fold_instruction, constant_fold_select_instruction,
     constant_fold_shuffle_vector_instruction, constant_fold_unary_instruction, module_new,
 };
-use llvmkit_ir::{VectorType, lanes};
+use llvmkit_ir::{ArrayType, VectorType, lanes};
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldBinaryInstruction` APInt `shl` path.
 #[test]
@@ -1067,7 +1067,7 @@ fn shufflevector_scalable_all_poison_mask_folds() -> Result<(), IrError> {
 fn insertvalue_array_replaces_element() -> Result<(), IrError> {
     let m = module_new!("fold-insertvalue")?;
     let i32_ty = m.i32_type();
-    let array_ty = m.array_type(i32_ty.as_type(), 2);
+    let array_ty = ArrayType::of(i32_ty, 2);
     let aggregate = array_ty.const_array::<ConstantIntValue<'_, i32, _>, _>([
         i32_ty.const_int(1_i32),
         i32_ty.const_int(2_i32),
@@ -1095,7 +1095,7 @@ fn insertvalue_array_replaces_element() -> Result<(), IrError> {
 fn extractvalue_undef_and_poison_aggregates_fold_to_typed_elements() -> Result<(), IrError> {
     let m = module_new!("fold-extractvalue-undef-poison")?;
     let i32_ty = m.i32_type();
-    let array_ty = m.array_type(i32_ty.as_type(), 2);
+    let array_ty = ArrayType::of(i32_ty, 2);
     let undef = array_ty.as_type().undef().as_constant();
     let poison = array_ty.as_type().poison().as_constant();
 
@@ -1936,8 +1936,8 @@ fn compare_ifunc_linkage_relations_match_globalvalue_rules() -> Result<(), IrErr
 fn compare_globals_with_recursive_empty_value_type_declines() -> Result<(), IrError> {
     let m = module_new!("fold-compare-empty-global")?;
     let i8_ty = m.i8_type();
-    let empty_array_ty = m.array_type(i8_ty.as_type(), 0);
-    let nested_array_ty = m.array_type(empty_array_ty.as_type(), 1);
+    let empty_array_ty = ArrayType::of(i8_ty, 0);
+    let nested_array_ty = ArrayType::of(empty_array_ty, 1);
     let nested_g = m.add_global("nested_g", nested_array_ty.as_type().undef())?;
     let nested_h = m.add_global("nested_h", nested_array_ty.as_type().undef())?;
     assert!(
@@ -2280,8 +2280,8 @@ fn vector_and_aggregate_rebuilders_materialize_constants() -> Result<(), IrError
             .expect("out-of-range shuffle lane extracts");
     assert_eq!(shuffle_lane_one, i32_ty.as_type().undef().as_constant());
 
-    let inner_ty = m.array_type(i32_ty.as_type(), 2);
-    let outer_ty = m.array_type(inner_ty.as_type(), 2);
+    let inner_ty = ArrayType::of(i32_ty, 2);
+    let outer_ty = ArrayType::of(inner_ty, 2);
     let row_zero = inner_ty.const_array::<ConstantIntValue<'_, i32, _>, _>([
         i32_ty.const_int(1_i32),
         i32_ty.const_int(2_i32),
