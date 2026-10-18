@@ -8,16 +8,19 @@
 //! error in `LLParser` — and an `assert` is compiled out of a release build.
 //!
 //! Over the agreement grid below (6 containers × 25 element kinds, 150 cells),
-//! llvmkit's builder accepts every cell its parser refuses outside the vector
-//! and array containers: 12 cells are built but not parsed, none is parsed but
-//! not built, and where both accept they make the same type. Measured at the
-//! commit that adds `llvmkit_ir::ArrayType::of` (parent `bb7e518`) by running
+//! llvmkit's builder accepts every cell its parser refuses outside the vector,
+//! array and struct containers: 7 cells are built but not parsed, none is
+//! parsed but not built, and where both accept they make the same type.
+//! Measured at the commit that makes the struct constructors refuse an invalid
+//! element (parent `9b4bce3`) by running
 //! `cargo +1.96.0 test --release -p llvmkit-asmparser --test type_validity`
 //! with `KNOWN_DISAGREEMENTS` emptied; it was 46 at `5ce065f`, before the
-//! vector constructors refused their 28, and 18 at the commit that adds
+//! vector constructors refused their 28, 18 at the commit that adds
 //! `llvmkit_ir::VectorType::of` (parent `dcde8b6`), before the array
-//! constructor refused its 6. Each of those cells is a type a module built in
-//! Rust can hold and print, and no parser reads back.
+//! constructor refused its 6, and 12 at the commit that adds
+//! `llvmkit_ir::ArrayType::of` (parent `bb7e518`), before the struct
+//! constructors refused their 5. Each of those cells is a type a module built
+//! in Rust can hold and print, and no parser reads back.
 
 use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_asmparser::{SlotMapping, parse_type, parse_type_at_beginning, parse_type_with_slots};
@@ -253,8 +256,8 @@ fn element<'m>(m: &'m Module<DynBrand>, text: &str) -> Result<Type<'m, DynBrand>
         "token" => m.token_type().as_type(),
         "x86_amx" => m.x86_amx_type(),
         "[2 x i32]" => ArrayType::of(m.i32_type(), 2).as_type(),
-        "{ i32 }" => m.struct_type([i32_ty]).as_type(),
-        "<{ i32 }>" => m.packed_struct_type([i32_ty]).as_type(),
+        "{ i32 }" => m.struct_type([i32_ty])?.as_type(),
+        "<{ i32 }>" => m.packed_struct_type([i32_ty])?.as_type(),
         "%opaque" => m
             .named_struct("opaque")
             .expect("GRID_SOURCE declares `%opaque`")
@@ -323,7 +326,7 @@ impl Container {
             Container::Vector => m.vector_type(element, lanes::<2>())?.as_type(),
             Container::ScalableVector => m.scalable_vector_type(element, lanes::<2>())?.as_type(),
             Container::Array => m.array_type(element, 2)?.as_type(),
-            Container::Struct => m.struct_type([element]).as_type(),
+            Container::Struct => m.struct_type([element])?.as_type(),
             Container::FunctionReturn => m.function_type_no_parameters(element).as_type(),
             Container::FunctionParameter => m.function_type(m.void_type(), [element]).as_type(),
         })
@@ -335,12 +338,6 @@ impl Container {
 /// the list ends empty and is then deleted. A task that removes rows here
 /// re-measures the module doc's "built but not parsed" count in that commit.
 const KNOWN_DISAGREEMENTS: &[(&str, &str)] = &[
-    // struct — removed by Task 4.
-    ("struct", "void"),
-    ("struct", "label"),
-    ("struct", "metadata"),
-    ("struct", "token"),
-    ("struct", "i32 ()"),
     // function return — removed by Task 5.
     ("function return", "label"),
     ("function return", "metadata"),

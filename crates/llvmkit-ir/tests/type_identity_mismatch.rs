@@ -40,7 +40,7 @@ fn rendered_type_agrees_with_the_type_it_came_from() -> Result<(), IrError> {
         m.ptr_type(0).as_type(),
         m.array_type_n::<i32, 4>().as_type(),
         m.vector_type_n::<i32, 4>().as_type(),
-        m.struct_type([i32_ty, i32_ty]).as_type(),
+        m.struct_type([i32_ty, i32_ty])?.as_type(),
     ];
 
     for ty in types {
@@ -66,12 +66,12 @@ fn same_kind_operands_still_render_distinctly() -> Result<(), IrError> {
 
     let mut rejections: Vec<IrError> = Vec::new();
 
-    let struct_i32 = m.struct_type([i32_ty.as_type()]);
-    let struct_i64 = m.struct_type([i64_ty.as_type()]);
+    let struct_i32 = m.struct_type([i32_ty.as_type()])?;
+    let struct_i64 = m.struct_type([i64_ty.as_type()])?;
 
     // `StructType::const_struct` — a field constant against the struct's own
     // field type. Both are literal structs, so both label `struct`.
-    let outer = m.struct_type([struct_i32.as_type()]);
+    let outer = m.struct_type([struct_i32.as_type()])?;
     let wrong_field = struct_i64.const_struct([i64_ty.const_int(0i64)])?;
     rejections.push(
         outer
@@ -139,7 +139,7 @@ fn a_literal_struct_has_no_settable_body() -> Result<(), IrError> {
     let m = module_new!("literal")?;
     let i32_ty = m.i32_type();
     // `struct_type` interns a *literal* struct — its body is its identity.
-    let literal = m.struct_type([i32_ty.as_type()]);
+    let literal = m.struct_type([i32_ty.as_type()])?;
 
     let error = m
         .set_struct_body_dyn(literal, [i32_ty.as_type()], false)

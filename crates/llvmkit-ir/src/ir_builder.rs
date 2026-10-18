@@ -4456,7 +4456,11 @@ where
             });
         }
         let module = self.mutable_ref();
-        let result_ty = module.literal_struct_type([c.ty(), module.bool_type().as_type()], false);
+        // `AtomicCmpXchgInst`'s constructor builds `StructType::get(Cmp->getType(),
+        // i1)`; a compared value whose type is no struct element (a block's
+        // `label`) is refused here rather than built into `{ label, i1 }`.
+        let result_ty =
+            module.literal_struct_type([c.ty(), module.bool_type().as_type()], false)?;
         let payload = AtomicCmpXchgInstData::new(
             p.slot_trusting_same_module(),
             c.slot_trusting_same_module(),

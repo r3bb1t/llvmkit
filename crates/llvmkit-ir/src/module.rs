@@ -139,6 +139,34 @@ fn reject_reserved_intrinsic_name(name: &str) -> IrResult<()> {
     }
 }
 
+/// A struct body's element slots, each admitted against `owner` and then
+/// checked as a struct element, in order: a type from another module is
+/// [`IrError::ForeignType`] before its kind is read, and one
+/// `StructType::isValidElementType` refuses is
+/// [`IrError::InvalidTypeComponent`] naming its index.
+///
+/// Stricter than upstream on purpose: `StructType::get` and
+/// `StructType::setBody` check no element (only `LLParser::parseStructBody`
+/// does); `docs/divergences.md` records why.
+fn struct_element_slots<'ctx, B, I, T>(owner: ModuleId, elements: I) -> IrResult<Box<[TypeSlot]>>
+where
+    B: ModuleBrand + 'ctx,
+    I: IntoIterator<Item = T>,
+    T: IrType<'ctx, B>,
+{
+    elements
+        .into_iter()
+        .enumerate()
+        .map(|(index, element)| {
+            let element = element.as_type();
+            // Boundary: each caller element, admitted against this module.
+            let slot = element.slot_in(owner)?;
+            require_component(TypePosition::StructElement { index }, element)?;
+            Ok(slot)
+        })
+        .collect()
+}
+
 // --------------------------------------------------------------------------
 // ModuleId
 // --------------------------------------------------------------------------
@@ -924,17 +952,16 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
         self,
         elements: I,
         packed: bool,
-    ) -> StructType<'ctx, StructBodyDyn, B, C>
+    ) -> IrResult<StructType<'ctx, StructBodyDyn, B, C>>
     where
         I: IntoIterator<Item = T>,
         T: IrType<'ctx, B>,
     {
-        // boundary (F1): refused by Task 26
-        let elems: Box<[TypeSlot]> = elements
-            .into_iter()
-            .map(|t| t.as_type().slot_trusting_same_module())
-            .collect();
-        StructType::new(self.core.ctx.literal_struct_type(elems, packed), self)
+        let elems = struct_element_slots(self.id(), elements)?;
+        Ok(StructType::new(
+            self.core.ctx.literal_struct_type(elems, packed),
+            self,
+        ))
     }
 
     /// Function type, variadic or not.
@@ -1766,8 +1793,34 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     }
 
     /// Literal (unnamed) struct type `{ .. }`.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an element that cannot live in a struct — `void`, `label`,
+    /// `metadata`, a function type or `token` — with
+    /// [`IrError::InvalidTypeComponent`], and a type from another module with
+    /// [`IrError::ForeignType`].
+    ///
+    /// **Stricter than LLVM's C++ API.** `StructType::get` accepts those
+    /// elements; `LLParser::parseStructBody` rejects them (`invalid element
+    /// type for struct`), so a module built that way prints text no parser —
+    /// llvmkit's or LLVM's — reads back. `Verifier.cpp`'s header states the
+    /// rule ("It should be illegal to put a label into any other type (like a
+    /// structure)"), and MLIR's `LLVMStructType::verifyInvariants` enforces it at
+    /// construction; llvmkit does the same. See `docs/divergences.md`.
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// let view = m.as_view();
+    /// assert!(view.struct_type([view.label_type()]).is_err());
+    /// assert!(view.struct_type([view.i32_type()]).is_ok());
+    /// ```
     #[inline]
-    pub fn struct_type<I, T>(self, elements: I) -> StructType<'ctx, StructBodyDyn, B, ReadOnly>
+    pub fn struct_type<I, T>(
+        self,
+        elements: I,
+    ) -> IrResult<StructType<'ctx, StructBodyDyn, B, ReadOnly>>
     where
         I: IntoIterator<Item = T>,
         T: IrType<'ctx, B>,
@@ -1776,11 +1829,34 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     }
 
     /// Packed literal struct type `<{ .. }>`.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an element that cannot live in a struct — `void`, `label`,
+    /// `metadata`, a function type or `token` — with
+    /// [`IrError::InvalidTypeComponent`], and a type from another module with
+    /// [`IrError::ForeignType`].
+    ///
+    /// **Stricter than LLVM's C++ API.** `StructType::get` accepts those
+    /// elements; `LLParser::parseStructBody` rejects them (`invalid element
+    /// type for struct`), so a module built that way prints text no parser —
+    /// llvmkit's or LLVM's — reads back. `Verifier.cpp`'s header states the
+    /// rule ("It should be illegal to put a label into any other type (like a
+    /// structure)"), and MLIR's `LLVMStructType::verifyInvariants` enforces it at
+    /// construction; llvmkit does the same. See `docs/divergences.md`.
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// let view = m.as_view();
+    /// assert!(view.packed_struct_type([view.label_type()]).is_err());
+    /// assert!(view.packed_struct_type([view.i32_type()]).is_ok());
+    /// ```
     #[inline]
     pub fn packed_struct_type<I, T>(
         self,
         elements: I,
-    ) -> StructType<'ctx, StructBodyDyn, B, ReadOnly>
+    ) -> IrResult<StructType<'ctx, StructBodyDyn, B, ReadOnly>>
     where
         I: IntoIterator<Item = T>,
         T: IrType<'ctx, B>,
@@ -4507,7 +4583,32 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     }
 
     /// Literal (unnamed) struct type `{ .. }`.
-    pub fn struct_type<I, T>(&'ctx self, elements: I) -> StructType<'ctx, StructBodyDyn, B>
+    ///
+    /// # Errors
+    ///
+    /// Refuses an element that cannot live in a struct — `void`, `label`,
+    /// `metadata`, a function type or `token` — with
+    /// [`IrError::InvalidTypeComponent`], and a type from another module with
+    /// [`IrError::ForeignType`].
+    ///
+    /// **Stricter than LLVM's C++ API.** `StructType::get` accepts those
+    /// elements; `LLParser::parseStructBody` rejects them (`invalid element
+    /// type for struct`), so a module built that way prints text no parser —
+    /// llvmkit's or LLVM's — reads back. `Verifier.cpp`'s header states the
+    /// rule ("It should be illegal to put a label into any other type (like a
+    /// structure)"), and MLIR's `LLVMStructType::verifyInvariants` enforces it at
+    /// construction; llvmkit does the same. See `docs/divergences.md`.
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// assert!(m.struct_type([m.label_type()]).is_err());
+    /// assert!(m.struct_type([m.i32_type()]).is_ok());
+    /// ```
+    pub fn struct_type<I, T>(
+        &'ctx self,
+        elements: I,
+    ) -> IrResult<StructType<'ctx, StructBodyDyn, B>>
     where
         I: IntoIterator<Item = T>,
         T: IrType<'ctx, B>,
@@ -4516,7 +4617,32 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     }
 
     /// Packed literal struct type `<{ .. }>`.
-    pub fn packed_struct_type<I, T>(&'ctx self, elements: I) -> StructType<'ctx, StructBodyDyn, B>
+    ///
+    /// # Errors
+    ///
+    /// Refuses an element that cannot live in a struct — `void`, `label`,
+    /// `metadata`, a function type or `token` — with
+    /// [`IrError::InvalidTypeComponent`], and a type from another module with
+    /// [`IrError::ForeignType`].
+    ///
+    /// **Stricter than LLVM's C++ API.** `StructType::get` accepts those
+    /// elements; `LLParser::parseStructBody` rejects them (`invalid element
+    /// type for struct`), so a module built that way prints text no parser —
+    /// llvmkit's or LLVM's — reads back. `Verifier.cpp`'s header states the
+    /// rule ("It should be illegal to put a label into any other type (like a
+    /// structure)"), and MLIR's `LLVMStructType::verifyInvariants` enforces it at
+    /// construction; llvmkit does the same. See `docs/divergences.md`.
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// assert!(m.packed_struct_type([m.label_type()]).is_err());
+    /// assert!(m.packed_struct_type([m.i32_type()]).is_ok());
+    /// ```
+    pub fn packed_struct_type<I, T>(
+        &'ctx self,
+        elements: I,
+    ) -> IrResult<StructType<'ctx, StructBodyDyn, B>>
     where
         I: IntoIterator<Item = T>,
         T: IrType<'ctx, B>,
@@ -4574,6 +4700,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.capability_ref().get_or_insert_struct_of::<S>()
     }
 
+    /// Set an identified struct's body through the erased handle.
+    ///
+    /// # Errors
+    ///
+    /// A struct or element type from another module is
+    /// [`IrError::ForeignType`]; an element that cannot live in a struct —
+    /// `void`, `label`, `metadata`, a function type or `token` — is
+    /// [`IrError::InvalidTypeComponent`] (stricter than `StructType::setBody`,
+    /// as [`struct_type`](Self::struct_type) explains); a literal struct is
+    /// [`IrError::LiteralStructBodyNotSettable`]; a body already set is
+    /// refused as `StructType::setBodyOrError` refuses it.
     pub fn set_struct_body_dyn<I, T>(
         &'ctx self,
         st: StructType<'ctx, StructBodyDyn, B, impl Capability>,
@@ -4588,10 +4725,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         // this module before the struct is read or its body set.
         let owner = self.id();
         let st_id = st.slot_in(owner)?;
-        let elems = elements
-            .into_iter()
-            .map(|t| t.as_type().slot_in(owner))
-            .collect::<IrResult<Box<[TypeSlot]>>>()?;
+        let elems = struct_element_slots(owner, elements)?;
         let body = StructBody {
             elements: elems,
             packed,
@@ -4613,6 +4747,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.core().ctx.set_named_struct_body(st_id, body)
     }
 
+    /// Set an opaque identified struct's body, upgrading the handle to
+    /// [`BodySet`].
+    ///
+    /// # Errors
+    ///
+    /// A struct or element type from another module is
+    /// [`IrError::ForeignType`]; an element that cannot live in a struct —
+    /// `void`, `label`, `metadata`, a function type or `token` — is
+    /// [`IrError::InvalidTypeComponent`] (stricter than `StructType::setBody`,
+    /// as [`struct_type`](Self::struct_type) explains); a body already set is
+    /// refused as `StructType::setBodyOrError` refuses it.
     pub fn set_struct_body<I, T>(
         &'ctx self,
         opaque: StructType<'ctx, Opaque, B, impl Capability>,
@@ -4631,10 +4776,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         let opaque = opaque.admitted_at(self.capability_ref())?;
         // Internal: admitted on the line above.
         let opaque_id = opaque.slot_trusting_same_module();
-        let elems = elements
-            .into_iter()
-            .map(|t| t.as_type().slot_in(owner))
-            .collect::<IrResult<Box<[TypeSlot]>>>()?;
+        let elems = struct_element_slots(owner, elements)?;
         let body = StructBody {
             elements: elems,
             packed,

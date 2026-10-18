@@ -1740,6 +1740,9 @@ where
     // `array_type`, as `ArrayType::get` asserts. A zero length is no such
     // case: `ArrayType::get` takes one, so `[0 x i32]` is spelled `a0i32`
     // (`append_mangled_type` writes it too) and `parse_prefixed_u64` reads it.
+    // The struct arms above follow the same rule: a literal struct of an
+    // element no struct may hold is the mismatch, and a named struct is looked
+    // up, never created (`parse_struct_type_prefix`).
     if let Some((min, consumed)) = parse_prefixed_lanes(text, "nxv") {
         let (elem, elem_consumed) = parse_mangled_type_prefix(module, &text[consumed..])?;
         return Ok((
@@ -1889,11 +1892,16 @@ where
         if name.is_empty() {
             continue;
         }
-        let id = module
-            .module()
-            .context()
-            .get_or_create_named_struct(name)
-            .slot();
+        // `getMangledTypeStr` spells `"s_" + Name + "s"` from a struct that
+        // exists, and upstream never demangles — it declares from the types it
+        // is handed — so the struct must already be in the module: a name
+        // creates no type. A candidate naming no struct is not this overload
+        // (`s_named` + `s` + `.sl_i32s` first tries the name `nameds.sl_i32`),
+        // so the scan moves to the next `s`; with none left the text is the
+        // file's mismatch.
+        let Some(id) = module.module().context().named_struct(name) else {
+            continue;
+        };
         return Ok(Some((Type::new(id, module), end + 3)));
     }
     Ok(None)
@@ -1917,6 +1925,14 @@ where
         let Some(elements) = parse_mangled_type_sequence(module, body)? else {
             continue;
         };
+        // As for the vector and array arms: `getMangledTypeStr` spells
+        // `"sl_"` + elements + `"s"` from a struct that exists, so a candidate
+        // whose elements no struct may hold (`isVoid` and `Metadata` demangle)
+        // builds nothing; the scan moves to the next `s`, and with none left
+        // the text is the file's mismatch.
+        if !elements.iter().all(|ty| ty.is_valid_struct_element()) {
+            continue;
+        }
         let elements = elements
             .iter()
             .map(|ty| ty.slot_trusting_same_module())
@@ -2884,7 +2900,7 @@ mod tests {
             )?,
             fn_type_with_var_arg(module_ref, i32_ty, [i32_ty, ptr_ty], false)?.as_type(),
             fn_type_with_var_arg(module_ref, void_type(module_ref), [i32_ty], true)?.as_type(),
-            module.struct_type([i32_ty, ptr_ty]).as_type(),
+            module.struct_type([i32_ty, ptr_ty])?.as_type(),
             module.opaque_struct("named")?.as_type(),
             target_ext_type(module_ref, "aarch64.svcount", [], []),
             target_ext_type(module_ref, "spirv.Image", [void_type(module_ref)], [0, 1]),
@@ -2908,12 +2924,36 @@ mod tests {
             );
         }
 
-        let packed = module.packed_struct_type([i32_ty]).as_type();
+        let packed = module.packed_struct_type([i32_ty])?.as_type();
         let mut name = String::new();
         assert!(append_mangled_type(packed, &mut name).is_ok());
         assert_eq!(name, "sl_i32s");
         let (back, _) = parse_mangled_type_prefix(module_ref, &name)?;
-        assert_eq!(back, module.struct_type([i32_ty]).as_type());
+        assert_eq!(back, module.struct_type([i32_ty])?.as_type());
+
+        // A named struct followed by another overload: the first `s` from the
+        // right closes the second overload, and the name before it is no
+        // struct, so the scan moves on to `named`.
+        let followed = "s_nameds.sl_i32s";
+        let (back, consumed) = parse_mangled_type_prefix(module_ref, followed)?;
+        assert_eq!(
+            (back, consumed),
+            (module.opaque_struct("named")?.as_type(), "s_nameds".len())
+        );
+
+        // Spellings no type mangles to: the demangler refuses them rather
+        // than build the type they describe — a literal struct of an element
+        // no struct may hold, and a struct the module does not hold.
+        for name in ["sl_isVoids", "sl_Metadatas", "s_absents"] {
+            assert!(
+                parse_mangled_type_prefix(module_ref, name).is_err(),
+                "`{name}` spells no type"
+            );
+        }
+        assert!(
+            context.named_struct("absent").is_none(),
+            "demangling created `%absent`"
+        );
 
         for ty in [
             Type::new(context.token(), module_ref),

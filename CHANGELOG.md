@@ -134,8 +134,8 @@ LLVM's vector constructors `assert` two rules — `FixedVectorType::get` and
 `VectorType::isValidElementType` admits — and an `assert` is compiled out of a
 release build. llvmkit's builder accepted both, so a module built in Rust could
 hold `<4 x void>`, `<2 x [2 x i32]>` or `<0 x i32>` and print text no parser
-reads back. This section covers the vector and array families; the other
-constructors follow.
+reads back. This section covers the vector, array and struct families; the
+other constructors follow.
 
 - **Breaking: `Module::vector_type` / `Module::scalable_vector_type`, and the
   same two on `ModuleView`, take `lanes: NonZeroU32` / `min_lanes: NonZeroU32`
@@ -312,6 +312,63 @@ and the trybuild fixture `array_of_label_element.rs`. `type_validity.rs`'s
 agreement law drops its 6 array known disagreements: the cells built but not
 parsed go from 18 to 12, measured as its module doc says, with
 `KNOWN_DISAGREEMENTS` emptied, over `bb7e518`.
+
+**Structs — stricter than `StructType::get`, on purpose.** Upstream's
+`StructType::get` and `StructType::setBody` check no element (only recursion);
+`StructType::isValidElementType` is called by `LLParser::parseStructBody`
+alone. So `{ label }` could be built — through llvmkit, and through LLVM's C++
+and C APIs — and printed, and no parser reads it back. llvmkit's struct
+constructors refuse such an element, as MLIR's LLVM dialect does
+(`docs/divergences.md` D19).
+
+- **Breaking: `Module::struct_type` / `Module::packed_struct_type`, and the
+  same two on `ModuleView`, return `IrResult`.** They refuse an element from
+  another module with `IrError::ForeignType`, checked first, and an element
+  `StructType::isValidElementType` refuses — `void`, `label`, `metadata`, a
+  function type, `token` — with
+  `IrError::InvalidTypeComponent { position: TypePosition::StructElement { index }, kind }`
+  (`invalid element type for struct (element 1): label`). They took each
+  element's slot unchecked. `x86_amx` is a struct element, as upstream says.
+- `Module::set_struct_body` and `Module::set_struct_body_dyn` refuse the same
+  elements the same way; they already refused a foreign one.
+- `IrBuilder::atomic_cmpxchg`'s `{ <cmp type>, i1 }` result is built through the
+  checked constructor, so a compared value whose type is no struct element is
+  refused rather than built into `{ label, i1 }`.
+- An intrinsic name whose overload suffix spells a literal struct of an invalid
+  element (`llvm.ssa.copy.sl_isVoids`) is `IrError::IntrinsicSignatureMismatch`;
+  the demangler built `{ void }` and the intrinsic was declared over it. A
+  named-struct overload (`s_Missings`) no longer creates `%Missing` as a side
+  effect of demangling: the struct must already exist, as it does wherever
+  `getMangledTypeStr` spelled the name.
+- The parser checks each struct element where it parses it, as before, so its
+  diagnostics are unchanged; the constructor's refusal behind it is a
+  backstop.
+- Call sites: rust-analyzer `findReferences` over `9b4bce3`, less this
+  section's new tests, found 34 calls of `Module::struct_type`, 6 of
+  `Module::packed_struct_type`, none of either `ModuleView` constructor, and 1
+  internal one of the shared literal-struct constructor (`atomic_cmpxchg`).
+  The parser's 3 map the refusal to a diagnostic; the agreement law's 3 and
+  the rest check with `?` (or `expect` in a test that returns nothing). Two
+  trybuild fixtures outside the build call `Module::struct_type`
+  (`rg -l "\.struct_type\(" crates/llvmkit-ir/tests/compile_fail` at
+  `9b4bce3`: `extract_value_empty_indices.rs`,
+  `extract_value_dyn_empty_slice_compiles.rs`); both take `?`.
+
+| Before | After |
+|---|---|
+| `m.struct_type(elements)` | `m.struct_type(elements)?` |
+| `m.packed_struct_type(elements)` | `m.packed_struct_type(elements)?` |
+
+Tests: `type_components.rs` (`a_struct_refuses_an_invalid_element`,
+`an_intrinsic_name_cannot_spell_an_invalid_struct`,
+`demangling_a_struct_name_creates_no_struct`),
+`cross_module_handles.rs::the_struct_constructors_reject_an_element_from_another_module`,
+and `intrinsics.rs::tests::every_mangled_type_demangles_to_itself`, which now
+refuses `sl_isVoids`, `sl_Metadatas` and an absent `s_absents` and reads a
+named struct followed by another overload. `type_validity.rs`'s agreement law
+drops its 5 struct known disagreements: the cells built but not parsed go from
+12 to 7, measured as its module doc says, with `KNOWN_DISAGREEMENTS` emptied,
+over `9b4bce3`.
 
 ### Fixed (breaking) — every cast instruction is one port of `LLParser::parseCast`; the verifier's cast checks follow upstream's
 

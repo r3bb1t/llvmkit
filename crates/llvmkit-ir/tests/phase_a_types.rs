@@ -125,14 +125,20 @@ fn literal_struct_intern() {
     let m = module_new!("t").expect("fresh module");
     let i32 = m.i32_type();
     let i64 = m.i64_type();
-    let s1 = m.struct_type([i32.as_type(), i64.as_type()]);
-    let s2 = m.struct_type([i32.as_type(), i64.as_type()]);
+    let s1 = m
+        .struct_type([i32.as_type(), i64.as_type()])
+        .expect("valid struct elements");
+    let s2 = m
+        .struct_type([i32.as_type(), i64.as_type()])
+        .expect("valid struct elements");
     assert_eq!(s1.as_type(), s2.as_type());
     assert_eq!(s1.field_count(), 2);
     assert!(!s1.is_packed());
     assert!(s1.name().is_none());
 
-    let s_packed = m.packed_struct_type([i32.as_type(), i64.as_type()]);
+    let s_packed = m
+        .packed_struct_type([i32.as_type(), i64.as_type()])
+        .expect("valid struct elements");
     assert_ne!(s1.as_type(), s_packed.as_type());
     assert!(s_packed.is_packed());
 }
@@ -307,7 +313,9 @@ fn aggregate_excludes_vector() {
     let i32 = m.i32_type();
     let arr = ArrayType::of(i32, 4);
     let vec = VectorType::of(i32, lanes::<4>());
-    let lit = m.struct_type([i32.as_type()]);
+    let lit = m
+        .struct_type([i32.as_type()])
+        .expect("valid struct elements");
 
     assert!(AggregateType::try_from(arr.as_type()).is_ok());
     assert!(AggregateType::try_from(lit.as_type()).is_ok());

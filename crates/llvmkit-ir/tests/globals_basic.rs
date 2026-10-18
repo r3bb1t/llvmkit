@@ -626,7 +626,9 @@ fn const_struct_initializer() {
     let i32_ty = m.i32_type();
     let i8_ty = m.i8_type();
     let i64_ty = m.i64_type();
-    let st = m.struct_type([i32_ty.as_type(), i8_ty.as_type(), i64_ty.as_type()]);
+    let st = m
+        .struct_type([i32_ty.as_type(), i8_ty.as_type(), i64_ty.as_type()])
+        .expect("valid struct elements");
     let neg_one = i32_ty.const_int(-1i32);
     let undef_i8 = i8_ty.as_type().undef();
     let poison_i64 = i64_ty.as_type().poison();

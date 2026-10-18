@@ -7175,12 +7175,19 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     }
                 }
                 Token::LBrace => {
+                    // `parse_struct_element` refused an invalid element at
+                    // its own location, as `LLParser::parseStructBody` does,
+                    // so the constructor's own refusal is a backstop only:
+                    // `LLParser::parseAnonStructType` calls `StructType::get`
+                    // with nothing after it that can fail.
                     let (elems, packed) = self.parse_struct_body()?;
                     if packed {
-                        self.module.packed_struct_type(elems).as_type()
+                        self.module.packed_struct_type(elems)
                     } else {
-                        self.module.struct_type(elems).as_type()
+                        self.module.struct_type(elems)
                     }
+                    .map_err(|e| self.builder_err_at(type_loc, "struct type", e))?
+                    .as_type()
                 }
                 Token::Less => {
                     // `<` introduces vector or `<{ packed-struct }>`.
@@ -7188,7 +7195,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     if matches!(self.peek(), Token::LBrace) {
                         let (elems, _was_packed_redundant) = self.parse_struct_body_braces()?;
                         self.expect_punct(PunctKind::Greater, "'>' at end of packed struct")?;
-                        self.module.packed_struct_type(elems).as_type()
+                        // As in the `{` arm: the elements were checked where
+                        // they were parsed.
+                        self.module
+                            .packed_struct_type(elems)
+                            .map_err(|e| self.builder_err_at(type_loc, "struct type", e))?
+                            .as_type()
                     } else {
                         self.parse_array_or_vector_after_open(true)?
                     }

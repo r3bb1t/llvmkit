@@ -25,7 +25,7 @@ fn extract_value_struct_field0() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()]);
+    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()])?;
     let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()]);
     let f = m.add_function_dyn("instructions.aggregateops", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -76,8 +76,8 @@ fn extract_value_nested_indices() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let inner = m.struct_type([i32_ty.as_type()]);
-    let outer = m.struct_type([i8_ty.as_type(), inner.as_type()]);
+    let inner = m.struct_type([i32_ty.as_type()])?;
+    let outer = m.struct_type([i8_ty.as_type(), inner.as_type()])?;
     let fn_ty = m.function_type(void_ty.as_type(), [outer.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -105,7 +105,7 @@ fn extract_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()]);
+    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()])?;
     let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -166,7 +166,7 @@ fn extract_value_rejects_out_of_range_struct_index() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()]);
+    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()])?;
     let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()]);
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -197,7 +197,7 @@ fn insert_value_struct_field0() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()]);
+    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()])?;
     let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -252,7 +252,7 @@ fn insert_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()]);
+    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()])?;
     let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");

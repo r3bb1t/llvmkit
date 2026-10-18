@@ -196,7 +196,7 @@ fn gep_erased_rejects_invalid_indices() -> Result<(), IrError> {
     let vec_ptr_ty = VectorType::of(ptr_ty, lanes::<2>());
     let vec_i32_ty = VectorType::of(i32_ty, lanes::<2>());
     let void_ty = m.void_type();
-    let s_ty = m.struct_type([i32_ty.as_type(), i32_ty.as_type()]);
+    let s_ty = m.struct_type([i32_ty.as_type(), i32_ty.as_type()])?;
     let fn_ty = m.function_type(void_ty.as_type(), [vec_ptr_ty.as_type()]);
     let f = m.add_function_dyn("gvbad", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");

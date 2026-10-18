@@ -493,7 +493,7 @@ fn target_extension_overload_name_round_trips() -> Result<(), IrError> {
         .struct_type([
             VectorType::of(m.f32_type(), lanes::<4>()).as_type(),
             VectorType::of(m.i32_type(), lanes::<4>()).as_type(),
-        ])
+        ])?
         .as_type();
     let raw_buffer = m
         .target_ext_type("dx.RawBuffer", [element], [0, 0])

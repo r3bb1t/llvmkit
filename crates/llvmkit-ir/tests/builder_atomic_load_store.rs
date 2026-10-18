@@ -312,7 +312,7 @@ fn verifier_rejects_atomic_load_non_power_of_two_size() -> Result<(), IrError> {
 fn verifier_rejects_atomic_load_struct_operand() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
-    let struct_ty = m.struct_type([i32_ty.as_type()]);
+    let struct_ty = m.struct_type([i32_ty.as_type()])?;
     let ptr_ty = m.ptr_type(0);
     let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;

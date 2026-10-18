@@ -643,6 +643,72 @@ records the message, which no upstream build prints for this input.
 **Guarded by:**
 `crates/llvmkit-asmparser/tests/type_validity.rs::an_array_constant_of_a_non_array_element_is_refused_at_its_first_element`.
 
+### D19 — The struct constructors refuse an element `StructType::get` accepts
+
+**Severity:** model-gap — chosen by reading the table above: no grade fits an
+API call, since the grades name *input*. It is not **rejects-valid**: no `.ll`
+text LLVM accepts is refused, because `LLParser::parseStructBody` refuses the
+same elements. The public constructor answers differently from its LLVM
+counterpart, which is what **model-gap** names.
+**Where:** `crates/llvmkit-ir/src/module.rs` — `struct_element_slots`, behind
+`Module::struct_type` / `packed_struct_type` (and the same two on
+`ModuleView`), `Module::set_struct_body` and `Module::set_struct_body_dyn`.
+
+**LLVM:** `StructType::get` (`lib/IR/Type.cpp`) interns the body through
+`StructType::setBody`, which is `cantFail(setBodyOrError(...))`;
+`StructType::setBodyOrError` runs `StructType::checkBody`, which refuses a
+recursive body and nothing else. `StructType::isValidElementType` — `void`,
+`label`, `metadata`, a function type and `token` refused — is called only by
+`LLParser::parseStructBody`, at its two element sites (`invalid element type
+for struct`). The C API forwards (`LLVMStructTypeInContext` to
+`StructType::get`, `LLVMStructSetBody` to `setBody`), so a module built through
+either can hold `{ label }`, print it, and not read it back.
+
+**llvmkit:** refuses such an element at construction with
+`IrError::InvalidTypeComponent { position: TypePosition::StructElement { index
+}, kind }` (`invalid element type for struct (element N): <kind>`), after
+refusing a type from another module with `IrError::ForeignType`. `x86_amx` is a
+struct element, as upstream's predicate says. The parser checks each element
+first, at its own location, so its diagnostics are unchanged. The intrinsic
+demangler follows the same rule: a literal-struct overload of such an element
+(`sl_isVoids`) is a signature mismatch, and a named-struct overload (`s_<name>s`)
+names a struct the module must already hold rather than creating one.
+
+**Why:** a type no parser — llvmkit's or LLVM's — reads back is what Doctrine
+D10 forbids building. `lib/IR/Verifier.cpp`'s header states the rule ("It
+should be illegal to put a label into any other type (like a structure)"), and
+MLIR's LLVM dialect enforces it at construction:
+`LLVMStructType::verifyInvariants` (`mlir/lib/Dialect/LLVMIR/IR/LLVMTypes.cpp`)
+refuses every element `LLVMStructType::isValidElementType` refuses, the same
+five kinds.
+
+**Fix:** none — deliberate. Revisit if upstream adds the check to
+`StructType::get`; an LLVM patch proposing it is being drafted (the
+type-constructor plan's Task 9).
+
+**Guarded by:** `crates/llvmkit-ir/tests/type_components.rs::a_struct_refuses_an_invalid_element`,
+`crates/llvmkit-ir/tests/cross_module_handles.rs::the_struct_constructors_reject_an_element_from_another_module`,
+`crates/llvmkit-ir/tests/type_components.rs::an_intrinsic_name_cannot_spell_an_invalid_struct`,
+`crates/llvmkit-ir/tests/type_components.rs::demangling_a_struct_name_creates_no_struct`,
+and the agreement law
+`crates/llvmkit-asmparser/tests/type_validity.rs::the_builder_and_the_parser_agree_on_every_derived_type`,
+whose struct rows left `KNOWN_DISAGREEMENTS` with this change.
+
+<details>
+<summary>Evidence (2026-10-18, vendored llvmorg-22.1.4)</summary>
+
+- `rg -n "StructType::isValidElementType" llvm/lib llvm/include` → the
+  definition in `lib/IR/Type.cpp` and two calls in `lib/AsmParser/LLParser.cpp`
+  (`parseStructBody`); no call on the `StructType::get` / `setBody` path.
+- `StructType::checkBody` walks the element worklist and returns an error only
+  when it meets the struct itself (`identified structure type '…' is
+  recursive`).
+- `rg -n "LLVMStructTypeInContext|LLVMStructSetBody" -A6 llvm/lib/IR/Core.cpp`
+  → `StructType::get(*unwrap(C), Tys, Packed != 0)` and
+  `unwrap<StructType>(StructTy)->setBody(Tys, Packed != 0)`, unchecked.
+
+</details>
+
 ---
 
 ---

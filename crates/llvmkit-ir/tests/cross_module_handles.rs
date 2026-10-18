@@ -683,6 +683,66 @@ fn the_vector_constructors_reject_an_element_from_another_module() {
     assert!(problems.is_empty(), "{problems:#?}");
 }
 
+/// The literal struct constructors — `struct_type` and `packed_struct_type`, on
+/// `Module` and on `ModuleView` — reject an element type from another module:
+/// its slot would name a different type in this module's arena. The second
+/// list hands each, and `set_struct_body`, the other module's `void`, which is
+/// also no struct element, and still expects `ForeignType`: the module check
+/// runs before the element check. (`set_struct_body`'s foreign element and
+/// foreign struct are pinned in `a_type_entry_rejects_a_type_from_another_module`.)
+///
+/// No upstream counterpart: `StructType::get` takes `Type *`s, uniqued per
+/// `LLVMContext`.
+#[test]
+fn the_struct_constructors_reject_an_element_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let view = home.as_view();
+    let element = foreign.i32_type().as_type();
+    let problems = not_refused(vec![
+        ("struct_type", without_value(home.struct_type([element]))),
+        (
+            "packed_struct_type",
+            without_value(home.packed_struct_type([element])),
+        ),
+        (
+            "view.struct_type",
+            without_value(view.struct_type([element])),
+        ),
+        (
+            "view.packed_struct_type",
+            without_value(view.packed_struct_type([element])),
+        ),
+    ]);
+    assert!(problems.is_empty(), "{problems:#?}");
+
+    let foreign_void = foreign.void_type().as_type();
+    let opaque = home.opaque_struct("S").expect("fresh name");
+    let problems = not_refused(vec![
+        (
+            "struct_type(void)",
+            without_value(home.struct_type([foreign_void])),
+        ),
+        (
+            "packed_struct_type(void)",
+            without_value(home.packed_struct_type([foreign_void])),
+        ),
+        (
+            "view.struct_type(void)",
+            without_value(view.struct_type([foreign_void])),
+        ),
+        (
+            "view.packed_struct_type(void)",
+            without_value(view.packed_struct_type([foreign_void])),
+        ),
+        (
+            "set_struct_body(void)",
+            without_value(home.set_struct_body(opaque, [foreign_void], false)),
+        ),
+    ]);
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
 /// The array constructor — on `Module` and on `ModuleView` — rejects an
 /// element type from another module: its slot would name a different type in
 /// this module's arena. The second list hands each the other module's `void`,

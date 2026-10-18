@@ -764,7 +764,7 @@ fn verify_gep_into_scalable_struct_fails() -> Result<(), IrError> {
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type();
     let vscale_double = VectorType::scalable_of(double_ty, lanes::<1>());
-    let struct_ty = m.struct_type([vscale_double.as_type(), vscale_double.as_type()]);
+    let struct_ty = m.struct_type([vscale_double.as_type(), vscale_double.as_type()])?;
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
     let f = m.add_function_dyn("gep", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");

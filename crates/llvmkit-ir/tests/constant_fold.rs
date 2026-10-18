@@ -1949,7 +1949,7 @@ fn compare_globals_with_recursive_empty_value_type_declines() -> Result<(), IrEr
         .is_none()
     );
 
-    let wrapper_ty = m.struct_type([empty_array_ty.as_type()]);
+    let wrapper_ty = m.struct_type([empty_array_ty.as_type()])?;
     let wrapper_g = m.add_global("wrapper_g", wrapper_ty.as_type().undef())?;
     let wrapper_h = m.add_global("wrapper_h", wrapper_ty.as_type().undef())?;
     assert!(

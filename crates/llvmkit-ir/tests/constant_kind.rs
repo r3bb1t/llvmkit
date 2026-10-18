@@ -181,7 +181,7 @@ fn an_all_null_element_list_is_a_constant_aggregate_zero() -> IrResult<()> {
     };
     assert!(aggregate_zero(vector_kind(&m, [zero, zero])?));
     assert!(aggregate_zero(array_kind(&m, [zero, zero])?));
-    let pair = m.struct_type([m.i32_type(), m.i32_type()]);
+    let pair = m.struct_type([m.i32_type(), m.i32_type()])?;
     assert!(aggregate_zero(
         pair.const_struct([zero, zero])?.as_constant().kind()
     ));
@@ -206,7 +206,7 @@ fn an_all_poison_or_all_undef_element_list_is_that_undef_value() -> IrResult<()>
     let i32_ty = m.i32_type().as_type();
     let poison = i32_ty.poison().as_constant();
     let undef = i32_ty.undef().as_constant();
-    let pair = m.struct_type([m.i32_type(), m.i32_type()]);
+    let pair = m.struct_type([m.i32_type(), m.i32_type()])?;
     let poison_value = |kind: ConstantKind<'_, DynBrand>| {
         matches!(
             kind,
@@ -285,7 +285,7 @@ fn a_list_that_is_not_all_simple_is_a_constant_aggregate() -> IrResult<()> {
         ConstantKind::Aggregate(ConstantAggregateKind::Vector)
     ));
 
-    let pair = m.struct_type([m.i32_type(), m.i32_type()]);
+    let pair = m.struct_type([m.i32_type(), m.i32_type()])?;
     assert!(matches!(
         pair.const_struct([one, one])?.as_constant().kind(),
         ConstantKind::Aggregate(ConstantAggregateKind::Struct)
@@ -579,7 +579,7 @@ fn nested_and_empty_lists_are_classified_through_their_class() -> IrResult<()> {
     ));
 
     let empty_struct = m
-        .struct_type(Vec::<Type<'_, _>>::new())
+        .struct_type(Vec::<Type<'_, _>>::new())?
         .const_struct(Vec::<Constant<'_, _>>::new())?
         .as_constant();
     assert!(matches!(
