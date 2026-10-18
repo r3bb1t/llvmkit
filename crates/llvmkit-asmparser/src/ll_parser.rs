@@ -56,7 +56,7 @@ use llvmkit_ir::{
     Visibility, ZextFlags, derived_types::PointerType, resolve_intrinsic_name,
     shufflevector_mask_from_constant,
 };
-use llvmkit_ir::{FunctionValue, IsValue};
+use llvmkit_ir::{ArrayType, FunctionValue, IsValue};
 use llvmkit_macros::Branded;
 use llvmkit_support::{Span, Spanned};
 
@@ -708,7 +708,7 @@ struct ParsedInlineAsm {
 enum ParsedCallee<'ctx, B: ModuleBrand> {
     Function(llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn, B>),
     InlineAsm(llvmkit_ir::InlineAsm<'ctx, B>),
-    Indirect(llvmkit_ir::PointerValue<'ctx, B>),
+    Indirect(llvmkit_ir::PointerValue<'ctx, llvmkit_ir::SpaceDyn, B>),
 }
 
 impl<'ctx, B: ModuleBrand> ParsedCallee<'ctx, B> {
@@ -7157,7 +7157,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         } else {
                             0
                         };
-                        let ptr_ty: PointerType<'ctx, B> = self.module.ptr_type(addr_space);
+                        let ptr_ty: PointerType<'ctx, llvmkit_ir::SpaceDyn, B> =
+                            self.module.ptr_type(addr_space);
                         if matches!(self.peek(), Token::Star) {
                             return Err(self.message("ptr* is invalid - use ptr instead"));
                         }
@@ -7174,12 +7175,19 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     }
                 }
                 Token::LBrace => {
+                    // `parse_struct_element` refused an invalid element at
+                    // its own location, as `LLParser::parseStructBody` does,
+                    // so the constructor's own refusal is a backstop only:
+                    // `LLParser::parseAnonStructType` calls `StructType::get`
+                    // with nothing after it that can fail.
                     let (elems, packed) = self.parse_struct_body()?;
                     if packed {
-                        self.module.packed_struct_type(elems).as_type()
+                        self.module.packed_struct_type(elems)
                     } else {
-                        self.module.struct_type(elems).as_type()
+                        self.module.struct_type(elems)
                     }
+                    .map_err(|e| self.builder_err_at(type_loc, "struct type", e))?
+                    .as_type()
                 }
                 Token::Less => {
                     // `<` introduces vector or `<{ packed-struct }>`.
@@ -7187,7 +7195,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     if matches!(self.peek(), Token::LBrace) {
                         let (elems, _was_packed_redundant) = self.parse_struct_body_braces()?;
                         self.expect_punct(PunctKind::Greater, "'>' at end of packed struct")?;
-                        self.module.packed_struct_type(elems).as_type()
+                        // As in the `{` arm: the elements were checked where
+                        // they were parsed.
+                        self.module
+                            .packed_struct_type(elems)
+                            .map_err(|e| self.builder_err_at(type_loc, "struct type", e))?
+                            .as_type()
                     } else {
                         self.parse_array_or_vector_after_open(true)?
                     }
@@ -7367,7 +7380,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             if !elem.is_valid_array_element() {
                 return Err(self.message_at(elem_loc, "invalid array element type"));
             }
-            let arr = self.module.array_type(elem, n);
+            let arr = self
+                .module
+                .array_type(elem, n)
+                .map_err(|e| self.builder_err_at(elem_loc, "array type", e))?;
             Ok(arr.as_type())
         }
     }
@@ -8320,12 +8336,28 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     // element type to derive, so the check is deferred.
                     return Ok(ValIdKind::EmptyArray);
                 }
-                self.check_aggregate_elements(&values, "array", first_elt_loc)?;
                 let element_ty = values[0].ty();
+                let invalid_element = || ParseError::Message {
+                    message: format!("invalid array element type: {element_ty}").into(),
+                    loc: first_elt_loc,
+                };
+                if !element_ty.is_first_class() {
+                    return Err(invalid_element());
+                }
                 let len = u64::try_from(values.len()).unwrap_or(u64::MAX);
-                let c = self
-                    .module
-                    .array_type(element_ty, len)
+                // `ArrayType::get`, whose `isValidElementType` assert is the
+                // only check an element that is first-class yet no array
+                // element (`token none`, `x86_amx undef`) meets. The checked
+                // constructor refuses it here, before the element loop as the
+                // assert fires, and the refusal is the guard's own diagnostic
+                // (`docs/divergences.md`, D18).
+                let array_ty = match self.module.array_type(element_ty, len) {
+                    Ok(array_ty) => array_ty,
+                    Err(IrError::InvalidTypeComponent { .. }) => return Err(invalid_element()),
+                    Err(e) => return Err(self.builder_err_at(first_elt_loc, "array constant", e)),
+                };
+                self.check_aggregate_elements(&values, "array", first_elt_loc)?;
+                let c = array_ty
                     .const_array(values)
                     .map_err(|e| self.builder_err("array constant", e))?;
                 Ok(ValIdKind::Constant(c.as_constant()))
@@ -8391,9 +8423,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .iter()
                     .map(|byte| i8_ty.const_int(*byte).as_constant())
                     .collect();
-                let c = self
-                    .module
-                    .array_type(i8_ty, u64::try_from(values.len()).unwrap_or(u64::MAX))
+                let c = ArrayType::of(i8_ty, u64::try_from(values.len()).unwrap_or(u64::MAX))
                     .const_array(values)
                     .map_err(|e| self.builder_err("c\"...\" constant", e))?;
                 Ok(ValIdKind::Constant(c.as_constant()))
@@ -8720,12 +8750,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Ok(());
         };
         let element_ty = first.ty();
-        if what == "array" && !element_ty.is_first_class() {
-            return Err(ParseError::Message {
-                message: format!("invalid array element type: {element_ty}").into(),
-                loc: first_elt_loc,
-            });
-        }
         for (index, value) in values.iter().enumerate() {
             if value.ty() != element_ty {
                 return Err(ParseError::Message {
@@ -9164,7 +9188,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         &self,
         loc: Span,
         r: GlobalRef<'ctx, B>,
-    ) -> ParseResult<llvmkit_ir::PointerValue<'ctx, B>> {
+    ) -> ParseResult<llvmkit_ir::PointerValue<'ctx, llvmkit_ir::SpaceDyn, B>> {
         llvmkit_ir::PointerValue::try_from(self.global_ref_to_constant(r).as_erased())
             .map_err(|e| self.builder_err_at(loc, "global value as a pointer", e))
     }
@@ -9178,7 +9202,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         &self,
         loc: Span,
         c: llvmkit_ir::Constant<'ctx, B>,
-    ) -> ParseResult<llvmkit_ir::PointerValue<'ctx, B>> {
+    ) -> ParseResult<llvmkit_ir::PointerValue<'ctx, llvmkit_ir::SpaceDyn, B>> {
         llvmkit_ir::PointerValue::try_from(c.as_erased())
             .map_err(|e| self.builder_err_at(loc, "forward-referenced callee as a pointer", e))
     }
@@ -13316,12 +13340,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let align = self.parse_optional_comma_align_strict()?;
 
         // `parseLoad`'s checks, in its order and at its anchors.
-        let ptr: llvmkit_ir::PointerValue<'ctx, B> = ptr_v.try_into().map_err(|_| {
-            self.message_at(
-                operand_loc,
-                "load operand must be a pointer to a first class type",
-            )
-        })?;
+        let ptr: llvmkit_ir::PointerValue<'ctx, llvmkit_ir::SpaceDyn, B> =
+            ptr_v.try_into().map_err(|_| {
+                self.message_at(
+                    operand_loc,
+                    "load operand must be a pointer to a first class type",
+                )
+            })?;
         if !ty.is_first_class() {
             return Err(self.message_at(
                 operand_loc,
@@ -13397,7 +13422,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
         // `parseStore`'s checks, in its order. Note the anchors differ: the
         // pointer rule reports at `PtrLoc`, everything else at the *value*.
-        let ptr: llvmkit_ir::PointerValue<'ctx, B> = ptr_v
+        let ptr: llvmkit_ir::PointerValue<'ctx, llvmkit_ir::SpaceDyn, B> = ptr_v
             .try_into()
             .map_err(|_| self.message_at(ptr_loc, "store operand must be a pointer"))?;
         if !val_ty.is_first_class() {
@@ -14764,9 +14789,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         let list_ty = self.parse_type(false)?;
         let list_v = self.parse_value(state, list_ty)?;
-        let list_ptr: llvmkit_ir::PointerValue<'ctx, B> = list_v
-            .try_into()
-            .map_err(|_| self.expected("ptr-typed va_arg list operand"))?;
+        let list_ptr: llvmkit_ir::PointerValue<'ctx, llvmkit_ir::SpaceDyn, B> =
+            list_v
+                .try_into()
+                .map_err(|_| self.expected("ptr-typed va_arg list operand"))?;
         self.expect_punct(PunctKind::Comma, "',' after vaarg operand")?;
         let result_type_loc = self.loc();
         let result_ty = self.parse_type(false)?;
@@ -14880,7 +14906,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // As in `parseSwitch`, the `[` is demanded before the address type is
         // checked.
         self.expect_punct(PunctKind::LSquare, "'[' with indirectbr")?;
-        let addr: PointerValue<'ctx, B> = addr_v
+        let addr: PointerValue<'ctx, llvmkit_ir::SpaceDyn, B> = addr_v
             .try_into()
             .map_err(|_| self.message_at(addr_loc, "indirectbr address must have pointer type"))?;
         let (_, mut ibr) = b
@@ -14970,7 +14996,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if !cmpxchg_failure_ordering_is_valid(failure_ord) {
             return Err(self.message("invalid cmpxchg failure ordering"));
         }
-        let ptr: llvmkit_ir::PointerValue<'ctx, B> = ptr_v
+        let ptr: llvmkit_ir::PointerValue<'ctx, llvmkit_ir::SpaceDyn, B> = ptr_v
             .try_into()
             .map_err(|_| self.message_at(ptr_loc, "cmpxchg operand must be a pointer"))?;
         if cmp_ty != new_ty {
@@ -15026,7 +15052,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if ordering == AtomicOrdering::Unordered {
             return Err(self.message("atomicrmw cannot be unordered"));
         }
-        let ptr: llvmkit_ir::PointerValue<'ctx, B> = ptr_v
+        let ptr: llvmkit_ir::PointerValue<'ctx, llvmkit_ir::SpaceDyn, B> = ptr_v
             .try_into()
             .map_err(|_| self.message_at(ptr_loc, "atomicrmw operand must be a pointer"))?;
         if val_ty.is_scalable() {

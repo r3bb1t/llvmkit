@@ -21,7 +21,8 @@ fn gep_array_offset() -> Result<(), IrError> {
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let p: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(0)?.try_into()?;
     let n: llvmkit_ir::IntValue<'_, llvmkit_ir::IntDyn, _> = m.view(f).param(1)?.try_into()?;
     let r = b.gep(i32_ty, p, [n], "p2")?;
     b.ret(r)?;
@@ -45,7 +46,8 @@ fn gep_inbounds() -> Result<(), IrError> {
     let f = m.add_function_dyn("gi", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let p: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(0)?.try_into()?;
     let n: llvmkit_ir::IntValue<'_, llvmkit_ir::IntDyn, _> = m.view(f).param(1)?.try_into()?;
     let r = b.inbounds_gep(i32_ty, p, [n], "p2")?;
     b.ret(r)?;
@@ -79,7 +81,8 @@ fn struct_gep() -> Result<(), IrError> {
     let f = m.add_function_dyn("sg", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let p: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(0)?.try_into()?;
     let r = b.struct_gep(s_ty, p, 1, "p2")?;
     b.ret(r)?;
     let text = format!("{m}");
@@ -101,7 +104,8 @@ fn gep_zero_index() -> Result<(), IrError> {
     let f = m.add_function_dyn("gz", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let p: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(0)?.try_into()?;
     // Zero-index degenerate GEP: just `getelementptr i32, ptr %0` (no
     // indices). Mirrors `2009-07-24-ZeroArgGEP.ll`.
     let no_indices: [llvmkit_ir::ConstantIntValue<'_, llvmkit_ir::IntDyn, _>; 0] = [];
@@ -192,7 +196,7 @@ fn gep_erased_rejects_invalid_indices() -> Result<(), IrError> {
     let vec_ptr_ty = VectorType::of(ptr_ty, lanes::<2>());
     let vec_i32_ty = VectorType::of(i32_ty, lanes::<2>());
     let void_ty = m.void_type();
-    let s_ty = m.struct_type([i32_ty.as_type(), i32_ty.as_type()]);
+    let s_ty = m.struct_type([i32_ty.as_type(), i32_ty.as_type()])?;
     let fn_ty = m.function_type(void_ty.as_type(), [vec_ptr_ty.as_type()]);
     let f = m.add_function_dyn("gvbad", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");

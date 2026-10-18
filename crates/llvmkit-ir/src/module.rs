@@ -139,6 +139,34 @@ fn reject_reserved_intrinsic_name(name: &str) -> IrResult<()> {
     }
 }
 
+/// A struct body's element slots, each admitted against `owner` and then
+/// checked as a struct element, in order: a type from another module is
+/// [`IrError::ForeignType`] before its kind is read, and one
+/// `StructType::isValidElementType` refuses is
+/// [`IrError::InvalidTypeComponent`] naming its index.
+///
+/// Stricter than upstream on purpose: `StructType::get` and
+/// `StructType::setBody` check no element (only `LLParser::parseStructBody`
+/// does); `docs/divergences.md` records why.
+fn struct_element_slots<'ctx, B, I, T>(owner: ModuleId, elements: I) -> IrResult<Box<[TypeSlot]>>
+where
+    B: ModuleBrand + 'ctx,
+    I: IntoIterator<Item = T>,
+    T: IrType<'ctx, B>,
+{
+    elements
+        .into_iter()
+        .enumerate()
+        .map(|(index, element)| {
+            let element = element.as_type();
+            // Boundary: each caller element, admitted against this module.
+            let slot = element.slot_in(owner)?;
+            require_component(TypePosition::StructElement { index }, element)?;
+            Ok(slot)
+        })
+        .collect()
+}
+
 // --------------------------------------------------------------------------
 // ModuleId
 // --------------------------------------------------------------------------
@@ -247,6 +275,47 @@ pub trait ModuleBrand: 'static {}
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct DynBrand;
 impl ModuleBrand for DynBrand {}
+
+/// A brand the registry keeps to one live module — every brand but
+/// [`DynBrand`].
+///
+/// Code bounded `B: UniqueBrand` may rely on two live view handles of brand
+/// `B` (a struct value, an [`IrBuilder`](crate::IrBuilder)) belonging to the
+/// same module, so a check that a value comes from the builder's module cannot
+/// fail between them and need not be made. Storable ids are not covered: an id
+/// outlives its module, and a brand is issued again once its module drops.
+///
+/// # Why implementing it is safe
+///
+/// Module storage is created in exactly two places: `Module::registered`,
+/// behind [`Module::branded`] and [`Module::branded_once`], which claims the
+/// brand in the process-wide registry — at most one live module per brand —
+/// before it hands the module out; and [`Module::dynamic`], whose brand is
+/// [`DynBrand`]. Neither `Module` nor its storage is `Clone`. So for any brand
+/// but `DynBrand` the claim is true, and the orphan rule stops another crate
+/// implementing this trait for `DynBrand`. The premise is guarded by
+/// `tests/module_construction_drift.rs`, which fails if module storage gains
+/// another constructor or a clone.
+///
+/// [`module_new!`](crate::module_new) implements it for the brand it mints; a
+/// hand-written brand opts in with one line:
+///
+/// ```
+/// use llvmkit_ir::{Module, ModuleBrand, UniqueBrand};
+///
+/// struct Lifted;
+/// impl ModuleBrand for Lifted {}
+/// impl UniqueBrand for Lifted {}
+///
+/// fn unique<B: UniqueBrand>(_: &Module<B>) {}
+/// unique(&Module::branded::<Lifted, _>("lifted").expect("the brand is free"));
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` can name more than one live module",
+    note = "in brand-generic code, add `B: UniqueBrand`; for a `Module::dynamic` \
+            module, use the `try_` form, which checks"
+)]
+pub trait UniqueBrand: ModuleBrand {}
 
 /// Module state before successful structural verification.
 #[derive(Debug)]
@@ -427,6 +496,8 @@ macro_rules! module_new {
         // and distinct per expansion site.
         struct __LlvmkitGeneratedBrand;
         impl $crate::ModuleBrand for __LlvmkitGeneratedBrand {}
+        // The registry keeps this brand to the one module made below.
+        impl $crate::UniqueBrand for __LlvmkitGeneratedBrand {}
         $crate::Module::branded::<__LlvmkitGeneratedBrand, _>($name)
     }};
 }
@@ -775,9 +846,15 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
         IntType::new(self.core.ctx.int_type(N), self)
     }
 
-    /// Opaque pointer in address space `addr_space` (`0` = default).
-    pub(crate) fn ptr_type(self, addr_space: u32) -> PointerType<'ctx, B, C> {
+    /// Opaque pointer in address space `addr_space` (`0` = default). The space
+    /// is a run-time number, so the type is marked [`SpaceDyn`](crate::SpaceDyn).
+    pub(crate) fn ptr_type(self, addr_space: u32) -> PointerType<'ctx, crate::SpaceDyn, B, C> {
         PointerType::new(self.core.ctx.ptr_type(addr_space), self)
+    }
+
+    /// Opaque pointer in address space `N`, marked [`Space<N>`](crate::Space).
+    pub(crate) fn ptr_type_in<const N: u32>(self) -> PointerType<'ctx, crate::Space<N>, B, C> {
+        PointerType::new(self.core.ctx.ptr_type(N), self)
     }
 
     /// Legacy typed pointer `T*` in address space `addr_space`.
@@ -797,14 +874,22 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
         )
     }
 
-    /// `[n x elem]`.
-    pub(crate) fn array_type<T>(self, elem: T, n: u64) -> ArrayType<'ctx, ElemDyn, ArrLenDyn, B, C>
+    /// `[len x elem]`. Mirrors `ArrayType::get`: its `isValidElementType`
+    /// assert is [`require_component`]; a type from another module is refused
+    /// with [`IrError::ForeignType`] first.
+    pub(crate) fn array_type<T>(
+        self,
+        elem: T,
+        len: u64,
+    ) -> IrResult<ArrayType<'ctx, ElemDyn, ArrLenDyn, B, C>>
     where
         T: IrType<'ctx, B>,
     {
-        // boundary (F1): refused by Task 26
-        let elem_id = elem.as_type().slot_trusting_same_module();
-        ArrayType::new(self.core.ctx.array_type(elem_id, n), self)
+        let elem = elem.as_type();
+        // Boundary: the caller's element type, admitted against this module.
+        let slot = elem.slot_in(self.id())?;
+        require_component(TypePosition::ArrayElement, elem)?;
+        Ok(ArrayType::new(self.core.ctx.array_type(slot, len), self))
     }
 
     /// Const-generic typed array `[N x E]`; `N == 0` is permitted.
@@ -910,17 +995,16 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
         self,
         elements: I,
         packed: bool,
-    ) -> StructType<'ctx, StructBodyDyn, B, C>
+    ) -> IrResult<StructType<'ctx, StructBodyDyn, B, C>>
     where
         I: IntoIterator<Item = T>,
         T: IrType<'ctx, B>,
     {
-        // boundary (F1): refused by Task 26
-        let elems: Box<[TypeSlot]> = elements
-            .into_iter()
-            .map(|t| t.as_type().slot_trusting_same_module())
-            .collect();
-        StructType::new(self.core.ctx.literal_struct_type(elems, packed), self)
+        let elems = struct_element_slots(self.id(), elements)?;
+        Ok(StructType::new(
+            self.core.ctx.literal_struct_type(elems, packed),
+            self,
+        ))
     }
 
     /// Function type, variadic or not.
@@ -1095,7 +1179,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariableView<'ctx, B> {
     }
 
     #[inline]
-    pub fn ty(self) -> PointerType<'ctx, B, ReadOnly> {
+    pub fn ty(self) -> PointerType<'ctx, crate::SpaceDyn, B, ReadOnly> {
         self.global.ty()
     }
 
@@ -1208,7 +1292,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasView<'ctx, B> {
     }
 
     #[inline]
-    pub fn ty(self) -> PointerType<'ctx, B, ReadOnly> {
+    pub fn ty(self) -> PointerType<'ctx, crate::SpaceDyn, B, ReadOnly> {
         self.alias.ty()
     }
 
@@ -1286,7 +1370,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfuncView<'ctx, B> {
     }
 
     #[inline]
-    pub fn ty(self) -> PointerType<'ctx, B, ReadOnly> {
+    pub fn ty(self) -> PointerType<'ctx, crate::SpaceDyn, B, ReadOnly> {
         self.ifunc.ty()
     }
 
@@ -1612,10 +1696,24 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         self.read_only_ref().int_type_n::<N>()
     }
 
-    /// Opaque pointer in address space `addr_space` (`0` = default).
+    /// Opaque pointer in address space `addr_space` (`0` = default). The space
+    /// is a run-time number, so the type is marked [`SpaceDyn`](crate::SpaceDyn);
+    /// [`ptr_type_in`](Self::ptr_type_in) names a static one.
     #[inline]
-    pub fn ptr_type(self, addr_space: u32) -> PointerType<'ctx, B, ReadOnly> {
+    pub fn ptr_type(self, addr_space: u32) -> PointerType<'ctx, crate::SpaceDyn, B, ReadOnly> {
         self.read_only_ref().ptr_type(addr_space)
+    }
+
+    /// Opaque pointer in address space `N`, marked [`Space<N>`](crate::Space).
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// assert_eq!(m.as_view().ptr_type_in::<3>().to_string(), "ptr addrspace(3)");
+    /// ```
+    #[inline]
+    pub fn ptr_type_in<const N: u32>(self) -> PointerType<'ctx, crate::Space<N>, B, ReadOnly> {
+        self.read_only_ref().ptr_type_in::<N>()
     }
 
     /// Legacy typed pointer `T*` in address space `addr_space`.
@@ -1631,13 +1729,32 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         self.read_only_ref().typed_pointer_type(pointee, addr_space)
     }
 
-    /// `[n x elem]`.
+    /// `[len x elem]` array, checked. Mirrors `ArrayType::get`.
+    ///
+    /// Refuses an `elem` from another module ([`IrError::ForeignType`]) and
+    /// one `ArrayType::isValidElementType` rejects — `void`, `label`,
+    /// `metadata`, a function type, `token` or `x86_amx`
+    /// ([`IrError::InvalidTypeComponent`]). A zero `len` is allowed, as in
+    /// LLVM. For a typed handle, [`ArrayType::of`] is the route that cannot
+    /// fail.
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// let view = m.as_view();
+    /// assert!(view.array_type(view.label_type(), 2).is_err()); // [2 x label]
+    /// assert!(view.array_type(view.i32_type(), 2).is_ok());
+    /// ```
     #[inline]
-    pub fn array_type<T>(self, elem: T, n: u64) -> ArrayType<'ctx, ElemDyn, ArrLenDyn, B, ReadOnly>
+    pub fn array_type<T>(
+        self,
+        elem: T,
+        len: u64,
+    ) -> IrResult<ArrayType<'ctx, ElemDyn, ArrLenDyn, B, ReadOnly>>
     where
         T: IrType<'ctx, B>,
     {
-        self.read_only_ref().array_type(elem, n)
+        self.read_only_ref().array_type(elem, len)
     }
 
     /// Const-generic typed array `[N x E]`. The element marker `E` projects
@@ -1719,8 +1836,34 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     }
 
     /// Literal (unnamed) struct type `{ .. }`.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an element that cannot live in a struct — `void`, `label`,
+    /// `metadata`, a function type or `token` — with
+    /// [`IrError::InvalidTypeComponent`], and a type from another module with
+    /// [`IrError::ForeignType`].
+    ///
+    /// **Stricter than LLVM's C++ API.** `StructType::get` accepts those
+    /// elements; `LLParser::parseStructBody` rejects them (`invalid element
+    /// type for struct`), so a module built that way prints text no parser —
+    /// llvmkit's or LLVM's — reads back. `Verifier.cpp`'s header states the
+    /// rule ("It should be illegal to put a label into any other type (like a
+    /// structure)"), and MLIR's `LLVMStructType::verifyInvariants` enforces it at
+    /// construction; llvmkit does the same. See `docs/divergences.md`.
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// let view = m.as_view();
+    /// assert!(view.struct_type([view.label_type()]).is_err());
+    /// assert!(view.struct_type([view.i32_type()]).is_ok());
+    /// ```
     #[inline]
-    pub fn struct_type<I, T>(self, elements: I) -> StructType<'ctx, StructBodyDyn, B, ReadOnly>
+    pub fn struct_type<I, T>(
+        self,
+        elements: I,
+    ) -> IrResult<StructType<'ctx, StructBodyDyn, B, ReadOnly>>
     where
         I: IntoIterator<Item = T>,
         T: IrType<'ctx, B>,
@@ -1729,11 +1872,34 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     }
 
     /// Packed literal struct type `<{ .. }>`.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an element that cannot live in a struct — `void`, `label`,
+    /// `metadata`, a function type or `token` — with
+    /// [`IrError::InvalidTypeComponent`], and a type from another module with
+    /// [`IrError::ForeignType`].
+    ///
+    /// **Stricter than LLVM's C++ API.** `StructType::get` accepts those
+    /// elements; `LLParser::parseStructBody` rejects them (`invalid element
+    /// type for struct`), so a module built that way prints text no parser —
+    /// llvmkit's or LLVM's — reads back. `Verifier.cpp`'s header states the
+    /// rule ("It should be illegal to put a label into any other type (like a
+    /// structure)"), and MLIR's `LLVMStructType::verifyInvariants` enforces it at
+    /// construction; llvmkit does the same. See `docs/divergences.md`.
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// let view = m.as_view();
+    /// assert!(view.packed_struct_type([view.label_type()]).is_err());
+    /// assert!(view.packed_struct_type([view.i32_type()]).is_ok());
+    /// ```
     #[inline]
     pub fn packed_struct_type<I, T>(
         self,
         elements: I,
-    ) -> StructType<'ctx, StructBodyDyn, B, ReadOnly>
+    ) -> IrResult<StructType<'ctx, StructBodyDyn, B, ReadOnly>>
     where
         I: IntoIterator<Item = T>,
         T: IrType<'ctx, B>,
@@ -2282,7 +2448,7 @@ impl<'ctx> ModuleCore {
     pub fn ptr_type<B: ModuleBrand + 'ctx>(
         &'ctx self,
         addr_space: u32,
-    ) -> PointerType<'ctx, B, ReadOnly> {
+    ) -> PointerType<'ctx, crate::SpaceDyn, B, ReadOnly> {
         PointerType::new(self.ctx.ptr_type(addr_space), self)
     }
 
@@ -4327,8 +4493,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.capability_ref().int_type_n::<N>()
     }
 
-    pub fn ptr_type(&'ctx self, addr_space: u32) -> PointerType<'ctx, B> {
+    /// Opaque pointer in address space `addr_space` (`0` = default). The space
+    /// is a run-time number, so the type is marked [`SpaceDyn`](crate::SpaceDyn);
+    /// [`ptr_type_in`](Self::ptr_type_in) names a static one.
+    pub fn ptr_type(&'ctx self, addr_space: u32) -> PointerType<'ctx, crate::SpaceDyn, B> {
         self.capability_ref().ptr_type(addr_space)
+    }
+
+    /// Opaque pointer in address space `N`, marked [`Space<N>`](crate::Space).
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// assert_eq!(m.ptr_type_in::<0>().to_string(), "ptr");
+    /// ```
+    pub fn ptr_type_in<const N: u32>(&'ctx self) -> PointerType<'ctx, crate::Space<N>, B> {
+        self.capability_ref().ptr_type_in::<N>()
     }
 
     pub fn typed_pointer_type<T>(
@@ -4343,11 +4523,30 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
             .typed_pointer_type(pointee, addr_space)
     }
 
-    pub fn array_type<T>(&'ctx self, elem: T, n: u64) -> ArrayType<'ctx, ElemDyn, ArrLenDyn, B>
+    /// `[len x elem]` array, checked. Mirrors `ArrayType::get`.
+    ///
+    /// Refuses an `elem` from another module ([`IrError::ForeignType`]) and
+    /// one `ArrayType::isValidElementType` rejects — `void`, `label`,
+    /// `metadata`, a function type, `token` or `x86_amx`
+    /// ([`IrError::InvalidTypeComponent`]). A zero `len` is allowed, as in
+    /// LLVM. For a typed handle, [`ArrayType::of`] is the route that cannot
+    /// fail.
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// assert!(m.array_type(m.label_type(), 2).is_err()); // [2 x label]
+    /// assert!(m.array_type(m.i32_type(), 2).is_ok());
+    /// ```
+    pub fn array_type<T>(
+        &'ctx self,
+        elem: T,
+        len: u64,
+    ) -> IrResult<ArrayType<'ctx, ElemDyn, ArrLenDyn, B>>
     where
         T: IrType<'ctx, B>,
     {
-        self.capability_ref().array_type(elem, n)
+        self.capability_ref().array_type(elem, len)
     }
 
     /// Const-generic typed array `[N x E]`. The element marker `E` projects
@@ -4427,7 +4626,32 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     }
 
     /// Literal (unnamed) struct type `{ .. }`.
-    pub fn struct_type<I, T>(&'ctx self, elements: I) -> StructType<'ctx, StructBodyDyn, B>
+    ///
+    /// # Errors
+    ///
+    /// Refuses an element that cannot live in a struct — `void`, `label`,
+    /// `metadata`, a function type or `token` — with
+    /// [`IrError::InvalidTypeComponent`], and a type from another module with
+    /// [`IrError::ForeignType`].
+    ///
+    /// **Stricter than LLVM's C++ API.** `StructType::get` accepts those
+    /// elements; `LLParser::parseStructBody` rejects them (`invalid element
+    /// type for struct`), so a module built that way prints text no parser —
+    /// llvmkit's or LLVM's — reads back. `Verifier.cpp`'s header states the
+    /// rule ("It should be illegal to put a label into any other type (like a
+    /// structure)"), and MLIR's `LLVMStructType::verifyInvariants` enforces it at
+    /// construction; llvmkit does the same. See `docs/divergences.md`.
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// assert!(m.struct_type([m.label_type()]).is_err());
+    /// assert!(m.struct_type([m.i32_type()]).is_ok());
+    /// ```
+    pub fn struct_type<I, T>(
+        &'ctx self,
+        elements: I,
+    ) -> IrResult<StructType<'ctx, StructBodyDyn, B>>
     where
         I: IntoIterator<Item = T>,
         T: IrType<'ctx, B>,
@@ -4436,7 +4660,32 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     }
 
     /// Packed literal struct type `<{ .. }>`.
-    pub fn packed_struct_type<I, T>(&'ctx self, elements: I) -> StructType<'ctx, StructBodyDyn, B>
+    ///
+    /// # Errors
+    ///
+    /// Refuses an element that cannot live in a struct — `void`, `label`,
+    /// `metadata`, a function type or `token` — with
+    /// [`IrError::InvalidTypeComponent`], and a type from another module with
+    /// [`IrError::ForeignType`].
+    ///
+    /// **Stricter than LLVM's C++ API.** `StructType::get` accepts those
+    /// elements; `LLParser::parseStructBody` rejects them (`invalid element
+    /// type for struct`), so a module built that way prints text no parser —
+    /// llvmkit's or LLVM's — reads back. `Verifier.cpp`'s header states the
+    /// rule ("It should be illegal to put a label into any other type (like a
+    /// structure)"), and MLIR's `LLVMStructType::verifyInvariants` enforces it at
+    /// construction; llvmkit does the same. See `docs/divergences.md`.
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// assert!(m.packed_struct_type([m.label_type()]).is_err());
+    /// assert!(m.packed_struct_type([m.i32_type()]).is_ok());
+    /// ```
+    pub fn packed_struct_type<I, T>(
+        &'ctx self,
+        elements: I,
+    ) -> IrResult<StructType<'ctx, StructBodyDyn, B>>
     where
         I: IntoIterator<Item = T>,
         T: IrType<'ctx, B>,
@@ -4494,6 +4743,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.capability_ref().get_or_insert_struct_of::<S>()
     }
 
+    /// Set an identified struct's body through the erased handle.
+    ///
+    /// # Errors
+    ///
+    /// A struct or element type from another module is
+    /// [`IrError::ForeignType`]; an element that cannot live in a struct —
+    /// `void`, `label`, `metadata`, a function type or `token` — is
+    /// [`IrError::InvalidTypeComponent`] (stricter than `StructType::setBody`,
+    /// as [`struct_type`](Self::struct_type) explains); a literal struct is
+    /// [`IrError::LiteralStructBodyNotSettable`]; a body already set is
+    /// refused as `StructType::setBodyOrError` refuses it.
     pub fn set_struct_body_dyn<I, T>(
         &'ctx self,
         st: StructType<'ctx, StructBodyDyn, B, impl Capability>,
@@ -4508,10 +4768,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         // this module before the struct is read or its body set.
         let owner = self.id();
         let st_id = st.slot_in(owner)?;
-        let elems = elements
-            .into_iter()
-            .map(|t| t.as_type().slot_in(owner))
-            .collect::<IrResult<Box<[TypeSlot]>>>()?;
+        let elems = struct_element_slots(owner, elements)?;
         let body = StructBody {
             elements: elems,
             packed,
@@ -4533,6 +4790,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.core().ctx.set_named_struct_body(st_id, body)
     }
 
+    /// Set an opaque identified struct's body, upgrading the handle to
+    /// [`BodySet`].
+    ///
+    /// # Errors
+    ///
+    /// A struct or element type from another module is
+    /// [`IrError::ForeignType`]; an element that cannot live in a struct —
+    /// `void`, `label`, `metadata`, a function type or `token` — is
+    /// [`IrError::InvalidTypeComponent`] (stricter than `StructType::setBody`,
+    /// as [`struct_type`](Self::struct_type) explains); a body already set is
+    /// refused as `StructType::setBodyOrError` refuses it.
     pub fn set_struct_body<I, T>(
         &'ctx self,
         opaque: StructType<'ctx, Opaque, B, impl Capability>,
@@ -4551,10 +4819,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         let opaque = opaque.admitted_at(self.capability_ref())?;
         // Internal: admitted on the line above.
         let opaque_id = opaque.slot_trusting_same_module();
-        let elems = elements
-            .into_iter()
-            .map(|t| t.as_type().slot_in(owner))
-            .collect::<IrResult<Box<[TypeSlot]>>>()?;
+        let elems = struct_element_slots(owner, elements)?;
         let body = StructBody {
             elements: elems,
             packed,

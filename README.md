@@ -320,17 +320,31 @@ and hiding field changes would obscure ABI/layout changes.
 
 Detailed macro docs: [IrStruct derive macro](docs/ir-struct-derive.md).
 
+### Address spaces
+
+A pointer's LLVM address space is part of its Rust type. `m.ptr_type_in::<3>()`
+is a `PointerType<'_, Space<3>, _>`, and the pointers built from it — through a
+GEP, `select`, a phi or an SSA variable — stay `Space<3>`, so a `select` or a
+pointer comparison mixing address spaces 0 and 1 does not compile. Where only
+run-time data knows the space — `m.ptr_type(n)`, the parser, the default
+`alloca` — the marker is `SpaceDyn`; `TryFrom` narrows it to `Space<N>`,
+refusing another space with `IrError::AddressSpaceMismatch`, and `as_dyn()`
+erases a static one. In a typed signature `Ptr` is address space 0 and `Ptr<N>`
+is address space `N`.
+
 ### Typed pointers
 
-`TypedPointerValue<'ctx, T: IrField, B>` overlays a compile-time pointee
-schema on top of a plain opaque `ptr` value -- it is Rust-side bookkeeping
+`TypedPointerValue<'ctx, T: IrField, A, B>` overlays a compile-time pointee
+schema on top of a plain opaque `ptr` value, keeping its address-space marker
+`A` -- it is Rust-side bookkeeping
 only, so printed IR is byte-identical to the erased path. `PointerValue::with_pointee::<T>()`
 attaches the schema as an explicit, documented assertion (exactly as
 powerful as passing a type to `load` today; a mis-assertion produces
-wrong IR that the verifier catches, never memory-unsafe behavior).
+wrong IR -- legal under opaque pointers, so no verifier flags it -- never
+memory-unsafe behavior).
 `typed_alloca::<T>`, `typed_load`, and `typed_store` skip
 the runtime type-narrowing that the erased path needs, and
-`field_gep::<S, I>` projects the field type at compile time straight
+`field_gep::<S, _, I, _>` projects the field type at compile time straight
 from a `#[derive(IrStruct)]` schema -- an out-of-range field index is a
 missing trait impl, not a runtime bounds check.
 

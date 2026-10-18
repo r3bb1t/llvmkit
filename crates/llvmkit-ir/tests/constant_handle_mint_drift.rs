@@ -63,7 +63,7 @@ const AUDITED: &[(&str, &str, usize, &str)] = &[
         INTERNED,
     ),
     ("constant_folding.rs", "zero_constant_for_type", 1, INTERNED),
-    ("constants.rs", "as_constant", 3, REMINT),
+    ("constants.rs", "as_constant", 4, REMINT),
     ("constants.rs", "constant_handle", 1, INTERNED),
     ("function.rs", "as_aggregate_ptr", 1, INTERNED),
     ("function.rs", "as_global_constant_ptr", 1, INTERNED),

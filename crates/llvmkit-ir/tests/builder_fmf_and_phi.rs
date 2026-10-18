@@ -425,11 +425,11 @@ fn build_pointer_phi_emits_phi_with_ptr() -> Result<(), IrError> {
     let join_label = join.id();
     // entry: br join(%0) — the incoming ptr rides the edge into the head-phi.
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     b.br_with_args(join_label, &[p.as_erased()])?;
     // join: ret %p (the head-phi param, where the phi result was used).
     let b2 = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
-    let phi: PointerValue<'_, _> = params[0].try_into()?;
+    let phi: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = params[0].try_into()?;
     b2.ret(phi)?;
     let text = format!("{m}");
     // The param-phi is unnamed, so assert on the load-bearing `phi ptr`

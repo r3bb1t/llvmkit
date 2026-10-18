@@ -21,7 +21,7 @@ fn load_pointer_operand_is_typed() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let loaded = b.load(i32_ty, p, "v")?;
 
     let view = InstructionView::try_from(b.view(loaded))?;
@@ -29,7 +29,7 @@ fn load_pointer_operand_is_typed() -> Result<(), IrError> {
         panic!("expected a load instruction");
     };
     // `pointer()` returns `PointerValue`, not an erased `Value`.
-    let ptr: PointerValue<'_, _> = load.pointer();
+    let ptr: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = load.pointer();
     assert_eq!(ptr.as_erased(), p.as_erased());
     Ok(())
 }
@@ -143,7 +143,7 @@ fn indirect_call_callee_is_indirect() -> Result<(), IrError> {
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let fp: PointerValue<'_, _> = m.view(caller).param(0)?.try_into()?;
+    let fp: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(caller).param(0)?.try_into()?;
     let callee_ty = m.function_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new());
     let call = b.indirect_call_dyn::<i32, _, Value<'_, _>, _, _>(
         callee_ty,

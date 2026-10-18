@@ -11,15 +11,20 @@
 
 use core::num::NonZeroU32;
 
+use crate::addr_space::AddrSpace;
+use crate::array_len::{ArrLenDyn, ArrayLen};
 use crate::capability::Capability;
-use crate::derived_types::{FloatType, IntType, PointerType, VectorType};
+use crate::derived_types::{
+    ArrayType, FloatType, IntType, PointerType, StructType, TargetExtType, VectorType,
+};
 use crate::element::{ElemDyn, VecElem};
 use crate::error::{IrError, IrResult, TypePosition};
 use crate::float_kind::{Bfloat, FloatDyn, Fp128, Half, PpcFp128, X86Fp80};
 use crate::int_width::{IntDyn, Width};
 use crate::module::ModuleBrand;
+use crate::struct_body_state::StructBodyState;
 use crate::r#type::{IrType, Type, TypeSlotAccess};
-use crate::vec_len::LenDyn;
+use crate::vec_len::{LenDyn, VecLen};
 
 mod sealed {
     pub trait Sealed {}
@@ -68,10 +73,40 @@ pub trait VectorElement<'ctx, B: ModuleBrand + 'ctx>: IrType<'ctx, B> + sealed::
     type Elem: VecElem;
 }
 
+/// A type handle that is always a valid array element — every kind
+/// `ArrayType::isValidElementType` admits that has a typed handle: integers,
+/// floats, pointers, arrays, structs (any body state), vectors and target
+/// types — except a legacy typed pointer: `ArrayType::isValidElementType`
+/// admits one, but [`TypedPointerType`](crate::TypedPointerType) does not
+/// implement this trait, so an array of one goes through the checked
+/// [`Module::array_type`](crate::Module::array_type).
+///
+/// Sealed. `void`, `label`, `metadata`, function types and `token` have
+/// handles and never implement it; `x86_amx` has no typed handle.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be an array element",
+    label = "LLVM arrays cannot hold void, label, metadata, function, token or x86_amx types",
+    note = "a runtime `Type` goes through `array_type(ty, len)?`, which checks it \
+            (`ArrayType::isValidElementType`)"
+)]
+pub trait ArrayElement<'ctx, B: ModuleBrand + 'ctx>: IrType<'ctx, B> + sealed::Sealed {
+    /// The element marker the array carries: the scalar marker when the handle
+    /// has one, [`ElemDyn`] otherwise.
+    type Elem: VecElem;
+}
+
+// Every vector element is an array element, with the same marker:
+// `VectorType::isValidElementType`'s integers, floats and pointers all pass
+// `ArrayType::isValidElementType`.
 macro_rules! scalar_elements {
     ($handle:ident: $($marker:ty => $elem:ty),+ $(,)?) => {$(
         impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> sealed::Sealed for $handle<'ctx, $marker, B, C> {}
         impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> VectorElement<'ctx, B>
+            for $handle<'ctx, $marker, B, C>
+        {
+            type Elem = $elem;
+        }
+        impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ArrayElement<'ctx, B>
             for $handle<'ctx, $marker, B, C>
         {
             type Elem = $elem;
@@ -91,10 +126,65 @@ impl<'ctx, const N: u32, B: ModuleBrand + 'ctx, C: Capability> VectorElement<'ct
 {
     type Elem = ElemDyn;
 }
+impl<'ctx, const N: u32, B: ModuleBrand + 'ctx, C: Capability> ArrayElement<'ctx, B>
+    for IntType<'ctx, Width<N>, B, C>
+{
+    type Elem = ElemDyn;
+}
 
-impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> sealed::Sealed for PointerType<'ctx, B, C> {}
-impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> VectorElement<'ctx, B>
-    for PointerType<'ctx, B, C>
+// A pointer in any address space is a vector and an array element.
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> sealed::Sealed
+    for PointerType<'ctx, A, B, C>
+{
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> VectorElement<'ctx, B>
+    for PointerType<'ctx, A, B, C>
+{
+    type Elem = ElemDyn;
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> ArrayElement<'ctx, B>
+    for PointerType<'ctx, A, B, C>
+{
+    type Elem = ElemDyn;
+}
+
+// The kinds `ArrayType::isValidElementType` admits beyond the vector elements
+// above: arrays, structs of any body state (an opaque struct included),
+// vectors of any length and scalability, and every target type, whatever
+// properties it declares.
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx, C: Capability> sealed::Sealed
+    for ArrayType<'ctx, E, L, B, C>
+{
+}
+impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx, C: Capability> ArrayElement<'ctx, B>
+    for ArrayType<'ctx, E, L, B, C>
+{
+    type Elem = ElemDyn;
+}
+
+impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx, C: Capability> sealed::Sealed
+    for StructType<'ctx, Body, B, C>
+{
+}
+impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx, C: Capability> ArrayElement<'ctx, B>
+    for StructType<'ctx, Body, B, C>
+{
+    type Elem = ElemDyn;
+}
+
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, C: Capability> sealed::Sealed
+    for VectorType<'ctx, E, L, B, C>
+{
+}
+impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, C: Capability> ArrayElement<'ctx, B>
+    for VectorType<'ctx, E, L, B, C>
+{
+    type Elem = ElemDyn;
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> sealed::Sealed for TargetExtType<'ctx, B, C> {}
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ArrayElement<'ctx, B>
+    for TargetExtType<'ctx, B, C>
 {
     type Elem = ElemDyn;
 }
@@ -140,6 +230,30 @@ impl<'ctx, B: ModuleBrand + 'ctx> VectorType<'ctx, ElemDyn, LenDyn, B> {
             module.context().scalable_vector_type(slot, min_lanes),
             module,
         )
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> ArrayType<'ctx, ElemDyn, ArrLenDyn, B> {
+    /// An array `[len x element]`, built in the element's own module.
+    ///
+    /// Cannot fail: [`ArrayElement`] is implemented only for kinds
+    /// `ArrayType::isValidElementType` admits, and LLVM allows a zero length.
+    /// For a runtime [`Type`], use [`Module::array_type`](crate::Module::array_type).
+    ///
+    /// ```
+    /// # use llvmkit_ir::{ArrayType, Module};
+    /// let m = Module::dynamic("doc");
+    /// assert_eq!(ArrayType::of(m.i8_type(), 16).to_string(), "[16 x i8]");
+    /// ```
+    pub fn of<T: ArrayElement<'ctx, B>>(
+        element: T,
+        len: u64,
+    ) -> ArrayType<'ctx, T::Elem, ArrLenDyn, B, T::Capability> {
+        let element = element.as_type();
+        // Internal: interned in the element's own module.
+        let slot = element.slot_trusting_same_module();
+        let module = element.module;
+        ArrayType::new(module.context().array_type(slot, len), module)
     }
 }
 

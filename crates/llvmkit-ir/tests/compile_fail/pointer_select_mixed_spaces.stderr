@@ -1,0 +1,22 @@
+error[E0308]: mismatched types
+  --> tests/compile_fail/pointer_select_mixed_spaces.rs:13:28
+   |
+13 |     let _ = b.select(c, p, q, "s");
+   |               ------       ^ expected `0`, found `1`
+   |               |
+   |               arguments to this method are incorrect
+   |
+   = note: expected struct `PointerValue<'_, llvmkit_ir::Space<0>, __LlvmkitGeneratedBrand>`
+              found struct `PointerValue<'_, llvmkit_ir::Space<1>, __LlvmkitGeneratedBrand>`
+help: the return type of this call is `PointerValue<'_, llvmkit_ir::Space<1>, __LlvmkitGeneratedBrand>` due to the type of the argument passed
+  --> tests/compile_fail/pointer_select_mixed_spaces.rs:13:13
+   |
+13 |     let _ = b.select(c, p, q, "s");
+   |             ^^^^^^^^^^^^^^^-^^^^^^
+   |                            |
+   |                            this argument influences the return type of `select`
+note: method defined here
+  --> src/ir_builder.rs
+   |
+   |     pub fn select<C, A, Name>(
+   |            ^^^^^^

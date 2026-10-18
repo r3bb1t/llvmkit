@@ -173,8 +173,12 @@ fn instsimplify_pass_keeps_load_from_interposable_constant_global() -> Result<()
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let weak_ptr = PointerValue::try_from(m.view(weak).as_global_constant_ptr().as_erased())?;
-    let strong_ptr = PointerValue::try_from(m.view(strong).as_global_constant_ptr().as_erased())?;
+    let weak_ptr = PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(
+        m.view(weak).as_global_constant_ptr().as_erased(),
+    )?;
+    let strong_ptr = PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(
+        m.view(strong).as_global_constant_ptr().as_erased(),
+    )?;
     let w = IntValue::try_from(b.view(b.load(i32_ty.as_type(), weak_ptr, "w")?))?;
     let s = IntValue::try_from(b.view(b.load(i32_ty.as_type(), strong_ptr, "s")?))?;
     let sum = b.int_add::<i32, _, _, _>(w, s, "sum")?;
@@ -212,7 +216,7 @@ fn dce_removes_unordered_atomic_load_keeps_ordered_and_volatile() -> Result<(), 
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let _u = b
         .load_from(p)
         .atomic(AtomicOrdering::Unordered)
@@ -262,7 +266,7 @@ fn dce_keeps_store_fence_and_call() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     b.store(i32_ty.const_int(1_u32), p)?;
     b.fence(
         AtomicOrdering::SequentiallyConsistent,
@@ -299,7 +303,9 @@ fn instsimplify_terminates_on_ordered_atomic_load_from_constant() -> Result<(), 
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let gp = PointerValue::try_from(m.view(g).as_global_constant_ptr().as_erased())?;
+    let gp = PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(
+        m.view(g).as_global_constant_ptr().as_erased(),
+    )?;
     let s = b
         .load_from(gp)
         .atomic(AtomicOrdering::Monotonic)

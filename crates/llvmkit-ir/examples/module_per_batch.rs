@@ -28,13 +28,17 @@
 //! cargo run -p llvmkit-ir --example module_per_batch
 //! ```
 
-use llvmkit_ir::{IrBuilder, IrError, Linkage, Module, ModuleBrand, Unverified, ValueId, Verified};
+use llvmkit_ir::{
+    IrBuilder, IrError, Linkage, Module, ModuleBrand, UniqueBrand, Unverified, ValueId, Verified,
+};
 
 /// The brand every batch runs under. Named, so `Module<Jit, _>` is spellable
-/// in a signature — and registry-checked, so two live batches cannot overlap.
+/// in a signature — and registry-checked, so two live batches cannot overlap,
+/// which is what makes it a `UniqueBrand`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Jit;
 impl ModuleBrand for Jit {}
+impl UniqueBrand for Jit {}
 
 /// Fill `module` with `i32 @batch(i32 %x)` returning `x + n`, and verify it.
 ///

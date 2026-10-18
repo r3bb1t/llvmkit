@@ -241,7 +241,7 @@ fn indirectbr_destination_into_param_block_errors() -> Result<(), IrError> {
         bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "par")?;
     let param_label = param_bb.id();
 
-    let addr: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let addr: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let (_sealed, ibr) = b.indirectbr(addr, "")?;
     let res = ibr.add_destination(param_label);

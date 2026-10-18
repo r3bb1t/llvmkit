@@ -26,7 +26,8 @@ fn load_atomic_monotonic_align4() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let word: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(0)?.try_into()?;
     let ld = b
         .load_from(word)
         .atomic(AtomicOrdering::Monotonic)
@@ -55,7 +56,8 @@ fn load_atomic_volatile_acquire_align8() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let word: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(0)?.try_into()?;
     let ld = b
         .load_from(word)
         .volatile()
@@ -85,7 +87,8 @@ fn load_atomic_volatile_singlethread_seq_cst_align16() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let word: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(0)?.try_into()?;
     let ld = b
         .load_from(word)
         .volatile()
@@ -120,7 +123,8 @@ fn store_atomic_monotonic_align4() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let word: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(0)?.try_into()?;
     let val = i32_ty.const_int(23_i32);
     b.store_to(val, word)
         .atomic(AtomicOrdering::Monotonic)
@@ -150,7 +154,8 @@ fn store_atomic_volatile_monotonic_align4() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let word: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(0)?.try_into()?;
     let val = i32_ty.const_int(24_i32);
     b.store_to(val, word)
         .volatile()
@@ -181,7 +186,8 @@ fn store_atomic_volatile_singlethread_monotonic() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let word: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(0)?.try_into()?;
     let val = i32_ty.const_int(25_i32);
     b.store_to(val, word)
         .volatile()
@@ -214,7 +220,8 @@ fn verifier_rejects_atomic_load_release_ordering() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let word: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(0)?.try_into()?;
     let ld = b
         .load_from(word)
         .atomic(AtomicOrdering::Release)
@@ -243,7 +250,8 @@ fn verifier_rejects_atomic_store_acquire_ordering() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let word: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(0)?.try_into()?;
     let val = i32_ty.const_int(42_i32);
     b.store_to(val, word)
         .atomic(AtomicOrdering::Acquire)
@@ -275,7 +283,8 @@ fn verifier_rejects_atomic_load_non_power_of_two_size() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let word: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(0)?.try_into()?;
     // i17 → bit width 17, not power-of-two.
     let _ = b
         .load_from(word)
@@ -303,13 +312,14 @@ fn verifier_rejects_atomic_load_non_power_of_two_size() -> Result<(), IrError> {
 fn verifier_rejects_atomic_load_struct_operand() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
-    let struct_ty = m.struct_type([i32_ty.as_type()]);
+    let struct_ty = m.struct_type([i32_ty.as_type()])?;
     let ptr_ty = m.ptr_type(0);
     let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let ptr: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let ptr: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
+        m.view(f).param(0)?.try_into()?;
     let _ = b
         .load_from(ptr)
         .atomic(AtomicOrdering::Unordered)

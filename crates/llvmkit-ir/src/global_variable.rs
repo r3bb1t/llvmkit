@@ -333,7 +333,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GlobalVariable<'ctx, B, C> {
 
     /// Pointer type (`ptr addrspace(N)`) of `@<name>`.
     #[inline]
-    pub fn ty(self) -> PointerType<'ctx, B, C> {
+    pub fn ty(self) -> PointerType<'ctx, crate::SpaceDyn, B, C> {
         PointerType::new(self.ty, self.module)
     }
 

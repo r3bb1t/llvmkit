@@ -458,23 +458,25 @@ impl_float_field!(
     PpcFp128 => ppc_fp128_type, crate::TypeKind::PpcFp128,
 );
 
-impl IrField for Ptr {
-    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = PointerValue<'ctx, B, C>;
+impl<const AS: u32> IrField for Ptr<AS> {
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> =
+        PointerValue<'ctx, crate::Space<AS>, B, C>;
 
     #[inline]
     fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
     where
         B: ModuleBrand + 'ctx,
     {
-        Ok(module.ptr_type(0).as_type())
+        Ok(module.ptr_type_in::<AS>().as_type())
     }
 
+    /// A pointer in address space `AS` exactly.
     #[inline]
     fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
-        ty.is_pointer()
+        crate::PointerType::<crate::Space<AS>, B, C>::try_from(ty).is_ok()
     }
 
     #[inline]
@@ -488,10 +490,11 @@ impl IrField for Ptr {
     }
 }
 
-impl<'ctx, B, V> IntoIrField<'ctx, Ptr, B> for V
+// A `Ptr<AS>` field takes a pointer in address space `AS`, by type.
+impl<'ctx, B, V, const AS: u32> IntoIrField<'ctx, Ptr<AS>, B> for V
 where
     B: ModuleBrand + 'ctx,
-    V: IntoPointerValue<'ctx, B>,
+    V: IntoPointerValue<'ctx, B, Space = crate::Space<AS>>,
 {
     #[inline]
     fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
@@ -570,7 +573,7 @@ impl_struct_operand!(IntoCallArg::into_call_arg);
 /// The `I`-th top-level field schema of a field tuple. Implemented for
 /// tuple arities 1..=16, one impl per (arity, index) pair, so an
 /// out-of-range index is "no impl" -- a compile error at the
-/// `field_gep::<S, I>` call site.
+/// `field_gep::<S, _, I, _>` call site.
 pub trait StructFieldAt<const I: u32> {
     type Field: IrField;
 }

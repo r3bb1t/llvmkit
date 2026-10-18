@@ -6,10 +6,10 @@
 //! counterpart to port.
 
 use llvmkit_ir::ShuffleMaskElem::{Lane, Poison};
+use llvmkit_ir::{ArrayType, VectorType, lanes};
 use llvmkit_ir::{
     Dyn, DynBrand, IntValue, IrBuilder, IrError, Linkage, Module, ShuffleVectorInst, module_new,
 };
-use llvmkit_ir::{VectorType, lanes};
 
 // --------------------------------------------------------------------------
 // extractvalue
@@ -25,7 +25,7 @@ fn extract_value_struct_field0() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()]);
+    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()])?;
     let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()]);
     let f = m.add_function_dyn("instructions.aggregateops", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -50,7 +50,7 @@ fn extract_value_array_index() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
-    let arr_ty = m.array_type(i8_ty, 3);
+    let arr_ty = ArrayType::of(i8_ty, 3);
     let fn_ty = m.function_type(void_ty.as_type(), [arr_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -76,8 +76,8 @@ fn extract_value_nested_indices() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let inner = m.struct_type([i32_ty.as_type()]);
-    let outer = m.struct_type([i8_ty.as_type(), inner.as_type()]);
+    let inner = m.struct_type([i32_ty.as_type()])?;
+    let outer = m.struct_type([i8_ty.as_type(), inner.as_type()])?;
     let fn_ty = m.function_type(void_ty.as_type(), [outer.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -105,7 +105,7 @@ fn extract_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()]);
+    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()])?;
     let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -136,7 +136,7 @@ fn extract_value_rejects_out_of_range_array_index() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let arr_ty = m.array_type(i32_ty, 0);
+    let arr_ty = ArrayType::of(i32_ty, 0);
     let fn_ty = m.function_type(void_ty.as_type(), [arr_ty.as_type()]);
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -166,7 +166,7 @@ fn extract_value_rejects_out_of_range_struct_index() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()]);
+    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()])?;
     let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()]);
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -197,7 +197,7 @@ fn insert_value_struct_field0() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()]);
+    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()])?;
     let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -222,7 +222,7 @@ fn insert_value_array_index_zero() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
-    let arr_ty = m.array_type(i8_ty, 3);
+    let arr_ty = ArrayType::of(i8_ty, 3);
     let fn_ty = m.function_type(void_ty.as_type(), [arr_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -252,7 +252,7 @@ fn insert_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()]);
+    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()])?;
     let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -731,7 +731,7 @@ fn the_three_aggregate_index_walks_agree_at_the_u32_boundary() -> Result<(), IrE
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
     // One element past `u32::MAX`, so the largest legal index is `u32::MAX`.
-    let arr_ty = m.array_type(i8_ty, u64::from(u32::MAX) + 1);
+    let arr_ty = ArrayType::of(i8_ty, u64::from(u32::MAX) + 1);
     let fn_ty = m.function_type(void_ty.as_type(), [arr_ty.as_type()]);
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -746,7 +746,7 @@ fn the_three_aggregate_index_walks_agree_at_the_u32_boundary() -> Result<(), IrE
     );
     // ...and out of range one past it, at the true 64-bit length.
     assert!(
-        llvmkit_ir::indexed_aggregate_type(m.array_type(i8_ty, 4).as_type(), &[4u32]).is_none()
+        llvmkit_ir::indexed_aggregate_type(ArrayType::of(i8_ty, 4).as_type(), &[4u32]).is_none()
     );
 
     // Walk 2, the builder's: accepts, so the instruction is constructed.

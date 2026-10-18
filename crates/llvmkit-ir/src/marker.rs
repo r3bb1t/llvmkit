@@ -14,7 +14,8 @@
 //! - `f32` / `f64` / [`crate::Half`] / [`crate::Bfloat`] /
 //!   [`crate::Fp128`] / [`crate::X86Fp80`] / [`crate::PpcFp128`] /
 //!   [`crate::FloatDyn`] — IEEE/non-IEEE float return.
-//! - [`Ptr`] — opaque-pointer return (any address space).
+//! - [`Ptr`] — opaque-pointer return in address space `AS` (`0` when written
+//!   plain `Ptr`); its checks require that address space exactly.
 //! - [`Dyn`] — anything not statically described (struct, vector,
 //!   array, target-ext, parsed IR…). The IrBuilder keeps a runtime
 //!   [`crate::IrError::ReturnTypeMismatch`] check exclusively for
@@ -43,7 +44,8 @@ use crate::r#type::sealed;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExpectedRetKind {
     Void,
-    Ptr,
+    /// A pointer in this address space.
+    Ptr(u32),
     Dyn,
     IntStatic(u32),
     IntDyn,
@@ -79,15 +81,52 @@ impl ReturnMarker for () {
     }
 }
 
-/// Opaque-pointer return (any address space).
+/// Opaque pointer in address space `AS` — `0`, the default address space, when
+/// written plain `Ptr` — as a typed signature or struct-field marker. Its value
+/// is a [`PointerValue<'ctx, Space<AS>, …>`](crate::PointerValue), and its type
+/// checks require that address space exactly (a `ptr addrspace(1)` is not a
+/// `Ptr`).
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Ptr(*mut core::ffi::c_void);
-impl sealed::Sealed for Ptr {}
-impl ReturnMarker for Ptr {
+pub struct Ptr<const AS: u32 = 0>(*mut core::ffi::c_void);
+impl<const AS: u32> Ptr<AS> {
+    /// Wrap a raw pointer — the Rust-side value of a `Ptr` field in a
+    /// `#[derive(IrStruct)]` struct, which is Rust data as well as an IR
+    /// schema.
+    ///
+    /// ```
+    /// use llvmkit_ir::Ptr;
+    /// let mut byte = 0_u8;
+    /// let raw = core::ptr::from_mut(&mut byte).cast::<core::ffi::c_void>();
+    /// assert_eq!(Ptr::<1>::new(raw).as_ptr(), raw);
+    /// ```
+    #[inline]
+    pub const fn new(pointer: *mut core::ffi::c_void) -> Self {
+        Self(pointer)
+    }
+
+    /// The null pointer.
+    ///
+    /// ```
+    /// use llvmkit_ir::Ptr;
+    /// assert!(Ptr::<0>::null().as_ptr().is_null());
+    /// ```
+    #[inline]
+    pub const fn null() -> Self {
+        Self(core::ptr::null_mut())
+    }
+
+    /// The wrapped raw pointer.
+    #[inline]
+    pub const fn as_ptr(self) -> *mut core::ffi::c_void {
+        self.0
+    }
+}
+impl<const AS: u32> sealed::Sealed for Ptr<AS> {}
+impl<const AS: u32> ReturnMarker for Ptr<AS> {
     #[inline]
     fn expected_kind() -> ExpectedRetKind {
-        ExpectedRetKind::Ptr
+        ExpectedRetKind::Ptr(AS)
     }
 }
 
@@ -162,7 +201,7 @@ impl<const N: u32> ReturnMarker for Width<N> {
 pub(crate) fn marker_kind_label<R: ReturnMarker>() -> Option<TypeKindLabel> {
     match R::expected_kind() {
         ExpectedRetKind::Void => Some(TypeKindLabel::Void),
-        ExpectedRetKind::Ptr => Some(TypeKindLabel::Pointer),
+        ExpectedRetKind::Ptr(_) => Some(TypeKindLabel::Pointer),
         ExpectedRetKind::IntStatic(_) | ExpectedRetKind::IntDyn => Some(TypeKindLabel::Integer),
         ExpectedRetKind::FloatStatic(kind) => Some(kind),
         ExpectedRetKind::FloatDyn => Some(TypeKindLabel::Float),

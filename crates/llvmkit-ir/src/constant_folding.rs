@@ -1044,7 +1044,7 @@ fn fold_ptr_int_cast_vs_null<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         && let Some(addr_bits) = index_bits_for_pointer(operand.ty(), dl)
         && let Ok(lhs_int_ty) = IntType::<IntDyn, B, C>::try_from(lhs.ty())
         && lhs_int_ty.bit_width() == addr_bits
-        && let Ok(ptr_ty) = PointerType::<B, C>::try_from(operand.ty())
+        && let Ok(ptr_ty) = PointerType::<crate::SpaceDyn, B, C>::try_from(operand.ty())
     {
         let null = ptr_ty.const_null().as_constant();
         return Ok(Some(

@@ -251,7 +251,7 @@ help: the trait `CanMutate` is implemented for `Mutable`
    |
    | impl CanMutate for Mutable {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^
-   = note: required for `PointerValue<'_, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+   = note: required for `PointerValue<'_, SpaceDyn, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
 
 error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
   --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:76:41
@@ -268,7 +268,7 @@ help: the trait `CanMutate` is implemented for `Mutable`
    |
    | impl CanMutate for Mutable {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^
-   = note: required for `PointerValue<'_, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
+   = note: required for `PointerValue<'_, SpaceDyn, DynBrand, llvmkit_ir::ReadOnly>` to implement `SetName<'_, DynBrand>`
 
 error[E0277]: a `llvmkit_ir::ReadOnly` handle cannot mutate the module it reads
   --> tests/compile_fail/verified_value_set_name_trait_is_read_only.rs:79:39

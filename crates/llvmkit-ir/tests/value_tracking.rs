@@ -273,7 +273,7 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
     let f0 = m.add_function_dyn("test0", fn_ty, Linkage::External)?;
     let entry0 = m.view(f0).append_basic_block(&m, "entry");
     let b0 = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry0);
-    let p0: PointerValue<'_, _> = m.view(f0).param(0)?.try_into()?;
+    let p0: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f0).param(0)?.try_into()?;
     let val0 = b0.int_load::<i8, _, _>(p0, "val")?;
     let lo0 = m.metadata_constant(i8_ty.const_int(-50_i8))?;
     let hi0 = m.metadata_constant(i8_ty.const_int(0_i8))?;
@@ -288,7 +288,7 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
     let f1 = m.add_function_dyn("test1", fn_ty, Linkage::External)?;
     let entry1 = m.view(f1).append_basic_block(&m, "entry");
     let b1 = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry1);
-    let p1: PointerValue<'_, _> = m.view(f1).param(0)?.try_into()?;
+    let p1: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f1).param(0)?.try_into()?;
     let val1 = b1.int_load::<i8, _, _>(p1, "val")?;
     let lo1 = m.metadata_constant(i8_ty.const_int(64_i8))?;
     let hi1 = m.metadata_constant(i8_ty.const_ap_int(&ApInt::from_words(8, &[128]))?)?;
@@ -303,7 +303,7 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
     let f2 = m.add_function_dyn("test2", fn_ty, Linkage::External)?;
     let entry2 = m.view(f2).append_basic_block(&m, "entry");
     let b2 = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry2);
-    let p2: PointerValue<'_, _> = m.view(f2).param(0)?.try_into()?;
+    let p2: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f2).param(0)?.try_into()?;
     let val2 = b2.int_load::<i8, _, _>(p2, "val")?;
     let lo2 = m.metadata_constant(i8_ty.const_int(64_i8))?;
     let hi2 = m.metadata_constant(i8_ty.const_ap_int(&ApInt::from_words(8, &[129]))?)?;
@@ -621,7 +621,7 @@ fn query_carries_context_demanded_elements_and_instr_info_policy() -> Result<(),
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let load = b.int_load::<i8, _, _>(p, "load")?;
     let load_inst = InstructionView::try_from(b.view(load).as_erased())?;
     let demanded = ApInt::from_words(1, &[1]);

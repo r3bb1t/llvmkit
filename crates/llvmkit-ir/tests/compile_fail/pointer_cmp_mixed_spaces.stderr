@@ -1,0 +1,18 @@
+error[E0271]: type mismatch resolving `<PointerValue<'_, Space<1>, __LlvmkitGeneratedBrand> as IntoPointerValue<'_, __LlvmkitGeneratedBrand>>::Space == Space<0>`
+  --> tests/compile_fail/pointer_cmp_mixed_spaces.rs:14:48
+   |
+14 |     let _ = b.pointer_cmp(IntPredicate::Eq, p, q, "eq");
+   |               -----------                      ^ expected `0`, found `1`
+   |               |
+   |               required by a bound introduced by this call
+   |
+   = note: expected struct `llvmkit_ir::Space<0>`
+              found struct `llvmkit_ir::Space<1>`
+note: required by a bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::pointer_cmp`
+  --> src/ir_builder.rs
+   |
+   |     pub fn pointer_cmp<L, R2, Name>(
+   |            ----------- required by a bound in this associated function
+...
+   |         R2: IntoPointerValue<'ctx, B, Space = L::Space>,
+   |                                       ^^^^^^^^^^^^^^^^ required by this bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::pointer_cmp`

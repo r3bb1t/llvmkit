@@ -11,7 +11,9 @@ struct Point {
     y: i32,
 }
 
-fn expects_pointer<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx>(value: PointerValue<'ctx, B>) {
+fn expects_pointer<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx>(
+    value: PointerValue<'ctx, llvmkit_ir::SpaceDyn, B>,
+) {
     let _ = value;
 }
 

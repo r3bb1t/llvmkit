@@ -18,11 +18,11 @@
 //! marked accordingly.
 
 use llvmkit_ir::{
-    AddFlags, Align, AshrFlags, AttrIndex, AttrKind, Attribute, AttributeStorage, Dyn, DynBrand,
-    FloatPredicate, FloatValue, FloatValueId, GepNoWrapFlags, IntPredicate, IntValue, IntValueId,
-    IntrinsicId, IrBuilder, IrError, Linkage, LshrFlags, MemoryEffects, MulFlags, PointerValue,
-    PointerValueId, SdivFlags, ShlFlags, SubFlags, UdivFlags, VectorType, VerifierRule, lanes,
-    module_new,
+    AddFlags, Align, ArrayType, AshrFlags, AttrIndex, AttrKind, Attribute, AttributeStorage, Dyn,
+    DynBrand, FloatPredicate, FloatValue, FloatValueId, GepNoWrapFlags, IntPredicate, IntValue,
+    IntValueId, IntrinsicId, IrBuilder, IrError, Linkage, LshrFlags, MemoryEffects, MulFlags,
+    PointerValue, PointerValueId, SdivFlags, ShlFlags, SubFlags, UdivFlags, VectorType,
+    VerifierRule, lanes, module_new,
 };
 
 fn abs_function_attrs_without_immarg() -> AttributeStorage {
@@ -360,7 +360,7 @@ fn verify_casts_full() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
     let x: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let y: FloatValue<'_, f32, _> = m.view(f).param(1)?.try_into()?;
-    let p: PointerValue<'_, _> = m.view(f).param(2)?.try_into()?;
+    let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(2)?.try_into()?;
     let s: IntValue<'_, i8, _> = m.view(f).param(3)?.try_into()?;
     let t: IntValueId<i32, _> = b.trunc(x, i32_ty, "t")?;
     let e: IntValueId<i64, _> = b.sext(t, i64_ty, "e")?;
@@ -372,10 +372,10 @@ fn verify_casts_full() -> Result<(), IrError> {
     let _is: FloatValueId<f32, _> = b.si_to_fp(x, f32_ty, "is")?;
     let _iu: FloatValueId<f32, _> = b.ui_to_fp(x, f32_ty, "iu")?;
     let pi: IntValueId<i64, _> = b.ptr_to_int(p, i64_ty, "pi")?;
-    let _ip: PointerValueId<_> = b.int_to_ptr(pi, ptr_ty, "ip")?;
+    let _ip: PointerValueId<llvmkit_ir::SpaceDyn, _> = b.int_to_ptr(pi, ptr_ty, "ip")?;
     // `addrspacecast` (identity here -- both ptrs in addr space 0 --
     // is a no-op, but exercises the builder + verifier path).
-    let _ac: PointerValueId<_> = b.addrspace_cast(p, ptr_ty, "ac")?;
+    let _ac: PointerValueId<llvmkit_ir::SpaceDyn, _> = b.addrspace_cast(p, ptr_ty, "ac")?;
     let sum = b.int_add(e, z, "sum")?;
     let total = b.int_add(sum, fi, "total")?;
     b.ret(total)?;
@@ -403,7 +403,7 @@ fn verify_memory_gep_select_control() -> Result<(), IrError> {
     let else_label = else_bb.id();
     let join_label = join.id();
 
-    let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let v: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -411,7 +411,7 @@ fn verify_memory_gep_select_control() -> Result<(), IrError> {
     b.store_with_align(v, slot, Align::new(4)?)?;
     let loaded: IntValue<'_, i32, _> = b.view(b.int_load::<i32, _, _>(p, "ld")?);
     let cmp = b.int_cmp(IntPredicate::Slt, loaded, 0_i32, "cmp")?;
-    let arr_ty = m.array_type(i32_ty, 4);
+    let arr_ty = ArrayType::of(i32_ty, 4);
     let v_dyn: IntValue<'_, llvmkit_ir::IntDyn, _> = v.into();
     let _gep = b.inbounds_gep(arr_ty, p, [v_dyn], "ix")?;
     b.cond_br(cmp, then_label, else_label)?;
@@ -764,7 +764,7 @@ fn verify_gep_into_scalable_struct_fails() -> Result<(), IrError> {
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type();
     let vscale_double = VectorType::scalable_of(double_ty, lanes::<1>());
-    let struct_ty = m.struct_type([vscale_double.as_type(), vscale_double.as_type()]);
+    let struct_ty = m.struct_type([vscale_double.as_type(), vscale_double.as_type()])?;
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
     let f = m.add_function_dyn("gep", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -867,7 +867,7 @@ fn verify_vector_gep_with_disagreeing_index_widths_fails() -> Result<(), IrError
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type();
-    let array_ty = m.array_type(i8_ty, 4);
+    let array_ty = ArrayType::of(i8_ty, 4);
     let vec2_i32 = VectorType::of(i32_ty, lanes::<2>());
     let vec4_i32 = VectorType::of(i32_ty, lanes::<4>());
     let fn_ty = m.function_type(

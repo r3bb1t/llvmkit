@@ -20,9 +20,9 @@
 //! llvmkit gives each module its own type arena.
 
 use llvmkit_ir::{
-    Align, Analyses, AtomicOrdering, AtomicRmwBinOp, AtomicRmwConfig, BasicBlock, CallInst,
-    CallSiteConfig, CastOpcode, CastOperation, DominatorTreeAnalysis, Dyn, DynBrand, FastMathFlags,
-    FloatDyn, FloatValue, FnCx, FnReport, FunctionId, FunctionPass, GepNoWrapFlags,
+    Align, Analyses, ArrayType, AtomicOrdering, AtomicRmwBinOp, AtomicRmwConfig, BasicBlock,
+    CallInst, CallSiteConfig, CastOpcode, CastOperation, DominatorTreeAnalysis, Dyn, DynBrand,
+    FastMathFlags, FloatDyn, FloatValue, FnCx, FnReport, FunctionId, FunctionPass, GepNoWrapFlags,
     InlineAsmOptions, InstructionView, IntDyn, IntValue, InvokeInst, IrBuilder, IrError, IrResult,
     IrStruct, Linkage, Module, OperandBundleDef, OperandBundleTag, OperandBundleUse, PatchBody,
     PointerValue, Positioned, ReshapeCfg, SsaBuilder, SsaState, StructSchema, SyncScope,
@@ -281,7 +281,7 @@ fn a_pointer_operand_rejects_a_value_from_another_module() {
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
     let foreign_null = foreign.ptr_type(0).const_null();
-    let foreign_pointer: PointerValue<'_, DynBrand> = foreign_null
+    let foreign_pointer: PointerValue<'_, llvmkit_ir::SpaceDyn, DynBrand> = foreign_null
         .as_erased()
         .try_into()
         .expect("a pointer value");
@@ -326,7 +326,7 @@ fn a_select_arm_rejects_a_value_from_another_module() {
         .as_erased()
         .try_into()
         .expect("an f32 value");
-    let pointer_arm: PointerValue<'_, DynBrand> = foreign
+    let pointer_arm: PointerValue<'_, llvmkit_ir::SpaceDyn, DynBrand> = foreign
         .ptr_type(0)
         .const_null()
         .as_erased()
@@ -451,7 +451,7 @@ fn a_branch_target_rejects_a_block_from_another_module() {
 fn a_constant_operand_rejects_a_constant_from_another_module() {
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
-    let array = home.array_type(home.i32_type(), 1);
+    let array = ArrayType::of(home.i32_type(), 1);
 
     let before = format!("{home}");
     let result = array.const_array([foreign.i32_type().const_int(1i32)]);
@@ -678,6 +678,103 @@ fn the_vector_constructors_reject_an_element_from_another_module() {
         (
             "view.scalable_vector_type(void)",
             without_value(view.scalable_vector_type(foreign_void, lanes::<2>())),
+        ),
+    ]);
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+/// The literal struct constructors — `struct_type` and `packed_struct_type`, on
+/// `Module` and on `ModuleView` — reject an element type from another module:
+/// its slot would name a different type in this module's arena. The second
+/// list hands each, and `set_struct_body`, the other module's `void`, which is
+/// also no struct element, and still expects `ForeignType`: the module check
+/// runs before the element check. (`set_struct_body`'s foreign element and
+/// foreign struct are pinned in `a_type_entry_rejects_a_type_from_another_module`.)
+///
+/// No upstream counterpart: `StructType::get` takes `Type *`s, uniqued per
+/// `LLVMContext`.
+#[test]
+fn the_struct_constructors_reject_an_element_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let view = home.as_view();
+    let element = foreign.i32_type().as_type();
+    let problems = not_refused(vec![
+        ("struct_type", without_value(home.struct_type([element]))),
+        (
+            "packed_struct_type",
+            without_value(home.packed_struct_type([element])),
+        ),
+        (
+            "view.struct_type",
+            without_value(view.struct_type([element])),
+        ),
+        (
+            "view.packed_struct_type",
+            without_value(view.packed_struct_type([element])),
+        ),
+    ]);
+    assert!(problems.is_empty(), "{problems:#?}");
+
+    let foreign_void = foreign.void_type().as_type();
+    let opaque = home.opaque_struct("S").expect("fresh name");
+    let problems = not_refused(vec![
+        (
+            "struct_type(void)",
+            without_value(home.struct_type([foreign_void])),
+        ),
+        (
+            "packed_struct_type(void)",
+            without_value(home.packed_struct_type([foreign_void])),
+        ),
+        (
+            "view.struct_type(void)",
+            without_value(view.struct_type([foreign_void])),
+        ),
+        (
+            "view.packed_struct_type(void)",
+            without_value(view.packed_struct_type([foreign_void])),
+        ),
+        (
+            "set_struct_body(void)",
+            without_value(home.set_struct_body(opaque, [foreign_void], false)),
+        ),
+    ]);
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+/// The array constructor — on `Module` and on `ModuleView` — rejects an
+/// element type from another module: its slot would name a different type in
+/// this module's arena. The second list hands each the other module's `void`,
+/// which is also no array element, and still expects `ForeignType`: the module
+/// check runs before the element check.
+///
+/// No upstream counterpart: `ArrayType::get` takes a `Type *`, uniqued per
+/// `LLVMContext`.
+#[test]
+fn the_array_constructors_reject_an_element_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let view = home.as_view();
+    let element = foreign.i32_type().as_type();
+    let problems = not_refused(vec![
+        ("array_type", without_value(home.array_type(element, 2))),
+        (
+            "view.array_type",
+            without_value(view.array_type(element, 2)),
+        ),
+    ]);
+    assert!(problems.is_empty(), "{problems:#?}");
+
+    let foreign_void = foreign.void_type().as_type();
+    let problems = not_refused(vec![
+        (
+            "array_type(void)",
+            without_value(home.array_type(foreign_void, 2)),
+        ),
+        (
+            "view.array_type(void)",
+            without_value(view.array_type(foreign_void, 2)),
         ),
     ]);
     assert!(problems.is_empty(), "{problems:#?}");
@@ -1234,7 +1331,8 @@ fn a_pointer_cast_rejects_a_destination_type_from_another_module() {
     let foreign = Module::dynamic("foreign");
     let (b, [_, wide, _, _, pointer]) = builder_with_parameters(&home, "f");
     let wide_typed: IntValue<'_, i64, DynBrand> = wide.try_into().expect("an i64");
-    let pointer_typed: PointerValue<'_, DynBrand> = pointer.try_into().expect("a pointer");
+    let pointer_typed: PointerValue<'_, llvmkit_ir::SpaceDyn, DynBrand> =
+        pointer.try_into().expect("a pointer");
     let before = format!("{home}");
 
     let outcomes = vec![
@@ -1245,7 +1343,7 @@ fn a_pointer_cast_rejects_a_destination_type_from_another_module() {
         ),
         (
             "int_to_ptr",
-            b.int_to_ptr::<i64, _, _>(wide_typed, foreign.ptr_type(0), "c")
+            b.int_to_ptr::<i64, _, _, _>(wide_typed, foreign.ptr_type(0), "c")
                 .map(|_| ()),
         ),
         (
@@ -1289,7 +1387,8 @@ fn a_memory_entry_rejects_a_type_from_another_module() {
     let foreign = Module::dynamic("foreign");
     let (b, [_, wide, _, _, pointer]) = builder_with_parameters(&home, "f");
     let wide_dyn: IntValue<'_, IntDyn, DynBrand> = wide.try_into().expect("an integer");
-    let pointer_typed: PointerValue<'_, DynBrand> = pointer.try_into().expect("a pointer");
+    let pointer_typed: PointerValue<'_, llvmkit_ir::SpaceDyn, DynBrand> =
+        pointer.try_into().expect("a pointer");
     let align = Align::new(4).expect("a power of two");
     let before = format!("{home}");
 
@@ -1381,7 +1480,8 @@ fn a_phi_pad_or_va_arg_rejects_a_type_from_another_module() {
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
     let (b, [.., pointer]) = builder_with_parameters(&home, "f");
-    let pointer_typed: PointerValue<'_, DynBrand> = pointer.try_into().expect("a pointer");
+    let pointer_typed: PointerValue<'_, llvmkit_ir::SpaceDyn, DynBrand> =
+        pointer.try_into().expect("a pointer");
     let before = format!("{home}");
 
     let outcomes = vec![
@@ -3017,7 +3117,8 @@ fn an_operand_or_clause_setter_rejects_a_handle_from_another_module() {
     let foreign_null = foreign.ptr_type(0).const_null();
     let (b, [narrow, _, _, _, pointer]) = builder_with_parameters(&home, "f");
     let narrow: IntValue<'_, i32, DynBrand> = narrow.try_into().expect("an i32");
-    let pointer: PointerValue<'_, DynBrand> = pointer.try_into().expect("a pointer");
+    let pointer: PointerValue<'_, llvmkit_ir::SpaceDyn, DynBrand> =
+        pointer.try_into().expect("a pointer");
     let rmw = b
         .atomicrmw(
             AtomicRmwBinOp::Add,

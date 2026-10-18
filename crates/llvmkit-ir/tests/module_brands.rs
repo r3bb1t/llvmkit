@@ -20,7 +20,7 @@ use std::sync::{Arc, Barrier};
 
 use llvmkit_ir::{
     BrandError, Dyn, DynBrand, IntValue, IrBuilder, IrError, Linkage, Module, ModuleBrand,
-    Unverified, module_new,
+    UniqueBrand, Unverified, module_new,
 };
 
 /// Declare a brand type exactly as a user would: a bare unit struct and the
@@ -52,6 +52,27 @@ fn bare_brand_builds_a_module() {
     b.ret(sum).expect("ret");
     let verified = m.verify().expect("verifies");
     assert!(format!("{verified}").contains("define i32 @add"));
+}
+
+/// A `module_new!` brand is a [`UniqueBrand`]: the registry keeps its one
+/// module the only live one, so code bounded `B: UniqueBrand` accepts it. A
+/// hand-written brand opts in with one line, as `Unique` does here. The
+/// negative half — `DynBrand` is no `UniqueBrand` — is the trybuild fixture
+/// `dyn_brand_is_not_unique.rs`. llvmkit-specific (D7): LLVM's `Module` has
+/// no brand.
+#[test]
+fn a_module_new_brand_is_unique() -> Result<(), BrandError> {
+    fn unique<B: UniqueBrand>(_: &Module<B>) {}
+
+    let generated = module_new!("generated")?;
+    unique(&generated);
+
+    struct Unique;
+    impl ModuleBrand for Unique {}
+    impl UniqueBrand for Unique {}
+    let written = Module::branded::<Unique, _>("written")?;
+    unique(&written);
+    Ok(())
 }
 
 // --------------------------------------------------------------------------

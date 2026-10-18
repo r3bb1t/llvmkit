@@ -52,7 +52,7 @@ fn build_ptr_add_emits_gep_i8() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
-    let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let i64_ty = m.i64_type();
     let one = i64_ty.const_int(1_i64);
     let q = b.ptr_add::<_, _, i64, _>(p, one, "bar")?;
@@ -78,7 +78,7 @@ fn build_inbounds_ptr_add_emits_gep_inbounds_i8() -> Result<(), IrError> {
     let f = m.add_function_dyn("gep_inbounds", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
-    let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let idx: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
     let q = b.inbounds_ptr_add::<_, _, i64, _>(p, idx, "gep")?;
     b.ret(q)?;

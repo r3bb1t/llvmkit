@@ -8,18 +8,23 @@
 //! error in `LLParser` — and an `assert` is compiled out of a release build.
 //!
 //! Over the agreement grid below (6 containers × 25 element kinds, 150 cells),
-//! llvmkit's builder accepts every cell its parser refuses outside the vector
-//! containers: 18 cells are built but not parsed, none is parsed but not
-//! built, and where both accept they make the same type. Measured at the
-//! commit that adds `llvmkit_ir::VectorType::of` (parent `dcde8b6`) by running
+//! llvmkit's builder accepts every cell its parser refuses outside the vector,
+//! array and struct containers: 7 cells are built but not parsed, none is
+//! parsed but not built, and where both accept they make the same type.
+//! Measured at the commit that makes the struct constructors refuse an invalid
+//! element (parent `9b4bce3`) by running
 //! `cargo +1.96.0 test --release -p llvmkit-asmparser --test type_validity`
 //! with `KNOWN_DISAGREEMENTS` emptied; it was 46 at `5ce065f`, before the
-//! vector constructors refused their 28. Each of those cells is a type a
-//! module built in Rust can hold and print, and no parser reads back.
+//! vector constructors refused their 28, 18 at the commit that adds
+//! `llvmkit_ir::VectorType::of` (parent `dcde8b6`), before the array
+//! constructor refused its 6, and 12 at the commit that adds
+//! `llvmkit_ir::ArrayType::of` (parent `bb7e518`), before the struct
+//! constructors refused their 5. Each of those cells is a type a module built
+//! in Rust can hold and print, and no parser reads back.
 
 use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_asmparser::{SlotMapping, parse_type, parse_type_at_beginning, parse_type_with_slots};
-use llvmkit_ir::{AnyTypeEnum, DynBrand, IrError, Module, Type, VectorType, lanes};
+use llvmkit_ir::{AnyTypeEnum, ArrayType, DynBrand, IrError, Module, Type, VectorType, lanes};
 
 pub mod support;
 
@@ -100,6 +105,52 @@ fn upstream_target_type_with_the_vector_property_verifies() {
     .parse_module()
     .expect("fixture parses");
     m.verify_borrowed().expect("fixture verifies");
+}
+
+/// An array constant whose elements are first-class yet no array element —
+/// `x86_amx undef`, `token none` — is refused at its first element, with the
+/// `lsquare` arm's own `invalid array element type` diagnostic, before the
+/// element-agreement loop runs: a later element of another type does not
+/// change the answer.
+///
+/// llvmkit-specific regression (Doctrine D10; `docs/divergences.md` entry D18):
+/// `LLParser::parseValID`'s `lsquare` arm checks only `isFirstClassType`
+/// before calling `ArrayType::get`, whose `isValidElementType` assert is the
+/// only check these elements meet, and runs its agreement loop after it; a
+/// release build makes `[2 x x86_amx]` and then reports
+/// `convertValIDToValue`'s `constant expression type mismatch`, which is what
+/// llvmkit reported too until its array constructor refused the element. No
+/// upstream test reaches the assert: against the vendored `llvmorg-22.1.4`
+/// tree, `rg -n '\[\s*(x86_amx|token) ' llvm/test llvm/unittests` finds only
+/// `test/MC/M68k/operand.s`, an assembler `CHECK` line. A well-typed array
+/// constant is the positive control.
+#[test]
+fn an_array_constant_of_a_non_array_element_is_refused_at_its_first_element() {
+    for (source, message) in [
+        (
+            "@g = global i32 [x86_amx undef, x86_amx undef]\n",
+            "invalid array element type: x86_amx",
+        ),
+        (
+            "@g = global i32 [token none, token none]\n",
+            "invalid array element type: token",
+        ),
+        (
+            "@g = global i32 [x86_amx undef, i32 1]\n",
+            "invalid array element type: x86_amx",
+        ),
+    ] {
+        assert_eq!(
+            rejection_at(source),
+            (message.to_owned(), (1, 18)),
+            "{source}"
+        );
+    }
+    let m = Module::dynamic("type_validity");
+    Parser::new(b"@g = global [2 x i32] [i32 1, i32 2]\n".as_slice(), &m)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("a well-typed array constant parses");
 }
 
 /// `llvm::parseType` and `llvm::parseTypeAtBeginning` refuse a bare `void`:
@@ -204,9 +255,9 @@ fn element<'m>(m: &'m Module<DynBrand>, text: &str) -> Result<Type<'m, DynBrand>
         "metadata" => m.metadata_type().as_type(),
         "token" => m.token_type().as_type(),
         "x86_amx" => m.x86_amx_type(),
-        "[2 x i32]" => m.array_type(i32_ty, 2).as_type(),
-        "{ i32 }" => m.struct_type([i32_ty]).as_type(),
-        "<{ i32 }>" => m.packed_struct_type([i32_ty]).as_type(),
+        "[2 x i32]" => ArrayType::of(m.i32_type(), 2).as_type(),
+        "{ i32 }" => m.struct_type([i32_ty])?.as_type(),
+        "<{ i32 }>" => m.packed_struct_type([i32_ty])?.as_type(),
         "%opaque" => m
             .named_struct("opaque")
             .expect("GRID_SOURCE declares `%opaque`")
@@ -274,8 +325,8 @@ impl Container {
         Ok(match self {
             Container::Vector => m.vector_type(element, lanes::<2>())?.as_type(),
             Container::ScalableVector => m.scalable_vector_type(element, lanes::<2>())?.as_type(),
-            Container::Array => m.array_type(element, 2).as_type(),
-            Container::Struct => m.struct_type([element]).as_type(),
+            Container::Array => m.array_type(element, 2)?.as_type(),
+            Container::Struct => m.struct_type([element])?.as_type(),
             Container::FunctionReturn => m.function_type_no_parameters(element).as_type(),
             Container::FunctionParameter => m.function_type(m.void_type(), [element]).as_type(),
         })
@@ -287,19 +338,6 @@ impl Container {
 /// the list ends empty and is then deleted. A task that removes rows here
 /// re-measures the module doc's "built but not parsed" count in that commit.
 const KNOWN_DISAGREEMENTS: &[(&str, &str)] = &[
-    // array — removed by Task 3.
-    ("array", "void"),
-    ("array", "label"),
-    ("array", "metadata"),
-    ("array", "token"),
-    ("array", "x86_amx"),
-    ("array", "i32 ()"),
-    // struct — removed by Task 4.
-    ("struct", "void"),
-    ("struct", "label"),
-    ("struct", "metadata"),
-    ("struct", "token"),
-    ("struct", "i32 ()"),
     // function return — removed by Task 5.
     ("function return", "label"),
     ("function return", "metadata"),

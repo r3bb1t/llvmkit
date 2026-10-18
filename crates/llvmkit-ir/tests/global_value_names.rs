@@ -503,7 +503,7 @@ fn a_void_value_refuses_a_name() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let v: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let p: PointerValue<'_, _> = m.view(f).param(1)?.try_into()?;
+    let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(1)?.try_into()?;
     let sum = b.int_add(v, 1_i32, "")?;
     let store = b.store(sum, p)?;
 

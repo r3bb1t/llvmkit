@@ -49,5 +49,5 @@ help: there is a method `pointer_cmp` with a similar name, but with different ar
    | |         lhs: L,
 ...  |
    | |         L: IntoPointerValue<'ctx, B>,
-   | |         R2: IntoPointerValue<'ctx, B>,
-   | |______________________________________^
+   | |         R2: IntoPointerValue<'ctx, B, Space = L::Space>,
+   | |________________________________________________________^

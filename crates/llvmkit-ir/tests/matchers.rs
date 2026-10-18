@@ -138,7 +138,7 @@ fn load_of_gep_binds_base() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let base: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let base: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let idx: IntValue<'_, IntDyn, _> = m.view(f).param(1)?.try_into()?;
     let gep = b.gep(i32_ty, base, [idx], "p")?;
     let load = b.load(i32_ty, gep, "v")?;

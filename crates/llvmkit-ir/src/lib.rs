@@ -54,6 +54,7 @@
 //! incomplete: a broad built-in transform library, bitcode, and a
 //! pipeline-*execution* engine (running a parsed pipeline) are ahead.
 
+pub mod addr_space;
 pub mod align;
 pub mod analysis;
 pub mod ap_float;
@@ -325,7 +326,8 @@ pub use metadata::{
 };
 pub use module::{
     ComdatView, DynBrand, GlobalAliasView, GlobalIfuncView, GlobalVariableView, Module,
-    ModuleBrand, ModuleId, ModuleRef, ModuleView, PreservedUseListOrder, Unverified, Verified,
+    ModuleBrand, ModuleId, ModuleRef, ModuleView, PreservedUseListOrder, UniqueBrand, Unverified,
+    Verified,
 };
 pub use module_flags::{ModuleFlagBehavior, ModuleFlagEntry, ModuleFlagKey};
 pub use named_md_node::{NamedMetadataId, NamedMetadataName};
@@ -386,7 +388,7 @@ pub use struct_schema::{
 pub use sync_scope::SyncScope;
 pub use target_library_info::{LibFunc, TargetLibraryInfo};
 pub use r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeKind};
-pub use type_components::{VectorElement, lanes};
+pub use type_components::{ArrayElement, VectorElement, lanes};
 pub use typed_pointer_type::TypedPointerType;
 pub use typed_pointer_value::TypedPointerValue;
 pub use unnamed_addr::UnnamedAddr;
@@ -424,6 +426,7 @@ pub use known_fp_class::{
 };
 pub use value_tracking::analyze_known_bits_from_and_xor_or;
 
+pub use addr_space::{AddrSpace, Space, SpaceDyn};
 pub use array_len::{ArrLen, ArrLenDyn, ArrayLen, StaticArrayLen};
 pub use assumptions::{
     Assumption, AssumptionCache, AssumptionSource, DomConditionCache,

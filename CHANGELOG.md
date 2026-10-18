@@ -19,6 +19,102 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Added — `UniqueBrand`, a brand the registry keeps to one live module
+
+- **Added: `UniqueBrand: ModuleBrand`**, the type-level form of the brand
+  registry's guarantee: at most one live module carries a brand other than
+  `DynBrand`, so two live view handles of a `UniqueBrand` brand belong to the
+  same module. `module_new!` implements it for the brand it mints; a
+  hand-written brand opts in with `impl UniqueBrand for MyBrand {}` (the
+  `module_per_batch` and `lifter_session` examples do). `DynBrand` does not
+  implement it, and a `Module::dynamic` module fails a `B: UniqueBrand` bound
+  with the trait's own message (trybuild fixture `dyn_brand_is_not_unique.rs`).
+  Storable ids are not covered: an id outlives its module, and a brand is
+  issued again once its module drops. Nothing uses the bound yet; the derived
+  struct reads and builds that need no `?` are its first users.
+- The trait is safe to implement because module storage is created only by
+  `Module::branded` / `Module::branded_once` (through the registry) and by
+  `Module::dynamic`, and neither `Module` nor its storage is `Clone`.
+  `tests/module_construction_drift.rs` fails if that ever changes.
+
+### Changed (breaking) — pointers carry their address space
+
+An LLVM pointer type carries its address space (`ptr addrspace(3)`); llvmkit's
+pointer handles did not carry it in their Rust type. So a `select` of a `ptr`
+and a `ptr addrspace(1)` compiled and was refused only by the verifier, and a
+typed `Ptr` signature accepted a pointer in any address space. Every pointer
+handle now carries an address-space marker — `Space<N>` where the call fixes
+the space, `SpaceDyn` where only run-time data knows it — the way integers
+carry `Width<N>` / `IntDyn` and vectors `Len<N>` / `LenDyn`.
+
+- **Added: `AddrSpace`, `Space<const N: u32>` and `SpaceDyn`** (module
+  `addr_space`, re-exported at the crate root). `AddrSpace::static_space()` is
+  `Some(N)` for `Space<N>` and `None` for `SpaceDyn`.
+- **Breaking: every pointer handle gains the marker, second and without a
+  default**: `PointerType<'ctx, A, B, C>`, `PointerValue<'ctx, A, B, C>`,
+  `PointerValueId<A, B>`, `ConstantPointerNull<'ctx, A, B, C>`,
+  `PointerPhiInst<'ctx, A, B, C>` / `PointerPhiInstId<A, B>`,
+  `PointerVariable<A, B>` and `TypedPointerValue<'ctx, T, A, B, C>`. `as_dyn()`
+  erases the marker of a pointer type, value, id, null constant or typed
+  pointer to `SpaceDyn`; `TryFrom` narrows a `SpaceDyn` handle — or an
+  erased `Value`, `Argument`, `Constant` or `Instruction` — to `Space<N>`,
+  refusing another address space with `IrError::AddressSpaceMismatch { expected,
+  got }`. `IntoPointerValue` names its input's marker as the associated type
+  `Space`.
+- **Breaking: `ptr_type(n)` returns a `SpaceDyn` type**, on `Module` and
+  `ModuleView` alike; the new `ptr_type_in::<N>()` returns a `Space<N>` one.
+- Where a pointer's marker comes from: the GEPs (`gep`, `inbounds_gep`,
+  `struct_gep`, `gep_with_flags`, `ptr_add`, `inbounds_ptr_add`, `field_gep`,
+  `element_gep`, `inbounds_element_gep`) keep the base pointer's; `int_to_ptr`,
+  `addrspace_cast` and `pointer_cast` take their destination type's; `select`
+  and a pointer phi take their operands'; a call to a `Ptr<N>`-returning callee
+  and a `Ptr<N>` parameter are `Space<N>`; a `null` constant is its type's; an
+  SSA pointer variable is its declaration's. The parser, the instruction
+  accessors (`LoadInst::pointer`, a cast's `src`, …), `PhiKind::Ptr` and the
+  erased lifts answer `SpaceDyn`.
+- **Breaking: `pointer_load` and `LoadBuilder::pointer` return `Space<0>` ids**
+  — they load a `ptr`, which is address space 0 — and the new
+  `pointer_load_in::<N>` loads a `ptr addrspace(N)` as `Space<N>`.
+- **Breaking: the default alloca builders (`alloca`, `alloca_with_align`,
+  `array_alloca*`, `AllocaBuilder::build`, `typed_alloca`) return `SpaceDyn`
+  pointers**: the DataLayout's alloca address space is run-time data. The new
+  `alloca_in::<N>` returns `Space<N>`.
+- **Breaking: `select`, `pointer_cmp` and `def_pointer_var` take one marker for
+  both of their pointers**, so pointers in address spaces 0 and 1 are a type
+  error there (trybuild fixtures `pointer_select_mixed_spaces.rs`,
+  `pointer_cmp_mixed_spaces.rs`, `pointer_var_def_wrong_space.rs`). Two
+  `SpaceDyn` pointers in different spaces are still refused at run time, as
+  before: by `select`'s own `IrError::TypeIdentityMismatch`, by
+  `def_pointer_var`'s `IrError::AddressSpaceMismatch`, and, for `pointer_cmp`,
+  which does not compare them itself, by the verifier's `icmp` same-type check.
+- **Breaking: `Ptr` is `Ptr<const AS: u32 = 0>`.** Plain `Ptr` is address
+  space 0 and `Ptr<N>` address space `N` — in signatures, struct fields and
+  return markers — and every check of one requires that address space exactly:
+  `m.function::<Ptr>(name)` accepted a function returning `ptr addrspace(1)`,
+  and now refuses it. `ExpectedRetKind::Ptr` carries the space (`Ptr(u32)`).
+  `CallInst<Ptr<AS>>::return_pointer_value` returns a `Space<AS>` pointer; it
+  returned an unmarked one, and only for `Ptr<0>`.
+- **Breaking: `field_gep`'s generics are `<S, A, const I: u32, Name>`** (and
+  `element_gep` / `inbounds_element_gep` / `typed_load` / `typed_store` gain an
+  `A` after their schema), so `field_gep::<S, I, _>` is now
+  `field_gep::<S, _, I, _>`.
+- **Added: `Ptr::new`, `Ptr::null` and `Ptr::as_ptr`.** `Ptr` had no public
+  constructor, so the Rust value of a `#[derive(IrStruct)]` struct with a
+  pointer field could not be built outside llvmkit, and rustc reported that
+  struct's pointer fields as never read.
+- `TypedPointerValue::with_pointee` keeps the pointer's marker; it erased it
+  without saying so.
+
+| Before | After |
+|---|---|
+| `PointerValue<'ctx, B>` | `PointerValue<'ctx, Space<0>, B>` for a `Ptr` value, `PointerValue<'ctx, SpaceDyn, B>` for one whose space is run-time data |
+| `PointerValueId<B>` | `PointerValueId<Space<0>, B>` / `PointerValueId<SpaceDyn, B>` |
+| `PointerType<'ctx, B>` | `PointerType<'ctx, SpaceDyn, B>` (from `ptr_type(n)`) / `PointerType<'ctx, Space<N>, B>` (from `ptr_type_in::<N>()`) |
+| `m.ptr_type(3)` where the space is a constant | `m.ptr_type_in::<3>()` |
+| `PointerValue::try_from(value)` | `PointerValue::<SpaceDyn, _, _>::try_from(value)`, or the `Space<N>` you expect |
+| `Ptr` (any address space) | `Ptr` (address space 0) / `Ptr<N>` |
+| `field_gep::<S, I, _>` | `field_gep::<S, _, I, _>` |
+
 ### Changed (breaking) — no `get_` getters (C-GETTER)
 
 The naming law — lookups are bare nouns, `get_` only in the std-consistent
@@ -56,8 +152,8 @@ LLVM's vector constructors `assert` two rules — `FixedVectorType::get` and
 `VectorType::isValidElementType` admits — and an `assert` is compiled out of a
 release build. llvmkit's builder accepted both, so a module built in Rust could
 hold `<4 x void>`, `<2 x [2 x i32]>` or `<0 x i32>` and print text no parser
-reads back. This section covers the vector family; the other constructors
-follow.
+reads back. This section covers the vector, array and struct families; the
+other constructors follow.
 
 - **Breaking: `Module::vector_type` / `Module::scalable_vector_type`, and the
   same two on `ModuleView`, take `lanes: NonZeroU32` / `min_lanes: NonZeroU32`
@@ -152,6 +248,145 @@ and the trybuild fixtures `vector_of_void_element.rs`, `lanes_zero.rs` and
 `len_zero_static_len.rs`.
 `type_validity.rs`'s agreement law drops its 28 vector and scalable-vector
 known disagreements.
+
+**Arrays.** `ArrayType::get` asserts `ArrayType::isValidElementType`, which
+refuses `void`, `label`, `metadata`, a function type, `token` and `x86_amx`;
+llvmkit's array constructor accepted all six, so `[2 x label]` could be built
+and printed.
+
+- **Breaking: `Module::array_type` and `ModuleView::array_type` return
+  `IrResult`.** They refuse an element from another module with
+  `IrError::ForeignType`, checked first, and an element
+  `ArrayType::isValidElementType` refuses with
+  `IrError::InvalidTypeComponent { position: TypePosition::ArrayElement, kind }`
+  (`invalid array element type: x86_amx`). Both took the element's slot
+  unchecked. A zero length is allowed, as in LLVM; `array_type_n` is
+  unchanged.
+- **Added: `ArrayType::of`**, the route that cannot fail: it takes a sealed
+  `ArrayElement` — an integer, float, pointer, array, struct (any body
+  state), vector or target-type handle — and a `u64` length, builds in the
+  element's own module, and keeps a scalar element marker
+  (`ArrayType::of(m.f64_type(), 3)` is an `ArrayType<'_, f64, ArrLenDyn, _>`).
+  Handing it a `void`, `label`, `metadata`, function or `token` handle is a
+  compile error carrying `ArrayElement`'s own message; `x86_amx`, which has no
+  typed handle, and any runtime `Type` go through `array_type(ty, len)?`.
+- An intrinsic name whose overload suffix spells an array of an invalid
+  element (`llvm.ssa.copy.a2x86amx`) is `IrError::IntrinsicSignatureMismatch`;
+  the demangler built `[2 x x86_amx]` and the intrinsic was declared over it.
+- The parser builds array types and array constants through the checked
+  constructor after its own checks, and `c"…"` constants through
+  `ArrayType::of`; its array-type diagnostics are unchanged. An array constant
+  whose element is first-class yet no array element (`[x86_amx undef, x86_amx
+  undef]`, `[token none, token none]`) — which upstream's
+  `LLParser::parseValID` hands to the asserting `ArrayType::get` — is refused
+  where that assert fires, before the element-agreement loop, with the arm's
+  own diagnostic at its first element: `invalid array element type: x86_amx`
+  (`docs/divergences.md` D18). llvmkit built the array and then reported
+  `constant expression type mismatch` against the demanded type, as a release
+  build of upstream does. The arm's `isFirstClassType` guard moved out of the
+  shared element-agreement helper into the arm, in upstream's order.
+- **Intrinsic names (rejects-valid, parser included).** A known intrinsic's
+  declaration — `Module::get_or_insert_intrinsic_declaration_by_name`, and the
+  parser's `declare` — is checked against the descriptor its name demangles
+  to, and the demangler refused two names upstream writes. It read no
+  zero-length array: the `llvm.ssa.copy.a0i32` that the mangler writes for a
+  `[0 x i32]` overload, as `getMangledTypeStr` does, was a signature mismatch.
+  And its `taarch64.svcountt` arm reported the length of the text after the
+  spelling as the length it read, so
+  `test/CodeGen/AArch64/sve-intrinsics-reinterpret.ll`'s
+  `declare <vscale x 16 x i1> @llvm.aarch64.sve.convert.to.svbool.taarch64.svcountt(target("aarch64.svcount"))`
+  did not parse. Both read now. The mangler no longer invents spellings
+  `getMangledTypeStr` does not have — it wrote `token`, `label`, and `p0` for a
+  typed pointer (which is no `PointerType` upstream), where upstream reaches
+  `llvm_unreachable("Unhandled type")`; an overload of one of those types is
+  now `IrError::IntrinsicSignatureMismatch`. The demangler reads `exnref`,
+  which the mangler spells for llvmkit's own `exnref` type
+  (`docs/divergences.md` entry 103).
+- Call sites: rust-analyzer `findReferences` at `bb7e518` found 48 calls of
+  `Module::array_type` (45 in tests, 3 in the parser) and 1 of
+  `ModuleView::array_type`; 38 moved to `ArrayType::of`, the rest check with
+  `?` (or `expect` in a test that returns nothing). No trybuild fixture calls
+  either (`rg -l '\.array_type\(' crates/llvmkit-ir/tests/compile_fail` prints
+  nothing at `bb7e518`).
+
+| Before | After |
+|---|---|
+| `m.array_type(ty, n)` | `m.array_type(ty, n)?`, or `ArrayType::of(handle, n)` for a typed handle |
+
+Tests: `type_components.rs` (`a_typed_array_takes_any_valid_element`,
+`an_erased_array_refuses_an_invalid_element`,
+`an_intrinsic_name_cannot_spell_an_invalid_array`,
+`an_intrinsic_name_can_spell_a_zero_length_array`),
+`cross_module_handles.rs::the_array_constructors_reject_an_element_from_another_module`,
+`intrinsics.rs::tests::the_array_helper_refuses_an_invalid_element_as_a_mismatch`,
+`intrinsics.rs::tests::every_mangled_type_demangles_to_itself` (the
+mangler/demangler round trip whose absence let the zero-length array and the
+`svcount` length through),
+the whole-file corpus rows for `test/CodeGen/AArch64/sve-intrinsics-reinterpret.ll`
+and `test/CodeGen/SPIRV/hlsl-resources/test_counters.ll` (which declares four
+intrinsics over a `spirv.VulkanBuffer` of `[0 x float]`, spelled `a0f32`),
+`type_validity.rs::an_array_constant_of_a_non_array_element_is_refused_at_its_first_element`
+and the trybuild fixture `array_of_label_element.rs`. `type_validity.rs`'s
+agreement law drops its 6 array known disagreements: the cells built but not
+parsed go from 18 to 12, measured as its module doc says, with
+`KNOWN_DISAGREEMENTS` emptied, over `bb7e518`.
+
+**Structs — stricter than `StructType::get`, on purpose.** Upstream's
+`StructType::get` and `StructType::setBody` check no element (only recursion);
+`StructType::isValidElementType` is called by `LLParser::parseStructBody`
+alone. So `{ label }` could be built — through llvmkit, and through LLVM's C++
+and C APIs — and printed, and no parser reads it back. llvmkit's struct
+constructors refuse such an element, as MLIR's LLVM dialect does
+(`docs/divergences.md` D19).
+
+- **Breaking: `Module::struct_type` / `Module::packed_struct_type`, and the
+  same two on `ModuleView`, return `IrResult`.** They refuse an element from
+  another module with `IrError::ForeignType`, checked first, and an element
+  `StructType::isValidElementType` refuses — `void`, `label`, `metadata`, a
+  function type, `token` — with
+  `IrError::InvalidTypeComponent { position: TypePosition::StructElement { index }, kind }`
+  (`invalid element type for struct (element 1): label`). They took each
+  element's slot unchecked. `x86_amx` is a struct element, as upstream says.
+- `Module::set_struct_body` and `Module::set_struct_body_dyn` refuse the same
+  elements the same way; they already refused a foreign one.
+- `IrBuilder::atomic_cmpxchg`'s `{ <cmp type>, i1 }` result is built through the
+  checked constructor, so a compared value whose type is no struct element is
+  refused rather than built into `{ label, i1 }`.
+- An intrinsic name whose overload suffix spells a literal struct of an invalid
+  element (`llvm.ssa.copy.sl_isVoids`) is `IrError::IntrinsicSignatureMismatch`;
+  the demangler built `{ void }` and the intrinsic was declared over it. A
+  named-struct overload (`s_Missings`) no longer creates `%Missing` as a side
+  effect of demangling: the struct must already exist, as it does wherever
+  `getMangledTypeStr` spelled the name.
+- The parser checks each struct element where it parses it, as before, so its
+  diagnostics are unchanged; the constructor's refusal behind it is a
+  backstop.
+- Call sites: rust-analyzer `findReferences` over `9b4bce3`, less this
+  section's new tests, found 34 calls of `Module::struct_type`, 6 of
+  `Module::packed_struct_type`, none of either `ModuleView` constructor, and 1
+  internal one of the shared literal-struct constructor (`atomic_cmpxchg`).
+  The parser's 3 map the refusal to a diagnostic; the agreement law's 3 and
+  the rest check with `?` (or `expect` in a test that returns nothing). Two
+  trybuild fixtures outside the build call `Module::struct_type`
+  (`rg -l "\.struct_type\(" crates/llvmkit-ir/tests/compile_fail` at
+  `9b4bce3`: `extract_value_empty_indices.rs`,
+  `extract_value_dyn_empty_slice_compiles.rs`); both take `?`.
+
+| Before | After |
+|---|---|
+| `m.struct_type(elements)` | `m.struct_type(elements)?` |
+| `m.packed_struct_type(elements)` | `m.packed_struct_type(elements)?` |
+
+Tests: `type_components.rs` (`a_struct_refuses_an_invalid_element`,
+`an_intrinsic_name_cannot_spell_an_invalid_struct`,
+`demangling_a_struct_name_creates_no_struct`),
+`cross_module_handles.rs::the_struct_constructors_reject_an_element_from_another_module`,
+and `intrinsics.rs::tests::every_mangled_type_demangles_to_itself`, which now
+refuses `sl_isVoids`, `sl_Metadatas` and an absent `s_absents` and reads a
+named struct followed by another overload. `type_validity.rs`'s agreement law
+drops its 5 struct known disagreements: the cells built but not parsed go from
+12 to 7, measured as its module doc says, with `KNOWN_DISAGREEMENTS` emptied,
+over `9b4bce3`.
 
 ### Fixed (breaking) — every cast instruction is one port of `LLParser::parseCast`; the verifier's cast checks follow upstream's
 

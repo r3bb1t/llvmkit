@@ -178,7 +178,7 @@ fn typed_handles_agree_with_erased_value() -> Result<(), IrError> {
     assert_eq!(format!("{poison}"), format!("{}", poison.as_erased()));
 
     // PointerValue -- the `decl_value_handle!` family.
-    let p = PointerValue::try_from(null.as_erased())?;
+    let p = PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(null.as_erased())?;
     assert_eq!(format!("{p}"), format!("{}", p.as_erased()));
 
     // The erased `Constant` handle agrees with the erased `Value` too.

@@ -821,7 +821,7 @@ types are checked at the *call site* (runtime `IrError`). A **typed** variant
 lifts the block's *parameter shape* into the type system so those checks move to
 *compile* time. `append_block_typed::<(i32, Ptr), _, _>(m.view(f), "hdr")` returns
 the block stamped with that schema plus a typed tuple of parameter handles
-(`(IntValue<'_, i32, _>, PointerValue<'_, _>)`). The edge is then bundled
+(`(IntValue<'_, i32, _>, PointerValue<'_, Space<0>, _>)`). The edge is then bundled
 separately: `hdr.call((a, b))` mints a `BlockCall`, consumed by `br_call` /
 `cond_br_call`, and `BasicBlockLabel::call` carries a `CallArgs<Params>`
 bound (the same machinery a typed `call` uses), so a wrong-arity or
@@ -1244,10 +1244,10 @@ match view.classify() {
     // Total: every instruction is a non-terminator or a terminator, so there
     // is no overloaded `None` to forget an `is_terminator()` guard for.
     Classified::Inst(InstructionKind::Load(load)) => {
-        let ptr: PointerValue<'_, _> = load.pointer();  // typed, not an erased Value
+        let ptr: PointerValue<'_, SpaceDyn, _> = load.pointer();  // typed, not an erased Value
     }
     Classified::Inst(InstructionKind::Cast(CastKind::PtrToInt(c))) => {
-        let src: PointerValue<'_, _> = c.src();         // one handle per cast opcode
+        let src: PointerValue<'_, SpaceDyn, _> = c.src();         // one handle per cast opcode
     }
     Classified::Term(TerminatorKind::Switch(sw)) => {
         for (case_value, target) in sw.cases() { /* ... */ }

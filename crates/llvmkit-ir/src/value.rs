@@ -49,6 +49,7 @@ use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
+use super::addr_space::{AddrSpace, Space, SpaceDyn};
 use super::ap_int::ApInt;
 use super::array_len::{ArrLen, ArrLenDyn, ArrayLen};
 use super::constants::ConstantIntValue;
@@ -1511,40 +1512,305 @@ macro_rules! decl_value_handle {
 
 // `IntValue<'ctx, W>` and `FloatValue<'ctx, K>` are hand-written below to
 // carry their width / kind markers.
-decl_value_handle!(
-    /// Value whose type is a (opaque) pointer.
-    PointerValue, PointerValueId, Pointer, PointerType,
-    type_predicate |d| matches!(d, TypeData::Pointer { .. })
-);
-impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> PointerValue<'ctx, B, C> {
-    /// Crate-internal: wrap a [`Value`] **claimed** to have a pointer type,
-    /// without checking that it does.
+/// Value whose type is an (opaque) pointer.
+///
+/// The `A: AddrSpace` marker carries the pointer's address space at the type
+/// level, as [`IntValue`]'s width marker does: `PointerValue<'ctx, Space<0>>`
+/// is a `ptr`, `PointerValue<'ctx, SpaceDyn>` a pointer whose address space only
+/// run-time data knows. Hand-written rather than `decl_value_handle!` to carry
+/// the marker.
+pub struct PointerValue<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability = Mutable> {
+    id: ValueSlot,
+    pub(super) module: ModuleRef<'ctx, B, C>,
+    ty: TypeSlot,
+    _a: PhantomData<A>,
+}
+
+impl<A: AddrSpace, B: ModuleBrand, C: Capability> CapabilityOf for PointerValue<'_, A, B, C> {
+    type Capability = C;
+}
+
+// Manual impls: a `derive` would bound `A`.
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> Clone
+    for PointerValue<'ctx, A, B, C>
+{
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> Copy
+    for PointerValue<'ctx, A, B, C>
+{
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> PartialEq
+    for PointerValue<'ctx, A, B, C>
+{
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.module == other.module && self.ty == other.ty
+    }
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> Eq for PointerValue<'ctx, A, B, C> {}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> Hash
+    for PointerValue<'ctx, A, B, C>
+{
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        self.id.hash(h);
+        self.module.hash(h);
+        self.ty.hash(h);
+    }
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> fmt::Debug
+    for PointerValue<'ctx, A, B, C>
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PointerValue")
+            .field("id", &self.id)
+            .field("ty", &self.ty)
+            .field("space", &A::static_space())
+            .finish()
+    }
+}
+
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> PointerValue<'ctx, A, B, C> {
+    /// Widen to the erased [`Value`] handle, at the same capability.
+    #[inline]
+    pub fn as_erased(self) -> Value<'ctx, B, C> {
+        Value {
+            id: self.id,
+            module: self.module,
+            ty: self.ty,
+        }
+    }
+
+    /// Forget the static address space: the same pointer, marked
+    /// [`SpaceDyn`]. Never implicit (the no-silent-erasure rule).
+    #[inline]
+    pub fn as_dyn(self) -> PointerValue<'ctx, SpaceDyn, B, C> {
+        PointerValue {
+            id: self.id,
+            module: self.module,
+            ty: self.ty,
+            _a: PhantomData,
+        }
+    }
+
+    /// Storable, module-tagged id for this value (0.0.4), resolvable via
+    /// [`Module::view`](crate::Module::view) /
+    /// [`Module::try_view`](crate::Module::try_view).
+    #[inline]
+    pub fn id(self) -> PointerValueId<A, B> {
+        PointerValueId::from_raw(self.module.id(), self.id)
+    }
+
+    /// Owning module reference.
+    #[inline]
+    pub fn module(self) -> ModuleView<'ctx, B> {
+        ModuleView::new(self.module.module())
+    }
+
+    /// Refined IR-type handle for this value, at this value's capability,
+    /// carrying the same address-space marker.
+    #[inline]
+    pub fn ty(self) -> PointerType<'ctx, A, B, C> {
+        PointerType::new(self.ty, self.module)
+    }
+
+    /// Optional textual name.
+    pub fn name(self) -> Option<String> {
+        self.as_erased().name()
+    }
+
+    /// Set the textual name. [`Value::set_name`] on this value.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidValueName`] for a name `Value::setNameImpl` asserts
+    /// against; the value keeps its name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module_token` is not this value's module.
+    pub fn set_name<Name>(
+        self,
+        module_token: &'ctx Module<B, Unverified>,
+        name: Name,
+    ) -> IrResult<()>
+    where
+        Name: Into<String>,
+        C: CanMutate,
+    {
+        self.as_erased().set_name(module_token, name)
+    }
+
+    /// Clear the textual name.
+    pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>)
+    where
+        C: CanMutate,
+    {
+        self.as_erased().clear_name(module_token);
+    }
+
+    /// Optional debug-location.
+    #[inline]
+    pub fn debug_loc(self) -> Option<DebugLoc> {
+        self.as_erased().debug_loc()
+    }
+
+    /// Crate-internal: wrap a [`Value`] **claimed** to be a pointer in `A`'s
+    /// address space, without checking that it is.
     ///
     /// # Callers must guarantee
     ///
-    /// `v`'s runtime type is a pointer type. As with
-    /// `IntValue::from_value_unchecked` (see it for the full account of the
-    /// obligation), the builder is not the only caller: `ir_builder.rs` attaches
-    /// the pointer marker to a freshly-appended instruction only through the
-    /// `append_ptr` / `append_ptr_load` constructors (which append at a
-    /// `PointerType`, proving pointer-ness by construction) — its other in-file
-    /// callers are the fold seams (runtime-checked) and the select-arm re-wrap;
-    /// `instructions.rs` re-wraps pointer operands read back out of an
-    /// instruction payload, `function_signature.rs` lifts pointer arguments
-    /// and block parameters, and `ssa_builder.rs` wraps arena reads against a
-    /// pointer variable's pinned type.
-    ///
-    /// Carries no address-space marker to contradict — unlike the int/float
-    /// handles, a `PointerValue` never statically pins one — so the claim
-    /// forged here is only "this is a pointer". The checked path is
-    /// `TryFrom<Value>`.
+    /// `v`'s runtime type is a pointer type, and, when `A` is `Space<N>`, one
+    /// in address space `N`. As with `IntValue::from_value_unchecked` (see it
+    /// for the full account of the obligation), the builder is not the only
+    /// caller: `ir_builder.rs` attaches the pointer marker to a
+    /// freshly-appended instruction only through the `append_ptr` /
+    /// `append_ptr_load` constructors (which append at a `PointerType<A>`,
+    /// proving both by construction) — its other in-file callers are the fold
+    /// seams (runtime-checked) and the select-arm re-wrap; `instructions.rs`
+    /// re-wraps pointer operands read back out of an instruction payload (as
+    /// `SpaceDyn`), `function_signature.rs` lifts pointer arguments and block
+    /// parameters (at the signature's `Ptr<AS>`), and `ssa_builder.rs` wraps
+    /// arena reads against a pointer variable's pinned type. The checked path
+    /// is `TryFrom<Value>`.
     #[inline]
     pub(super) fn from_value_unchecked(v: Value<'ctx, B, C>) -> Self {
         Self {
             id: v.id,
             module: v.module,
             ty: v.ty,
+            _a: PhantomData,
         }
+    }
+}
+
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> fmt::Display
+    for PointerValue<'ctx, A, B, C>
+{
+    /// Print the operand form `<type> <ref>`, identical to what the erased
+    /// [`Value`] handle from `as_erased` prints.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&Self::as_erased(*self), f)
+    }
+}
+
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> sealed::Sealed
+    for PointerValue<'ctx, A, B, C>
+{
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> IsValue<'ctx, B>
+    for PointerValue<'ctx, A, B, C>
+{
+    #[inline]
+    fn as_erased(self) -> Value<'ctx, B, C> {
+        Self::as_erased(self)
+    }
+}
+impl_into_erased_value_for_handle!(PointerValue [A: AddrSpace]);
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> Typed<'ctx, B>
+    for PointerValue<'ctx, A, B, C>
+{
+    #[inline]
+    fn ty(self) -> Type<'ctx, B, C> {
+        self.ty().as_type()
+    }
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> HasName<'ctx, B>
+    for PointerValue<'ctx, A, B, C>
+{
+    #[inline]
+    fn name(self) -> Option<String> {
+        Self::name(self)
+    }
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: CanMutate> SetName<'ctx, B>
+    for PointerValue<'ctx, A, B, C>
+{
+    #[inline]
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) -> IrResult<()>
+    where
+        Name: Into<String>,
+    {
+        Self::set_name(self, module_token, name)
+    }
+    #[inline]
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
+        Self::clear_name(self, module_token)
+    }
+}
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> HasDebugLoc
+    for PointerValue<'ctx, A, B, C>
+{
+    #[inline]
+    fn debug_loc(self) -> Option<DebugLoc> {
+        Self::debug_loc(self)
+    }
+}
+
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> From<PointerValue<'ctx, A, B, C>>
+    for Value<'ctx, B, C>
+{
+    #[inline]
+    fn from(v: PointerValue<'ctx, A, B, C>) -> Self {
+        v.as_erased()
+    }
+}
+
+/// Any pointer for [`SpaceDyn`]; for `Space<N>`, only one in address space `N`
+/// (`IrError::AddressSpaceMismatch` otherwise).
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> TryFrom<Value<'ctx, B, C>>
+    for PointerValue<'ctx, A, B, C>
+{
+    type Error = IrError;
+    fn try_from(v: Value<'ctx, B, C>) -> IrResult<Self> {
+        PointerType::<A, B, C>::try_from(v.ty())?;
+        Ok(Self::from_value_unchecked(v))
+    }
+}
+
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> TryFrom<Argument<'ctx, B, C>>
+    for PointerValue<'ctx, A, B, C>
+{
+    type Error = IrError;
+    #[inline]
+    fn try_from(a: Argument<'ctx, B, C>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx, B, C>>>::try_from(a.as_erased())
+    }
+}
+
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> TryFrom<Constant<'ctx, B, C>>
+    for PointerValue<'ctx, A, B, C>
+{
+    type Error = IrError;
+    #[inline]
+    fn try_from(c: Constant<'ctx, B, C>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx, B, C>>>::try_from(c.as_erased())
+    }
+}
+
+// An attached `Instruction` is the linear lifecycle handle and is always
+// `Mutable` (rule R7), so this narrowing is too.
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
+    for PointerValue<'ctx, A, B>
+{
+    type Error = IrError;
+    #[inline]
+    fn try_from(i: Instruction<'ctx, Attached, B>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx, B>>>::try_from(Instruction::to_erased(&i))
+    }
+}
+
+/// Narrow a run-time-space pointer to `Space<N>`, checking its address space.
+impl<'ctx, const N: u32, B: ModuleBrand + 'ctx, C: Capability>
+    TryFrom<PointerValue<'ctx, SpaceDyn, B, C>> for PointerValue<'ctx, Space<N>, B, C>
+{
+    type Error = IrError;
+    #[inline]
+    fn try_from(p: PointerValue<'ctx, SpaceDyn, B, C>) -> IrResult<Self> {
+        <Self as TryFrom<Value<'ctx, B, C>>>::try_from(p.as_erased())
     }
 }
 
@@ -3280,14 +3546,17 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> fmt::Display for Value<'ctx, B,
 // IntoPointerValue: ergonomic operand input for the IrBuilder
 // --------------------------------------------------------------------------
 
-/// Inputs that can be lifted into a [`PointerValue<'ctx, B>`] operand
+/// Inputs that can be lifted into a [`PointerValue<'ctx, A, B>`] operand
 /// for the IR builder. Mirrors the int-side
-/// [`crate::IntoIntValue`] for the pointer family.
+/// [`crate::IntoIntValue`] for the pointer family. The associated
+/// [`Space`](Self::Space) is the input's address-space marker, which the
+/// lift keeps.
 ///
 /// Implemented by:
-/// - [`PointerValue<'ctx, B>`] (identity).
-/// - [`crate::ConstantPointerNull<'ctx, B>`] (lift via `null`).
-/// - [`crate::TypedPointerValue<'ctx, T, B>`] (drops the schema, identity lift).
+/// - [`PointerValue<'ctx, A, B>`] (identity).
+/// - [`crate::PointerValueId<A, B>`] (resolved in the builder's module).
+/// - [`crate::ConstantPointerNull<'ctx, A, B>`] (lift via `null`).
+/// - [`crate::TypedPointerValue<'ctx, T, A, B>`] (drops the schema, identity lift).
 ///
 /// The trait is **sealed**. An erased [`Value`] / `Argument` /
 /// `Instruction` no longer lifts silently: narrow it explicitly with
@@ -3295,12 +3564,19 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> fmt::Display for Value<'ctx, B,
 pub trait IntoPointerValue<'ctx, B: ModuleBrand>:
     Sized + into_pointer_value_sealed::Sealed
 {
+    /// The address-space marker this pointer carries. An associated type,
+    /// not a parameter: a handle has one address space, so an operand slot
+    /// that takes any pointer stays a single bound, and a result that keeps
+    /// its operand's space names `P::Space`.
+    type Space: AddrSpace;
+
     /// The pointer at `module`'s capability, as for
-    /// [`IntoIntValue`](crate::IntoIntValue).
+    /// [`IntoIntValue`](crate::IntoIntValue), keeping its address-space
+    /// marker.
     fn into_pointer_value<ModuleCapability: Capability>(
         self,
         module: ModuleRef<'ctx, B, ModuleCapability>,
-    ) -> IrResult<PointerValue<'ctx, B, ModuleCapability>>;
+    ) -> IrResult<PointerValue<'ctx, Self::Space, B, ModuleCapability>>;
 }
 
 /// Seals [`IntoPointerValue`] to the pointer-value handles below.
@@ -3310,23 +3586,25 @@ pub(crate) mod into_pointer_value_sealed {
     pub trait Sealed {}
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> into_pointer_value_sealed::Sealed
-    for PointerValue<'ctx, B, C>
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> into_pointer_value_sealed::Sealed
+    for PointerValue<'ctx, A, B, C>
 {
 }
-impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> into_pointer_value_sealed::Sealed
-    for ConstantPointerNull<'ctx, B, C>
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> into_pointer_value_sealed::Sealed
+    for ConstantPointerNull<'ctx, A, B, C>
 {
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IntoPointerValue<'ctx, B>
-    for PointerValue<'ctx, B, C>
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> IntoPointerValue<'ctx, B>
+    for PointerValue<'ctx, A, B, C>
 {
+    type Space = A;
+
     #[inline]
     fn into_pointer_value<ModuleCapability: Capability>(
         self,
         module: ModuleRef<'ctx, B, ModuleCapability>,
-    ) -> IrResult<PointerValue<'ctx, B, ModuleCapability>> {
+    ) -> IrResult<PointerValue<'ctx, A, B, ModuleCapability>> {
         // Boundary: refuse a handle minted by another module; one of any
         // capability is admitted and re-minted at `module`'s.
         Ok(PointerValue::from_value_unchecked(
@@ -3335,14 +3613,16 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IntoPointerValue<'ctx, B>
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IntoPointerValue<'ctx, B>
-    for ConstantPointerNull<'ctx, B, C>
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> IntoPointerValue<'ctx, B>
+    for ConstantPointerNull<'ctx, A, B, C>
 {
+    type Space = A;
+
     #[inline]
     fn into_pointer_value<ModuleCapability: Capability>(
         self,
         module: ModuleRef<'ctx, B, ModuleCapability>,
-    ) -> IrResult<PointerValue<'ctx, B, ModuleCapability>> {
+    ) -> IrResult<PointerValue<'ctx, A, B, ModuleCapability>> {
         // Boundary: refuse a handle minted by another module; one of any
         // capability is admitted and re-minted at `module`'s.
         Ok(PointerValue::from_value_unchecked(

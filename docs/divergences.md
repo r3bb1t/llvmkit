@@ -599,6 +599,118 @@ records the difference; it does not schedule work.
 
 ---
 
+## Type constructors
+
+### D18 — An array constant of a non-array element is refused where upstream asserts
+
+**Severity:** wrong-message, against a release build of upstream; an
+assertions build aborts instead.
+**Where:** `crates/llvmkit-asmparser/src/ll_parser.rs` — the `Token::LSquare`
+arm of the value parser, which ports `LLParser::parseValID`'s `lsquare` arm.
+
+**LLVM:** the `lsquare` arm refuses a first element that is not
+`isFirstClassType` with `invalid array element type: <ty>` at the first
+element, then calls `ArrayType::get(Elts[0]->getType(), Elts.size())`, whose
+first statement asserts `isValidElementType`, and only then checks each element
+against element 0. `Type::isFirstClassType` (`lib/IR/Type.cpp`) is false only
+for function types, `void` and opaque structs, so `x86_amx` and `token` pass the
+guard while `ArrayType::isValidElementType` refuses both — `[x86_amx undef,
+x86_amx undef]` and `[token none, token none]` reach the assert. An assertions
+build aborts there. A release build makes `[2 x x86_amx]`, the agreement loop
+passes, and `convertValIDToValue`'s `t_Constant` arm reports `constant
+expression type mismatch: got type '[2 x x86_amx]' but expected '…'` at the
+constant, because no demanded type can be an array that no `.ll` spells
+(derived from the source; no assertions-off LLVM was run).
+
+**llvmkit:** refuses where the assert fires — after the first-class guard,
+before the agreement loop — with the guard's own diagnostic at the same
+anchor: `invalid array element type: x86_amx` at the first element.
+`ModuleRef::array_type` refuses the element with
+`IrError::InvalidTypeComponent`, and the arm reports that refusal as the
+guard's message. So `[x86_amx undef, i32 1]` is refused for its element type
+too, where a release build of upstream reports the loop's `array element #1 is
+not of type 'x86_amx`.
+
+**Why:** llvmkit's array constructor cannot build `[2 x x86_amx]`, a type that
+no parser reads back (Doctrine D10, `README.md`), and llvmkit takes no crash in
+place of an assert.
+The arm must refuse, and the guard's message at the guard's anchor is the
+nearest diagnostic upstream has for an element no array may hold.
+
+**Fix:** none owed — this is hardening of an assert, as D17 is. The entry
+records the message, which no upstream build prints for this input.
+
+**Guarded by:**
+`crates/llvmkit-asmparser/tests/type_validity.rs::an_array_constant_of_a_non_array_element_is_refused_at_its_first_element`.
+
+### D19 — The struct constructors refuse an element `StructType::get` accepts
+
+**Severity:** model-gap — chosen by reading the table above: no grade fits an
+API call, since the grades name *input*. It is not **rejects-valid**: no `.ll`
+text LLVM accepts is refused, because `LLParser::parseStructBody` refuses the
+same elements. The public constructor answers differently from its LLVM
+counterpart, which is what **model-gap** names.
+**Where:** `crates/llvmkit-ir/src/module.rs` — `struct_element_slots`, behind
+`Module::struct_type` / `packed_struct_type` (and the same two on
+`ModuleView`), `Module::set_struct_body` and `Module::set_struct_body_dyn`.
+
+**LLVM:** `StructType::get` (`lib/IR/Type.cpp`) interns the body through
+`StructType::setBody`, which is `cantFail(setBodyOrError(...))`;
+`StructType::setBodyOrError` runs `StructType::checkBody`, which refuses a
+recursive body and nothing else. `StructType::isValidElementType` — `void`,
+`label`, `metadata`, a function type and `token` refused — is called only by
+`LLParser::parseStructBody`, at its two element sites (`invalid element type
+for struct`). The C API forwards (`LLVMStructTypeInContext` to
+`StructType::get`, `LLVMStructSetBody` to `setBody`), so a module built through
+either can hold `{ label }`, print it, and not read it back.
+
+**llvmkit:** refuses such an element at construction with
+`IrError::InvalidTypeComponent { position: TypePosition::StructElement { index
+}, kind }` (`invalid element type for struct (element N): <kind>`), after
+refusing a type from another module with `IrError::ForeignType`. `x86_amx` is a
+struct element, as upstream's predicate says. The parser checks each element
+first, at its own location, so its diagnostics are unchanged. The intrinsic
+demangler follows the same rule: a literal-struct overload of such an element
+(`sl_isVoids`) is a signature mismatch, and a named-struct overload (`s_<name>s`)
+names a struct the module must already hold rather than creating one.
+
+**Why:** a type no parser — llvmkit's or LLVM's — reads back is what Doctrine
+D10 forbids building. `lib/IR/Verifier.cpp`'s header states the rule ("It
+should be illegal to put a label into any other type (like a structure)"), and
+MLIR's LLVM dialect enforces it at construction:
+`LLVMStructType::verifyInvariants` (`mlir/lib/Dialect/LLVMIR/IR/LLVMTypes.cpp`)
+refuses every element `LLVMStructType::isValidElementType` refuses, the same
+five kinds.
+
+**Fix:** none — deliberate. Revisit if upstream adds the check to
+`StructType::get`; an LLVM patch proposing it is being drafted (the
+type-constructor plan's Task 9).
+
+**Guarded by:** `crates/llvmkit-ir/tests/type_components.rs::a_struct_refuses_an_invalid_element`,
+`crates/llvmkit-ir/tests/cross_module_handles.rs::the_struct_constructors_reject_an_element_from_another_module`,
+`crates/llvmkit-ir/tests/type_components.rs::an_intrinsic_name_cannot_spell_an_invalid_struct`,
+`crates/llvmkit-ir/tests/type_components.rs::demangling_a_struct_name_creates_no_struct`,
+and the agreement law
+`crates/llvmkit-asmparser/tests/type_validity.rs::the_builder_and_the_parser_agree_on_every_derived_type`,
+whose struct rows left `KNOWN_DISAGREEMENTS` with this change.
+
+<details>
+<summary>Evidence (2026-10-18, vendored llvmorg-22.1.4)</summary>
+
+- `rg -n "StructType::isValidElementType" llvm/lib llvm/include` → the
+  definition in `lib/IR/Type.cpp` and two calls in `lib/AsmParser/LLParser.cpp`
+  (`parseStructBody`); no call on the `StructType::get` / `setBody` path.
+- `StructType::checkBody` walks the element worklist and returns an error only
+  when it meets the struct itself (`identified structure type '…' is
+  recursive`).
+- `rg -n "LLVMStructTypeInContext|LLVMStructSetBody" -A6 llvm/lib/IR/Core.cpp`
+  → `StructType::get(*unwrap(C), Tys, Packed != 0)` and
+  `unwrap<StructType>(StructTy)->setBody(Tys, Packed != 0)`, unchecked.
+
+</details>
+
+---
+
 ---
 
 # Inventory
@@ -1087,7 +1199,11 @@ llvmkit-only remainder as attribute keywords.
   silently losing an operand type; `llvmkit-ir` carries `TypeData::WasmExnRef`
   with `Display` printing `exnref`; and the lexer matches `exnref` as a
   `TYPEKEYWORD` so that printed output re-parses. `declare exnref
-  @llvm.wasm.ref.null.exn()` therefore parses here and does not upstream.
+  @llvm.wasm.ref.null.exn()` therefore parses here and does not upstream. For
+  the same reason the intrinsic name mangler (`append_mangled_type`,
+  `crates/llvmkit-ir/src/intrinsics.rs`) spells an `exnref` overload `exnref`
+  and its demangler (`parse_mangled_type_prefix`) reads that back;
+  `intrinsics.rs::tests::every_mangled_type_demangles_to_itself` pins the pair.
 - **Why:** deliberate, and kept as a unit. Dropping the *keyword* alone would
   leave `llvmkit-ir` printing a type `llvmkit-asmparser` cannot read — a
   print-but-not-parse hole in the parser/printer contract, which is worse than

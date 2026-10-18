@@ -2,8 +2,8 @@
 //! them, and the erased routes that refuse to.
 
 use llvmkit_ir::{
-    ConstantFolder, Dyn, ElemDyn, IrBuilder, IrBuilderFolder, IrError, LenDyn, Linkage, Module,
-    ShuffleMaskElem, TypeKindLabel, TypePosition, VectorType,
+    ArrLenDyn, ArrayType, ConstantFolder, Dyn, ElemDyn, IntrinsicId, IrBuilder, IrBuilderFolder,
+    IrError, LenDyn, Linkage, Module, ShuffleMaskElem, TypeKindLabel, TypePosition, VectorType,
     constant_fold_shuffle_vector_instruction, lanes,
 };
 
@@ -130,6 +130,237 @@ fn an_intrinsic_name_cannot_spell_an_invalid_vector() {
         .expect("`<4 x i32>` is a vector overload of `llvm.vector.reduce.add`");
 }
 
+/// `ArrayType::of` keeps the element marker and takes every element kind
+/// `ArrayType::isValidElementType` admits that has a typed handle.
+/// llvmkit-specific (D3).
+#[test]
+fn a_typed_array_takes_any_valid_element() {
+    let m = Module::dynamic("components");
+    let a: ArrayType<'_, f64, ArrLenDyn, _, _> = ArrayType::of(m.f64_type(), 3);
+    assert_eq!(a.to_string(), "[3 x double]");
+    let nested = ArrayType::of(a, 2);
+    assert_eq!(nested.to_string(), "[2 x [3 x double]]");
+    let of_vectors = ArrayType::of(VectorType::of(m.i8_type(), lanes::<4>()), 0);
+    assert_eq!(of_vectors.to_string(), "[0 x <4 x i8>]");
+}
+
+/// The erased array constructor refuses what `ArrayType::isValidElementType`
+/// refuses — `x86_amx` included, which a struct accepts. Mirrors
+/// `ArrayType::get`'s `assert`; llvmkit-specific (D10).
+///
+/// The `ModuleView` half below runs the same refusals through the view's
+/// constructor, as `an_erased_vector_refuses_an_invalid_element` does for the
+/// vector ones.
+#[test]
+fn an_erased_array_refuses_an_invalid_element() {
+    let m = Module::dynamic("components");
+    for (element, kind) in [
+        (m.label_type().as_type(), TypeKindLabel::Label),
+        (m.x86_amx_type(), TypeKindLabel::X86Amx),
+        (m.token_type().as_type(), TypeKindLabel::Token),
+    ] {
+        let refused = m.array_type(element, 2);
+        assert!(
+            matches!(
+                refused,
+                Err(IrError::InvalidTypeComponent { position: TypePosition::ArrayElement, kind: k }) if k == kind
+            ),
+            "{refused:?}"
+        );
+    }
+    m.array_type(m.ptr_type(0), 2)
+        .expect("a pointer is an array element");
+
+    assert_eq!(
+        m.array_type(m.x86_amx_type(), 2)
+            .expect_err("`x86_amx` is no array element")
+            .to_string(),
+        "invalid array element type: x86_amx"
+    );
+
+    let view = m.as_view();
+    for (element, kind) in [
+        (view.label_type().as_type(), TypeKindLabel::Label),
+        (view.x86_amx_type(), TypeKindLabel::X86Amx),
+        (view.token_type().as_type(), TypeKindLabel::Token),
+    ] {
+        let refused = view.array_type(element, 2);
+        assert!(
+            matches!(
+                refused,
+                Err(IrError::InvalidTypeComponent { position: TypePosition::ArrayElement, kind: k }) if k == kind
+            ),
+            "{refused:?}"
+        );
+    }
+    view.array_type(view.ptr_type(0), 2)
+        .expect("a pointer is an array element");
+}
+
+/// An intrinsic name whose overload suffix spells an array of an element
+/// `ArrayType::isValidElementType` refuses does not demangle. Upstream's
+/// `getMangledTypeStr` (`lib/IR/Intrinsics.cpp`) spells only types that exist,
+/// so no upstream name reads `a2x86amx`, `a2isVoid` or `a2Metadata`.
+/// llvmkit-specific regression (D10): the demangler built `[2 x x86_amx]`
+/// straight into the arena and declared `llvm.ssa.copy` (whose one overload is
+/// `llvm_any_ty`) over it. `a2i32` is the positive control.
+#[test]
+fn an_intrinsic_name_cannot_spell_an_invalid_array() {
+    let m = Module::dynamic("components");
+    for name in [
+        "llvm.ssa.copy.a2x86amx",
+        "llvm.ssa.copy.a2isVoid",
+        "llvm.ssa.copy.a2Metadata",
+    ] {
+        let refused = m.get_or_insert_intrinsic_declaration_by_name(name);
+        assert!(
+            matches!(refused, Err(IrError::IntrinsicSignatureMismatch { .. })),
+            "{name}: {refused:?}"
+        );
+    }
+    m.get_or_insert_intrinsic_declaration_by_name("llvm.ssa.copy.a2i32")
+        .expect("`[2 x i32]` is an overload of `llvm.ssa.copy`");
+}
+
+/// An intrinsic name whose overload suffix spells a zero-length array
+/// demangles, and names the declaration the same overload gets by id.
+/// `ArrayType::get` takes a zero length, and `getMangledTypeStr`
+/// (`lib/IR/Intrinsics.cpp`) spells `[0 x i32]` as `"a" + utostr(0) + "i32"`
+/// — which is the name llvmkit's own mangling gives the by-id declaration.
+/// llvmkit-specific regression (D10): the demangler refused a zero count, so
+/// `llvm.ssa.copy.a0i32` was refused as a signature mismatch and the by-name
+/// entry could not read back the name the by-id entry wrote. The `a2i32`
+/// overload in `an_intrinsic_name_cannot_spell_an_invalid_array` is the
+/// nonzero control.
+#[test]
+fn an_intrinsic_name_can_spell_a_zero_length_array() -> Result<(), IrError> {
+    let m = Module::dynamic("components");
+    let ssa_copy = IntrinsicId::lookup("llvm.ssa.copy").expect("`llvm.ssa.copy` is an intrinsic");
+    let empty = ArrayType::of(m.i32_type(), 0).as_type();
+    let by_id = m.get_or_insert_intrinsic_declaration_by_id(ssa_copy, [empty])?;
+    assert_eq!(m.view(by_id).name().as_deref(), Some("llvm.ssa.copy.a0i32"));
+    let by_name = m.get_or_insert_intrinsic_declaration_by_name("llvm.ssa.copy.a0i32")?;
+    assert_eq!(by_name, by_id);
+    Ok(())
+}
+
+/// An intrinsic name whose overload suffix spells a literal struct of an
+/// element `StructType::isValidElementType` refuses does not demangle.
+/// Upstream's `getMangledTypeStr` (`lib/IR/Intrinsics.cpp`) spells a literal
+/// struct `"sl_"` + its elements + `"s"` from a struct that exists, so no
+/// upstream name reads `sl_isVoids` or `sl_Metadatas`. llvmkit-specific
+/// regression (D10): the demangler built `{ void }` straight into the arena and
+/// declared `llvm.ssa.copy` over it. `sl_i32s` is the positive control.
+#[test]
+fn an_intrinsic_name_cannot_spell_an_invalid_struct() {
+    let m = Module::dynamic("components");
+    for name in ["llvm.ssa.copy.sl_isVoids", "llvm.ssa.copy.sl_Metadatas"] {
+        let refused = m.get_or_insert_intrinsic_declaration_by_name(name);
+        assert!(
+            matches!(refused, Err(IrError::IntrinsicSignatureMismatch { .. })),
+            "{name}: {refused:?}"
+        );
+    }
+    m.get_or_insert_intrinsic_declaration_by_name("llvm.ssa.copy.sl_i32s")
+        .expect("`{ i32 }` is an overload of `llvm.ssa.copy`");
+}
+
+/// Demangling an intrinsic name creates no type: a named-struct overload
+/// (`"s_" + name + "s"`, `getMangledTypeStr`) names a struct the module must
+/// already hold. Upstream never demangles — `Intrinsic::getOrInsertDeclaration`
+/// is handed the overload types — so a name cannot conjure one.
+/// llvmkit-specific regression (D10): `s_Missings` created an opaque
+/// `%Missing` as a side effect and declared `llvm.ssa.copy` over it. With
+/// `%Present` created first, `s_Presents` is the positive control.
+#[test]
+fn demangling_a_struct_name_creates_no_struct() -> Result<(), IrError> {
+    let m = Module::dynamic("components");
+    let refused = m.get_or_insert_intrinsic_declaration_by_name("llvm.ssa.copy.s_Missings");
+    assert!(
+        matches!(refused, Err(IrError::IntrinsicSignatureMismatch { .. })),
+        "{refused:?}"
+    );
+    assert!(
+        m.named_struct("Missing").is_none(),
+        "demangling must not create `%Missing`"
+    );
+    let present = m.opaque_struct("Present")?;
+    m.set_struct_body(present, [m.i32_type()], false)?;
+    m.get_or_insert_intrinsic_declaration_by_name("llvm.ssa.copy.s_Presents")?;
+    Ok(())
+}
+
+/// The struct constructors refuse `void`, `label`, `metadata`, function types
+/// and `token`, naming the element's index. Stricter than upstream's
+/// `StructType::get`, which checks nothing: `LLParser::parseStructBody`
+/// refuses the same elements (`invalid element type for struct`),
+/// `Verifier.cpp`'s header calls a label inside a structure illegal, and MLIR's
+/// `LLVMStructType::verifyInvariants` refuses them at construction.
+/// llvmkit-specific (D10); `docs/divergences.md` records the difference.
+///
+/// The second half runs every refused kind through the packed constructor and
+/// the `ModuleView` receiver, as `an_erased_array_refuses_an_invalid_element`
+/// does for arrays.
+#[test]
+fn a_struct_refuses_an_invalid_element() {
+    let m = Module::dynamic("components");
+    let i32_ty = m.i32_type().as_type();
+    let refused = m.struct_type([i32_ty, m.label_type().as_type()]);
+    assert!(matches!(
+        refused,
+        Err(IrError::InvalidTypeComponent {
+            position: TypePosition::StructElement { index: 1 },
+            kind: TypeKindLabel::Label,
+        })
+    ));
+    assert_eq!(
+        refused.expect_err("refused above").to_string(),
+        "invalid element type for struct (element 1): label"
+    );
+    let opaque = m.opaque_struct("S").expect("fresh name");
+    let body = m.set_struct_body(opaque, [m.token_type().as_type()], false);
+    assert!(matches!(
+        body,
+        Err(IrError::InvalidTypeComponent {
+            position: TypePosition::StructElement { index: 0 },
+            ..
+        })
+    ));
+    m.struct_type([i32_ty, m.x86_amx_type()])
+        .expect("x86_amx is a struct element");
+
+    let view = m.as_view();
+    let view_i32 = view.i32_type().as_type();
+    for (element, kind) in [
+        (view.void_type().as_type(), TypeKindLabel::Void),
+        (view.label_type().as_type(), TypeKindLabel::Label),
+        (view.metadata_type().as_type(), TypeKindLabel::Metadata),
+        (
+            view.function_type_no_parameters(view.void_type()).as_type(),
+            TypeKindLabel::Function,
+        ),
+        (view.token_type().as_type(), TypeKindLabel::Token),
+    ] {
+        for refused in [
+            view.packed_struct_type([view_i32, view_i32, element]),
+            view.struct_type([view_i32, view_i32, element]),
+        ] {
+            assert!(
+                matches!(
+                    refused,
+                    Err(IrError::InvalidTypeComponent {
+                        position: TypePosition::StructElement { index: 2 },
+                        kind: k,
+                    }) if k == kind
+                ),
+                "{refused:?}"
+            );
+        }
+    }
+    view.packed_struct_type([view_i32, view.x86_amx_type()])
+        .expect("x86_amx is a struct element");
+}
+
 /// The builder's `shuffle_vector` refuses an empty mask, whose result would be
 /// a zero-lane vector, with `IrError::InvalidShuffleMaskLength`: the
 /// `ShuffleVectorInst` constructor computes its type as
@@ -217,7 +448,7 @@ fn a_splat_of_a_non_vector_element_is_refused() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let record = m.struct_type([m.i32_type().as_type()]).as_type().poison();
+    let record = m.struct_type([m.i32_type().as_type()])?.as_type().poison();
     let refused = b.vector_splat_dyn(lanes::<2>(), record, "v");
     assert!(
         matches!(

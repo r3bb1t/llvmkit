@@ -45,7 +45,7 @@ fn load_store_materialise_abi_align() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     b.load(m.i64_type(), p, "l64")?;
     b.load(m.ptr_type(0), p, "lptr")?;
     // Store default keys off the *stored value's* type (f32 -> align 4),
