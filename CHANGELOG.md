@@ -19,6 +19,24 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Added — `UniqueBrand`, a brand the registry keeps to one live module
+
+- **Added: `UniqueBrand: ModuleBrand`**, the type-level form of the brand
+  registry's guarantee: at most one live module carries a brand other than
+  `DynBrand`, so two live view handles of a `UniqueBrand` brand belong to the
+  same module. `module_new!` implements it for the brand it mints; a
+  hand-written brand opts in with `impl UniqueBrand for MyBrand {}` (the
+  `module_per_batch` and `lifter_session` examples do). `DynBrand` does not
+  implement it, and a `Module::dynamic` module fails a `B: UniqueBrand` bound
+  with the trait's own message (trybuild fixture `dyn_brand_is_not_unique.rs`).
+  Storable ids are not covered: an id outlives its module, and a brand is
+  issued again once its module drops. Nothing uses the bound yet; the derived
+  struct reads and builds that need no `?` are its first users.
+- The trait is safe to implement because module storage is created only by
+  `Module::branded` / `Module::branded_once` (through the registry) and by
+  `Module::dynamic`, and neither `Module` nor its storage is `Clone`.
+  `tests/module_construction_drift.rs` fails if that ever changes.
+
 ### Changed (breaking) — pointers carry their address space
 
 An LLVM pointer type carries its address space (`ptr addrspace(3)`); llvmkit's

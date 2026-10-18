@@ -1,0 +1,14 @@
+error[E0277]: `DynBrand` can name more than one live module
+  --> tests/compile_fail/dyn_brand_is_not_unique.rs:12:12
+   |
+12 |     unique(&m);
+   |     ------ ^^ the trait `UniqueBrand` is not implemented for `DynBrand`
+   |     |
+   |     required by a bound introduced by this call
+   |
+   = note: in brand-generic code, add `B: UniqueBrand`; for a `Module::dynamic` module, use the `try_` form, which checks
+note: required by a bound in `unique`
+  --> tests/compile_fail/dyn_brand_is_not_unique.rs:8:14
+   |
+ 8 | fn unique<B: UniqueBrand>(_: &Module<B>) {}
+   |              ^^^^^^^^^^^ required by this bound in `unique`

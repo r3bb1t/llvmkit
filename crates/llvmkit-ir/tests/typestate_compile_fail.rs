@@ -117,6 +117,8 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/pointer_cmp_mixed_spaces.rs");
     // A pointer variable takes values in its own address space only.
     t.compile_fail("tests/compile_fail/pointer_var_def_wrong_space.rs");
+    // `DynBrand` names many live modules, so it is no `UniqueBrand`.
+    t.compile_fail("tests/compile_fail/dyn_brand_is_not_unique.rs");
     // `ptr_type(n)` is `SpaceDyn`, never silently a `Space<0>` type.
     t.compile_fail("tests/compile_fail/dyn_pointer_where_static_required.rs");
     // Slice 6: typed array ops make wrong-element inserts compile errors.

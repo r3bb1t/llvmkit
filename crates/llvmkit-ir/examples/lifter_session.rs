@@ -45,7 +45,7 @@ use std::thread;
 
 use llvmkit_ir::{
     ConstantFolder, IntPredicate, IntVariable, IrError, Linkage, Module, ModuleBrand, SsaBlock,
-    SsaBuilder, SsaState, Unverified, Verified,
+    SsaBuilder, SsaState, UniqueBrand, Unverified, Verified,
 };
 
 // --------------------------------------------------------------------------
@@ -467,9 +467,10 @@ pub fn drive<B: ModuleBrand>(session: &mut LifterSession<B>, log: bool) -> Resul
 
 /// The example's own named brand: the session's type is spellable
 /// (`LifterSession<Cpu>`), and the registry guarantees one live module under
-/// it at a time.
+/// it at a time — which is what makes it a `UniqueBrand`.
 pub struct Cpu;
 impl ModuleBrand for Cpu {}
+impl UniqueBrand for Cpu {}
 
 /// The session holds no borrows, so it is `Send` — which is what lets the
 /// driver below finish a half-lifted function on another thread.

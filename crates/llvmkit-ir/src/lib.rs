@@ -326,7 +326,8 @@ pub use metadata::{
 };
 pub use module::{
     ComdatView, DynBrand, GlobalAliasView, GlobalIfuncView, GlobalVariableView, Module,
-    ModuleBrand, ModuleId, ModuleRef, ModuleView, PreservedUseListOrder, Unverified, Verified,
+    ModuleBrand, ModuleId, ModuleRef, ModuleView, PreservedUseListOrder, UniqueBrand, Unverified,
+    Verified,
 };
 pub use module_flags::{ModuleFlagBehavior, ModuleFlagEntry, ModuleFlagKey};
 pub use named_md_node::{NamedMetadataId, NamedMetadataName};

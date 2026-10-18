@@ -276,6 +276,47 @@ pub trait ModuleBrand: 'static {}
 pub struct DynBrand;
 impl ModuleBrand for DynBrand {}
 
+/// A brand the registry keeps to one live module — every brand but
+/// [`DynBrand`].
+///
+/// Code bounded `B: UniqueBrand` may rely on two live view handles of brand
+/// `B` (a struct value, an [`IrBuilder`](crate::IrBuilder)) belonging to the
+/// same module, so a check that a value comes from the builder's module cannot
+/// fail between them and need not be made. Storable ids are not covered: an id
+/// outlives its module, and a brand is issued again once its module drops.
+///
+/// # Why implementing it is safe
+///
+/// Module storage is created in exactly two places: `Module::registered`,
+/// behind [`Module::branded`] and [`Module::branded_once`], which claims the
+/// brand in the process-wide registry — at most one live module per brand —
+/// before it hands the module out; and [`Module::dynamic`], whose brand is
+/// [`DynBrand`]. Neither `Module` nor its storage is `Clone`. So for any brand
+/// but `DynBrand` the claim is true, and the orphan rule stops another crate
+/// implementing this trait for `DynBrand`. The premise is guarded by
+/// `tests/module_construction_drift.rs`, which fails if module storage gains
+/// another constructor or a clone.
+///
+/// [`module_new!`](crate::module_new) implements it for the brand it mints; a
+/// hand-written brand opts in with one line:
+///
+/// ```
+/// use llvmkit_ir::{Module, ModuleBrand, UniqueBrand};
+///
+/// struct Lifted;
+/// impl ModuleBrand for Lifted {}
+/// impl UniqueBrand for Lifted {}
+///
+/// fn unique<B: UniqueBrand>(_: &Module<B>) {}
+/// unique(&Module::branded::<Lifted, _>("lifted").expect("the brand is free"));
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` can name more than one live module",
+    note = "in brand-generic code, add `B: UniqueBrand`; for a `Module::dynamic` \
+            module, use the `try_` form, which checks"
+)]
+pub trait UniqueBrand: ModuleBrand {}
+
 /// Module state before successful structural verification.
 #[derive(Debug)]
 pub enum Unverified {}
@@ -455,6 +496,8 @@ macro_rules! module_new {
         // and distinct per expansion site.
         struct __LlvmkitGeneratedBrand;
         impl $crate::ModuleBrand for __LlvmkitGeneratedBrand {}
+        // The registry keeps this brand to the one module made below.
+        impl $crate::UniqueBrand for __LlvmkitGeneratedBrand {}
         $crate::Module::branded::<__LlvmkitGeneratedBrand, _>($name)
     }};
 }
