@@ -2110,7 +2110,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>>
 /// variant, since array lengths do not fit the `u32` `OperandWidthMismatch`
 /// the sibling `VectorValue` narrowing uses for its lane count; a value that
 /// is not an array reports [`IrError::TypeMismatch`].
-impl<'ctx, E, const N: u64, B, C> TryFrom<Value<'ctx, B, C>>
+impl<'ctx, E, const N: usize, B, C> TryFrom<Value<'ctx, B, C>>
     for ArrayValue<'ctx, E, ArrLen<N>, B, C>
 where
     E: StaticVecElem<'ctx, B>,
@@ -2129,11 +2129,9 @@ where
                         got: Type::new(*elem, v.module).rendered(),
                     });
                 }
-                if *n != N {
-                    return Err(IrError::ArrayLengthMismatch {
-                        expected: N,
-                        got: *n,
-                    });
+                let expected = crate::array_len::static_len_u64(N);
+                if *n != expected {
+                    return Err(IrError::ArrayLengthMismatch { expected, got: *n });
                 }
                 Ok(Self {
                     id: v.id,
@@ -2153,7 +2151,7 @@ where
 
 /// Static -> `Dyn` widening (always succeeds). Restricted to the `ArrLen<N>`
 /// typed form so it cannot overlap the reflexive `From<T> for T`.
-impl<'ctx, E: VecElem, const N: u64, B: ModuleBrand + 'ctx, C: Capability>
+impl<'ctx, E: VecElem, const N: usize, B: ModuleBrand + 'ctx, C: Capability>
     From<ArrayValue<'ctx, E, ArrLen<N>, B, C>> for ArrayValue<'ctx, ElemDyn, ArrLenDyn, B, C>
 {
     #[inline]

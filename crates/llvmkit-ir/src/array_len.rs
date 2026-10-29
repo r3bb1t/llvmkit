@@ -7,11 +7,12 @@
 //! [`ArrLen<M>`], so mixing them at a builder call site is a compile
 //! error rather than a runtime shape mismatch.
 //!
-//! Array lengths are `u64` (mirroring `ArrayType::getNumElements`,
-//! which returns a 64-bit count). This is a distinct family from the
-//! sibling [`vec_len`](crate::vec_len) marker (whose lane counts are
-//! `u32`); the two are kept separate so a single trait is not asked to
-//! be both `u32` and `u64`.
+//! A static length is a `usize`, the type a Rust array's length has, so a
+//! `[T; N]`'s `N` names [`ArrLen<N>`] as it is. A run-time length is a
+//! `u64` (mirroring `ArrayType::getNumElements`, which returns a 64-bit
+//! count), and [`ArrayLen::static_len`] answers in that currency. This is a
+//! distinct family from the sibling [`vec_len`](crate::vec_len) marker
+//! (whose lane counts are `u32`).
 //!
 //! Parsed `.ll` whose length is not statically known lands in
 //! [`ArrLenDyn`] until the consumer narrows it.
@@ -21,24 +22,35 @@
 
 use core::fmt;
 
+// A `usize` is at most 64 bits wide on every target this crate builds for,
+// so a static length always fits the `u64` a run-time length is.
+const _: () = assert!(usize::BITS <= u64::BITS, "a usize must fit in a u64");
+
+/// A static array length as the `u64` a run-time length is. Infallible:
+/// `usize::BITS <= u64::BITS` is asserted at compile time above.
+pub(crate) fn static_len_u64(len: usize) -> u64 {
+    u64::try_from(len)
+        .unwrap_or_else(|_| unreachable!("usize::BITS <= u64::BITS, asserted at compile time"))
+}
+
 /// Sealed marker trait implemented by every array-length tag.
 ///
 /// The array-length analog of [`IntWidth`](crate::IntWidth).
 pub trait ArrayLen: sealed::Sealed + Copy + 'static + fmt::Debug {
     /// Static element count if known at compile time, else `None` (used
-    /// by [`ArrLenDyn`]). Analog of
+    /// by [`ArrLenDyn`]), as the `u64` a run-time length is. Analog of
     /// [`IntWidth::static_bits`](crate::IntWidth::static_bits).
     fn static_len() -> Option<u64>;
 }
 
-/// Const-generic marker for a statically known array length. Analog of
-/// [`Width<N>`](crate::Width).
+/// Const-generic marker for a statically known array length — a `usize`,
+/// like a Rust array's. Analog of [`Width<N>`](crate::Width).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ArrLen<const N: u64>;
-impl<const N: u64> ArrayLen for ArrLen<N> {
+pub struct ArrLen<const N: usize>;
+impl<const N: usize> ArrayLen for ArrLen<N> {
     #[inline]
     fn static_len() -> Option<u64> {
-        Some(N)
+        Some(static_len_u64(N))
     }
 }
 
@@ -65,19 +77,19 @@ impl ArrayLen for ArrLenDyn {
 /// Not implemented for [`ArrLenDyn`] — there is no single static length
 /// for an erased array.
 pub trait StaticArrayLen: ArrayLen {
-    /// Element count at the type level. Usable as `L::STATIC_LEN` in
-    /// `const { ... }` assertions to enforce shape-equality at
-    /// monomorphisation time. Analog of
+    /// Element count at the type level, as the `usize` a Rust array's
+    /// length is. Usable as `L::STATIC_LEN` in `const { ... }` assertions
+    /// to enforce shape-equality at monomorphisation time. Analog of
     /// [`StaticIntWidth::STATIC_BITS`](crate::StaticIntWidth::STATIC_BITS).
-    const STATIC_LEN: u64;
+    const STATIC_LEN: usize;
 }
-impl<const N: u64> StaticArrayLen for ArrLen<N> {
-    const STATIC_LEN: u64 = N;
+impl<const N: usize> StaticArrayLen for ArrLen<N> {
+    const STATIC_LEN: usize = N;
 }
 
 mod sealed {
     pub trait Sealed {}
-    impl<const N: u64> Sealed for super::ArrLen<N> {}
+    impl<const N: usize> Sealed for super::ArrLen<N> {}
     impl Sealed for super::ArrLenDyn {}
 }
 

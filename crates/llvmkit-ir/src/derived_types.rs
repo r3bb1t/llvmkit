@@ -287,8 +287,9 @@ impl<'ctx, const N: u32, B: ModuleBrand, C: Capability> TryFrom<PointerType<'ctx
 }
 // `ArrayType<'ctx, E, L>` is hand-written below: the `E: VecElem` /
 // `L: ArrayLen` markers pin the element type and element count at the type
-// level, mirroring `VectorType<'ctx, E, L>` (arrays differ only in the
-// `u64` length and the `ArrLen`/`ArrLenDyn` marker family). Existing
+// level, mirroring `VectorType<'ctx, E, L>` (arrays differ in the length —
+// a `usize` static one, a `u64` run-time one — and the `ArrLen`/`ArrLenDyn`
+// marker family). Existing
 // `ArrayType<'ctx>` references resolve to `ArrayType<'ctx, ElemDyn,
 // ArrLenDyn>` via the defaults.
 /// `[N x T]` array. Mirrors `ArrayType` (`DerivedTypes.h`).

@@ -19,6 +19,20 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Changed (breaking) — a typed array's static length is a `usize`
+
+- **Breaking: `ArrLen<const N: u64>` is `ArrLen<const N: usize>`**, the type a
+  Rust array's length has, so a `[T; N]`'s `N` names `ArrLen<N>` with no
+  conversion (stable Rust cannot convert a const parameter, and `as` is not
+  used here). `Module::array_type_n::<E, const N: usize>()` (and the same on
+  `ModuleView`), the typed `ArrayValue` narrowing and its widening to the
+  erased form follow; `StaticArrayLen::STATIC_LEN` is a `usize`. A run-time
+  length stays a `u64`, as `ArrayType::getNumElements` returns one:
+  `ArrayLen::static_len` and `ArrayType::static_len` / `len` still answer
+  `u64`, and `IrError::ArrayLengthMismatch` still carries two. A call written
+  with a literal length (`array_type_n::<i32, 4>()`) is unchanged; one that
+  names a `u64` constant now needs a `usize` one.
+
 ### Added — `UniqueBrand`, a brand the registry keeps to one live module
 
 - **Added: `UniqueBrand: ModuleBrand`**, the type-level form of the brand

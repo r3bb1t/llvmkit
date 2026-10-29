@@ -6,8 +6,9 @@
 //! narrows into the matching `ArrayValue<E, ArrLen<N>>` only when its element
 //! type and element count both agree. The erased `ArrayType<'ctx>` /
 //! `ArrayValue<'ctx>` forms keep working via the `Dyn` defaults. Arrays differ
-//! from vectors only in the `u64` length and the `ArrLen`/`ArrLenDyn` markers;
-//! unlike vectors, a zero-length array `[0 x T]` is legal.
+//! from vectors in their length — a `usize` static length, as a Rust array's,
+//! and a `u64` run-time one — and the `ArrLen`/`ArrLenDyn` markers; unlike
+//! vectors, a zero-length array `[0 x T]` is legal.
 
 use llvmkit_ir::{ArrLen, ArrLenDyn, ArrayType, ArrayValue, ElemDyn, IrError, module_new};
 
@@ -28,6 +29,21 @@ fn array_type_n_constructor_prints_and_round_trips() {
     let erased: ArrayType<'_, ElemDyn, ArrLenDyn, _> = ArrayType::try_from(at.as_type()).unwrap();
     assert_eq!(erased.static_len(), None);
     assert_eq!(erased.len(), 4);
+}
+
+/// A typed array's static length is the `usize` a Rust array's length is, so a
+/// `[f32; N]`'s `N` names the `ArrLen<N>` of the LLVM array of the same shape
+/// with no conversion. llvmkit-specific (D3): LLVM has no type-level length.
+#[test]
+fn a_rust_array_length_names_the_static_array_length() {
+    const N: usize = 4;
+    let rust: [f32; N] = [0.0; N];
+    let m = module_new!("at").expect("fresh module");
+    let a: ArrayType<'_, f32, ArrLen<N>, _> = m.array_type_n::<f32, N>();
+    assert_eq!(a.static_len(), Some(4));
+    assert_eq!(a.len(), 4);
+    assert_eq!(rust.len(), N);
+    assert_eq!(format!("{}", a.as_type()), "[4 x float]");
 }
 
 /// LLVM permits zero-length arrays `[0 x T]`; `array_type_n::<i32, 0>()` is a

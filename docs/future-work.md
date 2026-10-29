@@ -2140,7 +2140,7 @@ moves to `Constant::kind`.
   `ArrayType`/`ArrayValue` now carry a scalar **element** marker (the scalar
   itself — `i64`, `f64`, … via `VecElem`/`StaticVecElem` in `element.rs`) and a
   **length** marker (`Len<const N: u32>`/`LenDyn` in `vec_len.rs`;
-  `ArrLen<const N: u64>`/`ArrLenDyn` in `array_len.rs`). The bare
+  `ArrLen<const N: usize>`/`ArrLenDyn` in `array_len.rs`). The bare
   `VectorValue<'ctx>`/`ArrayValue<'ctx>` stay the all-`Dyn` (erased) form —
   parsed `.ll`, scalable vectors, and runtime lengths land there and narrow via
   `TryFrom` (`OperandWidthMismatch` for lane count, `IrError::ArrayLengthMismatch`

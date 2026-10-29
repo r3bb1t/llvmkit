@@ -893,15 +893,15 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
     }
 
     /// Const-generic typed array `[N x E]`; `N == 0` is permitted.
-    pub(crate) fn array_type_n<E, const N: u64>(self) -> ArrayType<'ctx, E, ArrLen<N>, B, C>
+    pub(crate) fn array_type_n<E, const N: usize>(self) -> ArrayType<'ctx, E, ArrLen<N>, B, C>
     where
         E: StaticVecElem<'ctx, B>,
     {
         let elem = E::element_ir_type(self);
-        let id = self
-            .core
-            .ctx
-            .array_type(elem.slot_trusting_same_module(), N);
+        let id = self.core.ctx.array_type(
+            elem.slot_trusting_same_module(),
+            crate::array_len::static_len_u64(N),
+        );
         ArrayType::new(id, self)
     }
 
@@ -1762,7 +1762,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     /// [`vector_type_n`](Self::vector_type_n), `N == 0` is **not** rejected:
     /// LLVM permits zero-length arrays `[0 x T]`.
     #[inline]
-    pub fn array_type_n<E, const N: u64>(self) -> ArrayType<'ctx, E, ArrLen<N>, B, ReadOnly>
+    pub fn array_type_n<E, const N: usize>(self) -> ArrayType<'ctx, E, ArrLen<N>, B, ReadOnly>
     where
         E: StaticVecElem<'ctx, B>,
     {
@@ -4555,7 +4555,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// [`vector_type_n`](Self::vector_type_n), `N == 0` is **not** rejected:
     /// LLVM permits zero-length arrays `[0 x T]`. Mirrors `Type::getIntNTy`
     /// + `ArrayType::get`.
-    pub fn array_type_n<E, const N: u64>(&'ctx self) -> ArrayType<'ctx, E, ArrLen<N>, B>
+    pub fn array_type_n<E, const N: usize>(&'ctx self) -> ArrayType<'ctx, E, ArrLen<N>, B>
     where
         E: StaticVecElem<'ctx, B>,
     {
