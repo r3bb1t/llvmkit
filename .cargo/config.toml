@@ -1,0 +1,12 @@
+# Repo-local Cargo settings.
+#
+# Release builds are this repo's only gate profile (every gate runs with
+# `--release`), and a machine-wide `~/.cargo/config.toml` may turn release
+# builds incremental. Here that keeps one incremental cache per target for
+# each of `cargo test`, `cargo check` and `cargo clippy` — about 15 GB of
+# `target/release/incremental` on a full gate — which filled the disk
+# mid-run more than once. A closer config file overrides the machine-wide
+# one, so release builds of this workspace are not incremental, whatever
+# that file says. CI builds are unaffected: they are not incremental anyway.
+[profile.release]
+incremental = false
