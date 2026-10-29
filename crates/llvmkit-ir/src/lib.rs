@@ -382,8 +382,9 @@ pub use ssa_builder::{
 };
 pub use struct_body_state::{BodySet, Opaque, StructBodyDyn, StructBodyState};
 pub use struct_schema::{
-    ArrayElementLayout, FieldLayout, FieldList, FieldOf, IntoIrField, IntoLayoutValue, IrField,
-    LayoutValue, SchemaValue, StructFieldAt, StructFields, StructSchema, StructSchemaValue,
+    ArrayElementLayout, FieldArg, FieldLayout, FieldList, FieldOf, IntoIrField, IntoLayoutValue,
+    IrField, LayoutValue, LoweredField, SchemaValue, StructFieldAt, StructFields, StructOf,
+    StructSchema, StructSchemaValue,
 };
 pub use sync_scope::SyncScope;
 pub use target_library_info::{LibFunc, TargetLibraryInfo};

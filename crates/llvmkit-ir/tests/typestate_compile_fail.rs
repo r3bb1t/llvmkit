@@ -79,6 +79,10 @@ fn typestate_compile_fail() {
     // through llvmkit's own folders only.
     t.compile_fail("tests/compile_fail/field_read_on_dyn_brand.rs");
     t.compile_fail("tests/compile_fail/field_read_with_custom_folder.rs");
+    // A build without `?` takes view handles of the field's own type only:
+    // no `SpaceDyn` pointer for a `Ptr` field, no storable id.
+    t.compile_fail("tests/compile_fail/build_with_dyn_pointer.rs");
+    t.compile_fail("tests/compile_fail/build_with_id.rs");
     t.compile_fail("tests/compile_fail/cross_module_value_brand.rs");
     t.compile_fail("tests/compile_fail/cross_module_global_initializer_brand.rs");
     t.compile_fail("tests/compile_fail/cross_module_branch_target.rs");

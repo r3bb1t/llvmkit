@@ -516,13 +516,14 @@ fn a_struct_schema_operand_rejects_a_value_from_another_module() {
         )
     };
     let (refusing, _) = returning("k");
-    // `NestValue::build` interns `%Nest` before it lifts its field, and
-    // llvmkit prints every named struct in the module's type arena where
-    // upstream prints only the ones a `TypeFinder` walk reaches
-    // (`docs/divergences.md`, entry 143). Intern it before the snapshot:
-    // interning a type is not the mutation under test — upstream's
-    // `StructType`s live in the `LLVMContext`, not the module.
-    home.as_view()
+    // The build's `StructOf` token interns `%Nest`, and llvmkit prints every
+    // named struct in the module's type arena where upstream prints only the
+    // ones a `TypeFinder` walk reaches (`docs/divergences.md`, entry 143).
+    // Take the token before the snapshot: interning a type is not the
+    // mutation under test — upstream's `StructType`s live in the
+    // `LLVMContext`, not the module.
+    let nest = home
+        .as_view()
         .get_or_insert_struct_of::<Nest>()
         .expect("%Nest");
 
@@ -531,7 +532,7 @@ fn a_struct_schema_operand_rejects_a_value_from_another_module() {
     assert!(matches!(field, Err(IrError::ForeignValueId)), "{field:?}");
     let call = b.call(home.view(h), (foreign_pair,), "r");
     assert!(matches!(call, Err(IrError::ForeignValueId)), "{call:?}");
-    let nested = NestValue::build(home.as_view(), &b, foreign_pair_value, "n");
+    let nested = nest.try_build(&b, foreign_pair_value, "n");
     assert!(matches!(nested, Err(IrError::ForeignValueId)), "{nested:?}");
     let call = b.call(home.view(h), (foreign_pair_value,), "r");
     assert!(matches!(call, Err(IrError::ForeignValueId)), "{call:?}");

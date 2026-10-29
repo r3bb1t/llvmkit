@@ -18,12 +18,6 @@ struct Config {
     crate_path: TokenStream2,
 }
 
-struct BuildStepContext<'a> {
-    module_param: &'a Ident,
-    builder_param: &'a Ident,
-    base_name_ident: &'a Ident,
-}
-
 fn expand(input: DeriveInput) -> Result<TokenStream2> {
     if !input.generics.params.is_empty() || input.generics.where_clause.is_some() {
         return Err(Error::new_spanned(
@@ -71,6 +65,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
     }
 
     let value_ident = format_ident!("{}Value", ident);
+    let build_trait = format_ident!("{}Build", ident);
     let ir = config.crate_path;
     let llvm_name = config.llvm_name;
     let packed = config.packed;
@@ -86,10 +81,10 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
         .iter()
         .map(|idx| format_ident!("Field{}", idx))
         .collect();
-    let module_param = Ident::new("__llvmkit_module", Span::mixed_site());
     let builder_param = Ident::new("__llvmkit_builder", Span::mixed_site());
     let name_param = Ident::new("__llvmkit_name", Span::mixed_site());
     let base_name_ident = Ident::new("__llvmkit_base_name", Span::mixed_site());
+    let aggregate_ident = Ident::new("__llvmkit_aggregate", Span::mixed_site());
     // The value type's one field: the llvmkit-owned carrier, which only
     // llvmkit mints after checking a value against the schema — so code that
     // spells the field still cannot put a value of another type in it.
@@ -97,35 +92,66 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
     // Hygienic, so a field whose type is spelled `C` is not shadowed by the
     // capability parameter of the generated impls.
     let capability_param = Ident::new("__LlvmkitCapability", Span::mixed_site());
-    let value_steps = build_value_steps(
-        &ident,
-        &field_idents,
-        &field_tys,
-        &indices,
-        BuildStepContext {
-            module_param: &module_param,
-            builder_param: &builder_param,
-            base_name_ident: &base_name_ident,
-        },
-    );
-    let build_return = if field_count == 0 {
-        quote! {
-            let __llvmkit_ty = #module_param.get_or_insert_struct_of::<#ident>()?;
-            let __llvmkit_raw = <#ir::StructValue<'ctx, B> as ::core::convert::TryFrom<#ir::Constant<'ctx, B>>>::try_from(
-                __llvmkit_ty.as_type().poison().as_constant(),
-            )?;
-            Ok(Self { #schema_value_field: #ir::SchemaValue::try_new(__llvmkit_raw)? })
-        }
+    // Each field's instruction name: `base.field`, or `field` when the base
+    // name is empty. With no field there is no instruction to name.
+    let base_name = if field_count == 0 {
+        quote! { let _ = #name_param; }
     } else {
-        let last = Ident::new(
-            &format!("__llvmkit_value_{}", field_count - 1),
-            Span::mixed_site(),
-        );
-        quote! {
-            #(#value_steps)*
-            Ok(#last)
-        }
+        quote! { let #base_name_ident = ::core::convert::AsRef::<str>::as_ref(&#name_param); }
     };
+    let field_names: Vec<TokenStream2> = field_idents
+        .iter()
+        .map(|field_ident| {
+            let field_name = field_ident.to_string();
+            quote! {
+                if #base_name_ident.is_empty() {
+                    ::std::string::String::from(#field_name)
+                } else {
+                    ::std::format!("{}.{}", #base_name_ident, #field_name)
+                }
+            }
+        })
+        .collect();
+    let write_steps = field_idents
+        .iter()
+        .zip(indices.iter())
+        .zip(field_names.iter())
+        .map(|((field_ident, idx), field_name)| {
+            quote! {
+                let #aggregate_ident = #builder_param.write_field::<#ident, #idx, _, _>(
+                    #aggregate_ident,
+                    #field_ident,
+                    #field_name,
+                );
+            }
+        });
+    let insert_steps = field_idents
+        .iter()
+        .zip(field_tys.iter())
+        .zip(indices.iter())
+        .zip(field_names.iter())
+        .map(|(((field_ident, ty), idx), field_name)| {
+            quote! {
+                let #aggregate_ident = #builder_param.insert_field::<#ident, #ty, _, _, _>(
+                    #aggregate_ident,
+                    #field_ident,
+                    #idx,
+                    #field_name,
+                )?;
+            }
+        });
+    let build_doc = format!(
+        "Build a `{ident}` value — `poison` of `%{llvm_name}` and one `insertvalue` per field, \
+         folded by the builder's folder — with no `Result`, on a `UniqueBrand` module with \
+         llvmkit's own folder. Each argument is a view handle of its field's type or a Rust \
+         scalar literal (`FieldArg`). Any brand, any folder and any argument build with \
+         `try_build`."
+    );
+    let try_build_doc = format!(
+        "Build a `{ident}` value on any brand, through any folder, from any argument a field \
+         admits (`IntoIrField`, ids included): each is admitted at the builder's module and \
+         checked against its field."
+    );
 
     let accessors = field_idents
         .iter()
@@ -172,14 +198,25 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
             }
         });
 
-    let build_params = field_idents
+    let build_params: Vec<TokenStream2> = field_idents
         .iter()
         .zip(build_generics.iter())
-        .map(|(field_ident, generic)| quote! { #field_ident: #generic });
-    let build_bounds = build_generics
+        .map(|(field_ident, generic)| quote! { #field_ident: #generic })
+        .collect();
+    // `build` takes what lowers to the field's layout with no check;
+    // `try_build` takes what a field admits, checked.
+    let build_bounds: Vec<TokenStream2> = build_generics
         .iter()
         .zip(field_tys.iter())
-        .map(|(generic, ty)| quote! { #generic: #ir::IntoIrField<'ctx, #ty, B> });
+        .map(|(generic, ty)| {
+            quote! { #generic: #ir::FieldArg<'ctx, <#ty as #ir::IrField>::Layout, B> }
+        })
+        .collect();
+    let try_build_bounds: Vec<TokenStream2> = build_generics
+        .iter()
+        .zip(field_tys.iter())
+        .map(|(generic, ty)| quote! { #generic: #ir::IntoIrField<'ctx, #ty, B> })
+        .collect();
 
     Ok(quote! {
         /// The value of a struct of this schema, at the capability of the
@@ -268,25 +305,108 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
             #(#accessors)*
         }
 
-        impl<'ctx, B> #value_ident<'ctx, B>
-        where
-            B: #ir::ModuleBrand + 'ctx,
-        {
-            #[inline]
-            #vis fn build<'m, F, R, Name, #(#build_generics,)*>(
-                #module_param: #ir::ModuleView<'ctx, B>,
+        /// The builds of this schema's value, from the struct type
+        /// `get_or_insert_struct_of` answers: an extension of
+        /// `StructOf<Self>`, which holds the proof that the type exists with
+        /// this schema's body.
+        #vis trait #build_trait<'ctx, B: #ir::ModuleBrand + 'ctx>: ::core::marker::Sized {
+            #[doc = #build_doc]
+            fn build<'m, F, R, Name, #(#build_generics,)*>(
+                self,
                 #builder_param: &#ir::IrBuilder<'m, 'ctx, B, F, #ir::Positioned, R>,
                 #(#build_params,)*
                 #name_param: Name,
-            ) -> #ir::IrResult<Self>
+            ) -> #value_ident<'ctx, B>
+            where
+                B: #ir::UniqueBrand,
+                F: #ir::TrustedFolder<'ctx, B>,
+                R: #ir::ReturnMarker,
+                Name: ::core::convert::AsRef<str>,
+                #(#build_bounds,)*;
+
+            #[doc = #try_build_doc]
+            ///
+            /// # Errors
+            ///
+            /// `IrError::ForeignType` when another module minted the struct
+            /// type, and each field's admission error — `IrError::ForeignValueId`
+            /// for another module's value, a type mismatch for a value of
+            /// another type.
+            fn try_build<'m, F, R, Name, #(#build_generics,)*>(
+                self,
+                #builder_param: &#ir::IrBuilder<'m, 'ctx, B, F, #ir::Positioned, R>,
+                #(#build_params,)*
+                #name_param: Name,
+            ) -> #ir::IrResult<#value_ident<'ctx, B>>
             where
                 F: #ir::IrBuilderFolder<'ctx, B>,
                 R: #ir::ReturnMarker,
                 Name: ::core::convert::AsRef<str>,
+                #(#try_build_bounds,)*;
+        }
+
+        impl<'ctx, B, #capability_param> #build_trait<'ctx, B>
+            for #ir::StructOf<'ctx, #ident, B, #capability_param>
+        where
+            B: #ir::ModuleBrand + 'ctx,
+            #capability_param: #ir::Capability,
+        {
+            #[inline]
+            fn build<'m, F, R, Name, #(#build_generics,)*>(
+                self,
+                #builder_param: &#ir::IrBuilder<'m, 'ctx, B, F, #ir::Positioned, R>,
+                #(#build_params,)*
+                #name_param: Name,
+            ) -> #value_ident<'ctx, B>
+            where
+                B: #ir::UniqueBrand,
+                F: #ir::TrustedFolder<'ctx, B>,
+                R: #ir::ReturnMarker,
+                Name: ::core::convert::AsRef<str>,
                 #(#build_bounds,)*
             {
-                let #base_name_ident = #name_param.as_ref();
-                #build_return
+                #base_name
+                let #aggregate_ident = #builder_param.struct_poison(self);
+                #(#write_steps)*
+                <#value_ident<'ctx, B> as #ir::StructSchemaValue<'ctx, #ident, B, #ir::Mutable>>::from_schema_value(
+                    #aggregate_ident,
+                )
+            }
+
+            #[inline]
+            fn try_build<'m, F, R, Name, #(#build_generics,)*>(
+                self,
+                #builder_param: &#ir::IrBuilder<'m, 'ctx, B, F, #ir::Positioned, R>,
+                #(#build_params,)*
+                #name_param: Name,
+            ) -> #ir::IrResult<#value_ident<'ctx, B>>
+            where
+                F: #ir::IrBuilderFolder<'ctx, B>,
+                R: #ir::ReturnMarker,
+                Name: ::core::convert::AsRef<str>,
+                #(#try_build_bounds,)*
+            {
+                #base_name
+                let #aggregate_ident =
+                    <#value_ident<'ctx, B> as #ir::StructSchemaValue<'ctx, #ident, B, #ir::Mutable>>::from_schema_value(
+                        #builder_param.try_struct_poison(self)?,
+                    );
+                #(#insert_steps)*
+                ::core::result::Result::Ok(#aggregate_ident)
+            }
+        }
+
+        // A value of this schema fills a field laid out as this schema — a
+        // nested struct's field — in a build without `?`.
+        impl<'ctx, B, #capability_param> #ir::FieldArg<'ctx, #ident, B>
+            for #value_ident<'ctx, B, #capability_param>
+        where
+            B: #ir::UniqueBrand + 'ctx,
+            #capability_param: #ir::Capability,
+        {
+            #[inline]
+            fn lower(self, module: #ir::ModuleRef<'ctx, B>) -> #ir::LoweredField<'ctx, #ident, B> {
+                #ir::LoweredField::of(self, module)
             }
         }
 
@@ -451,61 +571,6 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
             }
         }
     })
-}
-
-fn build_value_steps(
-    schema_ident: &Ident,
-    field_idents: &[Ident],
-    field_tys: &[syn::Type],
-    indices: &[u32],
-    cx: BuildStepContext<'_>,
-) -> Vec<TokenStream2> {
-    let module_param = cx.module_param;
-    let builder_param = cx.builder_param;
-    let base_name_ident = cx.base_name_ident;
-    let mut steps = Vec::new();
-    for (position, ((field_ident, ty), idx)) in field_idents
-        .iter()
-        .zip(field_tys.iter())
-        .zip(indices.iter())
-        .enumerate()
-    {
-        let value_ident = Ident::new(&format!("__llvmkit_value_{position}"), Span::mixed_site());
-        let aggregate = if position == 0 {
-            quote! {
-                #module_param
-                    .get_or_insert_struct_of::<#schema_ident>()?
-                    .as_type()
-                    .poison()
-                    .as_constant()
-            }
-        } else {
-            let previous = Ident::new(
-                &format!("__llvmkit_value_{}", position - 1),
-                Span::mixed_site(),
-            );
-            quote! { #previous }
-        };
-        let field_name = field_ident.to_string();
-        let name_ident = Ident::new(
-            &format!("__llvmkit_field_name_{position}"),
-            Span::mixed_site(),
-        );
-        steps.push(quote! {
-            let #name_ident = if #base_name_ident.is_empty() {
-                ::std::string::String::from(#field_name)
-            } else {
-                ::std::format!("{}.{}", #base_name_ident, #field_name)
-            };
-            let #value_ident = #builder_param.insert_field::<#schema_ident, #ty, _, _, _>(
-                #aggregate,
-                #field_ident,
-                #idx,
-                #name_ident,
-            )?;
-        });
-    }
-    steps
 }
 
 fn parse_container_attrs(attrs: &[syn::Attribute], config: &mut Config) -> Result<()> {

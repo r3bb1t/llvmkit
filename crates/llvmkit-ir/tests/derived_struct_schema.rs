@@ -91,15 +91,18 @@ fn derive_builds_nested_named_structs_and_accessors() -> Result<(), IrError> {
     let min = rect.min(&b);
     let max = rect.max(&b);
     let x = min.x(&b);
-    let adjusted_min = PointValue::build(m.as_view(), &b, x, max.y(&b), "adjusted_min")?;
-    let adjusted_rect = RectValue::build(m.as_view(), &b, adjusted_min, max, "adjusted_rect")?;
-    let rebuilt = WindowPlacementValue::build(
-        m.as_view(),
+    let adjusted_min =
+        m.get_or_insert_struct_of::<Point>()?
+            .build(&b, x, max.y(&b), "adjusted_min");
+    let adjusted_rect =
+        m.get_or_insert_struct_of::<Rect>()?
+            .build(&b, adjusted_min, max, "adjusted_rect");
+    let rebuilt = m.get_or_insert_struct_of::<WindowPlacement>()?.build(
         &b,
         placement.show_cmd(&b),
         adjusted_rect,
         "rebuilt",
-    )?;
+    );
     b.ret(rebuilt)?;
 
     let text = format!("{m}");
@@ -175,8 +178,12 @@ fn derive_struct_fields_unpacks_top_level_fields() -> Result<(), IrError> {
     let (show_cmd, normal_position) = m.view(f).params();
     let _: IntValue<'_, i32, _> = show_cmd;
     let _: RectValue<'_, _> = normal_position;
-    let rebuilt =
-        WindowPlacementValue::build(m.as_view(), &b, show_cmd, normal_position, "rebuilt")?;
+    let rebuilt = m.get_or_insert_struct_of::<WindowPlacement>()?.build(
+        &b,
+        show_cmd,
+        normal_position,
+        "rebuilt",
+    );
     b.ret(rebuilt)?;
     let text = format!("{m}");
     assert!(
@@ -209,7 +216,9 @@ fn derive_build_accepts_fields_named_like_helper_parameters() -> Result<(), IrEr
     let f = m.add_typed_function::<CollisionNames, (), _>("collision", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let value = CollisionNamesValue::build(m.as_view(), &b, 1_i32, 2_i32, 3_i32, "collision")?;
+    let value =
+        m.get_or_insert_struct_of::<CollisionNames>()?
+            .build(&b, 1_i32, 2_i32, 3_i32, "collision");
     b.ret(value)?;
     let text = format!("{m}");
     assert!(
@@ -300,6 +309,133 @@ fn a_derived_field_of_each_layout_reads_its_value() -> Result<(), IrError> {
     Ok(())
 }
 
+/// The module `PointValue::build(m.as_view(), &b, x, 7_i32, "p")?` printed
+/// before builds moved to the `StructOf` token — captured from that build, so
+/// the token's build is compared with the output it replaces.
+const TOKEN_BUILD_EXPECTED: &str = "; ModuleID = 'token_build'
+
+%Point = type { i32, i32 }
+
+define %Point @make(i32 %0) {
+entry:
+  %p.x = insertvalue %Point poison, i32 %0, 0
+  %p.y = insertvalue %Point %p.x, i32 7, 1
+  ret %Point %p.y
+}
+";
+
+/// llvmkit-specific (D2, D10), no upstream counterpart —
+/// `IRBuilderBase::CreateInsertValue` takes any `Value *` and checks nothing:
+/// once `get_or_insert_struct_of` has answered — the one fallible step, where
+/// `%Point`'s body is confirmed or set — a build on a `UniqueBrand` module
+/// with llvmkit's own folder needs no `?`, and prints the `insertvalue` chain
+/// the old fallible build printed.
+#[test]
+fn a_build_needs_no_question_mark() -> Result<(), IrError> {
+    let m = module_new!("token_build")?;
+    let f = m.add_typed_function::<Point, (i32,), _>("make", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let (x,) = m.view(f).params();
+    let point = m.get_or_insert_struct_of::<Point>()?;
+    let p = point.build(&b, x, 7_i32, "p");
+    b.ret(p)?;
+    assert_eq!(format!("{m}"), TOKEN_BUILD_EXPECTED);
+    Ok(())
+}
+
+/// A struct with one pointer field, in address space 0.
+#[derive(IrStruct)]
+struct Node {
+    next: Ptr,
+}
+
+/// llvmkit-specific (D3, D10), no upstream counterpart: a `Ptr` field's build
+/// argument is an address-space-0 pointer by type — here the `alloca_in::<0>`
+/// result — so no build can store a `ptr addrspace(1)` in it.
+/// `compile_fail/build_with_dyn_pointer.rs` is the refused half.
+#[test]
+fn a_pointer_field_takes_a_space_zero_pointer() -> Result<(), IrError> {
+    let Node { next } = Node { next: Ptr::null() };
+    let _ = next;
+
+    let m = module_new!("pointer_build")?;
+    let f = m.add_typed_function::<Node, (), _>("make", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let slot = m.view(b.alloca_in::<0, _, _>(m.i32_type(), "slot")?);
+    let node = m.get_or_insert_struct_of::<Node>()?;
+    let n = node.build(&b, slot, "n");
+    b.ret(n)?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("%n.next = insertvalue %Node poison, ptr %slot, 0"),
+        "got:\n{text}"
+    );
+    Ok(())
+}
+
+/// llvmkit-specific (D2), no upstream counterpart: a nested field's build
+/// argument is the nested schema's own value — two `Point`s built on their
+/// token become a `Rect`'s fields.
+#[test]
+fn a_nested_field_takes_a_derived_value() -> Result<(), IrError> {
+    let m = module_new!("nested_build")?;
+    let f = m.add_typed_function::<Rect, (i32,), _>("make", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let (x,) = m.view(f).params();
+    let point = m.get_or_insert_struct_of::<Point>()?;
+    let rect = m.get_or_insert_struct_of::<Rect>()?;
+    let lo = point.build(&b, x, 1_i32, "lo");
+    let hi = point.build(&b, 2_i32, x, "hi");
+    let r = rect.build(&b, lo, hi, "r");
+    b.ret(r)?;
+    let text = format!("{m}");
+    for line in [
+        "%r.min = insertvalue %Rect poison, %Point %lo.y, 0",
+        "%r.max = insertvalue %Rect %r.min, %Point %hi.y, 1",
+    ] {
+        assert!(text.contains(line), "missing {line:?} in:\n{text}");
+    }
+    Ok(())
+}
+
+/// Review Focus 5 of the type-constructor validity plan (llvmkit-specific, D7;
+/// LLVM's `Module` has no brand): a storable id outlives its module, and a
+/// named brand is issued again once that module drops, so an id from the dead
+/// module type-checks against its successor. `try_build` admits each argument
+/// against the builder's module, so the stale id is refused with
+/// `ForeignValueId` — never resolved in the new module. (`build` takes no ids
+/// at all: `compile_fail/build_with_id.rs`.)
+#[test]
+fn a_stale_id_is_refused_by_try_build() -> Result<(), IrError> {
+    struct Generation;
+    impl ModuleBrand for Generation {}
+
+    let stale = {
+        let first = Module::branded::<Generation, _>("first")?;
+        let f = first.add_typed_function::<(), (i32,), _>("f", Linkage::External)?;
+        let (x,) = first.view(f).params();
+        x.id()
+        // `first` drops here, releasing the brand; the id survives it.
+    };
+
+    let second = Module::branded::<Generation, _>("second")?;
+    let f = second.add_typed_function::<Point, (), _>("make", Linkage::External)?;
+    let entry = second.view(f).append_basic_block(&second, "entry");
+    let b = IrBuilder::with_folder(&second, NoFolder).position_at_end(entry);
+    let point = second.get_or_insert_struct_of::<Point>()?;
+    assert_eq!(
+        point.try_build(&b, stale, 7_i32, "p").map(|_| ()),
+        Err(IrError::ForeignValueId)
+    );
+    // The same build with a live value of this module succeeds.
+    let live = point.try_build(&b, 1_i32, 7_i32, "p")?;
+    b.ret(live)?;
+    Ok(())
+}
+
 /// llvmkit-specific (D7, D10), no upstream counterpart —
 /// `IRBuilderBase::CreateExtractValue` returns a `Value *` and cannot report a
 /// foreign or mistyped aggregate at all: on a `UniqueBrand` module with one of
@@ -334,6 +470,7 @@ fn a_constant_struct_field_read_folds() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let point = m
         .get_or_insert_struct_of::<Point>()?
+        .struct_type()
         .const_struct([i32_ty.const_int(1_i32), i32_ty.const_int(2_i32)])?;
     let p = PointValue::try_from(point.as_constant())?;
     let f = m.add_typed_function::<i32, (), _>("one", Linkage::External)?;
@@ -343,6 +480,31 @@ fn a_constant_struct_field_read_folds() -> Result<(), IrError> {
     assert_eq!(x.as_erased(), i32_ty.const_int(1_i32).as_erased());
     assert_eq!(b.insert_block().instructions().len(), 0);
     b.ret(x)?;
+    Ok(())
+}
+
+/// Mirrors `ConstantFolder::FoldInsertValue`, which hands a constant aggregate
+/// and a constant value to `ConstantFoldInsertValueInstruction`
+/// (`lib/IR/ConstantFold.cpp`) and gets back the rebuilt aggregate: built
+/// through `ConstantFolder` from literals, a `Point` is the constant
+/// `%Point { i32 1, i32 2 }` — `poison` with each field replaced in turn — and
+/// no instruction is appended. `a_constant_struct_field_read_folds` is the
+/// read half.
+#[test]
+fn a_constant_struct_build_folds() -> Result<(), IrError> {
+    let m = module_new!("folded_build")?;
+    let i32_ty = m.i32_type();
+    let point = m.get_or_insert_struct_of::<Point>()?;
+    let expected = point
+        .struct_type()
+        .const_struct([i32_ty.const_int(1_i32), i32_ty.const_int(2_i32)])?;
+    let f = m.add_typed_function::<Point, (), _>("one_two", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, ConstantFolder).position_at_end(entry);
+    let p = point.build(&b, 1_i32, 2_i32, "p");
+    assert_eq!(p.as_erased(), expected.as_erased());
+    assert_eq!(b.insert_block().instructions().len(), 0);
+    b.ret(p)?;
     Ok(())
 }
 

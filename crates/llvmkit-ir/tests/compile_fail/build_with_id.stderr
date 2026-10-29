@@ -1,0 +1,31 @@
+error[E0277]: `IntValueId<i32, __LlvmkitGeneratedBrand>` is not a build argument for a field laid out as `i32`
+  --> tests/compile_fail/build_with_id.rs:24:29
+   |
+24 |     let _ = point.build(&b, x.id(), 7_i32, "p");
+   |                   -----     ^^^^^^ not a `FieldArg` for this field
+   |                   |
+   |                   required by a bound introduced by this call
+   |
+   = help: the trait `FieldArg<'_, i32, __LlvmkitGeneratedBrand>` is not implemented for `IntValueId<i32, __LlvmkitGeneratedBrand>`
+   = note: a build without `?` takes a view handle of the field's own type (for `Ptr`, an address-space-0 `PointerValue`) or a Rust scalar literal; storable ids and other values go through `try_build`, which checks
+   = help: the following other types implement trait `FieldArg<'ctx, L, B>`:
+             `ArrayValue<'ctx, L, ArrLen<N>, B, C>` implements `FieldArg<'ctx, [L; N], B>`
+             `FloatValue<'ctx, f32, B, C>` implements `FieldArg<'ctx, f32, B>`
+             `FloatValue<'ctx, f64, B, C>` implements `FieldArg<'ctx, f64, B>`
+             `FloatValue<'ctx, llvmkit_ir::Bfloat, B, C>` implements `FieldArg<'ctx, llvmkit_ir::Bfloat, B>`
+             `FloatValue<'ctx, llvmkit_ir::Fp128, B, C>` implements `FieldArg<'ctx, llvmkit_ir::Fp128, B>`
+             `FloatValue<'ctx, llvmkit_ir::Half, B, C>` implements `FieldArg<'ctx, llvmkit_ir::Half, B>`
+             `FloatValue<'ctx, llvmkit_ir::PpcFp128, B, C>` implements `FieldArg<'ctx, llvmkit_ir::PpcFp128, B>`
+             `FloatValue<'ctx, llvmkit_ir::X86Fp80, B, C>` implements `FieldArg<'ctx, llvmkit_ir::X86Fp80, B>`
+           and $N others
+note: required by a bound in `PointBuild::build`
+  --> tests/compile_fail/build_with_id.rs:11:10
+   |
+11 | #[derive(IrStruct)]
+   |          ^^^^^^^^ required by this bound in `PointBuild::build`
+   = note: this error originates in the derive macro `IrStruct` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: consider removing this method call, as the receiver has type `IntValue<'_, i32, __LlvmkitGeneratedBrand>` and `IntValue<'_, i32, __LlvmkitGeneratedBrand>: FieldArg<'_, i32, __LlvmkitGeneratedBrand>` trivially holds
+   |
+24 -     let _ = point.build(&b, x.id(), 7_i32, "p");
+24 +     let _ = point.build(&b, x, 7_i32, "p");
+   |

@@ -49,15 +49,15 @@ fn build() -> Result<String, IrError> {
     let min_x = min.x(&b);
     let max_y = max.y(&b);
 
-    let rebuilt_min = PointValue::build(m.as_view(), &b, min_x, max_y, "normal_position.min")?;
-    let rebuilt_rect = RectValue::build(m.as_view(), &b, rebuilt_min, max, "normal_position")?;
-    let rebuilt = WindowPlacementValue::build(
-        m.as_view(),
-        &b,
-        placement.show_cmd(&b),
-        rebuilt_rect,
-        "placement",
-    )?;
+    // The struct types, each with its schema's body: the one fallible
+    // step. A build from one needs no `?`.
+    let point = m.get_or_insert_struct_of::<Point>()?;
+    let rect = m.get_or_insert_struct_of::<Rect>()?;
+    let window = m.get_or_insert_struct_of::<WindowPlacement>()?;
+
+    let rebuilt_min = point.build(&b, min_x, max_y, "normal_position.min");
+    let rebuilt_rect = rect.build(&b, rebuilt_min, max, "normal_position");
+    let rebuilt = window.build(&b, placement.show_cmd(&b), rebuilt_rect, "placement");
     b.ret(rebuilt)?;
 
     Ok(format!("{m}"))
@@ -124,9 +124,29 @@ For `struct Point { x: i32, y: i32 }`, the derive creates:
     `DynBrand` names many live modules, or a folder of your own, which is
     consulted on every read and whose answer is checked. Calling `x` where
     either requirement fails is a compile error that names the missing bound.
-- `PointValue::build(module_view, &builder, x, y, name)` — the first argument is
-  a `ModuleView<'ctx, B>`, spelled `m.as_view()` at the call site — implemented
-  as a poison aggregate plus `insertvalue` steps.
+- A `PointBuild` trait, implemented for `StructOf<'ctx, Point, B, C>` — the
+  struct type `m.get_or_insert_struct_of::<Point>()` answers once it has
+  confirmed or set `%Point`'s body. Its methods build a `PointValue` as a
+  poison aggregate plus one `insertvalue` per field, named `name.x`,
+  `name.y` (or `x`, `y` for an empty name). The trait is how a method lands on
+  a type llvmkit owns; it is in scope wherever `Point` is, and a module that
+  builds a `Point` elsewhere imports it (`use crate::shapes::PointBuild;`).
+  - `point.build(&builder, x, y, name)` returns the value with no `Result`,
+    on the same terms as `x(&builder)`: a `UniqueBrand` module and a
+    `TrustedFolder`. Each argument is a `FieldArg` of its field's layout — a
+    view handle of the field's own type at either capability (a `PointerValue`
+    in address space 0 for a `Ptr` field, a `PointValue` for a `Point` field)
+    or, for a scalar field, a Rust literal of that scalar (`7_i32`, `7_u32`
+    for a `u32` field, `0.5_f64`), which becomes a constant. A storable id is
+    no `FieldArg`: an id outlives its module, and the brand is issued again
+    once the module drops. The `StructOf` token is what makes the build
+    infallible: it proves `%Point` has `Point`'s body, so no build can meet
+    `StructBodyMismatch`.
+  - `point.try_build(&builder, x, y, name)` returns `IrResult` and takes
+    anything a field admits (`IntoIrField`, ids included) on any brand,
+    through any folder: each argument is admitted at the builder's module
+    (`IrError::ForeignValueId` for another module's, a stale id included) and
+    checked against its field (`IrBuilder::insert_field`).
 - `PointValue::try_from(raw)` for `StructValue`, `Value`, `Argument`,
   `Constant`, and attached `Instruction` sources. Each conversion validates the
   raw struct against the `Point` schema (`SchemaValue::try_new`) before
@@ -304,7 +324,9 @@ let f = m.add_typed_function::<WindowPlacement, StructFields<WindowPlacement>, _
 let entry = m.view(f).append_basic_block(&m, "entry");
 let b = m.view(f).builder(&m).position_at_end(entry);
 let (show_cmd, normal_position) = m.view(f).params();
-let rebuilt = WindowPlacementValue::build(m.as_view(), &b, show_cmd, normal_position, "rebuilt")?;
+let rebuilt = m
+    .get_or_insert_struct_of::<WindowPlacement>()?
+    .build(&b, show_cmd, normal_position, "rebuilt");
 ```
 
 `StructFields<S>` unpacks only `S`'s top-level fields. Nested structs remain

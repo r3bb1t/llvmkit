@@ -1,0 +1,23 @@
+error[E0277]: `PointerValue<'_, SpaceDyn, __LlvmkitGeneratedBrand>` is not a build argument for a field laid out as `llvmkit_ir::Ptr`
+  --> tests/compile_fail/build_with_dyn_pointer.rs:22:28
+   |
+22 |     let _ = node.build(&b, slot, "n");
+   |                  -----     ^^^^ not a `FieldArg` for this field
+   |                  |
+   |                  required by a bound introduced by this call
+   |
+   = note: a build without `?` takes a view handle of the field's own type (for `Ptr`, an address-space-0 `PointerValue`) or a Rust scalar literal; storable ids and other values go through `try_build`, which checks
+help: the trait `FieldArg<'_, llvmkit_ir::Ptr, __LlvmkitGeneratedBrand>` is not implemented for `PointerValue<'_, SpaceDyn, __LlvmkitGeneratedBrand, Mutable>`
+      but it is implemented for `PointerValue<'_, llvmkit_ir::Space<0>, __LlvmkitGeneratedBrand, _>`
+  --> src/struct_schema.rs
+   |
+   | / impl<'ctx, B: UniqueBrand + 'ctx, C: Capability, const AS: u32> FieldArg<'ctx, Ptr<AS>, B>
+   | |     for PointerValue<'ctx, crate::Space<AS>, B, C>
+   | |__________________________________________________^
+   = help: for that trait implementation, expected `llvmkit_ir::Space<0>`, found `SpaceDyn`
+note: required by a bound in `NodeBuild::build`
+  --> tests/compile_fail/build_with_dyn_pointer.rs:10:10
+   |
+10 | #[derive(IrStruct)]
+   |          ^^^^^^^^ required by this bound in `NodeBuild::build`
+   = note: this error originates in the derive macro `IrStruct` (in Nightly builds, run with -Z macro-backtrace for more info)

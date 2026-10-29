@@ -2220,7 +2220,12 @@ moves to `Constant::kind`.
   finds nothing), so a handle list cannot be typed as constants of `E`
   without a new projection. The fallible `const_array` / `const_struct` /
   `const_vector` already accept `impl IntoConstantValue` elements. The same
-  question applies to a `StructSchema`-keyed tuple-struct constant.
+  question applies to a schema's struct constant. Its receiver exists:
+  `StructOf<'ctx, S, B, C>`, which `get_or_insert_struct_of::<S>()` answers,
+  proves `%S` has `S`'s body, and a derived *build* from it is infallible
+  (`FieldArg` arguments). A constant has no such constructor on it —
+  `struct_type().const_struct(…)` is the route, fallible for the two reasons
+  above.
 
 ## Session follow-ups
 

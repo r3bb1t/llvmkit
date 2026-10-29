@@ -18,6 +18,7 @@ use crate::argument::Argument;
 use crate::array_len::{ArrLen, static_len_u64};
 use crate::capability::{Capability, Mutable, ReadOnly};
 use crate::constant::Constant;
+use crate::derived_types::StructType;
 use crate::element::VecElem;
 use crate::error::{IrError, IrResult, TypeKindLabel};
 use crate::float_kind::{Bfloat, Fp128, Half, IntoFloatValue, PpcFp128, X86Fp80};
@@ -29,7 +30,8 @@ use crate::function_signature::{
 use crate::instruction::{Instruction, state::Attached};
 use crate::int_width::{IntoIntValue, Width};
 use crate::marker::{Dyn, Ptr, ReturnMarker};
-use crate::module::{ModuleBrand, ModuleRef, ModuleView};
+use crate::module::{ModuleBrand, ModuleRef, ModuleView, UniqueBrand};
+use crate::struct_body_state::BodySet;
 use crate::r#type::{Type, TypeData};
 use crate::value::{
     ArrayValue, FloatValue, IntValue, IntoErasedValue, IntoPointerValue, PointerValue, StructValue,
@@ -130,6 +132,13 @@ pub trait FieldLayout: layout_sealed::Sealed + Sized + 'static {
         raw: Value<'ctx, B, C>,
         token: CrateOnly,
     ) -> Self::Value<'ctx, B, C>;
+
+    /// The layout's value, erased.
+    #[doc(hidden)]
+    fn erase<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        value: Self::Value<'ctx, B, C>,
+        token: CrateOnly,
+    ) -> Value<'ctx, B, C>;
 }
 
 /// The value of a field of layout `L`.
@@ -342,6 +351,144 @@ pub trait StructSchemaValue<'ctx, S: StructSchema, B: ModuleBrand, C: Capability
     fn schema_value(self) -> SchemaValue<'ctx, S, B, C>;
 }
 
+/// Schema `S`'s struct type in a module, with `S`'s body — what
+/// `get_or_insert_struct_of::<S>()` answers once it has confirmed or set the
+/// body. Holding one proves `%S` exists with that body, so a build from it
+/// (the derive's `build` / `try_build`) does no lookup and cannot meet
+/// [`IrError::StructBodyMismatch`].
+#[derive(Branded)]
+pub struct StructOf<'ctx, S: StructSchema, B: ModuleBrand, C: Capability = Mutable> {
+    ty: StructType<'ctx, BodySet, B, C>,
+    _schema: PhantomData<fn() -> S>,
+}
+
+impl<'ctx, S, B, C> StructOf<'ctx, S, B, C>
+where
+    S: StructSchema,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+{
+    /// Wrap `ty`, which llvmkit has confirmed is `%S` with `S`'s body.
+    #[inline]
+    pub(crate) fn new_unchecked(ty: StructType<'ctx, BodySet, B, C>) -> Self {
+        Self {
+            ty,
+            _schema: PhantomData,
+        }
+    }
+
+    /// The struct type.
+    #[inline]
+    pub fn struct_type(self) -> StructType<'ctx, BodySet, B, C> {
+        self.ty
+    }
+
+    /// The struct type, erased.
+    #[inline]
+    pub fn as_type(self) -> Type<'ctx, B, C> {
+        self.ty.as_type()
+    }
+}
+
+/// What a build without `?` takes for a field of layout `L`: a value of the
+/// layout's own type — its view handle, at any capability — or, for a scalar
+/// layout, a Rust literal of that scalar, which becomes a constant. A storable
+/// id is no argument: an id outlives its module, so only the checked
+/// `try_build` takes one.
+///
+/// Keyed by layout, so a field kind of your own takes its layout's arguments.
+/// Open, so the derive can implement it for the value type it generates; an
+/// implementation can answer only through [`LoweredField::of`], which takes a
+/// value of the layout's own type, so no argument carries another type.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a build argument for a field laid out as `{L}`",
+    label = "not a `FieldArg` for this field",
+    note = "a build without `?` takes a view handle of the field's own type (for `Ptr`, an \
+            address-space-0 `PointerValue`) or a Rust scalar literal; storable ids and \
+            other values go through `try_build`, which checks"
+)]
+pub trait FieldArg<'ctx, L: FieldLayout, B: UniqueBrand>: Sized {
+    /// This argument as a value of the layout's type in `module`.
+    fn lower(self, module: ModuleRef<'ctx, B>) -> LoweredField<'ctx, L, B>;
+}
+
+/// A build argument lowered to a value of layout `L`'s type — only llvmkit
+/// mints one, from a value of that type ([`of`](Self::of)) or a constant of it.
+pub struct LoweredField<'ctx, L: FieldLayout, B: ModuleBrand> {
+    value: Value<'ctx, B>,
+    _layout: PhantomData<fn() -> L>,
+}
+
+impl<'ctx, L, B> LoweredField<'ctx, L, B>
+where
+    L: FieldLayout,
+    B: ModuleBrand + 'ctx,
+{
+    /// A value of layout `L`'s own type, in `module`. No module check: the
+    /// registry keeps one live module per [`UniqueBrand`] brand, and both
+    /// `value` and `module` borrow a live module of brand `B`.
+    #[inline]
+    pub fn of<C: Capability>(value: LayoutValue<'ctx, L, B, C>, module: ModuleRef<'ctx, B>) -> Self
+    where
+        B: UniqueBrand,
+    {
+        Self::new_unchecked(L::erase(value, CrateOnly(())).reminted_trusting_same_module(module))
+    }
+
+    /// Wrap `value`, which llvmkit has proven to be of `L`'s type and of the
+    /// builder's module.
+    #[inline]
+    pub(crate) fn new_unchecked(value: Value<'ctx, B>) -> Self {
+        Self {
+            value,
+            _layout: PhantomData,
+        }
+    }
+
+    /// The lowered value.
+    #[inline]
+    pub(crate) fn value(self) -> Value<'ctx, B> {
+        self.value
+    }
+}
+
+/// A Rust integer literal as a build argument for the integer layout of its
+/// width: a constant minted at the layout's own type. Unsigned literals fill
+/// the signless layout of their width, as `u8`…`u128` fields do.
+macro_rules! impl_int_literal_field_arg {
+    ($($layout:ty => $method:ident : $($lit:ty),+);+ $(;)?) => {$($(
+        impl<'ctx, B: UniqueBrand + 'ctx> FieldArg<'ctx, $layout, B> for $lit {
+            #[inline]
+            fn lower(self, module: ModuleRef<'ctx, B>) -> LoweredField<'ctx, $layout, B> {
+                LoweredField::new_unchecked(module.$method().const_int(self).as_erased())
+            }
+        }
+    )+)+};
+}
+
+impl_int_literal_field_arg!(
+    bool => bool_type: bool;
+    i8 => i8_type: i8, u8;
+    i16 => i16_type: i16, u16;
+    i32 => i32_type: i32, u32;
+    i64 => i64_type: i64, u64;
+    i128 => i128_type: i128, u128;
+);
+
+impl<'ctx, B: UniqueBrand + 'ctx> FieldArg<'ctx, f32, B> for f32 {
+    #[inline]
+    fn lower(self, module: ModuleRef<'ctx, B>) -> LoweredField<'ctx, f32, B> {
+        LoweredField::new_unchecked(module.f32_type().const_float(self).as_erased())
+    }
+}
+
+impl<'ctx, B: UniqueBrand + 'ctx> FieldArg<'ctx, f64, B> for f64 {
+    #[inline]
+    fn lower(self, module: ModuleRef<'ctx, B>) -> LoweredField<'ctx, f64, B> {
+        LoweredField::new_unchecked(module.f64_type().const_double(self).as_erased())
+    }
+}
+
 /// The identity check behind [`SchemaValue::try_new`]: `raw`'s type must be
 /// the struct schema `S` describes. It reads `raw` only through its own
 /// module, so it runs on a handle of any capability — the operand lifts below
@@ -438,6 +585,14 @@ where
             StructValue::from_value_unchecked(raw),
         ))
     }
+
+    #[inline]
+    fn erase<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        value: Self::Value<'ctx, B, C>,
+        _token: CrateOnly,
+    ) -> Value<'ctx, B, C> {
+        value.schema_value().as_erased()
+    }
 }
 
 impl<S> IrField for S
@@ -518,9 +673,26 @@ macro_rules! impl_int_layout {
             ) -> Self::Value<'ctx, B, C> {
                 IntValue::from_value_unchecked(raw)
             }
+
+            #[inline]
+            fn erase<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+                value: Self::Value<'ctx, B, C>,
+                _token: CrateOnly,
+            ) -> Value<'ctx, B, C> {
+                value.as_erased()
+            }
         }
 
         impl ArrayElementLayout for $w {}
+
+        impl<'ctx, B: UniqueBrand + 'ctx, C: Capability> FieldArg<'ctx, $w, B>
+            for IntValue<'ctx, $w, B, C>
+        {
+            #[inline]
+            fn lower(self, module: ModuleRef<'ctx, B>) -> LoweredField<'ctx, $w, B> {
+                LoweredField::of(self, module)
+            }
+        }
 
         impl_layout_field!($w => IntValue<$w>);
 
@@ -602,6 +774,23 @@ impl<const N: u32> FieldLayout for Width<N> {
     ) -> Self::Value<'ctx, B, C> {
         IntValue::from_value_unchecked(raw)
     }
+
+    #[inline]
+    fn erase<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        value: Self::Value<'ctx, B, C>,
+        _token: CrateOnly,
+    ) -> Value<'ctx, B, C> {
+        value.as_erased()
+    }
+}
+
+impl<'ctx, B: UniqueBrand + 'ctx, C: Capability, const N: u32> FieldArg<'ctx, Width<N>, B>
+    for IntValue<'ctx, Width<N>, B, C>
+{
+    #[inline]
+    fn lower(self, module: ModuleRef<'ctx, B>) -> LoweredField<'ctx, Width<N>, B> {
+        LoweredField::of(self, module)
+    }
 }
 
 impl<const N: u32> IrField for Width<N> {
@@ -665,9 +854,26 @@ macro_rules! impl_float_layout {
             ) -> Self::Value<'ctx, B, C> {
                 FloatValue::from_value_unchecked(raw)
             }
+
+            #[inline]
+            fn erase<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+                value: Self::Value<'ctx, B, C>,
+                _token: CrateOnly,
+            ) -> Value<'ctx, B, C> {
+                value.as_erased()
+            }
         }
 
         impl ArrayElementLayout for $k {}
+
+        impl<'ctx, B: UniqueBrand + 'ctx, C: Capability> FieldArg<'ctx, $k, B>
+            for FloatValue<'ctx, $k, B, C>
+        {
+            #[inline]
+            fn lower(self, module: ModuleRef<'ctx, B>) -> LoweredField<'ctx, $k, B> {
+                LoweredField::of(self, module)
+            }
+        }
 
         impl_layout_field!($k => FloatValue<$k>);
 
@@ -724,6 +930,25 @@ impl<const AS: u32> FieldLayout for Ptr<AS> {
         _token: CrateOnly,
     ) -> Self::Value<'ctx, B, C> {
         PointerValue::from_value_unchecked(raw)
+    }
+
+    #[inline]
+    fn erase<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        value: Self::Value<'ctx, B, C>,
+        _token: CrateOnly,
+    ) -> Value<'ctx, B, C> {
+        value.as_erased()
+    }
+}
+
+// A `Ptr<AS>` field's build argument is a pointer in address space `AS` by
+// type — never a `SpaceDyn` one, whose space is known only at run time.
+impl<'ctx, B: UniqueBrand + 'ctx, C: Capability, const AS: u32> FieldArg<'ctx, Ptr<AS>, B>
+    for PointerValue<'ctx, crate::Space<AS>, B, C>
+{
+    #[inline]
+    fn lower(self, module: ModuleRef<'ctx, B>) -> LoweredField<'ctx, Ptr<AS>, B> {
+        LoweredField::of(self, module)
     }
 }
 
@@ -795,6 +1020,27 @@ impl<L: ArrayElementLayout, const N: usize> FieldLayout for [L; N] {
         _token: CrateOnly,
     ) -> Self::Value<'ctx, B, C> {
         ArrayValue::from_value_unchecked(raw)
+    }
+
+    #[inline]
+    fn erase<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        value: Self::Value<'ctx, B, C>,
+        _token: CrateOnly,
+    ) -> Value<'ctx, B, C> {
+        value.as_erased()
+    }
+}
+
+impl<'ctx, L, B, C, const N: usize> FieldArg<'ctx, [L; N], B>
+    for ArrayValue<'ctx, L, ArrLen<N>, B, C>
+where
+    L: ArrayElementLayout,
+    B: UniqueBrand + 'ctx,
+    C: Capability,
+{
+    #[inline]
+    fn lower(self, module: ModuleRef<'ctx, B>) -> LoweredField<'ctx, [L; N], B> {
+        LoweredField::of(self, module)
     }
 }
 
@@ -1254,7 +1500,9 @@ mod tests {
         let f = m.add_typed_function::<i32, (Point,), _>("consume_point", Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let point = PointValue::build(m.as_view(), &b, 1_i32, 2_i32, "point")?;
+        let point = m
+            .get_or_insert_struct_of::<Point>()?
+            .build(&b, 1_i32, 2_i32, "point");
 
         let ids = <(_,) as CallArgs<'_, (Point,), _>>::lower((point,), (&m).into(), CrateOnly(()))?;
 

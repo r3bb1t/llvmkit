@@ -53,15 +53,15 @@ fn main() -> Result<(), IrError> {
         let min_x = min.x(&b);
         let max_y = max.y(&b);
 
-        let rebuilt_min = PointValue::build(m.as_view(), &b, min_x, max_y, "normal_position.min")?;
-        let rebuilt_rect = RectValue::build(m.as_view(), &b, rebuilt_min, max, "normal_position")?;
-        let rebuilt = WindowPlacementValue::build(
-            m.as_view(),
-            &b,
-            placement.show_cmd(&b),
-            rebuilt_rect,
-            "placement",
-        )?;
+        // The struct types, each with its schema's body: the one fallible
+        // step. A build from one needs no `?`.
+        let point = m.get_or_insert_struct_of::<Point>()?;
+        let rect = m.get_or_insert_struct_of::<Rect>()?;
+        let window = m.get_or_insert_struct_of::<WindowPlacement>()?;
+
+        let rebuilt_min = point.build(&b, min_x, max_y, "normal_position.min");
+        let rebuilt_rect = rect.build(&b, rebuilt_min, max, "normal_position");
+        let rebuilt = window.build(&b, placement.show_cmd(&b), rebuilt_rect, "placement");
         b.ret(rebuilt)?;
 
         format!("{m}")

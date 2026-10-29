@@ -304,7 +304,10 @@ let (placement,) = m.view(f).params();
 // `normal_position` returns `RectValue<'ctx, B>`, and `min` returns
 // `PointValue<'ctx, B>`; nested structs keep their generated wrapper type.
 let rect = placement.normal_position(&b);
-let _min = rect.min(&b);
+let min = rect.min(&b);
+// A build starts from the struct type, the one fallible step; the build
+// itself needs no `?` (`try_build` takes any brand, folder or argument).
+let moved = m.get_or_insert_struct_of::<Point>()?.build(&b, min.x(&b), 7_i32, "moved");
 ```
 
 A field is one of llvmkit's layouts — an integer (an unsigned field is the

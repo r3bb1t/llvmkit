@@ -482,4 +482,17 @@ pub trait TrustedFolder<'ctx, B: ModuleBrand + 'ctx>:
         index: u32,
         token: CrateOnly,
     ) -> Option<Value<'ctx, B>>;
+
+    /// `aggregate` with field `index` replaced by `value` when this folder
+    /// folds the write — a value of the aggregate's type by construction — or
+    /// `None` to emit the `insertvalue`. The caller hands it a `value` of the
+    /// field's type, in `aggregate`'s module.
+    #[doc(hidden)]
+    fn fold_field_insert(
+        &self,
+        aggregate: Value<'ctx, B>,
+        value: Value<'ctx, B>,
+        index: u32,
+        token: CrateOnly,
+    ) -> Option<Value<'ctx, B>>;
 }

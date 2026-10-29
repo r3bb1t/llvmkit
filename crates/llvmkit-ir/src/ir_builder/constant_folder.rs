@@ -606,6 +606,28 @@ impl<'ctx, B: ModuleBrand + 'ctx> TrustedFolder<'ctx, B> for ConstantFolder {
     ) -> Option<Value<'ctx, B>> {
         fold_extract_value(aggregate, &[index])
     }
+
+    /// The constant aggregate rebuilt with the field replaced —
+    /// `fold_insert_value_dyn` for one index, past its module check, which the
+    /// caller's one-module operands make moot.
+    #[inline]
+    fn fold_field_insert(
+        &self,
+        aggregate: Value<'ctx, B>,
+        value: Value<'ctx, B>,
+        index: u32,
+        _token: CrateOnly,
+    ) -> Option<Value<'ctx, B>> {
+        let (aggregate, value) = constants2(aggregate, value)?;
+        constant_fold_insert_value_instruction_trusting_same_module(aggregate, value, &[index])
+            .unwrap_or_else(|_| {
+                unreachable!(
+                    "a field of a set struct body, replaced by a constant of the field's type \
+                     in the aggregate's module, rebuilds"
+                )
+            })
+            .map(Constant::as_erased)
+    }
 }
 
 /// `fold_extract_value_dyn`'s body, shared with [`TrustedFolder::fold_field`].

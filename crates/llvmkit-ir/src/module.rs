@@ -106,7 +106,7 @@ use super::named_md_node::{
 use super::pass_context::{FunctionView, ModuleFunctionViews};
 use super::struct_body_state::StructBodyDyn;
 use super::struct_body_state::{BodySet, Opaque};
-use super::struct_schema::{FieldList, Minting, StructSchema};
+use super::struct_schema::{FieldList, Minting, StructOf, StructSchema};
 use super::r#type::{
     IrType, MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeData, TypeSlot, TypeSlotAccess,
 };
@@ -1056,14 +1056,16 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
 
     /// Idempotently intern schema `S`'s named struct type; see
     /// [`ModuleView::get_or_insert_struct_of`].
-    pub(super) fn get_or_insert_struct_of<S>(self) -> IrResult<StructType<'ctx, BodySet, B, C>>
+    pub(super) fn get_or_insert_struct_of<S>(self) -> IrResult<StructOf<'ctx, S, B, C>>
     where
         S: StructSchema,
     {
         let id = self.mint_struct_of::<S>(&mut Minting::new())?;
         // A fresh minting call has no schema in progress, so the minter took
         // its full path, which ends with `%S`'s body set or refused.
-        Ok(StructType::<BodySet, B, C>::new(id, self))
+        Ok(StructOf::new_unchecked(StructType::<BodySet, B, C>::new(
+            id, self,
+        )))
     }
 
     /// Mint schema `S`'s named struct type in this module, its body built
@@ -2059,7 +2061,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     /// The *typestate* body setters — [`Module::set_struct_body`] and
     /// [`Module::set_struct_body_dyn`], which drive an `Opaque` struct handle
     /// to `BodySet` — stay on the token alone.
-    pub fn get_or_insert_struct_of<S>(self) -> IrResult<StructType<'ctx, BodySet, B, ReadOnly>>
+    pub fn get_or_insert_struct_of<S>(self) -> IrResult<StructOf<'ctx, S, B, ReadOnly>>
     where
         S: StructSchema,
     {
@@ -4774,7 +4776,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// Idempotently intern schema `S`'s named struct type. Shares its body
     /// with [`ModuleView::get_or_insert_struct_of`], which is where the
     /// schema traits reach it.
-    pub fn get_or_insert_struct_of<S>(&'ctx self) -> IrResult<StructType<'ctx, BodySet, B>>
+    pub fn get_or_insert_struct_of<S>(&'ctx self) -> IrResult<StructOf<'ctx, S, B>>
     where
         S: StructSchema,
     {

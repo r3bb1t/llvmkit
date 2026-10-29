@@ -111,8 +111,8 @@ use super::module::{
 };
 use super::struct_body_state::StructBodyDyn;
 use super::struct_schema::{
-    FieldLayout, FieldOf, IntoIrField, IrField, Minting, SchemaValue, StructFieldAt, StructSchema,
-    StructSchemaValue,
+    FieldArg, FieldLayout, FieldOf, IntoIrField, IrField, Minting, SchemaValue, StructFieldAt,
+    StructOf, StructSchema, StructSchemaValue,
 };
 use super::sync_scope::SyncScope;
 use super::term_open_state::{Closed, Open};
@@ -121,7 +121,7 @@ use super::r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeSlot
 use super::typed_pointer_value::TypedPointerValue;
 use super::value::{
     ArrayValue, FloatValue, IntValue, IntoErasedValue, IntoPointerValue, IsValue, PointerValue,
-    Value, ValueKindData, ValueSlot, ValueSlotAccess, ValueUse, VectorValue,
+    StructValue, Value, ValueKindData, ValueSlot, ValueSlotAccess, ValueUse, VectorValue,
 };
 use super::value_id::{
     AtomicCmpXchgInstId, AtomicRmwInstId, BlockId, CallInstId, FloatValueId, FpPhiInstId,
@@ -3975,6 +3975,116 @@ where
         <FieldOf<S, I> as IrField>::wrap(
             <<FieldOf<S, I> as IrField>::Layout as FieldLayout>::value_of(read, CrateOnly(())),
         )
+    }
+
+    /// `poison` of schema `S`'s struct type — the aggregate a derived build
+    /// starts from — with no `Result`. The type needs no admission: the
+    /// registry keeps one live module per [`UniqueBrand`](crate::UniqueBrand)
+    /// brand, and both this builder and `of` borrow a live module of brand
+    /// `B`. Any brand goes through [`try_struct_poison`](Self::try_struct_poison).
+    pub fn struct_poison<S>(
+        &self,
+        of: StructOf<'ctx, S, B, impl Capability>,
+    ) -> SchemaValue<'ctx, S, B, Mutable>
+    where
+        S: StructSchema,
+        B: crate::UniqueBrand,
+    {
+        // The `UniqueBrand` argument above: `of` is a type of this builder's
+        // module, so it is re-minted here with no module check.
+        let ty =
+            Type::<B, Mutable>::new(of.as_type().slot_trusting_same_module(), self.mutable_ref());
+        Self::schema_poison(ty)
+    }
+
+    /// `poison` of schema `S`'s struct type, `of` admitted at this builder's
+    /// module first.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::ForeignType`] when another module minted `of`.
+    pub fn try_struct_poison<S>(
+        &self,
+        of: StructOf<'ctx, S, B, impl Capability>,
+    ) -> IrResult<SchemaValue<'ctx, S, B, Mutable>>
+    where
+        S: StructSchema,
+    {
+        // Boundary: the caller's struct type, admitted against this module.
+        let slot = of.as_type().slot_in(self.module.id())?;
+        Ok(Self::schema_poison(Type::<B, Mutable>::new(
+            slot,
+            self.mutable_ref(),
+        )))
+    }
+
+    /// `poison` of `ty`, which is `%S` with `S`'s body — the one proof
+    /// `struct_poison` and `try_struct_poison` share.
+    fn schema_poison<S: StructSchema>(
+        ty: Type<'ctx, B, Mutable>,
+    ) -> SchemaValue<'ctx, S, B, Mutable> {
+        SchemaValue::new_unchecked(StructValue::from_value_unchecked(ty.poison().as_erased()))
+    }
+
+    /// Write field `I` of a schema value — `insertvalue %S %aggregate, %value,
+    /// I`, folded by the builder's folder — with no `Result`. The derived
+    /// builds' step: `point.build(&b, x, 7_i32, "p")` is a
+    /// [`struct_poison`](Self::struct_poison) and one `write_field` per field.
+    ///
+    /// Nothing here can fail, by [`read_field`](Self::read_field)'s argument:
+    /// `aggregate` and the lowered `value` are this builder's module's, as a
+    /// [`UniqueBrand`](crate::UniqueBrand) brand's two live values are; field
+    /// `I` is in range of `S`'s body ([`StructFieldAt`]); `value` is of field
+    /// `I`'s layout type, because a [`FieldArg`] lowers only to a
+    /// [`LoweredField`](crate::LoweredField) of that layout; and the folder is one of llvmkit's own
+    /// ([`TrustedFolder`]), whose fold rebuilds `aggregate`'s type. Mirrors
+    /// `IRBuilderBase::CreateInsertValue`, which consults its folder
+    /// (`Folder.FoldInsertValue`) first. Any brand, any folder and any
+    /// argument write through [`insert_field`](Self::insert_field) instead,
+    /// which checks.
+    pub fn write_field<S, const I: u32, Arg, Name>(
+        &self,
+        aggregate: SchemaValue<'ctx, S, B, impl Capability>,
+        value: Arg,
+        name: Name,
+    ) -> SchemaValue<'ctx, S, B, Mutable>
+    where
+        S: StructSchema,
+        S::Fields: StructFieldAt<I>,
+        B: crate::UniqueBrand,
+        F: TrustedFolder<'ctx, B>,
+        Arg: FieldArg<'ctx, <FieldOf<S, I> as IrField>::Layout, B>,
+        Name: AsRef<str>,
+    {
+        let module = self.mutable_ref();
+        // The `UniqueBrand` argument above: `aggregate` is a value of this
+        // builder's module, so it is re-minted here with no module check.
+        let aggregate = aggregate.as_erased().reminted_trusting_same_module(module);
+        let value = value.lower(module).value();
+        let written = match self
+            .folder
+            .fold_field_insert(aggregate, value, I, CrateOnly(()))
+        {
+            Some(folded) => folded,
+            None => {
+                // Internal: `aggregate` and `value` are this module's (the
+                // argument above).
+                let payload = InsertValueInstData::new(
+                    aggregate.slot_trusting_same_module(),
+                    value.slot_trusting_same_module(),
+                    vec![I],
+                );
+                self.append_instruction(
+                    aggregate.ty().slot_trusting_same_module(),
+                    InstructionKindData::InsertValue(payload),
+                    name,
+                )
+                .to_erased()
+            }
+        };
+        // The write has `aggregate`'s type — the instruction's result type,
+        // or a trusted fold that rebuilds it — and that is `S`'s.
+        SchemaValue::new_unchecked(StructValue::from_value_unchecked(written))
     }
 
     /// Insert a typed field value into a named-struct schema aggregate.

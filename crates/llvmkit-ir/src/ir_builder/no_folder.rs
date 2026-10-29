@@ -28,4 +28,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> TrustedFolder<'ctx, B> for NoFolder {
     ) -> Option<Value<'ctx, B>> {
         None
     }
+
+    /// Mirrors `NoFolder::FoldInsertValue`, which answers null.
+    #[inline]
+    fn fold_field_insert(
+        &self,
+        _aggregate: Value<'ctx, B>,
+        _value: Value<'ctx, B>,
+        _index: u32,
+        _token: CrateOnly,
+    ) -> Option<Value<'ctx, B>> {
+        None
+    }
 }
