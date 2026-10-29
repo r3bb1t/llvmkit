@@ -311,7 +311,7 @@ pub use intrinsics::{
     descriptor_for_callee, resolve_intrinsic_name,
 };
 pub use ir_builder::constant_folder::ConstantFolder;
-pub use ir_builder::folder::IrBuilderFolder;
+pub use ir_builder::folder::{IrBuilderFolder, TrustedFolder};
 pub use ir_builder::no_folder::NoFolder;
 pub use ir_builder::{
     AllocaBuilder, BuilderPositionState, CallBuilder, CallSiteConfig, InsertPoint, IrBuilder,

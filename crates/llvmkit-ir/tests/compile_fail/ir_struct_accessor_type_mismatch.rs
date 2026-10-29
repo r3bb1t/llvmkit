@@ -23,7 +23,7 @@ fn main() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
     let (point,) = m.view(f).params();
-    expects_pointer(point.x(&b)?);
+    expects_pointer(point.try_x(&b)?);
     b.ret_void();
     Ok(())
 }

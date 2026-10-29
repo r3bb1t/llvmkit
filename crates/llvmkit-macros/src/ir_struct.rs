@@ -1,6 +1,7 @@
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote};
+use syn::ext::IdentExt;
 use syn::{Data, DeriveInput, Error, Fields, Ident, LitStr, Path, Result, parse_macro_input};
 
 pub(crate) fn derive(input: TokenStream) -> TokenStream {
@@ -132,16 +133,39 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
         .zip(indices.iter())
         .map(|((field_ident, ty), idx)| {
             let field_name = field_ident.to_string();
+            let try_ident = format_ident!("try_{}", field_ident.unraw());
+            let read_doc = format!(
+                "Read field `{field_name}` — no `Result` on a `UniqueBrand` module with \
+                 llvmkit's own folder. Any brand and any folder read with `{try_ident}`."
+            );
+            let try_doc = format!(
+                "Read field `{field_name}` on any brand, through any folder: the value is \
+                 admitted at the builder's module and the folder's answer is checked."
+            );
             quote! {
+                #[doc = #read_doc]
                 #[inline]
                 #vis fn #field_ident<'m, F, R>(
+                    self,
+                    builder: &#ir::IrBuilder<'m, 'ctx, B, F, #ir::Positioned, R>,
+                ) -> <#ty as #ir::IrField>::Value<'ctx, B, #ir::Mutable>
+                where
+                    B: #ir::UniqueBrand,
+                    F: #ir::TrustedFolder<'ctx, B>,
+                    R: #ir::ReturnMarker,
+                {
+                    builder.read_field::<#ident, #idx, _>(self.#schema_value_field, #field_name)
+                }
+
+                #[doc = #try_doc]
+                #[inline]
+                #vis fn #try_ident<'m, F, R>(
                     self,
                     builder: &#ir::IrBuilder<'m, 'ctx, B, F, #ir::Positioned, R>,
                 ) -> #ir::IrResult<<#ty as #ir::IrField>::Value<'ctx, B, #ir::Mutable>>
                 where
                     F: #ir::IrBuilderFolder<'ctx, B>,
                     R: #ir::ReturnMarker,
-                    #ty: #ir::IrField,
                 {
                     builder.extract_field::<#ident, #ty, _, _>(self, #idx, #field_name)
                 }

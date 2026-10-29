@@ -102,7 +102,7 @@ use super::int_width::{IntDyn, IntWidth, IntoIntValue, StaticIntWidth};
 use super::intrinsic_inst::IntrinsicInst;
 use super::intrinsics::{BinaryIntrinsic, IntrinsicDescriptor, IntrinsicId};
 use super::ir_builder::constant_folder::ConstantFolder;
-use super::ir_builder::folder::IrBuilderFolder;
+use super::ir_builder::folder::{IrBuilderFolder, TrustedFolder};
 use super::marker::ExpectedRetKind;
 use super::marker::{Dyn, Ptr, ReturnMarker};
 use super::module::{
@@ -3917,6 +3917,64 @@ where
             raw,
             CrateOnly(()),
         )))
+    }
+
+    /// Read field `I` of a schema value — `extractvalue %S %aggregate, I`,
+    /// folded by the builder's folder — with no `Result`. The derived
+    /// getters' entry: a struct's `point.x(&b)` is
+    /// `b.read_field::<Point, 0, _>(…)`.
+    ///
+    /// Nothing here can fail. The aggregate needs no admission: the registry
+    /// keeps one live module per [`UniqueBrand`](crate::UniqueBrand) brand, and
+    /// both this builder and `aggregate` borrow a live module of brand `B`, so
+    /// they borrow the same one. The index needs no check: `aggregate` is a
+    /// [`SchemaValue`] of `S`, so its type has `S`'s body, which has field `I`
+    /// ([`StructFieldAt`] is implemented only for an index in range) of
+    /// [`FieldOf<S, I>`]'s layout. And the folder is one of llvmkit's own
+    /// ([`TrustedFolder`]), whose field fold is of that type by construction.
+    /// Mirrors `IRBuilderBase::CreateExtractValue`, which always consults its
+    /// folder (`Folder.FoldExtractValue`) first. Any brand and any folder read
+    /// through [`extract_field`](Self::extract_field) instead, which checks.
+    pub fn read_field<S, const I: u32, Name>(
+        &self,
+        aggregate: SchemaValue<'ctx, S, B, impl Capability>,
+        name: Name,
+    ) -> <FieldOf<S, I> as IrField>::Value<'ctx, B, Mutable>
+    where
+        S: StructSchema,
+        S::Fields: StructFieldAt<I>,
+        B: crate::UniqueBrand,
+        F: TrustedFolder<'ctx, B>,
+        Name: AsRef<str>,
+    {
+        // The `UniqueBrand` argument above: `aggregate` is a value of this
+        // builder's module, so it is re-minted here with no module check.
+        let aggregate = aggregate
+            .as_erased()
+            .reminted_trusting_same_module(self.mutable_ref());
+        let read = match self.folder.fold_field(aggregate, I, CrateOnly(())) {
+            Some(folded) => folded,
+            None => {
+                // Internal: `aggregate` is this module's (the argument above).
+                let leaf_ty = walk_aggregate_for_builder(
+                    self.module,
+                    aggregate.ty().slot_trusting_same_module(),
+                    &[I],
+                )
+                .unwrap_or_else(|_| {
+                    unreachable!("a SchemaValue<S> has S's body, which has field I")
+                });
+                let payload =
+                    ExtractValueInstData::new(aggregate.slot_trusting_same_module(), vec![I]);
+                self.append_instruction(leaf_ty, InstructionKindData::ExtractValue(payload), name)
+                    .to_erased()
+            }
+        };
+        // The read has field `I`'s type — the element of `S`'s body, or a
+        // trusted fold of it — and that is `FieldOf<S, I>`'s layout type.
+        <FieldOf<S, I> as IrField>::wrap(
+            <<FieldOf<S, I> as IrField>::Layout as FieldLayout>::value_of(read, CrateOnly(())),
+        )
     }
 
     /// Insert a typed field value into a named-struct schema aggregate.

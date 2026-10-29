@@ -75,6 +75,10 @@ fn typestate_compile_fail() {
     // A hand-written schema's empty `NAME` is a const-evaluation error when its
     // type is minted (needs this harness's build mode).
     t.compile_fail("tests/compile_fail/schema_name_empty.rs");
+    // A derived field reads without `?` on a `UniqueBrand` module only, and
+    // through llvmkit's own folders only.
+    t.compile_fail("tests/compile_fail/field_read_on_dyn_brand.rs");
+    t.compile_fail("tests/compile_fail/field_read_with_custom_folder.rs");
     t.compile_fail("tests/compile_fail/cross_module_value_brand.rs");
     t.compile_fail("tests/compile_fail/cross_module_global_initializer_brand.rs");
     t.compile_fail("tests/compile_fail/cross_module_branch_target.rs");

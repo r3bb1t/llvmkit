@@ -43,18 +43,18 @@ fn build() -> Result<String, IrError> {
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let (placement,) = m.view(f).params();
 
-    let normal_position = placement.normal_position(&b)?;
-    let min = normal_position.min(&b)?;
-    let max = normal_position.max(&b)?;
-    let min_x = min.x(&b)?;
-    let max_y = max.y(&b)?;
+    let normal_position = placement.normal_position(&b);
+    let min = normal_position.min(&b);
+    let max = normal_position.max(&b);
+    let min_x = min.x(&b);
+    let max_y = max.y(&b);
 
     let rebuilt_min = PointValue::build(m.as_view(), &b, min_x, max_y, "normal_position.min")?;
     let rebuilt_rect = RectValue::build(m.as_view(), &b, rebuilt_min, max, "normal_position")?;
     let rebuilt = WindowPlacementValue::build(
         m.as_view(),
         &b,
-        placement.show_cmd(&b)?,
+        placement.show_cmd(&b),
         rebuilt_rect,
         "placement",
     )?;
@@ -110,8 +110,20 @@ For `struct Point { x: i32, y: i32 }`, the derive creates:
   `%Point` body and rejecting a mismatched one with
   `IrError::StructBodyMismatch`; building and matching come from the same
   layouts, so they cannot disagree.
-- Field accessors on `PointValue`, such as `x(&builder)` and `y(&builder)`,
-  implemented with `IrBuilder::extract_field`.
+- Field accessors on `PointValue`, two per field:
+  - `x(&builder)` returns the field's value with no `Result`. It needs a
+    `UniqueBrand` module (every `module_new!` module is one) and one of
+    llvmkit's own folders (`NoFolder`, `ConstantFolder` — a `TrustedFolder`).
+    The registry keeps one live module per such brand, so the value is the
+    builder's module's; the schema value proves the field's type; and
+    llvmkit's folders fold a field read only to a value of that type
+    (`ConstantFolder` reads a constant struct's element). So nothing is left
+    to check.
+  - `try_x(&builder)` returns `IrResult` and works on any brand, through any
+    folder (`IrBuilder::extract_field`): a `Module::dynamic` module, whose
+    `DynBrand` names many live modules, or a folder of your own, which is
+    consulted on every read and whose answer is checked. Calling `x` where
+    either requirement fails is a compile error that names the missing bound.
 - `PointValue::build(module_view, &builder, x, y, name)` — the first argument is
   a `ModuleView<'ctx, B>`, spelled `m.as_view()` at the call site — implemented
   as a poison aggregate plus `insertvalue` steps.
@@ -235,9 +247,9 @@ features only if you want the manual schema traits without the proc macro.
 Nested derived structs remain typed:
 
 ```rust
-let rect = placement.normal_position(&builder)?; // RectValue<'ctx, B>
-let min = rect.min(&builder)?;                   // PointValue<'ctx, B>
-let x = min.x(&builder)?;                        // IntValue<'ctx, i32, B>
+let rect = placement.normal_position(&builder); // RectValue<'ctx, B>
+let min = rect.min(&builder);                   // PointValue<'ctx, B>
+let x = min.x(&builder);                        // IntValue<'ctx, i32, B>
 ```
 
 A nested field does not degrade to raw `StructValue`; its schema stays in the
@@ -252,7 +264,7 @@ validated against a known schema:
 ```rust
 let raw = m.view(f).as_function().param(0)?;
 let placement = WindowPlacementValue::try_from(raw)?;
-let normal_position = placement.normal_position(&builder)?;
+let normal_position = placement.normal_position(&builder);
 ```
 
 The conversion accepts `StructValue`, erased `Value`, `Argument`, `Constant`,

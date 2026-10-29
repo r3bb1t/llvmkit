@@ -1,0 +1,16 @@
+error[E0277]: `DynBrand` can name more than one live module
+  --> tests/compile_fail/field_read_on_dyn_brand.rs:22:19
+   |
+22 |     let _ = point.x(&b);
+   |                   ^ the trait `UniqueBrand` is not implemented for `DynBrand`
+   |
+   = note: in brand-generic code, add `B: UniqueBrand`; for a `Module::dynamic` module, use the `try_` form, which checks
+note: required by a bound in `PointValue::<'ctx, B, __LlvmkitCapability>::x`
+  --> tests/compile_fail/field_read_on_dyn_brand.rs:10:10
+   |
+10 | #[derive(IrStruct)]
+   |          ^^^^^^^^ required by this bound in `PointValue::<'ctx, B, __LlvmkitCapability>::x`
+11 | struct Point {
+12 |     x: i32,
+   |     - required by a bound in this associated function
+   = note: this error originates in the derive macro `IrStruct` (in Nightly builds, run with -Z macro-backtrace for more info)

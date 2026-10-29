@@ -303,8 +303,8 @@ let b = IrBuilder::new_for_return::<Normalize>(&m).position_at_end(entry);
 let (placement,) = m.view(f).params();
 // `normal_position` returns `RectValue<'ctx, B>`, and `min` returns
 // `PointValue<'ctx, B>`; nested structs keep their generated wrapper type.
-let rect = placement.normal_position(&b)?;
-let _min = rect.min(&b)?;
+let rect = placement.normal_position(&b);
+let _min = rect.min(&b);
 ```
 
 A field is one of llvmkit's layouts — an integer (an unsigned field is the

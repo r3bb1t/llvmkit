@@ -1079,9 +1079,9 @@ fn insertvalue_array_replaces_element() -> Result<(), IrError> {
     )?
     .expect("insertvalue folds");
     let first =
-        constant_fold_extract_value_instruction(folded, &[0])?.expect("inserted element extracts");
+        constant_fold_extract_value_instruction(folded, &[0]).expect("inserted element extracts");
     let second =
-        constant_fold_extract_value_instruction(folded, &[1])?.expect("preserved element extracts");
+        constant_fold_extract_value_instruction(folded, &[1]).expect("preserved element extracts");
 
     assert_eq!(first, i32_ty.const_int(77_i32).as_constant());
     assert_eq!(second, i32_ty.const_int(2_i32).as_constant());
@@ -1099,11 +1099,11 @@ fn extractvalue_undef_and_poison_aggregates_fold_to_typed_elements() -> Result<(
     let undef = array_ty.as_type().undef().as_constant();
     let poison = array_ty.as_type().poison().as_constant();
 
-    let undef_lane = constant_fold_extract_value_instruction(undef, &[1])?
+    let undef_lane = constant_fold_extract_value_instruction(undef, &[1])
         .expect("extractvalue undef aggregate folds");
     assert_eq!(undef_lane, i32_ty.as_type().undef().as_constant());
 
-    let poison_lane = constant_fold_extract_value_instruction(poison, &[0])?
+    let poison_lane = constant_fold_extract_value_instruction(poison, &[0])
         .expect("extractvalue poison aggregate folds");
     assert_eq!(poison_lane, i32_ty.as_type().poison().as_constant());
     Ok(())
@@ -2298,9 +2298,9 @@ fn vector_and_aggregate_rebuilders_materialize_constants() -> Result<(), IrError
         &[1, 0],
     )?
     .expect("nested insertvalue rebuilds aggregate");
-    let nested_inserted = constant_fold_extract_value_instruction(rebuilt_aggregate, &[1, 0])?
+    let nested_inserted = constant_fold_extract_value_instruction(rebuilt_aggregate, &[1, 0])
         .expect("nested inserted element extracts");
-    let nested_preserved = constant_fold_extract_value_instruction(rebuilt_aggregate, &[1, 1])?
+    let nested_preserved = constant_fold_extract_value_instruction(rebuilt_aggregate, &[1, 1])
         .expect("nested preserved element extracts");
     assert_eq!(nested_inserted, i32_ty.const_int(77_i32).as_constant());
     assert_eq!(nested_preserved, i32_ty.const_int(4_i32).as_constant());

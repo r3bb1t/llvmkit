@@ -17,12 +17,13 @@ use super::constant_fold::{
     constant_fold_shuffle_vector_instruction_trusting_same_module, constant_fold_unary_instruction,
     gep_result_type,
 };
-use super::folder::IrBuilderFolder;
+use super::folder::{IrBuilderFolder, TrustedFolder, trusted_folder_sealed};
 use super::{
     BinaryIntrinsic, BinaryOpcode, CastOpcode, CmpPredicate, Constant, ConstantExprFlags,
     ConstantExprOpcode, ConstantExprOptions, FastMathFlags, FloatType, GepNoWrapFlags, IntType,
     IrError, IrResult, ModuleBrand, ModuleRef, ShuffleMaskElem, Type, TypeData, UnaryOpcode, Value,
 };
+use crate::CrateOnly;
 use core::num::NonZeroU32;
 
 use crate::cmp_predicate::{FloatPredicate, IntPredicate};
@@ -202,12 +203,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         aggregate: Value<'ctx, B>,
         indices: &[u32],
     ) -> IrResult<Option<Value<'ctx, B>>> {
-        let aggregate = match Constant::try_from(aggregate) {
-            Ok(aggregate) => aggregate,
-            Err(_) => return Ok(None),
-        };
-        constant_fold_extract_value_instruction(aggregate, indices)
-            .map(|folded| folded.map(Constant::as_erased))
+        Ok(fold_extract_value(aggregate, indices))
     }
 
     fn fold_insert_value_dyn(
@@ -594,6 +590,33 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
             .map(K::narrow)
             .transpose()
     }
+}
+
+impl trusted_folder_sealed::Sealed for ConstantFolder {}
+
+impl<'ctx, B: ModuleBrand + 'ctx> TrustedFolder<'ctx, B> for ConstantFolder {
+    /// The element read out of a constant aggregate, so of the field's type —
+    /// `fold_extract_value_dyn` for one index.
+    #[inline]
+    fn fold_field(
+        &self,
+        aggregate: Value<'ctx, B>,
+        index: u32,
+        _token: CrateOnly,
+    ) -> Option<Value<'ctx, B>> {
+        fold_extract_value(aggregate, &[index])
+    }
+}
+
+/// `fold_extract_value_dyn`'s body, shared with [`TrustedFolder::fold_field`].
+/// Mirrors `ConstantFolder::FoldExtractValue`: a constant aggregate goes to
+/// `ConstantFoldExtractValueInstruction`, anything else is no fold.
+fn fold_extract_value<'ctx, B: ModuleBrand + 'ctx>(
+    aggregate: Value<'ctx, B>,
+    indices: &[u32],
+) -> Option<Value<'ctx, B>> {
+    let aggregate = Constant::try_from(aggregate).ok()?;
+    constant_fold_extract_value_instruction(aggregate, indices).map(Constant::as_erased)
 }
 
 /// `fold_no_wrap_bin_op_dyn`'s body, for operands of one module: only `add`

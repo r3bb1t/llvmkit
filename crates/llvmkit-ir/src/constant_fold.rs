@@ -169,7 +169,10 @@ where
             let Some(aggregate) = constant_from_id(module, extract.aggregate.get()) else {
                 return Ok(None);
             };
-            constant_fold_extract_value_instruction(aggregate, &extract.indices)
+            Ok(constant_fold_extract_value_instruction(
+                aggregate,
+                &extract.indices,
+            ))
         }
         InstructionKindData::InsertValue(insert) => {
             let Some(aggregate) = constant_from_id(module, insert.aggregate.get()) else {
@@ -1957,25 +1960,21 @@ pub fn shufflevector_mask_from_constant<'ctx, B: ModuleBrand + 'ctx, C: Capabili
         .collect()
 }
 
-/// Fold an `extractvalue` with a constant aggregate operand.
+/// Fold an `extractvalue` with a constant aggregate operand: the element at
+/// `indices`, or `None` where it cannot be read out of the constant. Mirrors
+/// `ConstantFoldExtractValueInstruction` (`lib/IR/ConstantFold.cpp`), which
+/// answers a `Constant *` (null for no fold) and cannot fail.
 pub fn constant_fold_extract_value_instruction<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     aggregate: Constant<'ctx, B, C>,
     indices: &[u32],
-) -> IrResult<Option<Constant<'ctx, B, C>>> {
+) -> Option<Constant<'ctx, B, C>> {
     let mut current = aggregate;
     for index in indices.iter().copied() {
-        let Some(elements) = aggregate_elements_for_rebuild(current)? else {
-            return Ok(None);
-        };
-        let Ok(index) = usize::try_from(index) else {
-            return Ok(None);
-        };
-        let Some(next) = elements.get(index).copied() else {
-            return Ok(None);
-        };
-        current = next;
+        let elements = aggregate_elements_for_rebuild(current)?;
+        let index = usize::try_from(index).ok()?;
+        current = elements.get(index).copied()?;
     }
-    Ok(Some(current))
+    Some(current)
 }
 
 /// Fold an `insertvalue` with constant operands.
@@ -2006,7 +2005,7 @@ pub(crate) fn constant_fold_insert_value_instruction_trusting_same_module<
     if indices.is_empty() {
         return Ok(Some(value));
     }
-    let Some(elements) = aggregate_elements_for_rebuild(aggregate)? else {
+    let Some(elements) = aggregate_elements_for_rebuild(aggregate) else {
         return Ok(None);
     };
     let Ok(index) = usize::try_from(indices[0]) else {
@@ -3016,9 +3015,9 @@ fn fixed_vector_elements_for_rebuild<'ctx, B: ModuleBrand + 'ctx, C: Capability>
 
 fn aggregate_elements_for_rebuild<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     aggregate: Constant<'ctx, B, C>,
-) -> IrResult<Option<Vec<Constant<'ctx, B, C>>>> {
+) -> Option<Vec<Constant<'ctx, B, C>>> {
     if let Some(elements) = aggregate_elements(aggregate) {
-        return Ok(Some(elements));
+        return Some(elements);
     }
     let fill_for = |ty: Type<'ctx, B, C>| {
         if is_undef(aggregate) {
@@ -3030,28 +3029,19 @@ fn aggregate_elements_for_rebuild<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         }
     };
     if let Ok(array_ty) = ArrayType::<ElemDyn, ArrLenDyn, _, C>::try_from(aggregate.ty()) {
-        let Some(fill) = fill_for(array_ty.element()) else {
-            return Ok(None);
-        };
-        let Ok(count) = usize::try_from(array_ty.len()) else {
-            return Ok(None);
-        };
-        return Ok(Some((0..count).map(|_| fill).collect()));
+        let fill = fill_for(array_ty.element())?;
+        let count = usize::try_from(array_ty.len()).ok()?;
+        return Some((0..count).map(|_| fill).collect());
     }
     if let Ok(struct_ty) = StructType::try_from(aggregate.ty()) {
         let mut elements = Vec::with_capacity(struct_ty.field_count());
         for index in 0..struct_ty.field_count() {
-            let Some(field_ty) = struct_ty.field_type(index) else {
-                return Ok(None);
-            };
-            let Some(fill) = fill_for(field_ty) else {
-                return Ok(None);
-            };
-            elements.push(fill);
+            let field_ty = struct_ty.field_type(index)?;
+            elements.push(fill_for(field_ty)?);
         }
-        return Ok(Some(elements));
+        return Some(elements);
     }
-    Ok(None)
+    None
 }
 fn type_bit_width_for_bitcast<B: ModuleBrand, C: Capability>(ty: Type<'_, B, C>) -> Option<u32> {
     if let Ok(int_ty) = IntType::<IntDyn, B, C>::try_from(ty) {

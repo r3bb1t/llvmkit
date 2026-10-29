@@ -1,0 +1,33 @@
+error[E0277]: `MyFolder` is not one of llvmkit's own folders
+  --> tests/compile_fail/field_read_with_custom_folder.rs:28:21
+   |
+28 |     let _ = point.x(&b);
+   |                   - ^^ not a `TrustedFolder`
+   |                   |
+   |                   required by a bound introduced by this call
+   |
+help: the trait `TrustedFolder<'_, __LlvmkitGeneratedBrand>` is not implemented for `MyFolder`
+  --> tests/compile_fail/field_read_with_custom_folder.rs:18:1
+   |
+18 | struct MyFolder;
+   | ^^^^^^^^^^^^^^^
+   = note: a read without `?` takes `NoFolder` or `ConstantFolder`; with a folder of your own, use the `try_` form, which checks what it folds
+help: the following other types implement trait `TrustedFolder<'ctx, B>`
+  --> src/ir_builder/no_folder.rs
+   |
+   | impl<'ctx, B: ModuleBrand + 'ctx> TrustedFolder<'ctx, B> for NoFolder {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `NoFolder`
+   |
+  ::: src/ir_builder/constant_folder.rs
+   |
+   | impl<'ctx, B: ModuleBrand + 'ctx> TrustedFolder<'ctx, B> for ConstantFolder {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ConstantFolder`
+note: required by a bound in `PointValue::<'ctx, B, __LlvmkitCapability>::x`
+  --> tests/compile_fail/field_read_with_custom_folder.rs:12:10
+   |
+12 | #[derive(IrStruct)]
+   |          ^^^^^^^^ required by this bound in `PointValue::<'ctx, B, __LlvmkitCapability>::x`
+13 | struct Point {
+14 |     x: i32,
+   |     - required by a bound in this associated function
+   = note: this error originates in the derive macro `IrStruct` (in Nightly builds, run with -Z macro-backtrace for more info)

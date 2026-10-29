@@ -736,7 +736,10 @@ where
             let [aggregate] = operands else {
                 return Ok(None);
             };
-            constant_fold_extract_value_instruction(*aggregate, &extract.indices)
+            Ok(constant_fold_extract_value_instruction(
+                *aggregate,
+                &extract.indices,
+            ))
         }
         InstructionKindData::InsertValue(insert) => {
             let [aggregate, value] = operands else {

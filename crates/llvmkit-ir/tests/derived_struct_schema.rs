@@ -1,7 +1,7 @@
 use llvmkit_ir::{
-    ArrLen, ArrayValue, Capability, FloatValue, IntValue, IrBuilder, IrError, IrField, IrStruct,
-    LayoutValue, Linkage, ModuleBrand, NoFolder, PointerValue, Ptr, Space, StructFields,
-    module_new,
+    ArrLen, ArrayValue, Capability, ConstantFolder, FloatValue, IntValue, IrBuilder, IrError,
+    IrField, IrStruct, LayoutValue, Linkage, Module, ModuleBrand, NoFolder, PointerValue, Ptr,
+    Space, StructFields, module_new,
 };
 
 #[derive(IrStruct)]
@@ -87,16 +87,16 @@ fn derive_builds_nested_named_structs_and_accessors() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let (placement,) = m.view(f).params();
-    let rect = placement.normal_position(&b)?;
-    let min = rect.min(&b)?;
-    let max = rect.max(&b)?;
-    let x = min.x(&b)?;
-    let adjusted_min = PointValue::build(m.as_view(), &b, x, max.y(&b)?, "adjusted_min")?;
+    let rect = placement.normal_position(&b);
+    let min = rect.min(&b);
+    let max = rect.max(&b);
+    let x = min.x(&b);
+    let adjusted_min = PointValue::build(m.as_view(), &b, x, max.y(&b), "adjusted_min")?;
     let adjusted_rect = RectValue::build(m.as_view(), &b, adjusted_min, max, "adjusted_rect")?;
     let rebuilt = WindowPlacementValue::build(
         m.as_view(),
         &b,
-        placement.show_cmd(&b)?,
+        placement.show_cmd(&b),
         adjusted_rect,
         "rebuilt",
     )?;
@@ -154,7 +154,7 @@ fn derive_try_from_raw_ir_values() -> Result<(), IrError> {
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let arg = m.view(f).as_function().param(0)?;
     let placement = WindowPlacementValue::try_from(arg)?;
-    let normal_position = placement.normal_position(&b)?;
+    let normal_position = placement.normal_position(&b);
     let _: RectValue<'_, _> = normal_position;
     b.ret_void();
     Ok(())
@@ -284,10 +284,10 @@ fn a_derived_field_of_each_layout_reads_its_value() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let (sample,) = m.view(f).params();
-    let a: IntValue<'_, i32, _> = sample.a(&b)?;
-    let array: ArrayValue<'_, f32, ArrLen<4>, _> = sample.b(&b)?;
-    let c: PointerValue<'_, Space<0>, _> = sample.c(&b)?;
-    let d: PointValue<'_, _> = sample.d(&b)?;
+    let a: IntValue<'_, i32, _> = sample.a(&b);
+    let array: ArrayValue<'_, f32, ArrLen<4>, _> = sample.b(&b);
+    let c: PointerValue<'_, Space<0>, _> = sample.c(&b);
+    let d: PointValue<'_, _> = sample.d(&b);
     let _ = (a, array, c, d);
     b.ret_void();
     let text = format!("{m}");
@@ -297,6 +297,74 @@ fn a_derived_field_of_each_layout_reads_its_value() -> Result<(), IrError> {
             "got:\n{text}"
         );
     }
+    Ok(())
+}
+
+/// llvmkit-specific (D7, D10), no upstream counterpart —
+/// `IRBuilderBase::CreateExtractValue` returns a `Value *` and cannot report a
+/// foreign or mistyped aggregate at all: on a `UniqueBrand` module with one of
+/// llvmkit's own folders, a derived field read needs no `?`. The registry keeps
+/// one live module per brand, so the value is the builder's module's, and the
+/// schema value proves the field's type.
+#[test]
+fn a_field_read_needs_no_question_mark() -> Result<(), IrError> {
+    let m = module_new!("infallible_read")?;
+    let f = m.add_typed_function::<i32, (Point,), _>("first", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let (p,) = m.view(f).params();
+    let x: IntValue<'_, i32, _> = p.x(&b);
+    b.ret(x)?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("%x = extractvalue %Point %0, 0"),
+        "got:\n{text}"
+    );
+    Ok(())
+}
+
+/// Mirrors `ConstantFolder::FoldExtractValue`, which hands a constant
+/// aggregate to `ConstantFoldExtractValueInstruction` (`lib/IR/ConstantFold.cpp`)
+/// and gets back its element: read through `ConstantFolder`, field `x` of a
+/// constant `%Point { i32 1, i32 2 }` is the constant `i32 1`, and no
+/// instruction is appended.
+#[test]
+fn a_constant_struct_field_read_folds() -> Result<(), IrError> {
+    let m = module_new!("folded_read")?;
+    let i32_ty = m.i32_type();
+    let point = m
+        .get_or_insert_struct_of::<Point>()?
+        .const_struct([i32_ty.const_int(1_i32), i32_ty.const_int(2_i32)])?;
+    let p = PointValue::try_from(point.as_constant())?;
+    let f = m.add_typed_function::<i32, (), _>("one", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, ConstantFolder).position_at_end(entry);
+    let x = p.x(&b);
+    assert_eq!(x.as_erased(), i32_ty.const_int(1_i32).as_erased());
+    assert_eq!(b.insert_block().instructions().len(), 0);
+    b.ret(x)?;
+    Ok(())
+}
+
+/// llvmkit-specific (D7), no upstream counterpart: a `Module::dynamic`
+/// module's `DynBrand` names many live modules, so its derived reads keep the
+/// checked `try_` form — the value is admitted at the builder's module and the
+/// folder's result is checked. `field_read_on_dyn_brand.rs` is the
+/// compile-fail half.
+#[test]
+fn a_dynamic_module_reads_with_try() -> Result<(), IrError> {
+    let m = Module::dynamic("dynamic_read");
+    let f = m.add_typed_function::<i32, (Point,), _>("first", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let (p,) = m.view(f).params();
+    let x: IntValue<'_, i32, _> = p.try_x(&b)?;
+    b.ret(x)?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("%x = extractvalue %Point %0, 0"),
+        "got:\n{text}"
+    );
     Ok(())
 }
 
@@ -313,7 +381,7 @@ fn a_custom_field_kind_names_its_layout() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let (run,) = m.view(f).params();
-    let distance: FloatValue<'_, f64, _> = run.distance(&b)?;
+    let distance: FloatValue<'_, f64, _> = run.distance(&b);
     let _ = distance;
     b.ret_void();
     let text = format!("{m}");

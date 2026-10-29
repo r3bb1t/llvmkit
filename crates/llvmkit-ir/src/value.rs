@@ -463,6 +463,27 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
         })
     }
 
+    /// Crate-internal: this value re-minted at `module`'s capability with no
+    /// module check — [`admitted_at`](Self::admitted_at)'s twin for a caller
+    /// that has proven `module` is this value's own. The one proof in use is
+    /// [`UniqueBrand`](crate::UniqueBrand)'s: the registry keeps one live
+    /// module per brand, and both this value and `module` borrow a live module
+    /// of brand `B`.
+    #[inline]
+    pub(crate) fn reminted_trusting_same_module<C2: Capability>(
+        self,
+        module: ModuleRef<'ctx, B, C2>,
+    ) -> Value<'ctx, B, C2>
+    where
+        B: crate::UniqueBrand,
+    {
+        Value {
+            id: self.slot_trusting_same_module(),
+            module,
+            ty: self.ty,
+        }
+    }
+
     /// Optional textual name. `None` for slot-numbered (`%0`, `%1`)
     /// values. The interned `ptr @g` constant answers the name of the global
     /// it stands for, as `getName` on `@g` does (`docs/divergences.md` D3).

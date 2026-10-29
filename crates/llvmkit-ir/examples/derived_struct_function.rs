@@ -47,18 +47,18 @@ fn main() -> Result<(), IrError> {
         let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let (placement,) = m.view(f).params();
 
-        let normal_position = placement.normal_position(&b)?;
-        let min = normal_position.min(&b)?;
-        let max = normal_position.max(&b)?;
-        let min_x = min.x(&b)?;
-        let max_y = max.y(&b)?;
+        let normal_position = placement.normal_position(&b);
+        let min = normal_position.min(&b);
+        let max = normal_position.max(&b);
+        let min_x = min.x(&b);
+        let max_y = max.y(&b);
 
         let rebuilt_min = PointValue::build(m.as_view(), &b, min_x, max_y, "normal_position.min")?;
         let rebuilt_rect = RectValue::build(m.as_view(), &b, rebuilt_min, max, "normal_position")?;
         let rebuilt = WindowPlacementValue::build(
             m.as_view(),
             &b,
-            placement.show_cmd(&b)?,
+            placement.show_cmd(&b),
             rebuilt_rect,
             "placement",
         )?;

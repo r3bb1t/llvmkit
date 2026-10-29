@@ -10,6 +10,7 @@ use super::{
     BinaryIntrinsic, BinaryOpcode, CastOpcode, CmpPredicate, Constant, FastMathFlags,
     GepNoWrapFlags, InstructionView, IrResult, ModuleBrand, Type, UnaryOpcode, Value,
 };
+use crate::CrateOnly;
 use crate::cmp_predicate::{FloatPredicate, IntPredicate};
 use crate::derived_types::{FloatType, IntType};
 use crate::float_kind::FloatKind;
@@ -444,4 +445,41 @@ where
     v.slot_in(dest_ty.as_type().module.id())?;
     dest_ty.as_type().require_match(v.ty())?;
     Ok(Some(FloatValue::from_value_unchecked(v)))
+}
+
+/// Seals [`TrustedFolder`] to llvmkit's own folders. Visible to the sibling
+/// folder modules, which implement it; unnameable outside the crate.
+pub(super) mod trusted_folder_sealed {
+    pub trait Sealed {}
+}
+
+/// One of llvmkit's own folders — [`NoFolder`](super::no_folder::NoFolder)
+/// and [`ConstantFolder`](super::constant_folder::ConstantFolder) — whose
+/// struct-field folding is type-correct by construction: `ConstantFolder`
+/// hands back the constant aggregate's own element, `NoFolder` folds nothing.
+///
+/// The derived struct reads that need no `?` take only these. A folder of your
+/// own could fold a field read to a value of another type, so its builder reads
+/// through the `try_` forms, which consult it — as upstream's
+/// `IRBuilderBase::CreateExtractValue` always consults its folder — and check
+/// what it hands back. Sealed; its method takes llvmkit's call token.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not one of llvmkit's own folders",
+    label = "not a `TrustedFolder`",
+    note = "a read without `?` takes `NoFolder` or `ConstantFolder`; with a folder of \
+            your own, use the `try_` form, which checks what it folds"
+)]
+pub trait TrustedFolder<'ctx, B: ModuleBrand + 'ctx>:
+    IrBuilderFolder<'ctx, B> + trusted_folder_sealed::Sealed
+{
+    /// Field `index` of `aggregate` when this folder folds the read — a value
+    /// of the field's type by construction — or `None` to emit the
+    /// `extractvalue`.
+    #[doc(hidden)]
+    fn fold_field(
+        &self,
+        aggregate: Value<'ctx, B>,
+        index: u32,
+        token: CrateOnly,
+    ) -> Option<Value<'ctx, B>>;
 }
