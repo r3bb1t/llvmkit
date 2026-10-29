@@ -131,14 +131,14 @@ fn scalable_target_extension_types_are_scalable() -> Result<(), IrError> {
             "aarch64.svcount",
             Vec::<llvmkit_ir::Type<'_, _>>::new(),
             Vec::<u32>::new(),
-        )
+        )?
         .as_type();
     let image = m
         .target_ext_type(
             "spirv.Image",
             Vec::<llvmkit_ir::Type<'_, _>>::new(),
             Vec::<u32>::new(),
-        )
+        )?
         .as_type();
     assert!(svcount.is_scalable());
     assert!(!image.is_scalable());

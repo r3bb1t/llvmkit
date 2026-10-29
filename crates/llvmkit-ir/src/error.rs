@@ -171,6 +171,56 @@ impl fmt::Display for TypePosition {
     }
 }
 
+/// A target type rule `TargetExtType::checkParams` (`lib/IR/Type.cpp`)
+/// enforces on the parameter counts of a named target type. `Display` is
+/// upstream's message, verbatim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TargetExtParameterRule {
+    /// `aarch64.svcount` takes no parameters.
+    Aarch64Svcount,
+    /// `riscv.vector.tuple` takes one type parameter and one integer parameter.
+    RiscvVectorTuple,
+    /// `amdgcn.named.barrier` takes no type parameters and one integer parameter.
+    AmdgcnNamedBarrier,
+}
+
+impl TargetExtParameterRule {
+    /// The rule `name` breaks with these parameter counts, if any — the
+    /// branches of `TargetExtType::checkParams`, in its order.
+    pub(crate) fn broken_by(name: &str, types: usize, ints: usize) -> Option<Self> {
+        match (name, types, ints) {
+            ("aarch64.svcount", types, ints) if types != 0 || ints != 0 => {
+                Some(Self::Aarch64Svcount)
+            }
+            ("riscv.vector.tuple", types, ints) if types != 1 || ints != 1 => {
+                Some(Self::RiscvVectorTuple)
+            }
+            ("amdgcn.named.barrier", types, ints) if types != 0 || ints != 1 => {
+                Some(Self::AmdgcnNamedBarrier)
+            }
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for TargetExtParameterRule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Aarch64Svcount => {
+                "target extension type aarch64.svcount should have no parameters"
+            }
+            Self::RiscvVectorTuple => {
+                "target extension type riscv.vector.tuple should have one type parameter and one \
+                 integer parameter"
+            }
+            Self::AmdgcnNamedBarrier => {
+                "target extension type amdgcn.named.barrier should have no type parameters and \
+                 one integer parameter"
+            }
+        })
+    }
+}
+
 /// A type's kind together with its printed form, captured where a diagnostic
 /// is raised.
 ///
@@ -1408,6 +1458,16 @@ pub enum IrError {
         kind: TypeKindLabel,
     },
 
+    /// A named target type was given parameter counts its rule forbids —
+    /// `target("aarch64.svcount", i32)`. Mirrors the errors
+    /// `TargetExtType::checkParams` returns through `TargetExtType::getOrError`;
+    /// the message is upstream's.
+    #[error("{rule}")]
+    TargetExtTypeParameters {
+        /// The rule the counts break.
+        rule: TargetExtParameterRule,
+    },
+
     /// A `shufflevector` mask whose length is not a vector lane count: empty,
     /// or longer than a `u32` holds.
     ///
@@ -2117,6 +2177,7 @@ impl IrError {
             | Self::AddressSpaceMismatch { .. }
             | Self::UnsizedType { .. }
             | Self::InvalidTypeComponent { .. }
+            | Self::TargetExtTypeParameters { .. }
             | Self::InvalidShuffleMaskLength { .. }
             | Self::InvalidCast { .. }
             | Self::NotIntOrPointerType { .. }

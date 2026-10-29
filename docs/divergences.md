@@ -796,6 +796,34 @@ and `crates/llvmkit-ir/tests/compile_fail/typed_pointer_is_not_an_ir_type.rs`
 
 </details>
 
+### D21 — A malformed target type is refused on every request, not only the first
+
+**Severity:** model-gap — API only: the parser stops at the first refusal, so
+no `.ll` text asks twice.
+**Where:** `crates/llvmkit-ir/src/module.rs` — `ModuleRef::target_ext_type`,
+behind `Module::target_ext_type` / `ModuleView::target_ext_type`.
+
+**LLVM:** `TargetExtType::getOrError` (`lib/IR/Type.cpp`) interns the type
+first and runs `TargetExtType::checkParams` only when the lookup inserted it;
+on a hit — "The target type was found. Just return it." — it answers the
+interned type unchecked. So a second `getOrError` for the same malformed
+`target("aarch64.svcount", i32)` succeeds where the first failed, and the
+malformed type stays in the context.
+
+**llvmkit:** checks the counts (`TargetExtParameterRule::broken_by`, the
+branches of `checkParams` in order) before interning, so a malformed target
+type never enters the arena and every request is refused with
+`IrError::TargetExtTypeParameters`.
+
+**Why:** a type no parser reads back is what D10 forbids holding; refusing
+before interning is the only order that keeps none in the arena.
+
+**Fix:** none — deliberate.
+
+**Guarded by:** `crates/llvmkit-ir/tests/type_components.rs::a_target_type_checks_its_parameters_when_built`
+and `crates/llvmkit-ir/tests/type_components.rs::an_intrinsic_name_cannot_spell_an_invalid_target_type`
+(the intrinsic demangler applies the same rule).
+
 ---
 
 ---

@@ -236,9 +236,11 @@ const ELEMENTS: &[&str] = &[
 /// `m` must already hold [`GRID_SOURCE`], where `%opaque` is looked up.
 fn element<'m>(m: &'m Module<DynBrand>, text: &str) -> Result<Type<'m, DynBrand>, IrError> {
     let i32_ty = m.i32_type().as_type();
-    let target = |name: &str| {
-        m.target_ext_type(name, Vec::<Type<'_, DynBrand>>::new(), Vec::<u32>::new())
-            .as_type()
+    let target = |name: &str| -> Result<Type<'m, DynBrand>, IrError> {
+        Ok(
+            m.target_ext_type(name, Vec::<Type<'_, DynBrand>>::new(), Vec::<u32>::new())?
+                .as_type(),
+        )
     };
     Ok(match text {
         "i1" => m.i1_type().as_type(),
@@ -266,9 +268,9 @@ fn element<'m>(m: &'m Module<DynBrand>, text: &str) -> Result<Type<'m, DynBrand>
         "<2 x i32>" => VectorType::of(m.i32_type(), lanes::<2>()).as_type(),
         "<vscale x 2 x i32>" => VectorType::scalable_of(m.i32_type(), lanes::<2>()).as_type(),
         "i32 ()" => m.function_type_no_parameters(i32_ty)?.as_type(),
-        "target(\"llvm.test.vectorelement\")" => target("llvm.test.vectorelement"),
-        "target(\"spirv.Image\")" => target("spirv.Image"),
-        "target(\"aarch64.svcount\")" => target("aarch64.svcount"),
+        "target(\"llvm.test.vectorelement\")" => target("llvm.test.vectorelement")?,
+        "target(\"spirv.Image\")" => target("spirv.Image")?,
+        "target(\"aarch64.svcount\")" => target("aarch64.svcount")?,
         other => panic!("`{other}` is not in ELEMENTS"),
     })
 }

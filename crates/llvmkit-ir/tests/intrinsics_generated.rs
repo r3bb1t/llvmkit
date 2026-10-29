@@ -464,7 +464,7 @@ fn primitive_and_target_extension_types_widen_to_distinct_type_enum_variants() -
     ));
 
     let target_ext = m
-        .target_ext_type("dx.Resource", Vec::<Type<'_, _>>::new(), Vec::<u32>::new())
+        .target_ext_type("dx.Resource", Vec::<Type<'_, _>>::new(), Vec::<u32>::new())?
         .as_type();
     assert!(matches!(
         AnyTypeEnum::from(target_ext),
@@ -479,7 +479,7 @@ fn primitive_and_target_extension_types_widen_to_distinct_type_enum_variants() -
 fn target_extension_overload_name_round_trips() -> Result<(), IrError> {
     let m = module_new!("intrinsic-target-ext")?;
     let handle = m
-        .target_ext_type("dx.Resource", Vec::<Type<'_, _>>::new(), Vec::<u32>::new())
+        .target_ext_type("dx.Resource", Vec::<Type<'_, _>>::new(), Vec::<u32>::new())?
         .as_type();
     let id = IntrinsicId::lookup("llvm.dx.resource.handlefrombinding.tdx.Resourcet")
         .expect("dx handle intrinsic");
@@ -496,7 +496,7 @@ fn target_extension_overload_name_round_trips() -> Result<(), IrError> {
         ])?
         .as_type();
     let raw_buffer = m
-        .target_ext_type("dx.RawBuffer", [element], [0, 0])
+        .target_ext_type("dx.RawBuffer", [element], [0, 0])?
         .as_type();
     let raw_name = "llvm.dx.resource.handlefrombinding.tdx.RawBuffer_sl_v4f32v4i32s_0_0t";
     let raw_id = IntrinsicId::lookup(raw_name).expect("dx raw buffer handle intrinsic");
@@ -508,10 +508,10 @@ fn target_extension_overload_name_round_trips() -> Result<(), IrError> {
 
     let layout_struct = m.get_or_insert_named_struct("__cblayout_d").as_type();
     let layout = m
-        .target_ext_type("dx.Layout", [layout_struct], [16, 0, 4, 8, 12])
+        .target_ext_type("dx.Layout", [layout_struct], [16, 0, 4, 8, 12])?
         .as_type();
     let cbuffer = m
-        .target_ext_type("dx.CBuffer", [layout], Vec::<u32>::new())
+        .target_ext_type("dx.CBuffer", [layout], Vec::<u32>::new())?
         .as_type();
     let cbuffer_name = concat!(
         "llvm.dx.resource.handlefromimplicitbinding.tdx.CBuffer_",

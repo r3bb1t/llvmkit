@@ -445,7 +445,7 @@ fn token_none_and_target_none_are_null_values() -> IrResult<()> {
     let m = Module::dynamic("constants");
     assert!(m.token_none().is_null_value());
     let target = m
-        .target_ext_type("spirv.foo", Vec::<Type<'_, _>>::new(), Vec::<u32>::new())
+        .target_ext_type("spirv.foo", Vec::<Type<'_, _>>::new(), Vec::<u32>::new())?
         .as_type();
     let none = m.target_ext_none(target)?;
     assert!(matches!(
@@ -601,7 +601,7 @@ fn nested_and_empty_lists_are_classified_through_their_class() -> IrResult<()> {
 fn an_aggregate_zero_list_prints_as_zeroinitializer() -> IrResult<()> {
     let m = Module::dynamic("constants");
     let target = m
-        .target_ext_type("spirv.foo", Vec::<Type<'_, _>>::new(), Vec::<u32>::new())
+        .target_ext_type("spirv.foo", Vec::<Type<'_, _>>::new(), Vec::<u32>::new())?
         .as_type();
     let none = m.target_ext_none(target)?;
     let pair = m

@@ -303,7 +303,7 @@ fn constant_folder_gep_declines_scalable_target_ext_source_type() -> Result<(), 
         "aarch64.svcount",
         Vec::<Type<'_, _>>::new(),
         Vec::<u32>::new(),
-    );
+    )?;
     let ptr = m.ptr_type(0).const_null().as_constant();
 
     assert_eq!(

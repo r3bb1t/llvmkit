@@ -788,6 +788,7 @@ fn none_is_token_only() {
             Vec::<llvmkit_ir::Type<'_, _>>::new(),
             Vec::<u32>::new(),
         )
+        .expect("valid target type")
         .as_type();
     let err = parser::parse_constant_value(b"none", &module, target_ty)
         .expect_err("target-extension none is rejected");
@@ -817,6 +818,7 @@ fn target_ext_zeroinitializer_requires_zero_init_property() {
             Vec::<llvmkit_ir::Type<'_, _>>::new(),
             Vec::<u32>::new(),
         )
+        .expect("valid target type")
         .as_type();
     let zero = parser::parse_constant_value(b"zeroinitializer", &module, zero_ty)
         .expect("zero-initializable target extension parses");
@@ -831,6 +833,7 @@ fn target_ext_zeroinitializer_requires_zero_init_property() {
             Vec::<llvmkit_ir::Type<'_, _>>::new(),
             Vec::<u32>::new(),
         )
+        .expect("valid target type")
         .as_type();
     let err = parser::parse_constant_value(b"zeroinitializer", &module, image_ty)
         .expect_err("non-zero-initializable target extension is rejected");

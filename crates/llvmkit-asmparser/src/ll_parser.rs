@@ -7323,16 +7323,19 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         self.expect_punct(PunctKind::RParen, "')' in target extension type")?;
         let loc = self.loc();
-        let ty = self.module.target_ext_type(name, type_params, int_params);
-        // Upstream surfaces `TargetExtType::getOrError`'s message through
-        // `tokError`, so the arity complaint is the whole diagnostic.
-        ty.check_params().map_err(|e| match e {
-            IrError::InvalidOperation { message } => ParseError::Message {
-                message: message.into(),
-                loc,
-            },
-            other => self.builder_err("target extension type", other),
-        })?;
+        let ty = self
+            .module
+            .target_ext_type(name, type_params, int_params)
+            .map_err(|e| match e {
+                // Upstream surfaces `TargetExtType::getOrError`'s message
+                // through `tokError`, so the arity complaint is the whole
+                // diagnostic.
+                IrError::TargetExtTypeParameters { rule } => ParseError::Message {
+                    message: rule.to_string().into(),
+                    loc,
+                },
+                other => self.builder_err("target extension type", other),
+            })?;
         Ok(ty.as_type())
     }
 

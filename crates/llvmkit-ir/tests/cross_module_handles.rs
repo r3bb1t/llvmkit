@@ -894,6 +894,45 @@ fn the_typed_pointer_constructor_rejects_a_pointee_from_another_module() {
         .expect("a same-module typed pointer");
 }
 
+/// The target-type constructor — on `Module` and on `ModuleView` — rejects a
+/// type parameter from another module: its slot would name a different type
+/// in this module's arena. Handed the parameters of a target type whose count
+/// is also wrong (`aarch64.svcount` takes none), it still answers
+/// `ForeignType`: each parameter's module check runs before the count check.
+///
+/// No upstream counterpart: `TargetExtType::get` takes `Type *`s, uniqued per
+/// `LLVMContext`.
+#[test]
+fn the_target_type_constructor_rejects_a_parameter_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let view = home.as_view();
+    let foreign_i32 = foreign.i32_type().as_type();
+    let problems = not_refused(vec![
+        (
+            "target_ext_type",
+            without_value(home.target_ext_type("spirv.Image", [foreign_i32], [0])),
+        ),
+        (
+            "view.target_ext_type",
+            without_value(view.target_ext_type("spirv.Image", [foreign_i32], [0])),
+        ),
+        (
+            "target_ext_type(aarch64.svcount)",
+            without_value(home.target_ext_type("aarch64.svcount", [foreign_i32], [])),
+        ),
+        (
+            "view.target_ext_type(aarch64.svcount)",
+            without_value(view.target_ext_type("aarch64.svcount", [foreign_i32], [])),
+        ),
+    ]);
+    assert!(problems.is_empty(), "{problems:#?}");
+
+    // Positive control: the receiving module's own parameter.
+    home.target_ext_type("spirv.Image", [home.i32_type().as_type()], [0])
+        .expect("a same-module target type");
+}
+
 /// The array constructor — on `Module` and on `ModuleView` — rejects an
 /// element type from another module: its slot would name a different type in
 /// this module's arena. The second list hands each the other module's `void`,
@@ -1245,6 +1284,7 @@ fn target_ext_none_rejects_a_type_from_another_module() {
             Vec::<llvmkit_ir::Type<'_, DynBrand>>::new(),
             Vec::<u32>::new(),
         )
+        .expect("valid target type")
         .as_type();
 
     let before = format!("{home}");

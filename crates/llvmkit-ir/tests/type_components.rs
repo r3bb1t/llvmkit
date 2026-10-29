@@ -3,8 +3,9 @@
 
 use llvmkit_ir::{
     ArrLenDyn, ArrayType, ConstantFolder, Dyn, ElemDyn, IntrinsicId, IrBuilder, IrBuilderFolder,
-    IrError, LenDyn, Linkage, Module, ShuffleMaskElem, TypeKindLabel, TypePosition, TypedPointee,
-    TypedPointerType, VectorType, constant_fold_shuffle_vector_instruction, lanes,
+    IrError, LenDyn, Linkage, Module, ShuffleMaskElem, TargetExtParameterRule, Type, TypeKindLabel,
+    TypePosition, TypedPointee, TypedPointerType, VectorType,
+    constant_fold_shuffle_vector_instruction, lanes,
 };
 
 /// `VectorType::of` keeps the element marker and builds in the element's own
@@ -96,10 +97,12 @@ fn a_zero_count_riscv_tuple_has_no_layout() {
     let part = VectorType::scalable_of(m.i8_type(), lanes::<8>()).as_type();
     let zero = m
         .target_ext_type("riscv.vector.tuple", [part], [0])
+        .expect("valid target type")
         .as_type();
     assert!(!zero.is_sized());
     let two = m
         .target_ext_type("riscv.vector.tuple", [part], [2])
+        .expect("valid target type")
         .as_type();
     assert!(two.is_sized());
 }
@@ -220,6 +223,31 @@ fn an_intrinsic_name_cannot_spell_an_invalid_array() {
     }
     m.get_or_insert_intrinsic_declaration_by_name("llvm.ssa.copy.a2i32")
         .expect("`[2 x i32]` is an overload of `llvm.ssa.copy`");
+}
+
+/// An intrinsic name whose overload suffix spells a target type with
+/// parameter counts `TargetExtType::checkParams` refuses does not demangle.
+/// Upstream's `getMangledTypeStr` (`lib/IR/Intrinsics.cpp`) spells only types
+/// that exist — `"t" + name`, then `"_" + param` per type and integer
+/// parameter, then `"t"` — and `TargetExtType::get` would not build these.
+/// llvmkit-specific regression (D10): the demangler interned the target type
+/// with no count check. `tamdgcn.named.barrier_0t` is the positive control.
+#[test]
+fn an_intrinsic_name_cannot_spell_an_invalid_target_type() {
+    let m = Module::dynamic("components");
+    for name in [
+        "llvm.ssa.copy.taarch64.svcount_i32t",
+        "llvm.ssa.copy.triscv.vector.tuple_2t",
+        "llvm.ssa.copy.tamdgcn.named.barriert",
+    ] {
+        let refused = m.get_or_insert_intrinsic_declaration_by_name(name);
+        assert!(
+            matches!(refused, Err(IrError::IntrinsicSignatureMismatch { .. })),
+            "{name}: {refused:?}"
+        );
+    }
+    m.get_or_insert_intrinsic_declaration_by_name("llvm.ssa.copy.tamdgcn.named.barrier_0t")
+        .expect("`target(\"amdgcn.named.barrier\", 0)` is an overload of `llvm.ssa.copy`");
 }
 
 /// An intrinsic name whose overload suffix spells a zero-length array
@@ -361,6 +389,49 @@ fn a_struct_refuses_an_invalid_element() {
     }
     view.packed_struct_type([view_i32, view.x86_amx_type()])
         .expect("x86_amx is a struct element");
+}
+
+/// `target_ext_type` refuses a parameter count `TargetExtType::checkParams`
+/// refuses, with upstream's exact message, at construction — as
+/// `TargetExtType::getOrError` does (`lib/IR/Type.cpp`). llvmkit-specific
+/// (D10): upstream's `TargetExtType::get` wraps the check in `cantFail`.
+#[test]
+fn a_target_type_checks_its_parameters_when_built() {
+    let m = Module::dynamic("components");
+    let i32_ty = m.i32_type().as_type();
+    let no_types = Vec::<Type<'_, _>>::new();
+    for (name, types, ints, rule, message) in [
+        (
+            "aarch64.svcount",
+            vec![i32_ty],
+            vec![],
+            TargetExtParameterRule::Aarch64Svcount,
+            "target extension type aarch64.svcount should have no parameters",
+        ),
+        (
+            "riscv.vector.tuple",
+            no_types.clone(),
+            vec![2],
+            TargetExtParameterRule::RiscvVectorTuple,
+            "target extension type riscv.vector.tuple should have one type parameter and one integer parameter",
+        ),
+        (
+            "amdgcn.named.barrier",
+            no_types.clone(),
+            vec![],
+            TargetExtParameterRule::AmdgcnNamedBarrier,
+            "target extension type amdgcn.named.barrier should have no type parameters and one integer parameter",
+        ),
+    ] {
+        let refused = m.target_ext_type(name, types, ints);
+        assert!(
+            matches!(refused, Err(IrError::TargetExtTypeParameters { rule: r }) if r == rule),
+            "{name}: {refused:?}"
+        );
+        assert_eq!(refused.expect_err("refused above").to_string(), message);
+    }
+    m.target_ext_type("amdgcn.named.barrier", no_types, [0])
+        .expect("one integer parameter");
 }
 
 /// A typed pointer prints as AsmWriter prints one — `typedptr(<pointee>,

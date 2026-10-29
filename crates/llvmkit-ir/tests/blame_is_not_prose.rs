@@ -19,8 +19,12 @@
 //! phrase split across two source lines is still read as one phrase. Not read:
 //! text built by `format!`; literals passed positionally (the verifier's
 //! `Check` literals); raw-string literals; a literal bound to a local first and
-//! handed over by field shorthand, as `derived_types.rs`'s `check_params` does
-//! with `InvalidOperation { message }`; and the parser crate's messages.
+//! handed over by field shorthand, `InvalidOperation { message }` — no
+//! construction takes that shape since `TargetExtType::check_params` became
+//! `IrError::TargetExtTypeParameters` (`rg -n "InvalidOperation \{ message \}"
+//! crates/llvmkit-ir/src` then finds only two test `match` patterns in
+//! `verifier.rs`), so a new one would be unread; and the parser crate's
+//! messages.
 
 use std::path::{Path, PathBuf};
 

@@ -15,7 +15,7 @@ use crate::attributes::{
 };
 use crate::capability::{Capability, CapabilityOf, ModuleState, Mutable};
 use crate::derived_types::FunctionType;
-use crate::error::{IrError, IrResult};
+use crate::error::{IrError, IrResult, TargetExtParameterRule};
 use crate::module::{Module, ModuleBrand, ModuleId, ModuleRef};
 use crate::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
 use crate::type_components::lanes;
@@ -1790,6 +1790,11 @@ where
     Ok(None)
 }
 
+/// The target type `body` spells (`name`, then `_` + parameter for each type
+/// and integer parameter), or `None` when it spells none — including a name
+/// whose parameter counts `TargetExtType::checkParams` refuses
+/// ([`TargetExtParameterRule`]): `getMangledTypeStr` spells only types that
+/// exist, and `TargetExtType::get` would not build that one.
 fn parse_target_ext_type_body<'ctx, B, C: Capability>(
     module: ModuleRef<'ctx, B, C>,
     body: &str,
@@ -1832,6 +1837,9 @@ where
         }
         type_params.push(ty);
         params = rest.get(consumed + 1..);
+    }
+    if TargetExtParameterRule::broken_by(name, type_params.len(), int_params.len()).is_some() {
+        return None;
     }
     Some(target_ext_type(module, name, type_params, int_params))
 }

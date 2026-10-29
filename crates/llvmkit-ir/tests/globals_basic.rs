@@ -995,6 +995,7 @@ fn common_linkage_target_none_initializer_accepted() {
     let m = module_new!("m").expect("fresh module");
     let target = m
         .target_ext_type("spirv.foo", Vec::<Type<'_, _>>::new(), Vec::<u32>::new())
+        .expect("valid target type")
         .as_type();
     let none = m.target_ext_none(target).expect("target none");
     m.global_builder("c", target)

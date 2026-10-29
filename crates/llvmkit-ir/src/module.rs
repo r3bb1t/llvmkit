@@ -71,7 +71,7 @@ use super::derived_types::{
     TargetExtType, TokenType, VectorType, VoidType,
 };
 use super::element::{ElemDyn, StaticVecElem};
-use super::error::{BrandError, IrError, IrResult, TypePosition};
+use super::error::{BrandError, IrError, IrResult, TargetExtParameterRule, TypePosition};
 use super::float_kind::{Bfloat, Fp128, Half, PpcFp128, X86Fp80};
 use super::function::FunctionData;
 use super::function::{FunctionBuilder, FunctionValue};
@@ -929,12 +929,21 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
     }
 
     /// Target extension type `target("name", type_params..., int_params...)`.
+    ///
+    /// Mirrors `TargetExtType::getOrError` (`lib/IR/Type.cpp`): the parameter
+    /// counts a named target type's rule forbids are
+    /// [`IrError::TargetExtTypeParameters`], `TargetExtType::checkParams`'s
+    /// message, after each type parameter is admitted against this module
+    /// ([`IrError::ForeignType`]). Upstream interns the type first and checks
+    /// it after, so its second request for the same malformed type finds the
+    /// interned one and answers it unchecked; refusing before interning leaves
+    /// no malformed type in the arena, so every request is refused.
     pub(crate) fn target_ext_type<Name, I, T, J>(
         self,
         name: Name,
         type_params: I,
         int_params: J,
-    ) -> TargetExtType<'ctx, B, C>
+    ) -> IrResult<TargetExtType<'ctx, B, C>>
     where
         Name: Into<String>,
         I: IntoIterator<Item = T>,
@@ -942,16 +951,23 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
         J: IntoIterator<Item = u32>,
     {
         let name: String = name.into();
-        // boundary (F1): refused by Task 26
-        let type_params: Box<[TypeSlot]> = type_params
+        let owner = self.id();
+        let type_params = type_params
             .into_iter()
-            .map(|t| t.as_type().slot_trusting_same_module())
-            .collect();
+            // Boundary: each caller type parameter, admitted against this
+            // module.
+            .map(|t| t.as_type().slot_in(owner))
+            .collect::<IrResult<Box<[TypeSlot]>>>()?;
         let int_params: Box<[u32]> = int_params.into_iter().collect();
-        TargetExtType::new(
+        if let Some(rule) =
+            TargetExtParameterRule::broken_by(&name, type_params.len(), int_params.len())
+        {
+            return Err(IrError::TargetExtTypeParameters { rule });
+        }
+        Ok(TargetExtType::new(
             self.core.ctx.target_ext_type(name, type_params, int_params),
             self,
-        )
+        ))
     }
 
     /// Fixed `<lanes x elem>` vector. Mirrors `FixedVectorType::get`: its
@@ -2178,13 +2194,31 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     }
 
     /// Target extension type `target("name", type_params..., int_params...)`.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::TargetExtTypeParameters`] for parameter counts
+    /// `TargetExtType::checkParams` refuses (`aarch64.svcount` takes none,
+    /// `riscv.vector.tuple` one of each, `amdgcn.named.barrier` one integer),
+    /// with upstream's message; [`IrError::ForeignType`] for a type parameter
+    /// of another module, checked first.
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// let view = m.as_view();
+    /// let ty = view.target_ext_type("spirv.Image", [view.i32_type()], [0])?;
+    /// assert_eq!(ty.to_string(), "target(\"spirv.Image\", i32, 0)");
+    /// assert!(view.target_ext_type("aarch64.svcount", [view.i32_type()], []).is_err());
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
     #[inline]
     pub fn target_ext_type<Name, I, T, J>(
         self,
         name: Name,
         type_params: I,
         int_params: J,
-    ) -> TargetExtType<'ctx, B, ReadOnly>
+    ) -> IrResult<TargetExtType<'ctx, B, ReadOnly>>
     where
         Name: Into<String>,
         I: IntoIterator<Item = T>,
@@ -5150,12 +5184,29 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.typed_varargs_function_type::<Sig::Ret, Sig::Params>()
     }
 
+    /// Target extension type `target("name", type_params..., int_params...)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`ModuleView::target_ext_type`]: parameter counts the type's rule
+    /// forbids ([`IrError::TargetExtTypeParameters`]) or a type parameter of
+    /// another module ([`IrError::ForeignType`]).
+    ///
+    /// ```
+    /// # use llvmkit_ir::{IrError, Module, TargetExtParameterRule};
+    /// let m = Module::dynamic("doc");
+    /// assert_eq!(
+    ///     m.target_ext_type("amdgcn.named.barrier", [m.i32_type()], [0]).map(|_| ()),
+    ///     Err(IrError::TargetExtTypeParameters { rule: TargetExtParameterRule::AmdgcnNamedBarrier })
+    /// );
+    /// assert!(m.target_ext_type("amdgcn.named.barrier", Vec::<llvmkit_ir::Type<'_, _>>::new(), [0]).is_ok());
+    /// ```
     pub fn target_ext_type<Name, I, T, J>(
         &'ctx self,
         name: Name,
         type_params: I,
         int_params: J,
-    ) -> TargetExtType<'ctx, B>
+    ) -> IrResult<TargetExtType<'ctx, B>>
     where
         Name: Into<String>,
         I: IntoIterator<Item = T>,
