@@ -770,10 +770,10 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> InstructionView<'ctx, B, C> {
 
     /// Widen to the erased [`Value`] handle, at the view's capability.
     ///
-    /// Borrows rather than consumes; the by-value
+    /// The view is `Copy`, so it stays usable afterwards; the
     /// [`IsValue::as_erased`] form is also available on this type.
     #[inline]
-    pub fn to_erased(&self) -> Value<'ctx, B, C> {
+    pub fn to_erased(self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
@@ -1996,7 +1996,7 @@ impl<B: ModuleBrand, C: Capability> CapabilityOf for InstructionView<'_, B, C> {
 impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> IsValue<'ctx, B> for InstructionView<'ctx, B, C> {
     #[inline]
     fn as_erased(self) -> Value<'ctx, B, C> {
-        InstructionView::to_erased(&self)
+        InstructionView::to_erased(self)
     }
 }
 crate::value::impl_into_erased_value_for_handle!(InstructionView);
@@ -2048,7 +2048,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> User<'ctx, B> for InstructionVi
     }
 
     fn operand_use(self, index: u32) -> Option<Use<'ctx, B, C>> {
-        let user = InstructionView::to_erased(&self);
+        let user = InstructionView::to_erased(self);
         let v = self.operand(index)?;
         Some(Use::new(user, v, index))
     }
@@ -2541,9 +2541,9 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> NonTerminator<'ctx, B, C> {
 
     /// Widen to the erased [`Value`] handle (the instruction's result).
     ///
-    /// Borrows rather than consumes.
+    /// The handle is `Copy`, so it stays usable afterwards.
     #[inline]
-    pub fn to_erased(&self) -> Value<'ctx, B, C> {
+    pub fn to_erased(self) -> Value<'ctx, B, C> {
         self.view.to_erased()
     }
 

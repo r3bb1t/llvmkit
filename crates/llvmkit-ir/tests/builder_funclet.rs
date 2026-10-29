@@ -29,7 +29,7 @@ fn catchswitch_within_none_unwind_to_caller() -> Result<(), IrError> {
         bb_b.unreachable();
     }
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(cs1_block);
-    let (_sealed, cs) = b.catch_switch_within_none_to_caller("cs1")?;
+    let (_sealed, cs) = b.catch_switch_within_none_to_caller("cs1");
     let _closed = cs.add_handler(cp1_label)?.finish();
     let text = format!("{m}");
     assert!(
@@ -57,7 +57,7 @@ fn catchpad_within_catchswitch_empty_args() -> Result<(), IrError> {
         bb_b.ret_void()?;
     }
     let b_cs = IrBuilder::new_for::<Dyn>(&m).position_at_end(cs_block);
-    let (_sealed, cs) = b_cs.catch_switch_within_none_to_caller("cs1")?;
+    let (_sealed, cs) = b_cs.catch_switch_within_none_to_caller("cs1");
     let cs_closed = cs.add_handler(cp_label)?.finish();
     let cs_value = cs_closed.to_erased();
     let b_cp = IrBuilder::new_for::<Dyn>(&m).position_at_end(cp_block);
@@ -140,7 +140,7 @@ fn catchret_to_label() -> Result<(), IrError> {
         bb_b.ret_void()?;
     }
     let b_cs = IrBuilder::new_for::<Dyn>(&m).position_at_end(cs_block);
-    let (_sealed, cs) = b_cs.catch_switch_within_none_to_caller("cs")?;
+    let (_sealed, cs) = b_cs.catch_switch_within_none_to_caller("cs");
     let cs_closed = cs.add_handler(cp_label)?.finish();
     let cs_value = cs_closed.to_erased();
     let b_cp = IrBuilder::new_for::<Dyn>(&m).position_at_end(cp_block);

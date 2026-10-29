@@ -36,10 +36,10 @@ struct ReturningFolder<'ctx, B: ModuleBrand> {
 }
 
 impl<'ctx, B: ModuleBrand> ReturningFolder<'ctx, B> {
-    fn fold(&self) -> IrResult<Option<Value<'ctx, B>>> {
+    fn fold(&self) -> Option<Value<'ctx, B>> {
         match self.result {
-            FolderReturn::Value(value) => Ok(Some(value)),
-            FolderReturn::NoWrapCall { .. } => Ok(None),
+            FolderReturn::Value(value) => Some(value),
+            FolderReturn::NoWrapCall { .. } => None,
         }
     }
 }
@@ -56,7 +56,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ReturningFolder<'
         _lhs: Value<'ctx, B>,
         _rhs: Value<'ctx, B>,
     ) -> IrResult<Option<Value<'ctx, B>>> {
-        self.fold()
+        Ok(self.fold())
     }
 
     fn fold_no_wrap_bin_op_dyn(
@@ -78,7 +78,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ReturningFolder<'
             {
                 Ok(Some(value))
             }
-            _ => self.fold(),
+            _ => Ok(self.fold()),
         }
     }
 }

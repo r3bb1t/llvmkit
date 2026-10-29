@@ -1770,7 +1770,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 &item.attrs,
                 &item.attr_groups,
                 &item.expected_attrs,
-            )? {
+            ) {
                 return Err(self.intrinsic_attribute_error(item.loc));
             }
         }
@@ -1782,9 +1782,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         attrs: &AttributeStorage,
         attr_groups: &[u32],
         expected_attrs: &AttributeStorage,
-    ) -> ParseResult<bool> {
+    ) -> bool {
         if !attrs.is_subset_of(expected_attrs) {
-            return Ok(false);
+            return false;
         }
         self.intrinsic_declaration_attr_groups_match(attr_groups, expected_attrs)
     }
@@ -1793,21 +1793,21 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         &self,
         attr_groups: &[u32],
         expected_attrs: &AttributeStorage,
-    ) -> ParseResult<bool> {
+    ) -> bool {
         if attr_groups.is_empty() {
-            return Ok(true);
+            return true;
         }
         if Self::has_duplicate_attr_groups(attr_groups) {
-            return Ok(false);
+            return false;
         }
         let mut group_attrs = AttributeStorage::new();
         for group in attr_groups {
             let Some(attrs) = self.numbered_attr_groups.get(*group) else {
-                return Ok(false);
+                return false;
             };
             group_attrs.merge_from(attrs);
         }
-        Ok(group_attrs.has_only_index_attributes_subset_of(expected_attrs, AttrIndex::Function))
+        group_attrs.has_only_index_attributes_subset_of(expected_attrs, AttrIndex::Function)
     }
 
     fn intrinsic_declaration_attrs_are_pending(&self, attr_groups: &[u32]) -> bool {
@@ -11677,7 +11677,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         },
                     );
                 } else if !self
-                    .intrinsic_declaration_attr_groups_match(&suffix.attr_groups, &expected_attrs)?
+                    .intrinsic_declaration_attr_groups_match(&suffix.attr_groups, &expected_attrs)
                 {
                     return Err(self.intrinsic_attribute_error(decl_loc));
                 }
@@ -14952,9 +14952,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if ordering == AtomicOrdering::Monotonic {
             return Err(self.message("fence cannot be monotonic"));
         }
-        let _ = b
-            .fence(ordering, sync_scope, "")
-            .map_err(|e| self.builder_err("fence", e))?;
+        let _ = b.fence(ordering, sync_scope, "");
         Ok(())
     }
 
@@ -15359,7 +15357,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             (Some(parent), Some(dest)) => b.catch_switch(parent, dest, name),
             (Some(parent), None) => b.catch_switch_to_caller(parent, name),
             (None, Some(dest)) => b.catch_switch_within_none(dest, name),
-            (None, None) => b.catch_switch_within_none_to_caller(name),
+            (None, None) => Ok(b.catch_switch_within_none_to_caller(name)),
         }
         .map_err(|e| self.builder_err("catchswitch", e))?;
         for h in handlers {

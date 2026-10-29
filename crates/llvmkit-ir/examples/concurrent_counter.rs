@@ -83,7 +83,7 @@ pub fn build_atomic_inc<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     let b = IrBuilder::at_end(entry);
 
     // fence release
-    let _ = b.fence(AtomicOrdering::Release, SyncScope::System, "")?;
+    let _ = b.fence(AtomicOrdering::Release, SyncScope::System, "");
 
     // %old = atomicrmw add ptr %counter, i32 1 monotonic
     // `f.params()` hands back the parameter already typed as `PointerValue`
@@ -99,7 +99,7 @@ pub fn build_atomic_inc<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     )?;
 
     // fence acquire
-    let _ = b.fence(AtomicOrdering::Acquire, SyncScope::System, "")?;
+    let _ = b.fence(AtomicOrdering::Acquire, SyncScope::System, "");
 
     // ret i32 %old
     let result: IntValue<'_, i32, _> = b.view(old).to_erased().try_into()?;

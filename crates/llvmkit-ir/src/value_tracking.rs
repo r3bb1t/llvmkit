@@ -4764,7 +4764,7 @@ where
 pub(crate) fn logical_op_parts<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
 ) -> Option<LogicalOperation<'ctx, B, C>> {
-    if !matches!(scalar_type_kind(value), Some(TypeKind::Integer { bits: 1 })) {
+    if !matches!(scalar_type_kind(value), TypeKind::Integer { bits: 1 }) {
         return None;
     }
     match instruction_kind(value)? {
@@ -4857,12 +4857,12 @@ fn is_null_pointer<'ctx, B: ModuleBrand + 'ctx, C: Capability>(value: Value<'ctx
 /// The kind of the value's scalar type, peeling one vector layer.
 fn scalar_type_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
-) -> Option<TypeKind> {
+) -> TypeKind {
     let ty = value.ty();
-    Some(match ty.data().as_vector() {
+    match ty.data().as_vector() {
         Some((element, _, _)) => Type::new(element, ty.module).kind(),
         None => ty.kind(),
-    })
+    }
 }
 
 // --------------------------------------------------------------------------

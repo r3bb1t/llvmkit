@@ -29,6 +29,16 @@ llvmkit-macros    = { version = "0.0.4", path = "crates/llvmkit-macros" }
 llvmkit-tablegen  = { version = "0.0.4", path = "crates/llvmkit-tablegen" }
 thiserror         = "2"
 
+# Lints every member opts into with `[lints] workspace = true`.
+#
+# `unnecessary_wraps` is CLAUDE.md's "fallibility honesty" rule as a check: a
+# function whose `Result` or `Option` never holds the failure it declares is
+# refused, so a return type cannot claim a failure that cannot happen. It
+# checks public functions too — `clippy.toml` turns off
+# `avoid-breaking-exported-api`.
+[workspace.lints.clippy]
+unnecessary_wraps = "deny"
+
 # The gate runs `--release` on ~280 test binaries, and their *execution* is not
 # what costs: at `opt-level = 3` the workspace spends far longer optimising and
 # linking those binaries than running them. `opt-level = 1` keeps the loops in

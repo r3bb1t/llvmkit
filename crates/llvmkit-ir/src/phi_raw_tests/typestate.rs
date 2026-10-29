@@ -35,8 +35,8 @@ fn fp_and_pointer_phi_ids_view_back_to_typed_handles() -> Result<(), IrError> {
     // The ids resolve to the fp and pointer handles exactly as the int id
     // resolves to `PhiInst`. No incomings are added, so both read back a
     // count of zero.
-    let fp_phi = b.view(b.fp_phi::<f64, _>("fp")?);
-    let ptr_phi = b.view(b.pointer_phi("pp")?);
+    let fp_phi = b.view(b.fp_phi::<f64, _>("fp"));
+    let ptr_phi = b.view(b.pointer_phi("pp"));
     assert_eq!(fp_phi.incoming_count(), 0);
     assert_eq!(ptr_phi.incoming_count(), 0);
     Ok(())
@@ -66,7 +66,7 @@ fn phi_reads_back_all_incomings() -> Result<(), IrError> {
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
-        .view(b.int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p"))
         .add_incoming(1_i32, entry_label)?
         .add_incoming(2_i32, other_label)?;
 
@@ -99,9 +99,9 @@ fn rediscovered_phi_narrows_to_result_type() -> Result<(), IrError> {
     let bb = m.view(f).append_basic_block(&m, "bb");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
 
-    let int_phi = b.view(b.int_phi::<i32, _>("ip")?);
-    let fp_phi = b.view(b.fp_phi::<f64, _>("fp")?);
-    let ptr_phi = b.view(b.pointer_phi("pp")?);
+    let int_phi = b.view(b.int_phi::<i32, _>("ip"));
+    let fp_phi = b.view(b.fp_phi::<f64, _>("fp"));
+    let ptr_phi = b.view(b.pointer_phi("pp"));
 
     assert!(matches!(
         int_phi.as_view().kind(),
@@ -202,11 +202,11 @@ fn two_phis_built_after_nonphi_keep_relative_order() -> Result<(), IrError> {
     // p1 then p2, both after the add. Head placement must not reverse
     // them: p1 stays ahead of p2.
     let _p1 = b
-        .view(b.int_phi::<i32, _>("p1")?)
+        .view(b.int_phi::<i32, _>("p1"))
         .add_incoming(1_i32, entry_label)?
         .add_incoming(2_i32, other_label)?;
     let _p2 = b
-        .view(b.int_phi::<i32, _>("p2")?)
+        .view(b.int_phi::<i32, _>("p2"))
         .add_incoming(3_i32, entry_label)?
         .add_incoming(4_i32, other_label)?;
     b.ret(a)?;
@@ -248,9 +248,9 @@ fn phi_range_iterates_three_phis() -> Result<(), IrError> {
     let bb_label = bb.id();
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
-    let p1 = b.view(b.int_phi::<i32, _>("phi.1")?);
-    let p2 = b.view(b.int_phi::<i32, _>("phi.2")?);
-    let p3 = b.view(b.int_phi::<i32, _>("phi.3")?);
+    let p1 = b.view(b.int_phi::<i32, _>("phi.1"));
+    let p2 = b.view(b.int_phi::<i32, _>("phi.2"));
+    let p3 = b.view(b.int_phi::<i32, _>("phi.3"));
     // Upstream wires `P1->addIncoming(P2, BB)` etc. via the same `BB`
     // (cycle). We add poisons referencing self -- the structural shape
     // matches the upstream phi count assertion regardless of operand
@@ -297,7 +297,7 @@ fn phi_incomings_match_indexed_access() -> Result<(), IrError> {
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
-        .view(b.int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p"))
         .add_incoming(1_i32, entry_label)?
         .add_incoming(2_i32, other_label)?;
     b.ret(phi.as_int_value())?;

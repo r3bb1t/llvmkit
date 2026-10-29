@@ -1601,7 +1601,7 @@ where
     if is_var_arg {
         params.pop();
     }
-    fn_type_with_var_arg(module, ret, params, is_var_arg)
+    Ok(fn_type_with_var_arg(module, ret, params, is_var_arg))
 }
 
 fn iit_descriptors(record: &IntrinsicRecord) -> IrResult<Vec<IitDescriptor>> {
@@ -1782,7 +1782,7 @@ where
             continue;
         }
         let body = body_and_rest.get(..end).ok_or_else(intrinsic_mismatch)?;
-        if let Some(ty) = parse_target_ext_type_body(module, body)? {
+        if let Some(ty) = parse_target_ext_type_body(module, body) {
             return Ok(Some((ty, end + 2)));
         }
     }
@@ -1792,7 +1792,7 @@ where
 fn parse_target_ext_type_body<'ctx, B, C: Capability>(
     module: ModuleRef<'ctx, B, C>,
     body: &str,
-) -> IrResult<Option<Type<'ctx, B, C>>>
+) -> Option<Type<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
 {
@@ -1801,14 +1801,14 @@ where
         None => (body, None),
     };
     if name.is_empty() {
-        return Ok(None);
+        return None;
     }
 
     let mut type_params = Vec::new();
     let mut int_params = Vec::new();
     while let Some(rest) = params {
         if rest.is_empty() {
-            return Ok(None);
+            return None;
         }
         if let Some((value, consumed)) = parse_prefixed_u32(rest, "", true)
             && (consumed == rest.len() || rest.as_bytes().get(consumed) == Some(&b'_'))
@@ -1820,19 +1820,19 @@ where
 
         let (ty, consumed) = match parse_mangled_type_prefix(module, rest) {
             Ok(parsed) => parsed,
-            Err(_) => return Ok(None),
+            Err(_) => return None,
         };
         if consumed == rest.len() {
             type_params.push(ty);
             break;
         }
         if rest.as_bytes().get(consumed) != Some(&b'_') {
-            return Ok(None);
+            return None;
         }
         type_params.push(ty);
         params = rest.get(consumed + 1..);
     }
-    Ok(Some(target_ext_type(module, name, type_params, int_params)))
+    Some(target_ext_type(module, name, type_params, int_params))
 }
 
 fn parse_function_type_prefix<'ctx, B, C: Capability>(
@@ -1862,10 +1862,10 @@ where
             Some(params) => params,
             None => continue,
         };
-        let Some(params) = parse_mangled_type_sequence(module, params)? else {
+        let Some(params) = parse_mangled_type_sequence(module, params) else {
             continue;
         };
-        let fn_ty = fn_type_with_var_arg(module, ret, params, is_var_arg)?;
+        let fn_ty = fn_type_with_var_arg(module, ret, params, is_var_arg);
         return Ok(Some((fn_ty.as_type(), end + 3)));
     }
     Ok(None)
@@ -1922,7 +1922,7 @@ where
             continue;
         }
         let body = body_and_rest.get(..end).ok_or_else(intrinsic_mismatch)?;
-        let Some(elements) = parse_mangled_type_sequence(module, body)? else {
+        let Some(elements) = parse_mangled_type_sequence(module, body) else {
             continue;
         };
         // As for the vector and array arms: `getMangledTypeStr` spells
@@ -1954,26 +1954,20 @@ where
 fn parse_mangled_type_sequence<'ctx, B, C: Capability>(
     module: ModuleRef<'ctx, B, C>,
     mut text: &str,
-) -> IrResult<Option<Vec<Type<'ctx, B, C>>>>
+) -> Option<Vec<Type<'ctx, B, C>>>
 where
     B: ModuleBrand + 'ctx,
 {
     let mut types = Vec::new();
     while !text.is_empty() {
-        let (ty, consumed) = match parse_mangled_type_prefix(module, text) {
-            Ok(parsed) => parsed,
-            Err(_) => return Ok(None),
-        };
+        let (ty, consumed) = parse_mangled_type_prefix(module, text).ok()?;
         if consumed == 0 {
-            return Ok(None);
+            return None;
         }
         types.push(ty);
-        let Some(rest) = text.get(consumed..) else {
-            return Ok(None);
-        };
-        text = rest;
+        text = text.get(consumed..)?;
     }
-    Ok(Some(types))
+    Some(types)
 }
 
 fn parse_prefixed_u32(text: &str, prefix: &str, allow_zero: bool) -> Option<(u32, usize)> {
@@ -2360,7 +2354,7 @@ fn fn_type_with_var_arg<'ctx, B, C, I>(
     ret: Type<'ctx, B, C>,
     params: I,
     is_var_arg: bool,
-) -> IrResult<FunctionType<'ctx, B, C>>
+) -> FunctionType<'ctx, B, C>
 where
     B: ModuleBrand + 'ctx,
     C: Capability,
@@ -2375,7 +2369,7 @@ where
         param_ids.into_boxed_slice(),
         is_var_arg,
     );
-    Ok(FunctionType::new(id, module))
+    FunctionType::new(id, module)
 }
 
 /// `ScalableVectorType::get`, for the decoders and matchers here: its
@@ -2898,8 +2892,8 @@ mod tests {
                 fixed_vector_type(module_ref, f32_ty, lanes::<4>())?,
                 2,
             )?,
-            fn_type_with_var_arg(module_ref, i32_ty, [i32_ty, ptr_ty], false)?.as_type(),
-            fn_type_with_var_arg(module_ref, void_type(module_ref), [i32_ty], true)?.as_type(),
+            fn_type_with_var_arg(module_ref, i32_ty, [i32_ty, ptr_ty], false).as_type(),
+            fn_type_with_var_arg(module_ref, void_type(module_ref), [i32_ty], true).as_type(),
             module.struct_type([i32_ty, ptr_ty])?.as_type(),
             module.opaque_struct("named")?.as_type(),
             target_ext_type(module_ref, "aarch64.svcount", [], []),

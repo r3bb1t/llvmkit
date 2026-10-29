@@ -128,7 +128,7 @@ fn build_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
     // to: %p = phi i32 [ %x, entry ] ; %u = add %p, 1 ; ret %u
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(to);
     let p = b
-        .view(b.int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p"))
         .add_incoming(x, entry_lbl)?;
     let u = b.int_add(p.as_int_value(), 1_i32, "u")?;
     b.ret(u)?;
@@ -224,7 +224,7 @@ fn build_redirect_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
     // old_to: %p = phi i32 [ %x, entry ] ; %u = add %p, 1 ; ret %u
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(old_to);
     let p = b
-        .view(b.int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p"))
         .add_incoming(x, entry_lbl)?;
     let u = b.int_add(p.as_int_value(), 1_i32, "u")?;
     b.ret(u)?;
@@ -324,7 +324,7 @@ fn zero_incoming_phi_in_a_block_with_a_predecessor_is_rejected() -> Result<(), I
 
     // b: %p = phi i32   (no add_incoming) ; ret 0
     let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(b);
-    let _p = bld.view(bld.int_phi::<i32, _>("p")?);
+    let _p = bld.view(bld.int_phi::<i32, _>("p"));
     bld.ret(i32_ty.const_int(0_u32))?;
 
     let err = m
@@ -378,12 +378,12 @@ fn zero_incoming_phi_without_predecessors_verifies() -> Result<(), IrError> {
 
     // entry: %e = phi i32   (no add_incoming) ; ret 0
     let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let _e = bld.view(bld.int_phi::<i32, _>("e")?);
+    let _e = bld.view(bld.int_phi::<i32, _>("e"));
     bld.ret(i32_ty.const_int(0_u32))?;
 
     // u: %q = phi i32   (no add_incoming) ; ret 0
     let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(u);
-    let _q = bld.view(bld.int_phi::<i32, _>("q")?);
+    let _q = bld.view(bld.int_phi::<i32, _>("q"));
     bld.ret(i32_ty.const_int(0_u32))?;
 
     m.verify_borrowed()
@@ -412,7 +412,7 @@ fn an_empty_phi_prints_its_type_and_no_pairs() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let _e = bld.view(bld.int_phi::<i32, _>("e")?);
+    let _e = bld.view(bld.int_phi::<i32, _>("e"));
     bld.ret(i32_ty.const_int(0_u32))?;
 
     let printed = format!("{m}");

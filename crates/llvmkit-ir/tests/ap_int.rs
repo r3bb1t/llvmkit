@@ -7,7 +7,7 @@ use llvmkit_ir::{ApInt, ApIntTruncation, IrError, Signedness};
 
 /// Port of `llvm/unittests/ADT/APIntTest.cpp` construction and bit-count checks.
 #[test]
-fn construction_normalizes_top_word_and_counts_bits() -> Result<(), IrError> {
+fn construction_normalizes_top_word_and_counts_bits() {
     let value = ApInt::from_words(129, &[u64::MAX, u64::MAX, u64::MAX]);
 
     assert_eq!(value.bit_width(), 129);
@@ -16,8 +16,6 @@ fn construction_normalizes_top_word_and_counts_bits() -> Result<(), IrError> {
     assert_eq!(value.count_leading_zeros(), 0);
     assert_eq!(value.popcount(), 129);
     assert!(value.is_all_ones());
-
-    Ok(())
 }
 
 /// Port of `llvm/unittests/ADT/APIntTest.cpp` arithmetic wrap coverage.

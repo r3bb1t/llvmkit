@@ -356,7 +356,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> CompareOperand<'ctx, B, C> {
         match self {
             Self::Value(value) => matches!(
                 scalar_kind(*value),
-                Some(TypeKind::Integer { .. } | TypeKind::Pointer { .. })
+                TypeKind::Integer { .. } | TypeKind::Pointer { .. }
             ),
             Self::Literal(_) => true,
         }
@@ -1197,7 +1197,7 @@ fn binary_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 fn zero_like<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
 ) -> Option<CompareOperand<'ctx, B, C>> {
-    let TypeKind::Integer { bits } = scalar_kind(value)? else {
+    let TypeKind::Integer { bits } = scalar_kind(value) else {
         return None;
     };
     Some(CompareOperand::Literal(ApInt::zero(bits)))
@@ -1224,14 +1224,12 @@ fn constant_int<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 }
 
 /// The kind of the value's scalar type, peeling one vector layer.
-fn scalar_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    value: Value<'ctx, B, C>,
-) -> Option<TypeKind> {
+fn scalar_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(value: Value<'ctx, B, C>) -> TypeKind {
     let ty = value.ty();
-    Some(match ty.data().as_vector() {
+    match ty.data().as_vector() {
         Some((element, _, _)) => crate::r#type::Type::new(element, ty.module).kind(),
         None => ty.kind(),
-    })
+    }
 }
 
 /// The instruction payload behind `value`, or `None` when it is not one.

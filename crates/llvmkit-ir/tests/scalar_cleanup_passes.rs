@@ -272,7 +272,7 @@ fn dce_keeps_store_fence_and_call() -> Result<(), IrError> {
         AtomicOrdering::SequentiallyConsistent,
         SyncScope::System,
         "",
-    )?;
+    );
     b.call_dyn::<Dyn, _, _, _, _>(sink, Vec::<Value<'_, _>>::new(), "")?;
     b.ret_void()?;
 

@@ -2696,6 +2696,19 @@ items below are the deferred / known-remaining points.
   GEPs of globals" (needs a dereferenceable-bytes query). Each produces weaker /
   fewer folds than upstream, never a wrong one.
 
+- **Binary-intrinsic constant folding is unported (found 2026-10-29).** The
+  public `constant_fold_binary_intrinsic` (`constant_folding.rs`) admits its
+  operands and then answers `Ok(None)` for every input: its
+  `_trusting_same_module` body discards its arguments. Upstream's
+  `ConstantFoldBinaryIntrinsic` (`lib/Analysis/ConstantFolding.cpp`) hands
+  them to `ConstantFoldIntrinsicCall2`, which llvmkit has not ported (before
+  this entry, `rg -n "ConstantFoldIntrinsicCall2|ConstantFoldBinaryIntrinsic"
+  crates/llvmkit-ir/src` @ `49c95a9` found nothing; `constant_fold_call` folds
+  library calls only). No fold is always correct, so this costs strength, not
+  correctness. Found by the `clippy::unnecessary_wraps` sweep, which flagged the
+  body's always-`Ok` wrapper; the doc comment that claimed it folded "the
+  currently modelled binary intrinsic set" now says it folds nothing yet.
+
 - ~~**Proactive ApFloat bit-exactness audit (deferred to its own cycle).** No
   constant-folder fix in this cycle touched ApFloat arithmetic, and the folding
   audit found `ap_float` structurally faithful and test-backed. A full

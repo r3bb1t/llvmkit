@@ -22,9 +22,9 @@ fn fence_system_scope_orderings() -> Result<(), IrError> {
     let f = m.add_function_dyn("instructions.atomics", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let _ = b.fence(AtomicOrdering::Acquire, SyncScope::System, "")?;
-    let _ = b.fence(AtomicOrdering::Release, SyncScope::System, "")?;
-    let _ = b.fence(AtomicOrdering::AcquireRelease, SyncScope::System, "")?;
+    let _ = b.fence(AtomicOrdering::Acquire, SyncScope::System, "");
+    let _ = b.fence(AtomicOrdering::Release, SyncScope::System, "");
+    let _ = b.fence(AtomicOrdering::AcquireRelease, SyncScope::System, "");
     let _ = b.ret_void()?;
     let text = format!("{m}");
     assert!(text.contains("fence acquire\n"), "got:\n{text}");
@@ -48,7 +48,7 @@ fn fence_singlethread_seq_cst() -> Result<(), IrError> {
         AtomicOrdering::SequentiallyConsistent,
         SyncScope::SingleThread,
         "",
-    )?;
+    );
     let _ = b.ret_void()?;
     let text = format!("{m}");
     assert!(

@@ -281,9 +281,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
     /// Widen this copyable label reference to the erased [`Value`] handle,
     /// at the label's capability.
     ///
-    /// Borrows rather than consumes, so the label stays usable afterwards.
+    /// The label is `Copy`, so it stays usable afterwards.
     #[inline]
-    pub fn to_erased(&self) -> Value<'ctx, B, C> {
+    pub fn to_erased(self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 

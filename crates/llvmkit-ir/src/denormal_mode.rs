@@ -18,14 +18,17 @@ pub enum DenormalModeKind {
 }
 
 impl DenormalModeKind {
-    /// LLVM attribute spelling for this mode where one exists.
+    /// LLVM attribute spelling for this mode. Mirrors `denormalModeKindName`
+    /// (`llvm/ADT/FloatingPointMode.h`), whose `default:` arm answers `""` for
+    /// `DenormalMode::Invalid` — a kind this enum does not have, so every mode
+    /// has a spelling.
     #[inline]
-    pub const fn keyword(self) -> Option<&'static str> {
+    pub const fn keyword(self) -> &'static str {
         match self {
-            Self::Ieee => Some("ieee"),
-            Self::PreserveSign => Some("preserve-sign"),
-            Self::PositiveZero => Some("positive-zero"),
-            Self::Dynamic => Some("dynamic"),
+            Self::Ieee => "ieee",
+            Self::PreserveSign => "preserve-sign",
+            Self::PositiveZero => "positive-zero",
+            Self::Dynamic => "dynamic",
         }
     }
 }

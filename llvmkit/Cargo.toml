@@ -11,6 +11,9 @@ rust-version.workspace = true
 keywords.workspace     = true
 categories.workspace   = true
 
+[lints]
+workspace = true
+
 [features]
 default = ["macros"]
 # Forwards to `llvmkit-ir/macros`: the user-facing macro re-exports

@@ -81,7 +81,7 @@ fn infinity_and_nan_classification() {
 
 /// Port of `llvm/unittests/ADT/APFloatTest.cpp` arithmetic status checks.
 #[test]
-fn double_add_and_divide_status_bits() -> Result<(), IrError> {
+fn double_add_and_divide_status_bits() {
     let one = ApFloat::one(ApFloatSemantics::IeeeDouble, ApFloatSign::Positive);
     let two = one.add(&one, RoundingMode::NearestTiesToEven).0;
     assert!(two.is_exactly_value_f64(2.0));
@@ -89,7 +89,6 @@ fn double_add_and_divide_status_bits() -> Result<(), IrError> {
     let zero = ApFloat::zero(ApFloatSemantics::IeeeDouble, ApFloatSign::Positive);
     let (_quotient, status) = one.divide(&zero, RoundingMode::NearestTiesToEven);
     assert!(status.contains(ApFloatStatus::DIV_BY_ZERO));
-    Ok(())
 }
 
 /// llvmkit-specific subset of `llvm/unittests/ADT/APFloatTest.cpp::TEST(APFloatTest, add)`:

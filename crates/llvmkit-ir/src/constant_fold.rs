@@ -449,7 +449,7 @@ pub(crate) fn constant_fold_binary_instruction_trusting_same_module<
         return Ok(Some(folded));
     }
 
-    if let Some(folded) = fold_global_pointer_and_mask(opcode, lhs, rhs)? {
+    if let Some(folded) = fold_global_pointer_and_mask(opcode, lhs, rhs) {
         return Ok(Some(folded));
     }
 
@@ -2317,9 +2317,9 @@ fn fold_global_pointer_and_mask<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     opcode: BinaryOpcode,
     lhs: Constant<'ctx, B, C>,
     rhs: Constant<'ctx, B, C>,
-) -> IrResult<Option<Constant<'ctx, B, C>>> {
+) -> Option<Constant<'ctx, B, C>> {
     if !matches!(opcode, BinaryOpcode::And) {
-        return Ok(None);
+        return None;
     }
     let (pointer, mask) = if let Ok(mask) = ConstantIntValue::<IntDyn, B, C>::try_from(rhs)
         && ptr_to_int_global_operand(lhs).is_some()
@@ -2330,16 +2330,12 @@ fn fold_global_pointer_and_mask<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     {
         (rhs, mask)
     } else {
-        return Ok(None);
+        return None;
     };
-    let Some(global_id) = ptr_to_int_global_operand(pointer) else {
-        return Ok(None);
-    };
-    let Some(align) = global_pointer_alignment(pointer.as_erased().module(), global_id) else {
-        return Ok(None);
-    };
+    let global_id = ptr_to_int_global_operand(pointer)?;
+    let align = global_pointer_alignment(pointer.as_erased().module(), global_id)?;
     if align.value() <= 1 {
-        return Ok(None);
+        return None;
     }
     let dst_width = mask.bit_width();
     let src_width = dst_width.min(align.value().trailing_zeros());
@@ -2349,9 +2345,9 @@ fn fold_global_pointer_and_mask<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         .bitand(&bits_not_set)
         .eq_ap_int(&mask.ap_int())
     {
-        return Ok(Some(mask.ty().const_zero().as_constant()));
+        return Some(mask.ty().const_zero().as_constant());
     }
-    Ok(None)
+    None
 }
 
 fn ptr_to_int_global_operand<'ctx, B: ModuleBrand + 'ctx, C: Capability>(

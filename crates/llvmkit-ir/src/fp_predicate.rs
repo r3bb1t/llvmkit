@@ -110,12 +110,12 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ImpliedFpClasses<'ctx, B, C> {
 fn exact_class<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     tested: Value<'ctx, B, C>,
     mask: FpClassTest,
-) -> Option<ImpliedFpClasses<'ctx, B, C>> {
-    Some(ImpliedFpClasses {
+) -> ImpliedFpClasses<'ctx, B, C> {
+    ImpliedFpClasses {
         tested,
         if_true: mask,
         if_false: mask.complement(),
-    })
+    }
 }
 
 /// A non-exact answer, where the true and false masks are independent.
@@ -123,12 +123,12 @@ fn implied<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     tested: Value<'ctx, B, C>,
     if_true: FpClassTest,
     if_false: FpClassTest,
-) -> Option<ImpliedFpClasses<'ctx, B, C>> {
-    Some(ImpliedFpClasses {
+) -> ImpliedFpClasses<'ctx, B, C> {
+    ImpliedFpClasses {
         tested,
         if_true,
         if_false,
-    })
+    }
 }
 
 /// Which classes `lhs` may belong to given `fcmp <predicate> lhs, rhs`.
@@ -216,7 +216,7 @@ pub fn fcmp_implies_class_of_constant<
             mask = mask.complement();
         }
 
-        return exact_class(source, mask);
+        return Some(exact_class(source, mask));
     }
 
     fcmp_implies_class_of_class(
@@ -247,10 +247,10 @@ pub fn fcmp_implies_class_of_class<'ctx, B: ModuleBrand + 'ctx, C: Capability, C
     let source = lhs;
 
     if predicate == FloatPredicate::True {
-        return exact_class(source, FpClassTest::ALL);
+        return Some(exact_class(source, FpClassTest::ALL));
     }
     if predicate == FloatPredicate::False {
-        return exact_class(source, FpClassTest::NONE);
+        return Some(exact_class(source, FpClassTest::NONE));
     }
 
     let original_class = rhs_class;
@@ -262,24 +262,24 @@ pub fn fcmp_implies_class_of_class<'ctx, B: ModuleBrand + 'ctx, C: Capability, C
     if is_nan {
         // fcmp o__ x, nan -> false
         // fcmp u__ x, nan -> true
-        return exact_class(
+        return Some(exact_class(
             source,
             if predicate.is_ordered() {
                 FpClassTest::NONE
             } else {
                 FpClassTest::ALL
             },
-        );
+        ));
     }
 
     // fcmp ord x, zero|normal|subnormal|inf -> ~fcNan
     if predicate == FloatPredicate::Ord {
-        return exact_class(source, FpClassTest::NAN.complement());
+        return Some(exact_class(source, FpClassTest::NAN.complement()));
     }
 
     // fcmp uno x, zero|normal|subnormal|inf -> fcNan
     if predicate == FloatPredicate::Uno {
-        return exact_class(source, FpClassTest::NAN);
+        return Some(exact_class(source, FpClassTest::NAN));
     }
 
     let (source, is_fabs) = look_through_fabs(lhs, look_through_source);
@@ -315,7 +315,7 @@ pub fn fcmp_implies_class_of_class<'ctx, B: ModuleBrand + 'ctx, C: Capability, C
         // every predicate is accounted for and the match needs no fallback —
         // where upstream writes `llvm_unreachable("all compare types are
         // handled")`, exhaustiveness proves the same thing at compile time.
-        return match predicate {
+        return Some(match predicate {
             // Match x == 0.0
             FloatPredicate::Oeq => exact_class(source, FpClassTest::ZERO),
             // Match isnan(x) || (x == 0.0)
@@ -375,8 +375,8 @@ pub fn fcmp_implies_class_of_class<'ctx, B: ModuleBrand + 'ctx, C: Capability, C
                     .union(FpClassTest::POSITIVE_ZERO)
                     .union(FpClassTest::NAN),
             ),
-            FloatPredicate::True | FloatPredicate::False => None,
-        };
+            FloatPredicate::True | FloatPredicate::False => return None,
+        });
     }
 
     let is_denormal_rhs = original_class.intersection(FpClassTest::SUBNORMAL) == original_class;
@@ -522,31 +522,31 @@ pub fn fcmp_implies_class_of_class<'ctx, B: ModuleBrand + 'ctx, C: Capability, C
             mask = mask.complement();
         }
 
-        return exact_class(source, mask);
+        return Some(exact_class(source, mask));
     }
 
     if predicate == FloatPredicate::Oeq {
-        return implied(source, rhs_class, FpClassTest::ALL);
+        return Some(implied(source, rhs_class, FpClassTest::ALL));
     }
 
     if predicate == FloatPredicate::Ueq {
-        return implied(
+        return Some(implied(
             source,
             rhs_class.union(FpClassTest::NAN),
             FpClassTest::NAN.complement(),
-        );
+        ));
     }
 
     if predicate == FloatPredicate::One {
-        return implied(
+        return Some(implied(
             source,
             FpClassTest::NAN.complement(),
             rhs_class.union(FpClassTest::NAN),
-        );
+        ));
     }
 
     if predicate == FloatPredicate::Une {
-        return implied(source, FpClassTest::ALL, rhs_class);
+        return Some(implied(source, FpClassTest::ALL, rhs_class));
     }
 
     // Upstream asserts here that the remaining right-hand classes are exactly
@@ -560,7 +560,7 @@ pub fn fcmp_implies_class_of_class<'ctx, B: ModuleBrand + 'ctx, C: Capability, C
             // fabs(x) u> -k -> true
             // fabs(x) o< -k -> false
             // fabs(x) u< -k -> fcmp uno x, x
-            return match predicate {
+            return Some(match predicate {
                 FloatPredicate::Ogt | FloatPredicate::Oge => {
                     implied(source, FpClassTest::NAN.complement(), FpClassTest::NAN)
                 }
@@ -573,8 +573,8 @@ pub fn fcmp_implies_class_of_class<'ctx, B: ModuleBrand + 'ctx, C: Capability, C
                 FloatPredicate::Ult | FloatPredicate::Ule => {
                     implied(source, FpClassTest::NAN, FpClassTest::NAN.complement())
                 }
-                _ => None,
-            };
+                _ => return None,
+            });
         }
 
         let mut classes_le = FpClassTest::NEGATIVE_INFINITY.union(FpClassTest::NEGATIVE_NORMAL);
@@ -629,13 +629,13 @@ fn ordered_bound<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         implied(source, bound, bound.complement().union(rhs_class))
     };
 
-    match predicate {
+    Some(match predicate {
         FloatPredicate::Ogt | FloatPredicate::Oge => ordered(classes_ge),
         FloatPredicate::Ugt | FloatPredicate::Uge => unordered(classes_ge),
         FloatPredicate::Olt | FloatPredicate::Ole => ordered(classes_le),
         FloatPredicate::Ult | FloatPredicate::Ule => unordered(classes_le),
-        _ => None,
-    }
+        _ => return None,
+    })
 }
 
 /// The single `llvm.is.fpclass` mask equivalent to `fcmp <predicate> lhs, rhs`.

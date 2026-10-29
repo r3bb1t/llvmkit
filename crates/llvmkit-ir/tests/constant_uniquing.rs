@@ -156,7 +156,7 @@ fn forward_ref_placeholders_take_any_first_class_type() -> Result<(), IrError> {
 /// ever asked within one module, and a foreign id is rejected by the tag check
 /// rather than silently matching.
 #[test]
-fn uniquing_does_not_cross_modules() -> Result<(), IrError> {
+fn uniquing_does_not_cross_modules() {
     let first: Module<DynBrand> = Module::dynamic("first");
     let second: Module<DynBrand> = Module::dynamic("second");
     let a = first.i32_type().const_int(7_i32);
@@ -166,7 +166,6 @@ fn uniquing_does_not_cross_modules() -> Result<(), IrError> {
         b.as_constant(),
         "same value, different modules, different nodes"
     );
-    Ok(())
 }
 
 /// Two users that separately ask for the same constant end up naming one

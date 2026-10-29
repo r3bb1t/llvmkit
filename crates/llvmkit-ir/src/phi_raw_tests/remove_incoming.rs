@@ -53,7 +53,7 @@ fn remove_incoming_backfills_from_the_end_like_upstream() -> Result<(), IrError>
 
     let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bld
-        .view(bld.int_phi::<i32, _>("p")?)
+        .view(bld.int_phi::<i32, _>("p"))
         .add_incoming(1_i32, a_lbl)?
         .add_incoming(2_i32, b_lbl)?
         .add_incoming(3_i32, c_lbl)?;
@@ -94,7 +94,7 @@ fn remove_incoming_deregisters_one_use_of_the_removed_value() -> Result<(), IrEr
     // SSA value: two use-list entries for one value.
     let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bld
-        .view(bld.int_phi::<i32, _>("p")?)
+        .view(bld.int_phi::<i32, _>("p"))
         .add_incoming(7_i32, a_lbl)?
         .add_incoming(7_i32, a_lbl)?;
     let seven = i32_ty.const_int(7_i32).as_erased();
@@ -127,7 +127,7 @@ fn remove_incoming_rejects_an_out_of_range_index() -> Result<(), IrError> {
 
     let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bld
-        .view(bld.int_phi::<i32, _>("p")?)
+        .view(bld.int_phi::<i32, _>("p"))
         .add_incoming(1_i32, a_lbl)?;
 
     let err = phi.remove_incoming(&m, 1).expect_err("index 1 of 1 is oob");
@@ -167,7 +167,7 @@ fn remove_incoming_leaves_the_verifier_to_flag_the_missing_edge() -> Result<(), 
 
     let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bld
-        .view(bld.int_phi::<i32, _>("p")?)
+        .view(bld.int_phi::<i32, _>("p"))
         .add_incoming(1_i32, a_lbl)?
         .add_incoming(2_i32, b_lbl)?;
     bld.ret(phi.as_int_value())?;
@@ -205,7 +205,7 @@ fn remove_incoming_never_deletes_an_emptied_phi() -> Result<(), IrError> {
 
     let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bld
-        .view(bld.int_phi::<i32, _>("p")?)
+        .view(bld.int_phi::<i32, _>("p"))
         .add_incoming(1_i32, a_lbl)?;
     bld.ret(phi.as_int_value())?;
 

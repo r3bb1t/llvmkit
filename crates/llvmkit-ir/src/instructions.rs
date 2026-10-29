@@ -140,11 +140,10 @@ macro_rules! decl_binop_handle {
                 InstructionView::from_parts(self.id, self.module)
             }
 
-            /// Widen to the erased [`Value`] handle.
-            ///
-            /// Borrows rather than consumes.
+            /// Widen to the erased [`Value`] handle. The handle is `Copy`,
+            /// so it stays usable afterwards.
             #[inline]
-            pub fn to_erased(&self) -> Value<'ctx, B, C> {
+            pub fn to_erased(self) -> Value<'ctx, B, C> {
                 Value::from_parts(self.id, self.module, self.ty)
             }
 
@@ -349,11 +348,10 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> BinaryOp<'ctx, B, C> {
     pub fn as_view(&self) -> InstructionView<'ctx, B, C> {
         InstructionView::from_parts(self.id, self.module)
     }
-    /// Widen to the erased [`Value`] handle (the result).
-    ///
-    /// Borrows rather than consumes.
+    /// Widen to the erased [`Value`] handle (the result). The handle is
+    /// `Copy`, so it stays usable afterwards.
     #[inline]
-    pub fn to_erased(&self) -> Value<'ctx, B, C> {
+    pub fn to_erased(self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 }
@@ -435,11 +433,10 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Cmp<'ctx, B, C> {
     pub fn as_view(&self) -> InstructionView<'ctx, B, C> {
         InstructionView::from_parts(self.id, self.module)
     }
-    /// Widen to the erased [`Value`] handle (the `i1`/vector result).
-    ///
-    /// Borrows rather than consumes.
+    /// Widen to the erased [`Value`] handle (the `i1`/vector result). The
+    /// handle is `Copy`, so it stays usable afterwards.
     #[inline]
-    pub fn to_erased(&self) -> Value<'ctx, B, C> {
+    pub fn to_erased(self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 }
@@ -470,11 +467,10 @@ macro_rules! decl_handle_scaffold {
                 InstructionView::from_parts(self.id, self.module)
             }
 
-            /// Widen to the erased [`Value`] handle.
-            ///
-            /// Borrows rather than consumes.
+            /// Widen to the erased [`Value`] handle. The handle is `Copy`,
+            /// so it stays usable afterwards.
             #[inline]
-            pub fn to_erased(&self) -> Value<'ctx, B, C> {
+            pub fn to_erased(self) -> Value<'ctx, B, C> {
                 Value::from_parts(self.id, self.module, self.ty)
             }
         }
@@ -854,11 +850,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> CallInst<'ctx,
         InstructionView::from_parts(self.id, self.module)
     }
 
-    /// Widen to the erased [`Value`] handle.
-    ///
-    /// Borrows rather than consumes.
+    /// Widen to the erased [`Value`] handle. The handle is `Copy`, so it
+    /// stays usable afterwards.
     #[inline]
-    pub fn to_erased(&self) -> Value<'ctx, B, C> {
+    pub fn to_erased(self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
@@ -1871,11 +1866,10 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx, C: Capability> PhiInst<'ctx, W, B
         InstructionView::from_parts(self.id, self.module)
     }
 
-    /// Widen to the erased [`Value`] handle.
-    ///
-    /// Borrows rather than consumes.
+    /// Widen to the erased [`Value`] handle. The handle is `Copy`, so it
+    /// stays usable afterwards.
     #[inline]
-    pub fn to_erased(&self) -> Value<'ctx, B, C> {
+    pub fn to_erased(self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
@@ -2144,11 +2138,10 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx, C: Capability> FpPhiInst<'ctx, K
         InstructionView::from_parts(self.id, self.module)
     }
 
-    /// Widen to the erased [`Value`] handle.
-    ///
-    /// Borrows rather than consumes.
+    /// Widen to the erased [`Value`] handle. The handle is `Copy`, so it
+    /// stays usable afterwards.
     #[inline]
-    pub fn to_erased(&self) -> Value<'ctx, B, C> {
+    pub fn to_erased(self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
@@ -2368,11 +2361,10 @@ impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> PointerPhiInst<'c
         InstructionView::from_parts(self.id, self.module)
     }
 
-    /// Widen to the erased [`Value`] handle.
-    ///
-    /// Borrows rather than consumes.
+    /// Widen to the erased [`Value`] handle. The handle is `Copy`, so it
+    /// stays usable afterwards.
     #[inline]
-    pub fn to_erased(&self) -> Value<'ctx, B, C> {
+    pub fn to_erased(self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
@@ -3848,11 +3840,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> InvokeInst<'ct
         InstructionView::from_parts(self.id, self.module)
     }
 
-    /// Widen to the erased [`Value`] handle.
-    ///
-    /// Borrows rather than consumes.
+    /// Widen to the erased [`Value`] handle. The handle is `Copy`, so it
+    /// stays usable afterwards.
     #[inline]
-    pub fn to_erased(&self) -> Value<'ctx, B, C> {
+    pub fn to_erased(self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
     /// Re-tag the return marker. Crate-internal: both

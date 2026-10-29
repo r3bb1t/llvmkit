@@ -263,7 +263,7 @@ fn catchret_cfg_edge_is_target_block() -> Result<(), IrError> {
 
     let (_sealed, cs) = IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(cs_block)
-        .catch_switch_within_none_to_caller("cs")?;
+        .catch_switch_within_none_to_caller("cs");
     let cs_closed = cs.add_handler(cp_label)?.finish();
     let b_cp = IrBuilder::new_for::<Dyn>(&m).position_at_end(cp_block);
     let cp = b_cp.catch_pad(

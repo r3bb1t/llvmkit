@@ -36,7 +36,7 @@ fn verify_phi_predecessors_through_switch_passes() -> Result<(), IrError> {
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
-        .view(b.int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p"))
         .add_incoming(x, entry_label)?
         .add_incoming(x, entry_label)?;
     b.ret(phi.as_int_value())?;
@@ -68,7 +68,7 @@ fn verify_phi_predecessors_through_switch_rejects_missing_edge() -> Result<(), I
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
-        .view(b.int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p"))
         .add_incoming(x, entry_label)?;
     b.ret(phi.as_int_value())?;
 
@@ -142,7 +142,7 @@ fn verify_phi_predecessors_through_invoke_passes() -> Result<(), IrError> {
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
-        .view(b.int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p"))
         .add_incoming(x, entry_label)?;
     b.ret(phi.as_int_value())?;
 
@@ -200,7 +200,7 @@ fn verify_phi_predecessors_through_invoke_rejects_wrong_block() -> Result<(), Ir
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
-        .view(b.int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p"))
         .add_incoming(x, other_label)?;
     b.ret(phi.as_int_value())?;
 
@@ -260,7 +260,7 @@ fn verify_phi_predecessors_through_callbr_passes() -> Result<(), IrError> {
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
-        .view(b.int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p"))
         .add_incoming(x, entry_label)?
         .add_incoming(x, entry_label)?;
     b.ret(phi.as_int_value())?;
@@ -309,7 +309,7 @@ fn verify_phi_predecessors_through_callbr_rejects_missing_edge() -> Result<(), I
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
-        .view(b.int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p"))
         .add_incoming(x, entry_label)?;
     b.ret(phi.as_int_value())?;
 
@@ -360,7 +360,7 @@ fn verify_phi_incoming_edge_dominance_fails() -> Result<(), IrError> {
         .br(join_label)?;
     let bj = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bj
-        .view(bj.int_phi::<i32, _>("p")?)
+        .view(bj.int_phi::<i32, _>("p"))
         .add_incoming(x, then_label)?
         .add_incoming(y, else_label)?;
     bj.ret(phi.as_int_value())?;

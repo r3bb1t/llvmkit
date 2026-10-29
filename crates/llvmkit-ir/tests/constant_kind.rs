@@ -327,7 +327,7 @@ fn a_scalable_vector_is_classified_as_get_splat_builds_it() -> IrResult<()> {
 /// its typed handle. llvmkit-specific rule anchor (D11) for `Value.def`'s
 /// `ConstantData` members.
 #[test]
-fn each_scalar_form_names_its_class() -> IrResult<()> {
+fn each_scalar_form_names_its_class() {
     let m = Module::dynamic("constants");
     let ConstantKind::Data(ConstantDataKind::Int(int)) =
         m.i32_type().const_int(42_i32).as_constant().kind()
@@ -359,7 +359,6 @@ fn each_scalar_form_names_its_class() -> IrResult<()> {
         i32_ty.poison().as_constant().kind(),
         ConstantKind::Data(ConstantDataKind::Undef(Undefined::Poison))
     ));
-    Ok(())
 }
 
 /// A global's own handle, widened with `as_constant`, is a `GlobalValue` —

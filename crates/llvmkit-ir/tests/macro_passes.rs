@@ -65,7 +65,7 @@ fn build_ret_i32<'ctx, B: ModuleBrand + 'ctx>(
 /// hides.
 fn erase_dead_instructions<'m, 'ctx, B: ModuleBrand + 'ctx>(
     patch: &mut FnPatch<'m, '_, 'ctx, B, ()>,
-) -> IrResult<()> {
+) {
     let mut dead: Vec<InstructionView<'m, B, ReadOnly>> = Vec::new();
     for block in patch.function_mut().basic_blocks() {
         for view in block.instructions() {
@@ -81,7 +81,6 @@ fn erase_dead_instructions<'m, 'ctx, B: ModuleBrand + 'ctx>(
                 .expect("filtered to non-terminators"),
         );
     }
-    Ok(())
 }
 
 /// Meta reader: yields a function pass's `NAME`/`REQUIRED` consts. The `witness`
@@ -116,7 +115,7 @@ struct MacroEraser;
 impl MacroEraser {
     fn run(&mut self, cx: FnCx<Self>) -> IrResult<FnReport> {
         let mut patch = cx.mutate();
-        erase_dead_instructions(&mut patch)?;
+        erase_dead_instructions(&mut patch);
         Ok(patch.done())
     }
 }
@@ -135,7 +134,7 @@ impl<B: ModuleBrand> FunctionPass<B> for HandEraser {
         Self: 'ctx,
     {
         let mut patch = cx.mutate();
-        erase_dead_instructions(&mut patch)?;
+        erase_dead_instructions(&mut patch);
         Ok(patch.done())
     }
 }

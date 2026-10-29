@@ -490,7 +490,7 @@ where
     };
 
     if let InstructionKindData::Phi(phi) = &data.kind {
-        return fold_phi(value.ty(), value.module, phi);
+        return Ok(fold_phi(value.ty(), value.module, phi));
     }
 
     if let InstructionKindData::Call(call) = &data.kind {
@@ -1440,7 +1440,11 @@ pub(crate) fn constant_fold_fp_inst_operands_trusting_same_module<
     Ok(Some(folded))
 }
 
-/// Fold the currently modelled binary intrinsic set.
+/// Fold a binary intrinsic of constant operands. Folds nothing yet: upstream's
+/// `ConstantFoldBinaryIntrinsic` (`lib/Analysis/ConstantFolding.cpp`) hands
+/// its operands to `ConstantFoldIntrinsicCall2`, which llvmkit has not ported
+/// (`docs/future-work.md`), so every input answers `Ok(None)` — no fold,
+/// which is always correct and never as strong as upstream.
 ///
 /// Errors with [`IrError::ForeignValueId`] if `rhs`, or
 /// [`IrError::ForeignType`] if `ty`, belongs to a module other than `lhs`'s.
@@ -1456,7 +1460,9 @@ pub fn constant_fold_binary_intrinsic<'ctx, B: ModuleBrand + 'ctx, C: Capability
     let owner = lhs.module.id();
     rhs.slot_in(owner)?;
     ty.slot_in(owner)?;
-    constant_fold_binary_intrinsic_trusting_same_module(intrinsic, lhs, rhs, ty, dl)
+    Ok(constant_fold_binary_intrinsic_trusting_same_module(
+        intrinsic, lhs, rhs, ty, dl,
+    ))
 }
 
 /// [`constant_fold_binary_intrinsic`] for operands and a type of one module.
@@ -1470,9 +1476,10 @@ pub(crate) fn constant_fold_binary_intrinsic_trusting_same_module<
     rhs: Constant<'ctx, B, C>,
     ty: Type<'ctx, B, C>,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B, C>>> {
+) -> Option<Constant<'ctx, B, C>> {
+    // Unported: `ConstantFoldIntrinsicCall2` (see `constant_fold_binary_intrinsic`).
     let _ = (intrinsic, lhs, rhs, ty, dl);
-    Ok(None)
+    None
 }
 
 /// Reinterpret `constant` as though it were loaded through a bitcasted pointer.
@@ -1530,7 +1537,7 @@ pub(crate) fn constant_fold_load_through_bitcast_trusting_same_module<
                 return Ok(Some(folded));
             }
         }
-        current = aggregate_first_element(value, dl)?;
+        current = aggregate_first_element(value, dl);
     }
     Ok(None)
 }
@@ -1699,12 +1706,10 @@ fn fold_phi<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     ty: Type<'ctx, B, C>,
     module: ModuleRef<'ctx, B, C>,
     phi: &PhiData,
-) -> IrResult<Option<Constant<'ctx, B, C>>> {
+) -> Option<Constant<'ctx, B, C>> {
     let mut common = None;
     for (incoming, _) in phi.incoming.borrow().iter() {
-        let Some(constant) = constant_from_id(module, incoming.get()) else {
-            return Ok(None);
-        };
+        let constant = constant_from_id(module, incoming.get())?;
         // Upstream skips `isa<UndefValue>`, and `PoisonValue` is-a
         // `UndefValue` there, so poison incomings are skipped too; treating
         // poison as a candidate would fold `phi [poison], [undef]` to poison
@@ -1714,16 +1719,16 @@ fn fold_phi<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         }
         if let Some(previous) = common {
             if previous != constant {
-                return Ok(None);
+                return None;
             }
         } else {
             common = Some(constant);
         }
     }
-    Ok(Some(match common {
+    Some(match common {
         Some(value) => value,
         None => ty.undef().as_constant(),
-    }))
+    })
 }
 
 fn fold_sqrt_call<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
@@ -2625,42 +2630,32 @@ fn load_through_bitcast_opcode<B: ModuleBrand, C: Capability>(
 fn aggregate_first_element<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     constant: Constant<'ctx, B, C>,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B, C>>> {
+) -> Option<Constant<'ctx, B, C>> {
     let ValueKindData::Constant(ConstantData::Aggregate(elements)) =
         &constant.as_erased().data().kind
     else {
-        return Ok(None);
+        return None;
     };
     let module = constant.module;
     match constant.ty().data() {
         TypeData::Struct(_) => {
             for id in elements.iter().copied() {
-                let Some(element) = constant_from_id(module, id) else {
-                    return Ok(None);
-                };
+                let element = constant_from_id(module, id)?;
                 if dl.type_size_in_bits(erase_type(element.ty())) != 0 {
-                    return Ok(Some(element));
+                    return Some(element);
                 }
             }
-            Ok(None)
+            None
         }
-        TypeData::Array { .. } => {
-            let Some(id) = elements.first().copied() else {
-                return Ok(None);
-            };
-            Ok(constant_from_id(module, id))
-        }
+        TypeData::Array { .. } => constant_from_id(module, elements.first().copied()?),
         TypeData::FixedVector { elem, .. } => {
             let elem_ty = Type::new(*elem, module);
             if !dl.type_size_equals_store_size(erase_type(elem_ty)) {
-                return Ok(None);
+                return None;
             }
-            let Some(id) = elements.first().copied() else {
-                return Ok(None);
-            };
-            Ok(constant_from_id(module, id))
+            constant_from_id(module, elements.first().copied()?)
         }
-        _ => Ok(None),
+        _ => None,
     }
 }
 
