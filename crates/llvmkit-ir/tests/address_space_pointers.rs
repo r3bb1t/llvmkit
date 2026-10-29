@@ -13,7 +13,7 @@ use llvmkit_ir::{
     ConstantIntValue, ConstantPointerNull, InstructionKind, InstructionView, IntDyn, IntValue,
     IrBuilder, IrError, IrStruct, Linkage, Module, NoFolder, PointerPhiInstId, PointerType,
     PointerValue, PointerValueId, PointerVariable, Ptr, Space, SpaceDyn, SsaBuilder, SsaState,
-    StructSchema, TypedPointerValue, module_new,
+    TypedPointerValue, module_new,
 };
 
 /// `ptr_type_in::<N>()` names its address space in its type; `ptr_type(n)`,
@@ -307,7 +307,7 @@ fn a_ptr_field_is_in_its_address_space() -> Result<(), IrError> {
     assert!(rust_value.near.as_ptr().is_null() && rust_value.far.as_ptr().is_null());
 
     let m = module_new!("spaces")?;
-    let _ = <Spaced as StructSchema>::ir_type(m.as_view())?;
+    let _ = m.get_or_insert_struct_of::<Spaced>()?;
     let text = format!("{m}");
     assert!(
         text.contains("%Spaced = type { ptr, ptr addrspace(1) }"),

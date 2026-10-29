@@ -18,7 +18,6 @@ struct Config {
 }
 
 struct BuildStepContext<'a> {
-    ir: &'a TokenStream2,
     module_param: &'a Ident,
     builder_param: &'a Ident,
     base_name_ident: &'a Ident,
@@ -90,8 +89,12 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
     let builder_param = Ident::new("__llvmkit_builder", Span::mixed_site());
     let name_param = Ident::new("__llvmkit_name", Span::mixed_site());
     let base_name_ident = Ident::new("__llvmkit_base_name", Span::mixed_site());
+    // The value type's one field: the llvmkit-owned carrier, which only
+    // llvmkit mints after checking a value against the schema — so code that
+    // spells the field still cannot put a value of another type in it.
+    let schema_value_field = Ident::new("__llvmkit_schema_value", Span::mixed_site());
     // Hygienic, so a field whose type is spelled `C` is not shadowed by the
-    // capability parameter of the generated `matches_fields`.
+    // capability parameter of the generated impls.
     let capability_param = Ident::new("__LlvmkitCapability", Span::mixed_site());
     let value_steps = build_value_steps(
         &ident,
@@ -99,7 +102,6 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
         &field_tys,
         &indices,
         BuildStepContext {
-            ir: &ir,
             module_param: &module_param,
             builder_param: &builder_param,
             base_name_ident: &base_name_ident,
@@ -107,11 +109,11 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
     );
     let build_return = if field_count == 0 {
         quote! {
-            let __llvmkit_ty = <#ident as #ir::StructSchema>::ir_type(#module_param)?;
+            let __llvmkit_ty = #module_param.get_or_insert_struct_of::<#ident>()?;
             let __llvmkit_raw = <#ir::StructValue<'ctx, B> as ::core::convert::TryFrom<#ir::Constant<'ctx, B>>>::try_from(
                 __llvmkit_ty.as_type().poison().as_constant(),
             )?;
-            Ok(Self { raw: __llvmkit_raw })
+            Ok(Self { #schema_value_field: #ir::SchemaValue::try_new(__llvmkit_raw)? })
         }
     } else {
         let last = Ident::new(
@@ -146,17 +148,6 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
             }
         });
 
-    let matches_terms = field_tys
-        .iter()
-        .zip(indices.iter())
-        .map(|(ty, idx)| {
-            let idx_usize = usize::try_from(*idx).map_err(|_| {
-                Error::new(Span::call_site(), "IrStruct field index does not fit usize")
-            })?;
-            Ok(quote! { <#ty as #ir::IrField>::matches_ir_type(fields[#idx_usize]) })
-        })
-        .collect::<Result<Vec<_>>>()?;
-
     let build_params = field_idents
         .iter()
         .zip(build_generics.iter())
@@ -168,13 +159,14 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
 
     Ok(quote! {
         /// The value of a struct of this schema, at the capability of the
-        /// struct value it wraps (D8).
+        /// struct value it wraps (D8). It holds an llvmkit-checked
+        /// `SchemaValue`, so it is valid for the schema by construction.
         #vis struct #value_ident<
             'ctx,
             B: #ir::ModuleBrand,
             #capability_param: #ir::Capability = #ir::Mutable,
         > {
-            raw: #ir::StructValue<'ctx, B, #capability_param>,
+            #schema_value_field: #ir::SchemaValue<'ctx, #ident, B, #capability_param>,
         }
 
         // Bound-free std impls, spelled out instead of derived: a std derive
@@ -200,7 +192,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
         {
             fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
                 f.debug_struct(::core::stringify!(#value_ident))
-                    .field("raw", &self.raw)
+                    .field("schema_value", &self.#schema_value_field)
                     .finish()
             }
         }
@@ -210,7 +202,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
         {
             #[inline]
             fn eq(&self, other: &Self) -> bool {
-                self.raw == other.raw
+                self.#schema_value_field == other.#schema_value_field
             }
         }
         #[automatically_derived]
@@ -224,7 +216,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
         {
             #[inline]
             fn hash<__H: ::core::hash::Hasher>(&self, state: &mut __H) {
-                ::core::hash::Hash::hash(&self.raw, state);
+                ::core::hash::Hash::hash(&self.#schema_value_field, state);
             }
         }
         #[automatically_derived]
@@ -241,12 +233,12 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
         {
             #[inline]
             #vis fn as_struct_value(self) -> #ir::StructValue<'ctx, B, #capability_param> {
-                self.raw
+                self.#schema_value_field.as_struct_value()
             }
 
             #[inline]
             #vis fn as_erased(self) -> #ir::Value<'ctx, B, #capability_param> {
-                self.raw.as_erased()
+                self.#schema_value_field.as_erased()
             }
 
             #(#accessors)*
@@ -277,28 +269,10 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
         impl #ir::StructSchema for #ident {
             type Value<'ctx, B: #ir::ModuleBrand + 'ctx, #capability_param: #ir::Capability> =
                 #value_ident<'ctx, B, #capability_param>;
-            type FieldParams = (#(#field_tys,)*);
+            type Fields = (#(#field_tys,)*);
 
             const NAME: &'static str = #llvm_name;
             const PACKED: bool = #packed;
-
-            fn field_types<'ctx, B>(
-                module: #ir::ModuleView<'ctx, B>,
-            ) -> #ir::IrResult<::std::vec::Vec<#ir::Type<'ctx, B, #ir::ReadOnly>>>
-            where
-                B: #ir::ModuleBrand + 'ctx,
-            {
-                Ok(::std::vec![#(<#field_tys as #ir::IrField>::ir_type(module)?,)*])
-            }
-
-            fn matches_fields<'ctx, B, #capability_param: #ir::Capability>(
-                fields: &[#ir::Type<'ctx, B, #capability_param>],
-            ) -> bool
-            where
-                B: #ir::ModuleBrand + 'ctx,
-            {
-                fields.len() == #field_count #(&& #matches_terms)*
-            }
         }
 
         impl<'ctx, B, #capability_param> #ir::StructSchemaValue<'ctx, #ident, B, #capability_param>
@@ -308,16 +282,15 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
             #capability_param: #ir::Capability,
         {
             #[inline]
-            fn as_struct_value(self) -> #ir::StructValue<'ctx, B, #capability_param> {
-                self.raw
+            fn from_schema_value(
+                value: #ir::SchemaValue<'ctx, #ident, B, #capability_param>,
+            ) -> Self {
+                Self { #schema_value_field: value }
             }
 
             #[inline]
-            fn from_struct_value(
-                raw: #ir::StructValue<'ctx, B, #capability_param>,
-                _validated: &#ir::ValidatedStructValue<'_>,
-            ) -> Self {
-                Self { raw }
+            fn schema_value(self) -> #ir::SchemaValue<'ctx, #ident, B, #capability_param> {
+                self.#schema_value_field
             }
         }
 
@@ -332,7 +305,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
 
             #[inline]
             fn try_from(value: #ir::Argument<'ctx, B, #capability_param>) -> #ir::IrResult<Self> {
-                <#ident as #ir::StructSchema>::try_value_from_ir(value)
+                Ok(Self { #schema_value_field: #ir::SchemaValue::try_new(value)? })
             }
         }
 
@@ -349,7 +322,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
             fn try_from(
                 value: #ir::StructValue<'ctx, B, #capability_param>,
             ) -> #ir::IrResult<Self> {
-                <#ident as #ir::StructSchema>::try_value_from_ir(value)
+                Ok(Self { #schema_value_field: #ir::SchemaValue::try_new(value)? })
             }
         }
 
@@ -364,7 +337,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
 
             #[inline]
             fn try_from(value: #ir::Value<'ctx, B, #capability_param>) -> #ir::IrResult<Self> {
-                <#ident as #ir::StructSchema>::try_value_from_ir(value)
+                Ok(Self { #schema_value_field: #ir::SchemaValue::try_new(value)? })
             }
         }
 
@@ -379,7 +352,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
 
             #[inline]
             fn try_from(value: #ir::Constant<'ctx, B, #capability_param>) -> #ir::IrResult<Self> {
-                <#ident as #ir::StructSchema>::try_value_from_ir(value)
+                Ok(Self { #schema_value_field: #ir::SchemaValue::try_new(value)? })
             }
         }
 
@@ -394,7 +367,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
             fn try_from(
                 value: #ir::Instruction<'ctx, #ir::instruction::state::Attached, B>,
             ) -> #ir::IrResult<Self> {
-                <#ident as #ir::StructSchema>::try_value_from_ir(value)
+                Ok(Self { #schema_value_field: #ir::SchemaValue::try_new(value)? })
             }
         }
 
@@ -403,18 +376,21 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
         // another module minted — and re-mint it at that module's reference,
         // so a value of either capability is an operand: naming it is not
         // mutating it.
-        impl<'ctx, B, #capability_param> #ir::IntoIrField<'ctx, #ident, B>
+        impl<'ctx, B, #capability_param> #ir::IntoLayoutValue<'ctx, #ident, B>
             for #value_ident<'ctx, B, #capability_param>
         where
             B: #ir::ModuleBrand + 'ctx,
             #capability_param: #ir::Capability,
         {
             #[inline]
-            fn into_ir_field(
+            fn into_layout_value(
                 self,
                 module: #ir::ModuleRef<'ctx, B>,
             ) -> #ir::IrResult<#ir::Value<'ctx, B>> {
-                #ir::IntoErasedValue::into_erased_value(self.raw, module)
+                #ir::IntoErasedValue::into_erased_value(
+                    self.#schema_value_field.as_struct_value(),
+                    module,
+                )
             }
         }
 
@@ -426,7 +402,10 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
                 self,
                 module: #ir::ModuleRef<'ctx, B>,
             ) -> #ir::IrResult<#ir::Value<'ctx, B>> {
-                #ir::IntoErasedValue::into_erased_value(self.raw, module)
+                #ir::IntoErasedValue::into_erased_value(
+                    self.#schema_value_field.as_struct_value(),
+                    module,
+                )
             }
         }
 
@@ -441,7 +420,10 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
                 self,
                 module: #ir::ModuleRef<'ctx, B>,
             ) -> #ir::IrResult<#ir::Value<'ctx, B>> {
-                #ir::IntoErasedValue::into_erased_value(self.raw, module)
+                #ir::IntoErasedValue::into_erased_value(
+                    self.#schema_value_field.as_struct_value(),
+                    module,
+                )
             }
         }
     })
@@ -454,7 +436,6 @@ fn build_value_steps(
     indices: &[u32],
     cx: BuildStepContext<'_>,
 ) -> Vec<TokenStream2> {
-    let ir = cx.ir;
     let module_param = cx.module_param;
     let builder_param = cx.builder_param;
     let base_name_ident = cx.base_name_ident;
@@ -468,7 +449,8 @@ fn build_value_steps(
         let value_ident = Ident::new(&format!("__llvmkit_value_{position}"), Span::mixed_site());
         let aggregate = if position == 0 {
             quote! {
-                <#schema_ident as #ir::StructSchema>::ir_type(#module_param)?
+                #module_param
+                    .get_or_insert_struct_of::<#schema_ident>()?
                     .as_type()
                     .poison()
                     .as_constant()
@@ -511,6 +493,15 @@ fn parse_container_attrs(attrs: &[syn::Attribute], config: &mut Config) -> Resul
             }
             if meta.path.is_ident("name") {
                 let value: LitStr = meta.value()?.parse()?;
+                if value.value().is_empty() {
+                    // `StructType::create(Context, "")` makes an anonymous
+                    // struct, not one printed `%""`, so an empty name names
+                    // no identified struct.
+                    return Err(Error::new_spanned(
+                        value,
+                        "IrStruct name must not be empty: an identified struct needs a name",
+                    ));
+                }
                 config.llvm_name = value.value();
                 return Ok(());
             }

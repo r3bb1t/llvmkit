@@ -1,0 +1,29 @@
+error[E0080]: evaluation panicked: a struct schema's NAME must not be empty
+ --> $RUST/core/src/panic.rs
+  |
+  = note: evaluation of `llvmkit_ir::ModuleRef::<'_, main::__LlvmkitGeneratedBrand>::mint_struct_of::<EmptyName>::{constant#0}` failed here
+  |
+ ::: src/module.rs
+  |
+  | /             assert!(
+  | |                 !S::NAME.is_empty(),
+  | |                 "a struct schema's NAME must not be empty"
+  | |             )
+  | |_____________- in this macro invocation
+
+note: erroneous constant encountered
+ --> src/module.rs
+  |
+  | /         const {
+  | |             assert!(
+  | |                 !S::NAME.is_empty(),
+  | |                 "a struct schema's NAME must not be empty"
+  | |             )
+  | |         };
+  | |_________^
+
+note: the above error was encountered while instantiating `fn ModuleRef::<'_, __LlvmkitGeneratedBrand>::mint_struct_of::<EmptyName>`
+ --> src/module.rs
+  |
+  |         let id = self.mint_struct_of::<S>(&mut Minting::new())?;
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

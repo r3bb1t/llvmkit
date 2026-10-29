@@ -1,19 +1,65 @@
 use llvmkit_ir::{
-    Capability, Constant, Dyn, IntValue, IntoIrField, IrBuilder, IrError, IrField, Linkage, Module,
-    ModuleBrand, ModuleView, Mutable, ReadOnly, StructFields, StructSchema, StructSchemaValue,
-    StructValue, Type, ValidatedStructValue, Value, module_new,
+    Capability, Dyn, IntValue, IntoErasedValue, IntoIrField, IntoLayoutValue, IrBuilder, IrError,
+    Linkage, ModuleBrand, ModuleRef, Mutable, SchemaValue, StructFields, StructSchema,
+    StructSchemaValue, StructValue, Value, module_new,
 };
 use llvmkit_macros::Branded;
 
-struct Point;
-
-/// A hand-written schema value, capability-generic as the trait requires.
+/// A hand-written schema value, generic over its schema. It can hold only the
+/// llvmkit-owned carrier, which llvmkit mints after checking a value against
+/// `S` — so a `Hand<S>` is a value of `S`'s struct type by construction.
 #[derive(Branded)]
-struct PointValue<'ctx, B: ModuleBrand, C: Capability = Mutable> {
-    raw: StructValue<'ctx, B, C>,
+struct Hand<'ctx, S: StructSchema, B: ModuleBrand, C: Capability = Mutable> {
+    value: SchemaValue<'ctx, S, B, C>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> PointValue<'ctx, B> {
+impl<'ctx, S: StructSchema, B: ModuleBrand + 'ctx, C: Capability> Hand<'ctx, S, B, C> {
+    fn as_struct_value(self) -> StructValue<'ctx, B, C> {
+        self.value.as_struct_value()
+    }
+}
+
+impl<'ctx, S: StructSchema, B: ModuleBrand + 'ctx, C: Capability> StructSchemaValue<'ctx, S, B, C>
+    for Hand<'ctx, S, B, C>
+{
+    fn from_schema_value(value: SchemaValue<'ctx, S, B, C>) -> Self {
+        Self { value }
+    }
+
+    fn schema_value(self) -> SchemaValue<'ctx, S, B, C> {
+        self.value
+    }
+}
+
+impl<'ctx, S: StructSchema, B: ModuleBrand + 'ctx, C: Capability> IntoLayoutValue<'ctx, S, B>
+    for Hand<'ctx, S, B, C>
+{
+    fn into_layout_value(self, module: ModuleRef<'ctx, B>) -> Result<Value<'ctx, B>, IrError> {
+        self.value.as_struct_value().into_erased_value(module)
+    }
+}
+
+/// An aggregate lift that hands back whatever value it holds, whatever its
+/// type: `IntoLayoutValue` is open — the derive implements it in the user's
+/// crate — so nothing stops one being written.
+struct Forged<'ctx, B: ModuleBrand>(Value<'ctx, B>);
+
+impl<'ctx, B: ModuleBrand + 'ctx> IntoLayoutValue<'ctx, Point, B> for Forged<'ctx, B> {
+    fn into_layout_value(self, module: ModuleRef<'ctx, B>) -> Result<Value<'ctx, B>, IrError> {
+        self.0.into_erased_value(module)
+    }
+}
+
+struct Point;
+
+impl StructSchema for Point {
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = Hand<'ctx, Self, B, C>;
+    type Fields = (i32, i32);
+
+    const NAME: &'static str = "Point";
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> Hand<'ctx, Point, B> {
     fn x<'m, F, R>(
         self,
         b: &llvmkit_ir::IrBuilder<'m, 'ctx, B, F, llvmkit_ir::Positioned, R>,
@@ -37,198 +83,62 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointValue<'ctx, B> {
     {
         b.insert_field::<Point, i32, _, _, _>(self, value, 0, "with_x")
     }
-
-    fn as_struct_value(self) -> StructValue<'ctx, B> {
-        self.raw
-    }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> StructSchemaValue<'ctx, Point, B, C>
-    for PointValue<'ctx, B, C>
-{
-    fn as_struct_value(self) -> StructValue<'ctx, B, C> {
-        self.raw
-    }
-
-    fn from_struct_value(
-        raw: StructValue<'ctx, B, C>,
-        _validated: &ValidatedStructValue<'_>,
-    ) -> Self {
-        Self { raw }
-    }
-}
-
-impl<'ctx, B: ModuleBrand + 'ctx> IntoIrField<'ctx, Point, B> for PointValue<'ctx, B> {
-    fn into_ir_field(
-        self,
-        _module: llvmkit_ir::ModuleRef<'ctx, B>,
-    ) -> Result<Value<'ctx, B>, IrError> {
-        Ok(self.raw.as_erased())
-    }
-}
-
-impl StructSchema for Point {
-    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = PointValue<'ctx, B, C>;
-    type FieldParams = (i32, i32);
-
-    const NAME: &'static str = "Point";
-
-    fn field_types<'ctx, B>(
-        module: ModuleView<'ctx, B>,
-    ) -> Result<Vec<Type<'ctx, B, ReadOnly>>, IrError>
-    where
-        B: ModuleBrand + 'ctx,
-    {
-        Ok(vec![
-            <i32 as IrField>::ir_type(module)?,
-            <i32 as IrField>::ir_type(module)?,
-        ])
-    }
-
-    fn matches_fields<'ctx, B, C: Capability>(fields: &[Type<'ctx, B, C>]) -> bool
-    where
-        B: ModuleBrand + 'ctx,
-    {
-        fields.len() == 2
-            && <i32 as IrField>::matches_ir_type(fields[0])
-            && <i32 as IrField>::matches_ir_type(fields[1])
-    }
-}
-
+/// Named `"Point"` like [`Point`], with another body.
 struct BadPoint;
 
-impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> StructSchemaValue<'ctx, BadPoint, B, C>
-    for PointValue<'ctx, B, C>
-{
-    fn as_struct_value(self) -> StructValue<'ctx, B, C> {
-        self.raw
-    }
-
-    fn from_struct_value(
-        raw: StructValue<'ctx, B, C>,
-        _validated: &ValidatedStructValue<'_>,
-    ) -> Self {
-        Self { raw }
-    }
-}
-
 impl StructSchema for BadPoint {
-    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = PointValue<'ctx, B, C>;
-    type FieldParams = (i64,);
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = Hand<'ctx, Self, B, C>;
+    type Fields = (i64,);
 
     const NAME: &'static str = "Point";
-
-    fn field_types<'ctx, B>(
-        module: ModuleView<'ctx, B>,
-    ) -> Result<Vec<Type<'ctx, B, ReadOnly>>, IrError>
-    where
-        B: ModuleBrand + 'ctx,
-    {
-        Ok(vec![<i64 as IrField>::ir_type(module)?])
-    }
-
-    fn matches_fields<'ctx, B, C: Capability>(fields: &[Type<'ctx, B, C>]) -> bool
-    where
-        B: ModuleBrand + 'ctx,
-    {
-        fields.len() == 1 && <i64 as IrField>::matches_ir_type(fields[0])
-    }
 }
 
+/// Contains itself by value: no Rust struct can, but a hand-written schema
+/// can name itself as a field.
 struct RecursiveNode;
 
-impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> StructSchemaValue<'ctx, RecursiveNode, B, C>
-    for PointValue<'ctx, B, C>
-{
-    fn as_struct_value(self) -> StructValue<'ctx, B, C> {
-        self.raw
-    }
-
-    fn from_struct_value(
-        raw: StructValue<'ctx, B, C>,
-        _validated: &ValidatedStructValue<'_>,
-    ) -> Self {
-        Self { raw }
-    }
-}
-
 impl StructSchema for RecursiveNode {
-    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = PointValue<'ctx, B, C>;
-    type FieldParams = (RecursiveNode,);
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = Hand<'ctx, Self, B, C>;
+    type Fields = (RecursiveNode,);
 
     const NAME: &'static str = "RecursiveNode";
-
-    fn field_types<'ctx, B>(
-        module: ModuleView<'ctx, B>,
-    ) -> Result<Vec<Type<'ctx, B, ReadOnly>>, IrError>
-    where
-        B: ModuleBrand + 'ctx,
-    {
-        Ok(vec![
-            module.get_or_insert_named_struct(Self::NAME).as_type(),
-        ])
-    }
-
-    fn matches_fields<'ctx, B, C: Capability>(fields: &[Type<'ctx, B, C>]) -> bool
-    where
-        B: ModuleBrand + 'ctx,
-    {
-        fields.len() == 1 && <Self as IrField>::matches_ir_type(fields[0])
-    }
 }
 
-struct EmptyName;
+/// `CycleA { b: CycleB }` and `CycleB { a: CycleA }`: each contains the other
+/// by value.
+struct CycleA;
+struct CycleB;
 
-impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> StructSchemaValue<'ctx, EmptyName, B, C>
-    for PointValue<'ctx, B, C>
-{
-    fn as_struct_value(self) -> StructValue<'ctx, B, C> {
-        self.raw
-    }
+impl StructSchema for CycleA {
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = Hand<'ctx, Self, B, C>;
+    type Fields = (CycleB,);
 
-    fn from_struct_value(
-        raw: StructValue<'ctx, B, C>,
-        _validated: &ValidatedStructValue<'_>,
-    ) -> Self {
-        Self { raw }
-    }
+    const NAME: &'static str = "CycleA";
 }
 
-impl StructSchema for EmptyName {
-    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = PointValue<'ctx, B, C>;
-    type FieldParams = (i32,);
+impl StructSchema for CycleB {
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = Hand<'ctx, Self, B, C>;
+    type Fields = (CycleA,);
 
-    const NAME: &'static str = "";
-
-    fn field_types<'ctx, B>(
-        module: ModuleView<'ctx, B>,
-    ) -> Result<Vec<Type<'ctx, B, ReadOnly>>, IrError>
-    where
-        B: ModuleBrand + 'ctx,
-    {
-        Ok(vec![<i32 as IrField>::ir_type(module)?])
-    }
-
-    fn matches_fields<'ctx, B, C: Capability>(fields: &[Type<'ctx, B, C>]) -> bool
-    where
-        B: ModuleBrand + 'ctx,
-    {
-        fields.len() == 1 && <i32 as IrField>::matches_ir_type(fields[0])
-    }
+    const NAME: &'static str = "CycleB";
 }
 
 struct Rect;
 
-#[derive(Branded)]
-struct RectValue<'ctx, B: ModuleBrand, C: Capability = Mutable> {
-    raw: StructValue<'ctx, B, C>,
+impl StructSchema for Rect {
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = Hand<'ctx, Self, B, C>;
+    type Fields = (Point, Point);
+
+    const NAME: &'static str = "Rect";
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> RectValue<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> Hand<'ctx, Rect, B> {
     fn min<'m, F, R>(
         self,
         b: &llvmkit_ir::IrBuilder<'m, 'ctx, B, F, llvmkit_ir::Positioned, R>,
-    ) -> Result<PointValue<'ctx, B>, IrError>
+    ) -> Result<Hand<'ctx, Point, B>, IrError>
     where
         F: llvmkit_ir::IrBuilderFolder<'ctx, B>,
         R: llvmkit_ir::ReturnMarker,
@@ -239,7 +149,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> RectValue<'ctx, B> {
     fn max<'m, F, R>(
         self,
         b: &llvmkit_ir::IrBuilder<'m, 'ctx, B, F, llvmkit_ir::Positioned, R>,
-    ) -> Result<PointValue<'ctx, B>, IrError>
+    ) -> Result<Hand<'ctx, Point, B>, IrError>
     where
         F: llvmkit_ir::IrBuilderFolder<'ctx, B>,
         R: llvmkit_ir::ReturnMarker,
@@ -248,75 +158,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> RectValue<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> StructSchemaValue<'ctx, Rect, B, C>
-    for RectValue<'ctx, B, C>
-{
-    fn as_struct_value(self) -> StructValue<'ctx, B, C> {
-        self.raw
-    }
-
-    fn from_struct_value(
-        raw: StructValue<'ctx, B, C>,
-        _validated: &ValidatedStructValue<'_>,
-    ) -> Self {
-        Self { raw }
-    }
-}
-
-impl<'ctx, B: ModuleBrand + 'ctx> IntoIrField<'ctx, Rect, B> for RectValue<'ctx, B> {
-    fn into_ir_field(
-        self,
-        _module: llvmkit_ir::ModuleRef<'ctx, B>,
-    ) -> Result<Value<'ctx, B>, IrError> {
-        Ok(self.raw.as_erased())
-    }
-}
-
-impl StructSchema for Rect {
-    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = RectValue<'ctx, B, C>;
-    type FieldParams = (Point, Point);
-
-    const NAME: &'static str = "Rect";
-
-    fn field_types<'ctx, B>(
-        module: ModuleView<'ctx, B>,
-    ) -> Result<Vec<Type<'ctx, B, ReadOnly>>, IrError>
-    where
-        B: ModuleBrand + 'ctx,
-    {
-        Ok(vec![
-            <Point as IrField>::ir_type(module)?,
-            <Point as IrField>::ir_type(module)?,
-        ])
-    }
-
-    fn matches_fields<'ctx, B, C: Capability>(fields: &[Type<'ctx, B, C>]) -> bool
-    where
-        B: ModuleBrand + 'ctx,
-    {
-        fields.len() == 2
-            && <Point as IrField>::matches_ir_type(fields[0])
-            && <Point as IrField>::matches_ir_type(fields[1])
-    }
-}
-
-fn poison_point<'ctx, B: ModuleBrand + 'ctx>(
-    module: &'ctx Module<B>,
-) -> Result<Constant<'ctx, B, ReadOnly>, IrError> {
-    Ok(<Point as StructSchema>::ir_type(module.as_view())?
-        .as_type()
-        .poison()
-        .as_constant())
-}
-
 /// llvmkit-specific schema facade over LLVM named structs; closest upstream
 /// coverage is `unittests/IR/TypeBuilderTest.cpp::TEST(TypeBuilder, NamedStruct)`
 /// for idempotent identified-struct lookup.
 #[test]
 fn struct_schema_reuses_matching_named_body() -> Result<(), IrError> {
     let m = module_new!("schema")?;
-    let first = <Point as StructSchema>::ir_type(m.as_view())?;
-    let second = <Point as StructSchema>::ir_type(m.as_view())?;
+    let first = m.get_or_insert_struct_of::<Point>()?;
+    let second = m.get_or_insert_struct_of::<Point>()?;
     assert_eq!(first.as_type(), second.as_type());
     let text = format!("{m}");
     assert_eq!(text.matches("%Point = type { i32, i32 }").count(), 1);
@@ -328,9 +177,9 @@ fn struct_schema_reuses_matching_named_body() -> Result<(), IrError> {
 #[test]
 fn struct_schema_rejects_mismatched_existing_named_body() -> Result<(), IrError> {
     let m = module_new!("schema")?;
-    let _ = <Point as StructSchema>::ir_type(m.as_view())?;
+    let _ = m.get_or_insert_struct_of::<Point>()?;
     assert_eq!(
-        <BadPoint as StructSchema>::ir_type(m.as_view()),
+        m.get_or_insert_struct_of::<BadPoint>(),
         Err(IrError::StructBodyMismatch {
             name: String::from("Point"),
         })
@@ -340,12 +189,14 @@ fn struct_schema_rejects_mismatched_existing_named_body() -> Result<(), IrError>
 
 /// Mirrors `StructType::setBodyOrError` / `StructType::checkBody`
 /// (`lib/IR/Type.cpp`): identified struct bodies may not recursively contain
-/// the struct being defined.
+/// the struct being defined. The schema names itself as its only field; the
+/// minter hands the nested occurrence the still-opaque `%RecursiveNode`
+/// rather than recursing, and the body setter refuses the cycle.
 #[test]
 fn struct_schema_rejects_recursive_named_body() -> Result<(), IrError> {
     let m = module_new!("schema")?;
     assert_eq!(
-        <RecursiveNode as StructSchema>::ir_type(m.as_view()),
+        m.get_or_insert_struct_of::<RecursiveNode>(),
         Err(IrError::RecursiveStructBody {
             name: String::from("RecursiveNode"),
         })
@@ -353,16 +204,20 @@ fn struct_schema_rejects_recursive_named_body() -> Result<(), IrError> {
     Ok(())
 }
 
-/// LLVM `StructType::create(Context, "")` creates an anonymous struct, not a
-/// named entry with an empty printed `%` name; schema names must therefore be
-/// non-empty.
+/// Review Focus 3 of the type-constructor validity plan; mirrors
+/// `StructType::setBodyOrError` / `StructType::checkBody` (`lib/IR/Type.cpp`),
+/// whose walk refuses a body that reaches the struct being defined through
+/// any depth of by-value elements. Two hand-written schemas that contain each
+/// other: minting `CycleA` mints `CycleB`, whose `CycleA` field is the
+/// still-opaque `%CycleA`; `%CycleB`'s body is set, and `%CycleA`'s is refused
+/// — with no unbounded recursion on the way.
 #[test]
-fn struct_schema_rejects_empty_identified_name() -> Result<(), IrError> {
+fn mutually_recursive_schemas_are_refused() -> Result<(), IrError> {
     let m = module_new!("schema")?;
     assert_eq!(
-        <EmptyName as StructSchema>::ir_type(m.as_view()),
-        Err(IrError::InvalidOperation {
-            message: "struct schema name must not be empty",
+        m.get_or_insert_struct_of::<CycleA>(),
+        Err(IrError::RecursiveStructBody {
+            name: String::from("CycleA"),
         })
     );
     Ok(())
@@ -375,10 +230,10 @@ fn struct_schema_params_are_branded_wrappers() -> Result<(), IrError> {
     let m = module_new!("schema")?;
     let f = m.add_typed_function::<(), (Point,), _>("takes_point", Linkage::External)?;
     let (point,) = m.view(f).params();
-    let _: PointValue<'_, _> = point;
+    let _: Hand<'_, Point, _> = point;
     assert_eq!(
         point.as_struct_value().ty().as_type().read_only(),
-        <Point as StructSchema>::ir_type(m.as_view())?.as_type()
+        m.as_view().get_or_insert_struct_of::<Point>()?.as_type()
     );
     Ok(())
 }
@@ -386,15 +241,15 @@ fn struct_schema_params_are_branded_wrappers() -> Result<(), IrError> {
 /// llvmkit-specific checked wrapper over an existing LLVM struct argument;
 /// closest upstream coverage is `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)`.
 #[test]
-fn struct_schema_try_value_from_ir_wraps_raw_struct() -> Result<(), IrError> {
+fn struct_schema_try_new_wraps_raw_struct() -> Result<(), IrError> {
     let m = module_new!("schema")?;
-    let point_ty = <Point as StructSchema>::ir_type(m.as_view())?;
+    let point_ty = m.get_or_insert_struct_of::<Point>()?;
     let fn_ty = m.function_type(m.void_type(), [point_ty.as_type()]);
     let f = m.add_function_dyn("raw_take_point", fn_ty, Linkage::External)?;
-    let point = Point::try_value_from_ir(m.view(f).param(0)?)?;
+    let point = Hand::from_schema_value(SchemaValue::<Point, _>::try_new(m.view(f).param(0)?)?);
     assert_eq!(
         point.as_struct_value().ty().as_type().read_only(),
-        <Point as StructSchema>::ir_type(m.as_view())?.as_type()
+        m.as_view().get_or_insert_struct_of::<Point>()?.as_type()
     );
     Ok(())
 }
@@ -402,24 +257,25 @@ fn struct_schema_try_value_from_ir_wraps_raw_struct() -> Result<(), IrError> {
 /// llvmkit-specific checked wrapper rejection for schema/name/body mismatch;
 /// closest upstream coverage is `unittests/IR/TypeBuilderTest.cpp::TEST(TypeBuilder, NamedStruct)`.
 #[test]
-fn struct_schema_try_value_from_ir_rejects_wrong_schema() -> Result<(), IrError> {
+fn struct_schema_try_new_rejects_wrong_schema() -> Result<(), IrError> {
     let m = module_new!("schema")?;
-    let rect_ty = <Rect as StructSchema>::ir_type(m.as_view())?;
+    let rect_ty = m.get_or_insert_struct_of::<Rect>()?;
     let fn_ty = m.function_type(m.void_type(), [rect_ty.as_type()]);
     let f = m.add_function_dyn("raw_take_rect", fn_ty, Linkage::External)?;
     // Two identified structs both label `struct`, so reporting only the kinds
     // rendered "type mismatch: expected struct, got struct" — an assertion
     // that would have passed just as well had the schemas been swapped, or
     // had any other struct arrived.
-    let point_ty = <Point as StructSchema>::ir_type(m.as_view())?;
+    let point_ty = m.get_or_insert_struct_of::<Point>()?;
     assert_eq!(
-        Point::try_value_from_ir(m.view(f).param(0)?),
+        SchemaValue::<Point, _>::try_new(m.view(f).param(0)?),
         Err(IrError::TypeIdentityMismatch {
             expected: point_ty.as_type().rendered(),
             got: rect_ty.as_type().rendered(),
         })
     );
-    let error = Point::try_value_from_ir(m.view(f).param(0)?).expect_err("a Rect is not a Point");
+    let error =
+        SchemaValue::<Point, _>::try_new(m.view(f).param(0)?).expect_err("a Rect is not a Point");
     assert_eq!(
         error.to_string(),
         "type mismatch: expected '%Point', got '%Rect'"
@@ -456,14 +312,12 @@ fn struct_fields_unpacks_manual_schema_into_params() -> Result<(), IrError> {
 #[test]
 fn struct_schema_extracts_and_inserts_typed_fields() -> Result<(), IrError> {
     let m = module_new!("schema")?;
-    let point_ty = <Point as StructSchema>::ir_type(m.as_view())?;
+    let point_ty = m.get_or_insert_struct_of::<Point>()?;
     let fn_ty = m.function_type(m.void_type(), [point_ty.as_type()]);
     let f = m.add_function_dyn("edit", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let point = PointValue {
-        raw: StructValue::try_from(m.view(f).param(0)?)?,
-    };
+    let point = Hand::from_schema_value(SchemaValue::<Point, _>::try_new(m.view(f).param(0)?)?);
     let x = point.x(&b)?;
     let _: IntValue<'_, i32, _> = x;
     let _updated = point.with_x(&b, 42_i32)?;
@@ -482,14 +336,12 @@ fn struct_schema_extracts_and_inserts_typed_fields() -> Result<(), IrError> {
 #[test]
 fn struct_schema_extract_field_mismatch_does_not_append_instruction() -> Result<(), IrError> {
     let m = module_new!("schema")?;
-    let point_ty = <Point as StructSchema>::ir_type(m.as_view())?;
+    let point_ty = m.get_or_insert_struct_of::<Point>()?;
     let fn_ty = m.function_type(m.void_type(), [point_ty.as_type()]);
     let f = m.add_function_dyn("bad_extract", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let point = PointValue {
-        raw: StructValue::try_from(m.view(f).param(0)?)?,
-    };
+    let point = Hand::from_schema_value(SchemaValue::<Point, _>::try_new(m.view(f).param(0)?)?);
     let err = b
         .extract_field::<Point, i64, _, _>(point, 0, "bad")
         .expect_err("field type mismatch must be rejected");
@@ -509,6 +361,36 @@ fn struct_schema_extract_field_mismatch_does_not_append_instruction() -> Result<
     Ok(())
 }
 
+/// llvmkit-specific regression, no upstream counterpart —
+/// `IRBuilder::CreateInsertValue` returns a `Value *` and knows no schema:
+/// `insert_field` checks its result against `S` before wrapping it, because
+/// the aggregate's lift is user-implementable. A lift that hands back a
+/// literal `{ i32, i32 }` for a `Point` aggregate takes the insert — the
+/// element types agree — and is then refused, never wrapped as a `Point`
+/// value. `struct_schema_extracts_and_inserts_typed_fields` is the positive
+/// control.
+#[test]
+fn insert_field_refuses_a_lift_of_another_struct_type() -> Result<(), IrError> {
+    let m = module_new!("schema")?;
+    let literal = m.struct_type([m.i32_type(), m.i32_type()])?;
+    let point_ty = m.get_or_insert_struct_of::<Point>()?;
+    let fn_ty = m.function_type(m.void_type(), [literal.as_type()]);
+    let f = m.add_function_dyn("forged", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let forged = Forged(m.view(f).param(0)?.as_erased());
+    assert_eq!(
+        b.insert_field::<Point, i32, _, _, _>(forged, 7_i32, 0, "forged")
+            .map(|_| ()),
+        Err(IrError::TypeIdentityMismatch {
+            expected: point_ty.as_type().rendered(),
+            got: literal.as_type().rendered(),
+        })
+    );
+    b.ret_void()?;
+    Ok(())
+}
+
 /// llvmkit-specific typed return facade over LLVM by-value struct returns;
 /// closest upstream coverage is `unittests/IR/AsmWriterTest.cpp` for aggregate
 /// return printing.
@@ -518,7 +400,13 @@ fn struct_schema_can_be_function_return() -> Result<(), IrError> {
     let f = m.add_typed_function::<Point, (), _>("origin", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new(&m).position_at_end(entry);
-    let point = b.insert_field::<Point, i32, _, _, _>(poison_point(&m)?, 1_i32, 0, "p0")?;
+    let poison = m
+        .as_view()
+        .get_or_insert_struct_of::<Point>()?
+        .as_type()
+        .poison()
+        .as_constant();
+    let point = b.insert_field::<Point, i32, _, _, _>(poison, 1_i32, 0, "p0")?;
     let point = b.insert_field::<Point, i32, _, _, _>(point, 2_i32, 1, "p1")?;
     b.ret(point.as_struct_value())?;
     let text = format!("{m}");
@@ -533,22 +421,21 @@ fn struct_schema_can_be_function_return() -> Result<(), IrError> {
 /// Ports the nested aggregate indexing shape from `test/Bitcode/compatibility.ll`
 /// — its `@instructions.aggregateops` (`extractvalue { i8, { i32 } } %n, 1, 0`)
 /// — through nested named
-/// schemas so a `%Rect` field returns `PointValue`, not raw `StructValue`.
+/// schemas so a `%Rect` field returns the `Point` schema's value, not a raw
+/// `StructValue`.
 #[test]
 fn nested_struct_schema_accessors_return_nested_wrapper() -> Result<(), IrError> {
     let m = module_new!("schema")?;
-    let rect_ty = <Rect as StructSchema>::ir_type(m.as_view())?;
+    let rect_ty = m.get_or_insert_struct_of::<Rect>()?;
     let fn_ty = m.function_type(m.void_type(), [rect_ty.as_type()]);
     let f = m.add_function_dyn("read", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let rect = RectValue {
-        raw: StructValue::try_from(m.view(f).param(0)?)?,
-    };
+    let rect = Hand::from_schema_value(SchemaValue::<Rect, _>::try_new(m.view(f).param(0)?)?);
     let min = rect.min(&b)?;
     let max = rect.max(&b)?;
-    let _: PointValue<'_, _> = min;
-    let _: PointValue<'_, _> = max;
+    let _: Hand<'_, Point, _> = min;
+    let _: Hand<'_, Point, _> = max;
     let _ = min.x(&b)?;
     b.ret_void()?;
     let text = format!("{m}");

@@ -6,13 +6,14 @@ error[E0277]: the trait bound `PointValue<'_, Left>: IntoIrField<'_, Point, Righ
    |                     |
    |                     required by a bound introduced by this call
    |
-help: the trait `IntoIrField<'_, Point, Right>` is not implemented for `PointValue<'_, Left>`
-      but trait `IntoIrField<'_, Point, Left>` is implemented for it
+help: the trait `IntoLayoutValue<'_, Point, Right>` is not implemented for `PointValue<'_, Left>`
+      but trait `IntoLayoutValue<'_, Point, Left>` is implemented for it
   --> tests/compile_fail/ir_struct_cross_module_brand.rs:11:10
    |
 11 | #[derive(IrStruct)]
    |          ^^^^^^^^
    = help: for that trait implementation, expected `Left`, found `Right`
+   = note: required for `PointValue<'_, Left>` to implement `IntoIrField<'_, Point, Right>`
 note: required by a bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::insert_field`
   --> src/ir_builder.rs
    |

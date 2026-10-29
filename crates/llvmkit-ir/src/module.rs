@@ -34,12 +34,13 @@
 //! Public handle accessors expose [`ModuleView`], a branded view of the
 //! storage. It carries every *type* constructor — interning a type is
 //! preservation-neutral, so it needs no mutation authority, which is what lets
-//! the schema traits ([`crate::IrField`], [`crate::StructSchema`]) be declared
-//! against it. Module-structural work — declaring functions, globals, aliases,
-//! ifuncs, and the typestate struct-body setters — requires the unverified
-//! [`Module`] token instead.
+//! the typed-signature traits (`FunctionParam`, `FunctionReturn`) be declared
+//! against it and a struct schema's type be minted through it. Module-structural
+//! work — declaring functions, globals, aliases, ifuncs, and the typestate
+//! struct-body setters — requires the unverified [`Module`] token instead.
 
 use crate::Branded;
+use crate::CrateOnly;
 use core::any::TypeId;
 use core::hash::{Hash, Hasher};
 use core::iter::FusedIterator;
@@ -105,7 +106,7 @@ use super::named_md_node::{
 use super::pass_context::{FunctionView, ModuleFunctionViews};
 use super::struct_body_state::StructBodyDyn;
 use super::struct_body_state::{BodySet, Opaque};
-use super::struct_schema::StructSchema;
+use super::struct_schema::{FieldList, Minting, StructSchema};
 use super::r#type::{
     IrType, MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeData, TypeSlot, TypeSlotAccess,
 };
@@ -1059,13 +1060,45 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
     where
         S: StructSchema,
     {
-        if S::NAME.is_empty() {
-            return Err(IrError::InvalidOperation {
-                message: "struct schema name must not be empty",
-            });
+        let id = self.mint_struct_of::<S>(&mut Minting::new())?;
+        // A fresh minting call has no schema in progress, so the minter took
+        // its full path, which ends with `%S`'s body set or refused.
+        Ok(StructType::<BodySet, B, C>::new(id, self))
+    }
+
+    /// Mint schema `S`'s named struct type in this module, its body built
+    /// from the field layouts: fields first, then find or create `%S`, then
+    /// confirm a body already set or set it.
+    ///
+    /// Mirrors `StructType::setBodyOrError` (`lib/IR/Type.cpp`) for the body:
+    /// a body containing `%S` by value is refused by its `checkBody` port
+    /// ([`IrError::RecursiveStructBody`]). A schema that contains itself is
+    /// what makes that reachable — only by hand, since Rust refuses an
+    /// infinitely sized struct — and the minter must not recurse into it:
+    /// a schema already being minted on this call (`minting`) yields its
+    /// still-opaque named type, so the cycle ends at the body setter, mutual
+    /// ones included. A different body already set is
+    /// [`IrError::StructBodyMismatch`]. `S::NAME` must not be empty —
+    /// `StructType::create(Context, "")` makes an anonymous struct — which is
+    /// checked at compile time.
+    pub(crate) fn mint_struct_of<S>(self, minting: &mut Minting) -> IrResult<TypeSlot>
+    where
+        S: StructSchema,
+    {
+        const {
+            assert!(
+                !S::NAME.is_empty(),
+                "a struct schema's NAME must not be empty"
+            )
+        };
+        if minting.is_minting(S::NAME) {
+            return Ok(self.core.ctx.get_or_create_named_struct(S::NAME).slot());
         }
-        let field_types = S::field_types(ModuleView::<B>::new(self.core))?;
-        // Internal: the schema's field types were minted in this module.
+        minting.begin(S::NAME);
+        let field_types = <S::Fields as FieldList>::mint_types(self, minting, CrateOnly(()));
+        minting.end();
+        let field_types = field_types?;
+        // Internal: each field type was minted in this module by its layout.
         let elements: Box<[TypeSlot]> = field_types
             .iter()
             .map(|t| t.slot_trusting_same_module())
@@ -1081,7 +1114,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
             let body = data.body.borrow();
             if let Some(body) = body.as_ref() {
                 if body.packed == S::PACKED && body.elements.as_ref() == elements.as_ref() {
-                    return Ok(StructType::<BodySet, B, C>::new(id, self));
+                    return Ok(id);
                 }
                 return Err(IrError::StructBodyMismatch {
                     name: S::NAME.to_owned(),
@@ -1095,7 +1128,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
                 packed: S::PACKED,
             },
         )?;
-        Ok(StructType::<BodySet, B, C>::new(id, self))
+        Ok(id)
     }
 }
 
@@ -1146,9 +1179,9 @@ impl<B: ModuleBrand, C: Capability> core::fmt::Debug for ModuleRef<'_, B, C> {
 /// crate-private storage or the linear verification-state token. Beyond reads
 /// it carries the full type-constructor surface (see the `Type constructors`
 /// section below for why that is not a loosening), which is what the
-/// user-implementable schema traits ([`IrField::ir_type`](crate::IrField),
-/// [`StructSchema`], the `FunctionReturn` /
-/// `FunctionParam` family) are declared against.
+/// user-implementable typed-signature traits (the `FunctionReturn` /
+/// `FunctionParam` family) are declared against, and what mints a
+/// [`StructSchema`]'s type ([`get_or_insert_struct_of`](Self::get_or_insert_struct_of)).
 ///
 /// This is the **read capability** grade over a module's storage;
 /// [`ModuleRef`] is the bare **storage pointer** grade. The two have the same
@@ -2005,7 +2038,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     }
 
     /// Idempotently intern the named LLVM struct type described by schema `S`,
-    /// filling its body the first time.
+    /// filling its body the first time from the field layouts.
     ///
     /// This lives on the read-only view for the same reason the primitive
     /// constructors above do: it is preservation-**neutral**. It interns into
@@ -2013,10 +2046,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     /// confirms one that already matches — it never touches a function, block,
     /// or global, and a mismatch is refused with
     /// [`IrError::StructBodyMismatch`] rather than rewriting anything. That is
-    /// what lets [`crate::StructSchema`] and [`crate::IrField`] be declared
-    /// against a `ModuleView` instead of a `&Module<Unverified>` token —
-    /// which in turn is what lets [`crate::IrBuilder`] answer schema queries
-    /// without fabricating a module token it does not own.
+    /// what lets the typed-signature traits name a schema's type through a
+    /// `ModuleView` instead of a `&Module<Unverified>` token — which in turn
+    /// is what lets [`crate::IrBuilder`] answer schema queries without
+    /// fabricating a module token it does not own.
+    ///
+    /// Mirrors `StructType::setBodyOrError` for the body: a hand-written
+    /// schema that contains itself by value, directly or through others, is
+    /// [`IrError::RecursiveStructBody`] — the minter never recurses into a
+    /// schema it is already minting. An empty `S::NAME` does not compile.
     ///
     /// The *typestate* body setters — [`Module::set_struct_body`] and
     /// [`Module::set_struct_body_dyn`], which drive an `Opaque` struct handle

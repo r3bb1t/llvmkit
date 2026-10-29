@@ -307,6 +307,12 @@ let rect = placement.normal_position(&b)?;
 let _min = rect.min(&b)?;
 ```
 
+A field is one of llvmkit's layouts — an integer (an unsigned field is the
+signless integer of its width), a float, `Ptr<AS>`, an array `[T; N]` of a
+scalar, a nested schema — or a field kind of your own that names one. llvmkit
+builds the struct's body from those layouts, so a field cannot be laid out as an
+invalid element or as another module's type.
+
 Existing IR can be checked back into a generated wrapper with
 `WindowPlacementValue::try_from(raw)?`. When a function boundary should receive
 top-level fields separately, `StructFields<WindowPlacement>` emits `i32, %Rect`

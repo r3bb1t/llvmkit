@@ -25,9 +25,9 @@ use llvmkit_ir::{
     FastMathFlags, FloatDyn, FloatValue, FnCx, FnReport, FunctionId, FunctionPass, GepNoWrapFlags,
     InlineAsmOptions, InstructionView, IntDyn, IntValue, InvokeInst, IrBuilder, IrError, IrResult,
     IrStruct, Linkage, Module, OperandBundleDef, OperandBundleTag, OperandBundleUse, PatchBody,
-    PointerValue, Positioned, ReshapeCfg, SsaBuilder, SsaState, StructSchema, SyncScope,
-    TailCallKind, TruncFlags, Type, UiToFpFlags, Unterminated, Value, ValueId, ZextFlags,
-    comdat::SelectionKind, iter::BlockCursor, lanes, run_function_pass,
+    PointerValue, Positioned, ReshapeCfg, SsaBuilder, SsaState, SyncScope, TailCallKind,
+    TruncFlags, Type, UiToFpFlags, Unterminated, Value, ValueId, ZextFlags, comdat::SelectionKind,
+    iter::BlockCursor, lanes, run_function_pass,
 };
 
 /// A two-field schema, so a struct-typed value exists to hand across modules.
@@ -522,7 +522,9 @@ fn a_struct_schema_operand_rejects_a_value_from_another_module() {
     // (`docs/divergences.md`, entry 143). Intern it before the snapshot:
     // interning a type is not the mutation under test — upstream's
     // `StructType`s live in the `LLVMContext`, not the module.
-    <Nest as StructSchema>::ir_type(home.as_view()).expect("%Nest");
+    home.as_view()
+        .get_or_insert_struct_of::<Nest>()
+        .expect("%Nest");
 
     let before = format!("{home}");
     let field = b.extract_field::<Pair, i32, _, _>(foreign_pair, 0, "first");

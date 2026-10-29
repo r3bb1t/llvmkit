@@ -1,13 +1,24 @@
 //! Compile-time schemas for named LLVM struct types.
 //!
-//! The traits in this module let ordinary Rust marker types describe LLVM
-//! identified structs while all concrete values remain branded by the module
-//! that produced them.
+//! A [`StructSchema`] names an identified struct and lists its fields. Each
+//! field is an [`IrField`], and each field kind names a [`FieldLayout`]: one
+//! of a sealed set of valid struct elements that llvmkit builds and matches
+//! itself. So a schema's body is minted from its layouts alone, in the module
+//! that asks; building and matching cannot disagree; and no field can be laid
+//! out as an invalid element or as another module's type.
+//!
+//! A schema's value holds a [`SchemaValue`], which only llvmkit mints — after
+//! checking a raw value against the schema, or as the result of its own typed
+//! operations — so holding one proves the value has the schema's type. All
+//! concrete values stay branded by the module that produced them.
 
-use crate::CrateOnly;
+use core::marker::PhantomData;
+
 use crate::argument::Argument;
+use crate::array_len::{ArrLen, static_len_u64};
 use crate::capability::{Capability, Mutable, ReadOnly};
 use crate::constant::Constant;
+use crate::element::VecElem;
 use crate::error::{IrError, IrResult, TypeKindLabel};
 use crate::float_kind::{Bfloat, Fp128, Half, IntoFloatValue, PpcFp128, X86Fp80};
 use crate::function::FunctionValue;
@@ -16,62 +27,199 @@ use crate::function_signature::{
     token::{ValidatedCallResult, ValidatedFunctionParams},
 };
 use crate::instruction::{Instruction, state::Attached};
-use crate::int_width::{IntDyn, IntoIntValue, Width};
+use crate::int_width::{IntoIntValue, Width};
 use crate::marker::{Dyn, Ptr, ReturnMarker};
 use crate::module::{ModuleBrand, ModuleRef, ModuleView};
 use crate::r#type::{Type, TypeData};
-use crate::value::{FloatValue, IntValue, IntoPointerValue, PointerValue, StructValue, Value};
+use crate::value::{
+    ArrayValue, FloatValue, IntValue, IntoErasedValue, IntoPointerValue, PointerValue, StructValue,
+    Value,
+};
+use crate::{Branded, CrateOnly};
 
-#[doc(hidden)]
-pub mod token {
-    use core::marker::PhantomData;
-
-    /// Capability proving that a raw struct-typed value has already been
-    /// validated against a [`StructSchema`](crate::StructSchema).
-    #[derive(Debug)]
-    pub struct ValidatedStructValue<'a> {
-        _private: PhantomData<&'a ()>,
-    }
-
-    impl<'a> ValidatedStructValue<'a> {
-        #[inline]
-        pub(crate) fn new() -> Self {
-            Self {
-                _private: PhantomData,
-            }
-        }
+/// Home of [`Minting`]. Private, so the type is nameable nowhere outside
+/// llvmkit — the hidden [`FieldLayout::mint_type`] names it, and only llvmkit
+/// can build one.
+mod minting {
+    /// The schemas one minting call is inside, by LLVM name. A nested schema
+    /// found here is being minted further up the same call — it contains
+    /// itself by value — so the minter hands back its still-opaque named type
+    /// instead of recursing (`ModuleRef::mint_struct_of`).
+    #[derive(Debug, Default)]
+    pub struct Minting {
+        pub(super) in_progress: Vec<&'static str>,
     }
 }
 
-pub use token::ValidatedStructValue;
+pub(crate) use minting::Minting;
 
-/// Lifetime-free schema token for one LLVM struct field.
+impl Minting {
+    /// A minting call with no schema in progress.
+    #[inline]
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether the schema named `name` is being minted further up this call.
+    #[inline]
+    pub(crate) fn is_minting(&self, name: &'static str) -> bool {
+        self.in_progress.contains(&name)
+    }
+
+    /// Enter the schema named `name`.
+    #[inline]
+    pub(crate) fn begin(&mut self, name: &'static str) {
+        self.in_progress.push(name);
+    }
+
+    /// Leave the schema entered last.
+    #[inline]
+    pub(crate) fn end(&mut self) {
+        self.in_progress.pop();
+    }
+}
+
+mod layout_sealed {
+    pub trait Sealed {}
+}
+
+mod field_list_sealed {
+    pub trait Sealed {}
+}
+
+/// What a struct field is in LLVM: one of a closed set of valid struct
+/// elements, whose type llvmkit builds and matches itself.
+///
+/// Implemented for `bool`, `i8`…`i128`, [`Width<N>`], the floating-point
+/// kinds, [`Ptr<AS>`], an array `[L; N]` of a scalar layout
+/// ([`ArrayElementLayout`]), and every [`StructSchema`]. Sealed: a layout
+/// anyone could write could name `label`, or another module's type. Its
+/// methods other than [`Value`](Self::Value) take llvmkit's call token, so
+/// only llvmkit builds a layout's type or wraps a value as one.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a struct-field layout",
+    label = "not a `FieldLayout`",
+    note = "a field's layout is `bool`, `i8`…`i128`, `Width<N>`, a float kind, `Ptr<AS>`, \
+            an array `[L; N]` of a scalar layout, or a `StructSchema`"
+)]
+pub trait FieldLayout: layout_sealed::Sealed + Sized + 'static {
+    /// The value of a field of this layout: what a field read returns.
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability>: Copy;
+
+    /// Build this layout's type in `module`. A schema's struct type may be
+    /// refused — [`IrError::StructBodyMismatch`],
+    /// [`IrError::RecursiveStructBody`] — and a scalar's never is.
+    #[doc(hidden)]
+    fn mint_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        module: ModuleRef<'ctx, B, C>,
+        minting: &mut Minting,
+        token: CrateOnly,
+    ) -> IrResult<Type<'ctx, B, C>>;
+
+    /// Whether `ty` is this layout's type.
+    #[doc(hidden)]
+    fn matches_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        ty: Type<'ctx, B, C>,
+        token: CrateOnly,
+    ) -> bool;
+
+    /// Wrap `raw`, whose type llvmkit has proven to be this layout's, as the
+    /// layout's value. Unchecked: the proof is the caller's.
+    #[doc(hidden)]
+    fn value_of<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        raw: Value<'ctx, B, C>,
+        token: CrateOnly,
+    ) -> Self::Value<'ctx, B, C>;
+}
+
+/// The value of a field of layout `L`.
+pub type LayoutValue<'ctx, L, B, C> = <L as FieldLayout>::Value<'ctx, B, C>;
+
+/// A layout an array field's element may have: the scalar integer and
+/// floating-point layouts. `Width<N>`, `Ptr<AS>` and schemas stay out of
+/// arrays for now — a typed array value names its element by a vector-element
+/// marker, and they have none.
+pub trait ArrayElementLayout: FieldLayout + VecElem {}
+
+/// A struct field's kind: the layout it has in LLVM, and the value a field
+/// read returns.
+///
+/// The built-in kinds are the layouts themselves (`bool`, `i8`…`i128`,
+/// [`Width<N>`], the float kinds, [`Ptr<AS>`], every [`StructSchema`]), with
+/// [`wrap`](Self::wrap) and [`unwrap`](Self::unwrap) the identity. `u8`…`u128`
+/// have the signless integer layout of their width — LLVM integers carry no
+/// sign — and that integer's value. `[T; N]` has the layout `[T::Layout; N]`
+/// and an [`ArrayValue`] of it. A kind of the user's own names a layout and
+/// converts its values; llvmkit derives the field's type, its match and a
+/// schema's whole body from [`Layout`](Self::Layout) alone:
+///
+/// ```
+/// use llvmkit_ir::{Capability, FloatValue, IrField, LayoutValue, ModuleBrand};
+///
+/// /// A distance, laid out as a `double`.
+/// struct Meters;
+///
+/// impl IrField for Meters {
+///     type Layout = f64;
+///     type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = FloatValue<'ctx, f64, B, C>;
+///
+///     fn wrap<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+///         raw: LayoutValue<'ctx, f64, B, C>,
+///     ) -> Self::Value<'ctx, B, C> {
+///         raw
+///     }
+///
+///     fn unwrap<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+///         value: Self::Value<'ctx, B, C>,
+///     ) -> LayoutValue<'ctx, f64, B, C> {
+///         value
+///     }
+/// }
+/// ```
 pub trait IrField: Sized + 'static {
-    /// Branded IR value produced by typed field extraction.
+    /// What this field is in LLVM.
+    type Layout: FieldLayout;
+
+    /// The value a field read returns.
     type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability>;
 
-    /// Construct this field's LLVM IR type in `module`.
-    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
-    where
-        B: ModuleBrand + 'ctx;
+    /// The field's value from its layout's.
+    fn wrap<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        raw: LayoutValue<'ctx, Self::Layout, B, C>,
+    ) -> Self::Value<'ctx, B, C>;
 
-    /// Check whether an existing raw LLVM type matches this field schema.
-    fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
-    where
-        B: ModuleBrand + 'ctx;
-
-    /// Convert a raw field value after [`matches_ir_type`](Self::matches_ir_type)
-    /// has accepted its type.
-    fn value_from_ir_value<'ctx, B, C: Capability>(
-        value: Value<'ctx, B, C>,
-    ) -> IrResult<Self::Value<'ctx, B, C>>
-    where
-        B: ModuleBrand + 'ctx;
+    /// The layout's value from the field's.
+    fn unwrap<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        value: Self::Value<'ctx, B, C>,
+    ) -> LayoutValue<'ctx, Self::Layout, B, C>;
 }
 
-/// Inputs that can be lifted into a field value of schema `F`.
+/// Inputs a field of kind `F` accepts: whatever its layout accepts
+/// ([`IntoLayoutValue`]), so a kind of the user's own takes its layout's
+/// values with no impl of its own.
 pub trait IntoIrField<'ctx, F: IrField, B: ModuleBrand>: Sized {
     fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>>;
+}
+
+impl<'ctx, F, B, V> IntoIrField<'ctx, F, B> for V
+where
+    F: IrField,
+    B: ModuleBrand + 'ctx,
+    V: IntoLayoutValue<'ctx, F::Layout, B>,
+{
+    #[inline]
+    fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+        self.into_layout_value(module)
+    }
+}
+
+/// Inputs a field of layout `L` accepts, admitted at the receiving module:
+/// the typed handles of a scalar layout and the values that lift into them,
+/// a typed array of an array layout, and — for a schema — its value or a raw
+/// struct handle checked against it. The [`IrStruct`](crate::IrStruct) derive
+/// implements it for the value type it generates.
+pub trait IntoLayoutValue<'ctx, L: FieldLayout, B: ModuleBrand>: Sized {
+    fn into_layout_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>>;
 }
 
 /// A handle that may be a struct value, at capability `C`: the conversion
@@ -122,46 +270,100 @@ where
     }
 }
 
-/// Branded wrapper value generated for a [`StructSchema`], at capability `C`
-/// — the capability of the struct value it wraps (D8).
-pub trait StructSchemaValue<'ctx, S: StructSchema, B: ModuleBrand, C: Capability>:
-    Sized + Copy
+/// A struct value of schema `S`'s type, at capability `C` — the capability
+/// of the struct value it holds (D8).
+///
+/// Only llvmkit mints one: [`try_new`](Self::try_new) checks a raw value
+/// against `S`, and llvmkit's own typed operations (field reads, builds,
+/// typed loads, typed parameters) mint the values they produce. So holding a
+/// `SchemaValue<S>` proves the value has `S`'s type, and a schema's value
+/// type, which holds one, needs no check of its own.
+#[derive(Branded)]
+pub struct SchemaValue<'ctx, S: StructSchema, B: ModuleBrand, C: Capability = Mutable> {
+    raw: StructValue<'ctx, B, C>,
+    _schema: PhantomData<fn() -> S>,
+}
+
+impl<'ctx, S, B, C> SchemaValue<'ctx, S, B, C>
+where
+    S: StructSchema,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
 {
-    fn as_struct_value(self) -> StructValue<'ctx, B, C>;
-
-    fn from_struct_value(
-        raw: StructValue<'ctx, B, C>,
-        validated: &ValidatedStructValue<'_>,
-    ) -> Self;
-
-    /// Validate a raw struct-typed value against schema `S` before wrapping it.
+    /// Wrap `raw`, whose type llvmkit has proven to be `S`'s. Unchecked: the
+    /// proof is the caller's.
     #[inline]
-    fn try_from_struct_value(raw: StructValue<'ctx, B, C>) -> IrResult<Self> {
-        check_struct_identity::<S, B, _>(raw)?;
-        let validated = ValidatedStructValue::new();
-        Ok(Self::from_struct_value(raw, &validated))
+    pub(crate) fn new_unchecked(raw: StructValue<'ctx, B, C>) -> Self {
+        Self {
+            raw,
+            _schema: PhantomData,
+        }
+    }
+
+    /// Check `value` against schema `S`: it must be a struct of `S`'s type —
+    /// named `S::NAME`, `S::PACKED`, its elements `S`'s field layouts.
+    ///
+    /// # Errors
+    ///
+    /// A value that is no struct fails its narrowing; a struct of another
+    /// type is [`IrError::TypeIdentityMismatch`], both types spelled out.
+    pub fn try_new<V>(value: V) -> IrResult<Self>
+    where
+        V: TryIntoStructValue<'ctx, B, C>,
+    {
+        let raw = value.try_into_struct_value()?;
+        check_struct_identity::<S, B, C>(raw)?;
+        Ok(Self::new_unchecked(raw))
+    }
+
+    /// The struct value.
+    #[inline]
+    pub fn as_struct_value(self) -> StructValue<'ctx, B, C> {
+        self.raw
+    }
+
+    /// The struct value, erased.
+    #[inline]
+    pub fn as_erased(self) -> Value<'ctx, B, C> {
+        self.raw.as_erased()
     }
 }
 
-/// The identity check behind [`StructSchemaValue::try_from_struct_value`]:
-/// `raw`'s type must be the struct schema `S` names. It reads `raw` only
-/// through its own module, so it runs on a handle of any capability — the
-/// operand lifts below check before they admit.
+/// A schema's value type, at capability `C` — the capability of the struct
+/// value it wraps (D8). It holds a [`SchemaValue`], so it is valid for `S` by
+/// construction.
+pub trait StructSchemaValue<'ctx, S: StructSchema, B: ModuleBrand, C: Capability>:
+    Sized + Copy
+{
+    /// Wrap a checked value of `S`.
+    fn from_schema_value(value: SchemaValue<'ctx, S, B, C>) -> Self;
+
+    /// The checked value this wraps.
+    fn schema_value(self) -> SchemaValue<'ctx, S, B, C>;
+}
+
+/// The identity check behind [`SchemaValue::try_new`]: `raw`'s type must be
+/// the struct schema `S` describes. It reads `raw` only through its own
+/// module, so it runs on a handle of any capability — the operand lifts below
+/// check before they admit.
 fn check_struct_identity<'ctx, S, B, C>(raw: StructValue<'ctx, B, C>) -> IrResult<()>
 where
-    S: IrField,
+    S: StructSchema,
     B: ModuleBrand + 'ctx,
     C: Capability,
 {
     let got = raw.ty().as_type();
-    if !<S as IrField>::matches_ir_type(got) {
-        // `matches_ir_type` compares the struct's *name*, not just its
-        // kind, so the common failure is one identified struct given
-        // where another was required — and `expected:
-        // TypeKindLabel::Struct` rendered that as "expected struct, got
-        // struct".
+    if !<S as FieldLayout>::matches_type(got, CrateOnly(())) {
+        // The match compares the struct's *name*, not just its kind, so the
+        // common failure is one identified struct given where another was
+        // required — and `expected: TypeKindLabel::Struct` rendered that as
+        // "expected struct, got struct".
         return Err(IrError::TypeIdentityMismatch {
-            expected: <S as IrField>::ir_type(got.module())?.rendered(),
+            expected: got
+                .module()
+                .get_or_insert_struct_of::<S>()?
+                .as_type()
+                .rendered(),
             got: got.rendered(),
         });
     }
@@ -172,67 +374,40 @@ where
 pub trait StructSchema: Sized + 'static {
     type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability>: StructSchemaValue<'ctx, Self, B, C>;
 
-    /// Tuple of top-level field schemas in source-layout order.
-    type FieldParams: FunctionParamList;
+    /// Tuple of the field kinds, in source-layout order.
+    type Fields: FieldList;
 
-    /// LLVM identified-struct name, without the leading `%`.
+    /// LLVM identified-struct name, without the leading `%`. Must not be
+    /// empty — `StructType::create(Context, "")` makes an anonymous struct —
+    /// which minting the schema's type checks at compile time.
     const NAME: &'static str;
 
     /// Whether the struct body is packed.
     const PACKED: bool = false;
-
-    /// Construct this schema's field types in source-layout order.
-    fn field_types<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Vec<Type<'ctx, B, ReadOnly>>>
-    where
-        B: ModuleBrand + 'ctx;
-
-    /// Check a raw identified-struct body against this schema.
-    fn matches_fields<'ctx, B, C: Capability>(fields: &[Type<'ctx, B, C>]) -> bool
-    where
-        B: ModuleBrand + 'ctx;
-
-    /// Return the idempotent named LLVM struct type for this schema.
-    #[inline]
-    fn ir_type<'ctx, B>(
-        module: ModuleView<'ctx, B>,
-    ) -> IrResult<crate::StructType<'ctx, crate::BodySet, B, ReadOnly>>
-    where
-        B: ModuleBrand + 'ctx,
-    {
-        module.get_or_insert_struct_of::<Self>()
-    }
-
-    /// Convert an existing raw IR value into this schema's branded wrapper.
-    #[inline]
-    fn try_value_from_ir<'ctx, B, C, V>(value: V) -> IrResult<Self::Value<'ctx, B, C>>
-    where
-        B: ModuleBrand + 'ctx,
-        C: Capability,
-        V: TryIntoStructValue<'ctx, B, C>,
-    {
-        let raw = value.try_into_struct_value()?;
-        <Self::Value<'ctx, B, C> as StructSchemaValue<'ctx, Self, B, C>>::try_from_struct_value(raw)
-    }
 }
 
-impl<S> IrField for S
+impl<S: StructSchema> layout_sealed::Sealed for S {}
+
+impl<S> FieldLayout for S
 where
     S: StructSchema,
 {
     type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = S::Value<'ctx, B, C>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
-    where
-        B: ModuleBrand + 'ctx,
-    {
-        Ok(S::ir_type(module)?.as_type())
+    fn mint_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        module: ModuleRef<'ctx, B, C>,
+        minting: &mut Minting,
+        _token: CrateOnly,
+    ) -> IrResult<Type<'ctx, B, C>> {
+        let slot = module.mint_struct_of::<S>(minting)?;
+        Ok(Type::new(slot, module))
     }
 
-    fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
-    where
-        B: ModuleBrand + 'ctx,
-    {
+    fn matches_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        ty: Type<'ctx, B, C>,
+        token: CrateOnly,
+    ) -> bool {
         let TypeData::Struct(data) = ty.data() else {
             return false;
         };
@@ -249,68 +424,120 @@ where
         let fields: Vec<Type<'ctx, B, C>> = body
             .elements
             .iter()
-            .map(|id| Type::new(*id, ty.module))
+            .map(|slot| Type::new(*slot, ty.module))
             .collect();
-        S::matches_fields(&fields)
+        <S::Fields as FieldList>::matches_types(&fields, token)
     }
 
-    fn value_from_ir_value<'ctx, B, C: Capability>(
-        value: Value<'ctx, B, C>,
-    ) -> IrResult<Self::Value<'ctx, B, C>>
-    where
-        B: ModuleBrand + 'ctx,
-    {
-        let raw = StructValue::try_from(value)?;
-        <S::Value<'ctx, B, C> as StructSchemaValue<'ctx, S, B, C>>::try_from_struct_value(raw)
+    #[inline]
+    fn value_of<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        raw: Value<'ctx, B, C>,
+        _token: CrateOnly,
+    ) -> Self::Value<'ctx, B, C> {
+        S::Value::from_schema_value(SchemaValue::new_unchecked(
+            StructValue::from_value_unchecked(raw),
+        ))
     }
 }
 
-macro_rules! impl_int_field {
+impl<S> IrField for S
+where
+    S: StructSchema,
+{
+    type Layout = S;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = S::Value<'ctx, B, C>;
+
+    #[inline]
+    fn wrap<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        raw: LayoutValue<'ctx, S, B, C>,
+    ) -> Self::Value<'ctx, B, C> {
+        raw
+    }
+
+    #[inline]
+    fn unwrap<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        value: Self::Value<'ctx, B, C>,
+    ) -> LayoutValue<'ctx, S, B, C> {
+        value
+    }
+}
+
+/// The built-in kind of a layout that is its own field kind: `wrap` and
+/// `unwrap` are the identity.
+macro_rules! impl_layout_field {
+    ($kind:ty => $value:ident < $marker:ty >) => {
+        impl IrField for $kind {
+            type Layout = Self;
+            type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = $value<'ctx, $marker, B, C>;
+
+            #[inline]
+            fn wrap<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+                raw: LayoutValue<'ctx, Self, B, C>,
+            ) -> Self::Value<'ctx, B, C> {
+                raw
+            }
+
+            #[inline]
+            fn unwrap<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+                value: Self::Value<'ctx, B, C>,
+            ) -> LayoutValue<'ctx, Self, B, C> {
+                value
+            }
+        }
+    };
+}
+
+macro_rules! impl_int_layout {
     ($($w:ty => $method:ident, $bits:literal),+ $(,)?) => {$(
-        impl IrField for $w {
+        impl layout_sealed::Sealed for $w {}
+
+        impl FieldLayout for $w {
             type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = IntValue<'ctx, $w, B, C>;
 
             #[inline]
-            fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
-            where
-                B: ModuleBrand + 'ctx,
-            {
+            fn mint_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+                module: ModuleRef<'ctx, B, C>,
+                _minting: &mut Minting,
+                _token: CrateOnly,
+            ) -> IrResult<Type<'ctx, B, C>> {
                 Ok(module.$method().as_type())
             }
 
             #[inline]
-            fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
-            where
-                B: ModuleBrand + 'ctx,
-            {
+            fn matches_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+                ty: Type<'ctx, B, C>,
+                _token: CrateOnly,
+            ) -> bool {
                 matches!(ty.kind(), crate::TypeKind::Integer { bits } if bits == $bits)
             }
 
             #[inline]
-            fn value_from_ir_value<'ctx, B, C: Capability>(
-                value: Value<'ctx, B, C>,
-            ) -> IrResult<Self::Value<'ctx, B, C>>
-            where
-                B: ModuleBrand + 'ctx,
-            {
-                IntValue::<'ctx, $w, B, C>::try_from(value)
+            fn value_of<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+                raw: Value<'ctx, B, C>,
+                _token: CrateOnly,
+            ) -> Self::Value<'ctx, B, C> {
+                IntValue::from_value_unchecked(raw)
             }
         }
 
-        impl<'ctx, B, V> IntoIrField<'ctx, $w, B> for V
+        impl ArrayElementLayout for $w {}
+
+        impl_layout_field!($w => IntValue<$w>);
+
+        impl<'ctx, B, V> IntoLayoutValue<'ctx, $w, B> for V
         where
             B: ModuleBrand + 'ctx,
             V: IntoIntValue<'ctx, $w, B>,
         {
             #[inline]
-            fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+            fn into_layout_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
                 Ok(self.into_int_value(module)?.as_erased())
             }
         }
     )+};
 }
 
-impl_int_field!(
+impl_int_layout!(
     bool => bool_type, 1,
     i8 => i8_type, 8,
     i16 => i16_type, 16,
@@ -319,136 +546,145 @@ impl_int_field!(
     i128 => i128_type, 128,
 );
 
-impl IrField for IntDyn {
-    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = IntValue<'ctx, IntDyn, B, C>;
+/// `u8`…`u128` fields: the signless integer of their width, since LLVM
+/// integers carry no sign, and that integer's value.
+macro_rules! impl_unsigned_field {
+    ($($u:ty => $signless:ty),+ $(,)?) => {$(
+        impl IrField for $u {
+            type Layout = $signless;
+            type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = IntValue<'ctx, $signless, B, C>;
 
-    #[inline]
-    fn ir_type<'ctx, B>(_module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
-    where
-        B: ModuleBrand + 'ctx,
-    {
-        Err(IrError::InvalidOperation {
-            message: "IntDyn field schemas require an explicit static width",
-        })
-    }
+            #[inline]
+            fn wrap<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+                raw: LayoutValue<'ctx, $signless, B, C>,
+            ) -> Self::Value<'ctx, B, C> {
+                raw
+            }
 
-    #[inline]
-    fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
-    where
-        B: ModuleBrand + 'ctx,
-    {
-        ty.is_integer()
-    }
-
-    #[inline]
-    fn value_from_ir_value<'ctx, B, C: Capability>(
-        value: Value<'ctx, B, C>,
-    ) -> IrResult<Self::Value<'ctx, B, C>>
-    where
-        B: ModuleBrand + 'ctx,
-    {
-        IntValue::<'ctx, IntDyn, B, C>::try_from(value)
-    }
+            #[inline]
+            fn unwrap<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+                value: Self::Value<'ctx, B, C>,
+            ) -> LayoutValue<'ctx, $signless, B, C> {
+                value
+            }
+        }
+    )+};
 }
 
-impl<'ctx, B, V> IntoIrField<'ctx, IntDyn, B> for V
-where
-    B: ModuleBrand + 'ctx,
-    V: IntoIntValue<'ctx, IntDyn, B>,
-{
-    #[inline]
-    fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-        Ok(self.into_int_value(module)?.as_erased())
-    }
-}
+impl_unsigned_field!(u8 => i8, u16 => i16, u32 => i32, u64 => i64, u128 => i128);
 
-impl<const N: u32> IrField for Width<N> {
+impl<const N: u32> layout_sealed::Sealed for Width<N> {}
+
+impl<const N: u32> FieldLayout for Width<N> {
     type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = IntValue<'ctx, Width<N>, B, C>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
-    where
-        B: ModuleBrand + 'ctx,
-    {
+    fn mint_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        module: ModuleRef<'ctx, B, C>,
+        _minting: &mut Minting,
+        _token: CrateOnly,
+    ) -> IrResult<Type<'ctx, B, C>> {
         Ok(module.int_type_n::<N>().as_type())
     }
 
     #[inline]
-    fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
-    where
-        B: ModuleBrand + 'ctx,
-    {
+    fn matches_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        ty: Type<'ctx, B, C>,
+        _token: CrateOnly,
+    ) -> bool {
         matches!(ty.kind(), crate::TypeKind::Integer { bits } if bits == N)
     }
 
     #[inline]
-    fn value_from_ir_value<'ctx, B, C: Capability>(
-        value: Value<'ctx, B, C>,
-    ) -> IrResult<Self::Value<'ctx, B, C>>
-    where
-        B: ModuleBrand + 'ctx,
-    {
-        IntValue::<'ctx, Width<N>, B, C>::try_from(value)
+    fn value_of<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        raw: Value<'ctx, B, C>,
+        _token: CrateOnly,
+    ) -> Self::Value<'ctx, B, C> {
+        IntValue::from_value_unchecked(raw)
     }
 }
 
-impl<'ctx, B, V, const N: u32> IntoIrField<'ctx, Width<N>, B> for V
+impl<const N: u32> IrField for Width<N> {
+    type Layout = Self;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = IntValue<'ctx, Width<N>, B, C>;
+
+    #[inline]
+    fn wrap<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        raw: LayoutValue<'ctx, Self, B, C>,
+    ) -> Self::Value<'ctx, B, C> {
+        raw
+    }
+
+    #[inline]
+    fn unwrap<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        value: Self::Value<'ctx, B, C>,
+    ) -> LayoutValue<'ctx, Self, B, C> {
+        value
+    }
+}
+
+impl<'ctx, B, V, const N: u32> IntoLayoutValue<'ctx, Width<N>, B> for V
 where
     B: ModuleBrand + 'ctx,
     V: IntoIntValue<'ctx, Width<N>, B>,
 {
     #[inline]
-    fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+    fn into_layout_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
         Ok(self.into_int_value(module)?.as_erased())
     }
 }
 
-macro_rules! impl_float_field {
+macro_rules! impl_float_layout {
     ($($k:ty => $method:ident, $kind:pat),+ $(,)?) => {$(
-        impl IrField for $k {
+        impl layout_sealed::Sealed for $k {}
+
+        impl FieldLayout for $k {
             type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = FloatValue<'ctx, $k, B, C>;
 
             #[inline]
-            fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
-            where
-                B: ModuleBrand + 'ctx,
-            {
+            fn mint_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+                module: ModuleRef<'ctx, B, C>,
+                _minting: &mut Minting,
+                _token: CrateOnly,
+            ) -> IrResult<Type<'ctx, B, C>> {
                 Ok(module.$method().as_type())
             }
 
             #[inline]
-            fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
-            where
-                B: ModuleBrand + 'ctx,
-            {
+            fn matches_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+                ty: Type<'ctx, B, C>,
+                _token: CrateOnly,
+            ) -> bool {
                 matches!(ty.kind(), $kind)
             }
 
             #[inline]
-            fn value_from_ir_value<'ctx, B, C: Capability>(
-                value: Value<'ctx, B, C>,
-            ) -> IrResult<Self::Value<'ctx, B, C>>
-            where
-                B: ModuleBrand + 'ctx,
-            {
-                FloatValue::<'ctx, $k, B, C>::try_from(value)
+            fn value_of<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+                raw: Value<'ctx, B, C>,
+                _token: CrateOnly,
+            ) -> Self::Value<'ctx, B, C> {
+                FloatValue::from_value_unchecked(raw)
             }
         }
 
-        impl<'ctx, B, V> IntoIrField<'ctx, $k, B> for V
+        impl ArrayElementLayout for $k {}
+
+        impl_layout_field!($k => FloatValue<$k>);
+
+        impl<'ctx, B, V> IntoLayoutValue<'ctx, $k, B> for V
         where
             B: ModuleBrand + 'ctx,
             V: IntoFloatValue<'ctx, $k, B>,
         {
             #[inline]
-            fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+            fn into_layout_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
                 Ok(self.into_float_value(module)?.as_erased())
             }
         }
     )+};
 }
 
-impl_float_field!(
+impl_float_layout!(
     f32 => f32_type, crate::TypeKind::Float,
     f64 => f64_type, crate::TypeKind::Double,
     Half => half_type, crate::TypeKind::Half,
@@ -458,52 +694,150 @@ impl_float_field!(
     PpcFp128 => ppc_fp128_type, crate::TypeKind::PpcFp128,
 );
 
-impl<const AS: u32> IrField for Ptr<AS> {
+impl<const AS: u32> layout_sealed::Sealed for Ptr<AS> {}
+
+impl<const AS: u32> FieldLayout for Ptr<AS> {
     type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> =
         PointerValue<'ctx, crate::Space<AS>, B, C>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
-    where
-        B: ModuleBrand + 'ctx,
-    {
+    fn mint_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        module: ModuleRef<'ctx, B, C>,
+        _minting: &mut Minting,
+        _token: CrateOnly,
+    ) -> IrResult<Type<'ctx, B, C>> {
         Ok(module.ptr_type_in::<AS>().as_type())
     }
 
     /// A pointer in address space `AS` exactly.
     #[inline]
-    fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
-    where
-        B: ModuleBrand + 'ctx,
-    {
+    fn matches_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        ty: Type<'ctx, B, C>,
+        _token: CrateOnly,
+    ) -> bool {
         crate::PointerType::<crate::Space<AS>, B, C>::try_from(ty).is_ok()
     }
 
     #[inline]
-    fn value_from_ir_value<'ctx, B, C: Capability>(
-        value: Value<'ctx, B, C>,
-    ) -> IrResult<Self::Value<'ctx, B, C>>
-    where
-        B: ModuleBrand + 'ctx,
-    {
-        PointerValue::try_from(value)
+    fn value_of<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        raw: Value<'ctx, B, C>,
+        _token: CrateOnly,
+    ) -> Self::Value<'ctx, B, C> {
+        PointerValue::from_value_unchecked(raw)
+    }
+}
+
+impl<const AS: u32> IrField for Ptr<AS> {
+    type Layout = Self;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> =
+        PointerValue<'ctx, crate::Space<AS>, B, C>;
+
+    #[inline]
+    fn wrap<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        raw: LayoutValue<'ctx, Self, B, C>,
+    ) -> Self::Value<'ctx, B, C> {
+        raw
+    }
+
+    #[inline]
+    fn unwrap<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        value: Self::Value<'ctx, B, C>,
+    ) -> LayoutValue<'ctx, Self, B, C> {
+        value
     }
 }
 
 // A `Ptr<AS>` field takes a pointer in address space `AS`, by type.
-impl<'ctx, B, V, const AS: u32> IntoIrField<'ctx, Ptr<AS>, B> for V
+impl<'ctx, B, V, const AS: u32> IntoLayoutValue<'ctx, Ptr<AS>, B> for V
 where
     B: ModuleBrand + 'ctx,
     V: IntoPointerValue<'ctx, B, Space = crate::Space<AS>>,
 {
     #[inline]
-    fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+    fn into_layout_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
         Ok(self.into_pointer_value(module)?.as_erased())
     }
 }
 
-/// The struct-schema operand lift behind every [`IntoIrField`] and
-/// [`IntoCallArg`] impl below: narrow `value` to a struct, check it is the
+impl<L: ArrayElementLayout, const N: usize> layout_sealed::Sealed for [L; N] {}
+
+impl<L: ArrayElementLayout, const N: usize> FieldLayout for [L; N] {
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = ArrayValue<'ctx, L, ArrLen<N>, B, C>;
+
+    /// `[N x L]`. Mirrors `ArrayType::get`, whose `isValidElementType`
+    /// assert holds for every scalar layout.
+    #[inline]
+    fn mint_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        module: ModuleRef<'ctx, B, C>,
+        minting: &mut Minting,
+        token: CrateOnly,
+    ) -> IrResult<Type<'ctx, B, C>> {
+        let element = L::mint_type(module, minting, token)?;
+        Ok(module.array_type(element, static_len_u64(N))?.as_type())
+    }
+
+    #[inline]
+    fn matches_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        ty: Type<'ctx, B, C>,
+        token: CrateOnly,
+    ) -> bool {
+        match *ty.data() {
+            TypeData::Array { elem, n } => {
+                n == static_len_u64(N) && L::matches_type(Type::new(elem, ty.module), token)
+            }
+            _ => false,
+        }
+    }
+
+    #[inline]
+    fn value_of<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        raw: Value<'ctx, B, C>,
+        _token: CrateOnly,
+    ) -> Self::Value<'ctx, B, C> {
+        ArrayValue::from_value_unchecked(raw)
+    }
+}
+
+impl<T, const N: usize> IrField for [T; N]
+where
+    T: IrField,
+    T::Layout: ArrayElementLayout,
+{
+    type Layout = [T::Layout; N];
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> =
+        ArrayValue<'ctx, T::Layout, ArrLen<N>, B, C>;
+
+    #[inline]
+    fn wrap<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        raw: LayoutValue<'ctx, [T::Layout; N], B, C>,
+    ) -> Self::Value<'ctx, B, C> {
+        raw
+    }
+
+    #[inline]
+    fn unwrap<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        value: Self::Value<'ctx, B, C>,
+    ) -> LayoutValue<'ctx, [T::Layout; N], B, C> {
+        value
+    }
+}
+
+// An array field takes a typed array of its element and length.
+impl<'ctx, L, B, C, const N: usize> IntoLayoutValue<'ctx, [L; N], B>
+    for ArrayValue<'ctx, L, ArrLen<N>, B, C>
+where
+    L: ArrayElementLayout,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+{
+    #[inline]
+    fn into_layout_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
+        self.into_erased_value(module)
+    }
+}
+
+/// The struct-schema operand lift behind the [`IntoLayoutValue`] and
+/// [`IntoCallArg`] impls below: narrow `value` to a struct, check it is the
 /// struct `S` names, then admit it at `module`. The narrow and the check
 /// read `value` only through its own module; admission comes last.
 fn struct_operand<'ctx, S, B, C>(
@@ -567,8 +901,97 @@ macro_rules! impl_struct_operand {
     };
 }
 
-impl_struct_operand!(IntoIrField::into_ir_field);
+impl_struct_operand!(IntoLayoutValue::into_layout_value);
 impl_struct_operand!(IntoCallArg::into_call_arg);
+
+/// A schema's field tuple: the field kinds in source-layout order, from none
+/// to sixteen. Sealed; its hidden methods take llvmkit's call token, so only
+/// llvmkit mints or matches a body from it.
+pub trait FieldList: field_list_sealed::Sealed {
+    /// Each field's type, minted in `module` from its layout.
+    #[doc(hidden)]
+    fn mint_types<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        module: ModuleRef<'ctx, B, C>,
+        minting: &mut Minting,
+        token: CrateOnly,
+    ) -> IrResult<Vec<Type<'ctx, B, C>>>;
+
+    /// Whether `types` are the fields' types: one per field, each its
+    /// field's layout's.
+    #[doc(hidden)]
+    fn matches_types<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        types: &[Type<'ctx, B, C>],
+        token: CrateOnly,
+    ) -> bool;
+}
+
+impl field_list_sealed::Sealed for () {}
+
+impl FieldList for () {
+    #[inline]
+    fn mint_types<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        _module: ModuleRef<'ctx, B, C>,
+        _minting: &mut Minting,
+        _token: CrateOnly,
+    ) -> IrResult<Vec<Type<'ctx, B, C>>> {
+        Ok(Vec::new())
+    }
+
+    #[inline]
+    fn matches_types<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        types: &[Type<'ctx, B, C>],
+        _token: CrateOnly,
+    ) -> bool {
+        types.is_empty()
+    }
+}
+
+macro_rules! impl_field_list {
+    ($( ($($f:ident $ty:ident),+) );+ $(;)?) => {$(
+        impl<$($f: IrField),+> field_list_sealed::Sealed for ($($f,)+) {}
+
+        impl<$($f: IrField),+> FieldList for ($($f,)+) {
+            #[inline]
+            fn mint_types<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+                module: ModuleRef<'ctx, B, C>,
+                minting: &mut Minting,
+                token: CrateOnly,
+            ) -> IrResult<Vec<Type<'ctx, B, C>>> {
+                Ok(vec![$(<$f::Layout as FieldLayout>::mint_type(module, minting, token)?),+])
+            }
+
+            #[inline]
+            fn matches_types<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+                types: &[Type<'ctx, B, C>],
+                token: CrateOnly,
+            ) -> bool {
+                let [$($ty),+] = types else {
+                    return false;
+                };
+                true $(&& <$f::Layout as FieldLayout>::matches_type(*$ty, token))+
+            }
+        }
+    )+};
+}
+
+impl_field_list! {
+    (F0 t0);
+    (F0 t0, F1 t1);
+    (F0 t0, F1 t1, F2 t2);
+    (F0 t0, F1 t1, F2 t2, F3 t3);
+    (F0 t0, F1 t1, F2 t2, F3 t3, F4 t4);
+    (F0 t0, F1 t1, F2 t2, F3 t3, F4 t4, F5 t5);
+    (F0 t0, F1 t1, F2 t2, F3 t3, F4 t4, F5 t5, F6 t6);
+    (F0 t0, F1 t1, F2 t2, F3 t3, F4 t4, F5 t5, F6 t6, F7 t7);
+    (F0 t0, F1 t1, F2 t2, F3 t3, F4 t4, F5 t5, F6 t6, F7 t7, F8 t8);
+    (F0 t0, F1 t1, F2 t2, F3 t3, F4 t4, F5 t5, F6 t6, F7 t7, F8 t8, F9 t9);
+    (F0 t0, F1 t1, F2 t2, F3 t3, F4 t4, F5 t5, F6 t6, F7 t7, F8 t8, F9 t9, F10 t10);
+    (F0 t0, F1 t1, F2 t2, F3 t3, F4 t4, F5 t5, F6 t6, F7 t7, F8 t8, F9 t9, F10 t10, F11 t11);
+    (F0 t0, F1 t1, F2 t2, F3 t3, F4 t4, F5 t5, F6 t6, F7 t7, F8 t8, F9 t9, F10 t10, F11 t11, F12 t12);
+    (F0 t0, F1 t1, F2 t2, F3 t3, F4 t4, F5 t5, F6 t6, F7 t7, F8 t8, F9 t9, F10 t10, F11 t11, F12 t12, F13 t13);
+    (F0 t0, F1 t1, F2 t2, F3 t3, F4 t4, F5 t5, F6 t6, F7 t7, F8 t8, F9 t9, F10 t10, F11 t11, F12 t12, F13 t13, F14 t14);
+    (F0 t0, F1 t1, F2 t2, F3 t3, F4 t4, F5 t5, F6 t6, F7 t7, F8 t8, F9 t9, F10 t10, F11 t11, F12 t12, F13 t13, F14 t14, F15 t15);
+}
 
 /// The `I`-th top-level field schema of a field tuple. Implemented for
 /// tuple arities 1..=16, one impl per (arity, index) pair, so an
@@ -579,7 +1002,7 @@ pub trait StructFieldAt<const I: u32> {
 }
 
 /// Field schema of `S` at index `I`.
-pub type FieldOf<S, const I: u32> = <<S as StructSchema>::FieldParams as StructFieldAt<I>>::Field;
+pub type FieldOf<S, const I: u32> = <<S as StructSchema>::Fields as StructFieldAt<I>>::Field;
 
 // `$generics` / `$tuple` are matched as single opaque token trees (each a
 // parenthesized group, not a `$(...)+` repetition), so both can be spliced
@@ -630,24 +1053,27 @@ impl_struct_field_at! {
     (F0, F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12, F13, F14, F15) => [0: F0, 1: F1, 2: F2, 3: F3, 4: F4, 5: F5, 6: F6, 7: F7, 8: F8, 9: F9, 10: F10, 11: F11, 12: F12, 13: F13, 14: F14, 15: F15];
 }
 
-/// Explicit function-parameter marker that expands a schema into its top-level fields.
+/// Explicit function-parameter marker that expands a schema into its
+/// top-level fields — for a schema whose field kinds are all function
+/// parameters too.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct StructFields<S: StructSchema>(core::marker::PhantomData<S>);
 
 impl<S> FunctionParamList for StructFields<S>
 where
     S: StructSchema,
+    S::Fields: FunctionParamList,
 {
-    const ARITY: u32 = <S::FieldParams as FunctionParamList>::ARITY;
+    const ARITY: u32 = <S::Fields as FunctionParamList>::ARITY;
     type Values<'ctx, B: ModuleBrand + 'ctx, C: Capability> =
-        <S::FieldParams as FunctionParamList>::Values<'ctx, B, C>;
+        <S::Fields as FunctionParamList>::Values<'ctx, B, C>;
 
     #[inline]
     fn ir_types<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Vec<Type<'ctx, B, ReadOnly>>>
     where
         B: ModuleBrand + 'ctx,
     {
-        <S::FieldParams as FunctionParamList>::ir_types(module)
+        <S::Fields as FunctionParamList>::ir_types(module)
     }
 
     #[inline]
@@ -656,7 +1082,7 @@ where
         R: ReturnMarker,
         B: ModuleBrand + 'ctx,
     {
-        <S::FieldParams as FunctionParamList>::validate(function)
+        <S::Fields as FunctionParamList>::validate(function)
     }
 
     #[inline]
@@ -668,7 +1094,7 @@ where
         R: ReturnMarker,
         B: ModuleBrand + 'ctx,
     {
-        <S::FieldParams as FunctionParamList>::values(function, validated)
+        <S::Fields as FunctionParamList>::values(function, validated)
     }
 
     #[inline]
@@ -679,7 +1105,7 @@ where
     where
         B: ModuleBrand + 'ctx,
     {
-        <S::FieldParams as FunctionParamList>::values_from_phi_values(phi_values, validated)
+        <S::Fields as FunctionParamList>::values_from_phi_values(phi_values, validated)
     }
 }
 
@@ -687,10 +1113,11 @@ impl<'ctx, B, S, A> CallArgs<'ctx, StructFields<S>, B> for A
 where
     B: ModuleBrand + 'ctx,
     S: StructSchema,
-    A: CallArgs<'ctx, S::FieldParams, B>,
+    S::Fields: FunctionParamList,
+    A: CallArgs<'ctx, S::Fields, B>,
 {
     fn lower(self, module: ModuleRef<'ctx, B>, token: CrateOnly) -> IrResult<LoweredCallArguments> {
-        <A as CallArgs<'ctx, S::FieldParams, B>>::lower(self, module, token)
+        <A as CallArgs<'ctx, S::Fields, B>>::lower(self, module, token)
     }
 }
 
@@ -705,7 +1132,7 @@ where
     where
         B: ModuleBrand + 'ctx,
     {
-        <S as IrField>::ir_type(module)
+        Ok(module.get_or_insert_struct_of::<S>()?.as_type())
     }
 
     #[inline]
@@ -713,7 +1140,7 @@ where
     where
         B: ModuleBrand + 'ctx,
     {
-        <S as IrField>::matches_ir_type(ty)
+        <S as FieldLayout>::matches_type(ty, CrateOnly(()))
     }
 
     #[inline]
@@ -730,8 +1157,7 @@ where
     where
         B: ModuleBrand + 'ctx,
     {
-        let validated = ValidatedStructValue::new();
-        S::Value::from_struct_value(StructValue::from_value_unchecked(value), &validated)
+        <S as FieldLayout>::value_of(value, CrateOnly(()))
     }
 }
 
@@ -746,7 +1172,7 @@ where
     where
         B: ModuleBrand + 'ctx,
     {
-        <S as IrField>::ir_type(module)
+        Ok(module.get_or_insert_struct_of::<S>()?.as_type())
     }
 
     #[inline]
@@ -754,20 +1180,25 @@ where
     where
         B: ModuleBrand + 'ctx,
     {
-        <S as IrField>::matches_ir_type(ty)
+        <S as FieldLayout>::matches_type(ty, CrateOnly(()))
     }
 
     fn validate_argument<'ctx, B>(arg: Argument<'ctx, B, ReadOnly>) -> IrResult<()>
     where
         B: ModuleBrand + 'ctx,
     {
-        if <S as IrField>::matches_ir_type(arg.ty()) {
+        if <S as FieldLayout>::matches_type(arg.ty(), CrateOnly(())) {
             Ok(())
         } else {
-            // Same reasoning as `try_from_struct_value` above: the guard is
+            // Same reasoning as `check_struct_identity` above: the guard is
             // finer than the kind, so both sides must carry their spelling.
             Err(IrError::TypeIdentityMismatch {
-                expected: <S as IrField>::ir_type(arg.ty().module())?.rendered(),
+                expected: arg
+                    .ty()
+                    .module()
+                    .get_or_insert_struct_of::<S>()?
+                    .as_type()
+                    .rendered(),
                 got: arg.ty().rendered(),
             })
         }
@@ -780,11 +1211,7 @@ where
     where
         B: ModuleBrand + 'ctx,
     {
-        let validated = ValidatedStructValue::new();
-        S::Value::from_struct_value(
-            StructValue::from_value_unchecked(arg.as_erased()),
-            &validated,
-        )
+        <S as FieldLayout>::value_of(arg.as_erased(), CrateOnly(()))
     }
 
     fn value_from_value<'ctx, B, C: Capability>(
@@ -794,8 +1221,7 @@ where
     where
         B: ModuleBrand + 'ctx,
     {
-        let validated = ValidatedStructValue::new();
-        S::Value::from_struct_value(StructValue::from_value_unchecked(value), &validated)
+        <S as FieldLayout>::value_of(value, CrateOnly(()))
     }
 }
 

@@ -68,6 +68,13 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/ir_struct_accessor_type_mismatch.rs");
     t.compile_fail("tests/compile_fail/ir_struct_cross_module_brand.rs");
     t.compile_fail("tests/compile_fail/ir_struct_try_from_cross_module_brand.rs");
+    // A derived schema names its struct: an empty `name` is the derive's error.
+    t.compile_fail("tests/compile_fail/ir_struct_empty_name.rs");
+    // A field kind's `Layout` is a sealed `FieldLayout`, or it does not compile.
+    t.compile_fail("tests/compile_fail/field_layout_not_a_layout.rs");
+    // A hand-written schema's empty `NAME` is a const-evaluation error when its
+    // type is minted (needs this harness's build mode).
+    t.compile_fail("tests/compile_fail/schema_name_empty.rs");
     t.compile_fail("tests/compile_fail/cross_module_value_brand.rs");
     t.compile_fail("tests/compile_fail/cross_module_global_initializer_brand.rs");
     t.compile_fail("tests/compile_fail/cross_module_branch_target.rs");

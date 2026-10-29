@@ -1,11 +1,48 @@
 use llvmkit_ir::{
-    IntValue, IrBuilder, IrError, IrStruct, Linkage, NoFolder, StructFields, module_new,
+    ArrLen, ArrayValue, Capability, FloatValue, IntValue, IrBuilder, IrError, IrField, IrStruct,
+    LayoutValue, Linkage, ModuleBrand, NoFolder, PointerValue, Ptr, Space, StructFields,
+    module_new,
 };
 
 #[derive(IrStruct)]
 struct Point {
     x: i32,
     y: i32,
+}
+
+/// One field of each kind a layout names: an unsigned integer, a Rust array
+/// of a scalar, a pointer and a nested schema.
+#[derive(IrStruct)]
+struct Sample {
+    a: u32,
+    b: [f32; 4],
+    c: Ptr,
+    d: Point,
+}
+
+/// The spec's hand-written field kind: a distance, laid out as a `double`.
+struct Meters;
+
+impl IrField for Meters {
+    type Layout = f64;
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = FloatValue<'ctx, f64, B, C>;
+
+    fn wrap<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        raw: LayoutValue<'ctx, f64, B, C>,
+    ) -> Self::Value<'ctx, B, C> {
+        raw
+    }
+
+    fn unwrap<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        value: Self::Value<'ctx, B, C>,
+    ) -> LayoutValue<'ctx, f64, B, C> {
+        value
+    }
+}
+
+#[derive(IrStruct)]
+struct Run {
+    distance: Meters,
 }
 
 #[derive(IrStruct)]
@@ -197,11 +234,113 @@ fn derive_supports_name_override_and_packed() -> Result<(), IrError> {
     let _ = rust_pair.a + rust_pair.b;
 
     let m = module_new!("attrs")?;
-    let _ = <Pair as llvmkit_ir::StructSchema>::ir_type(m.as_view())?;
+    let _ = m.get_or_insert_struct_of::<Pair>()?;
     let text = format!("{m}");
     assert!(
         text.contains("%Renamed = type <{ i32, i32 }>"),
         "got:\n{text}"
+    );
+    Ok(())
+}
+
+/// llvmkit-specific (D2, D10), no upstream counterpart — a C++ `StructType`
+/// is built from `Type *`s, never from a Rust declaration: a derived body is
+/// minted from its fields' layouts alone. An unsigned field is the signless
+/// integer of its width (LLVM integers carry no sign), a Rust array is an
+/// LLVM array of its element's layout, `Ptr` is `ptr`, and a nested schema is
+/// its own named type.
+#[test]
+fn a_derived_body_comes_from_its_field_layouts() -> Result<(), IrError> {
+    let rust_sample = Sample {
+        a: 1,
+        b: [0.5; 4],
+        c: Ptr::null(),
+        d: Point { x: 1, y: 2 },
+    };
+    let Sample { a, b, c, d } = rust_sample;
+    let _ = (a, b, c, d.x + d.y);
+
+    let m = module_new!("layouts")?;
+    let _ = m.get_or_insert_struct_of::<Sample>()?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("%Sample = type { i32, [4 x float], ptr, %Point }"),
+        "got:\n{text}"
+    );
+    assert!(text.contains("%Point = type { i32, i32 }"), "got:\n{text}");
+    Ok(())
+}
+
+/// llvmkit-specific (D2, D10), no upstream counterpart: a field read checks
+/// the element's type against the field's layout before it wraps the value,
+/// so each layout must recognise its own type — an unsigned field reads back
+/// the signless `i32`, an array field its typed `[4 x float]`, a `Ptr` field
+/// an address-space-0 pointer and a nested schema its value.
+/// `a_derived_body_comes_from_its_field_layouts` is the minting half.
+#[test]
+fn a_derived_field_of_each_layout_reads_its_value() -> Result<(), IrError> {
+    let m = module_new!("layout_reads")?;
+    let f = m.add_typed_function::<(), (Sample,), _>("read", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let (sample,) = m.view(f).params();
+    let a: IntValue<'_, i32, _> = sample.a(&b)?;
+    let array: ArrayValue<'_, f32, ArrLen<4>, _> = sample.b(&b)?;
+    let c: PointerValue<'_, Space<0>, _> = sample.c(&b)?;
+    let d: PointValue<'_, _> = sample.d(&b)?;
+    let _ = (a, array, c, d);
+    b.ret_void();
+    let text = format!("{m}");
+    for (field, index) in [("a", 0), ("b", 1), ("c", 2), ("d", 3)] {
+        assert!(
+            text.contains(&format!("%{field} = extractvalue %Sample %0, {index}")),
+            "got:\n{text}"
+        );
+    }
+    Ok(())
+}
+
+/// llvmkit-specific (D2), no upstream counterpart: a field kind the user
+/// writes names a layout, and llvmkit builds the field's type from that
+/// layout — `Meters` is laid out as `f64`, so `%Run` is `{ double }` and the
+/// derived getter hands back the layout's `FloatValue<f64>`.
+#[test]
+fn a_custom_field_kind_names_its_layout() -> Result<(), IrError> {
+    let Run { distance: Meters } = Run { distance: Meters };
+
+    let m = module_new!("custom_kind")?;
+    let f = m.add_typed_function::<(), (Run,), _>("pace", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let (run,) = m.view(f).params();
+    let distance: FloatValue<'_, f64, _> = run.distance(&b)?;
+    let _ = distance;
+    b.ret_void();
+    let text = format!("{m}");
+    assert!(text.contains("%Run = type { double }"), "got:\n{text}");
+    assert!(
+        text.contains("%distance = extractvalue %Run %0, 0"),
+        "got:\n{text}"
+    );
+    Ok(())
+}
+
+/// Review Focus 1 of the type-constructor validity plan (llvmkit-specific; the
+/// rule is upstream's — `StructType::setBody` is never called twice on one
+/// named struct): a module already holding `%Point` with another body, built
+/// by hand, refuses the derived schema with `StructBodyMismatch` rather than
+/// minting a second struct. The parsed form is
+/// `llvmkit-asmparser/tests/parser_facade.rs::a_different_existing_body_is_refused`.
+#[test]
+fn a_hand_built_different_body_is_refused() -> Result<(), IrError> {
+    let m = module_new!("hand_built_point")?;
+    let point = m.get_or_insert_named_struct("Point");
+    m.set_struct_body_dyn(point, [m.i64_type()], false)?;
+    assert_eq!(
+        m.get_or_insert_struct_of::<Point>(),
+        Err(IrError::StructBodyMismatch {
+            name: "Point".into(),
+        })
     );
     Ok(())
 }

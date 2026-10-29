@@ -1,0 +1,5 @@
+error: IrStruct name must not be empty: an identified struct needs a name
+ --> tests/compile_fail/ir_struct_empty_name.rs:9:18
+  |
+9 | #[llvmkit(name = "")]
+  |                  ^^

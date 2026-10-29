@@ -7,7 +7,7 @@ use llvmkit_asmparser::file_loc::{FileLoc, FileLocRange};
 use llvmkit_asmparser::parse_error::ParseError;
 use llvmkit_asmparser::parser;
 use llvmkit_asmparser::{ParserConfig, parse_dynamic, parse_dynamic_with_config, parse_into};
-use llvmkit_ir::{AnyTypeEnum, BrandError, Module, module_new};
+use llvmkit_ir::{AnyTypeEnum, BrandError, IrError, Module, module_new};
 
 const MINIMAL: &str = include_str!("fixtures/facade_minimal.ll");
 const INCOMPLETE_IR_DECLARATIONS: &str =
@@ -97,6 +97,32 @@ fn parse_into_fills_a_caller_supplied_module() {
     assert_eq!(module.name(), "caller-named");
     let module = module.verify().expect("parsed module verifies");
     assert!(format!("{module}").contains("define i32 @main()"));
+}
+
+/// Review Focus 1 of the type-constructor validity plan (llvmkit-specific; the
+/// rule is upstream's — `StructType::setBody` is never called twice on one
+/// named struct): a parsed module that already holds `%Point` with another
+/// body refuses a derived `Point` schema with `StructBodyMismatch` — never a
+/// panic, never a silently different struct. The hand-built form is
+/// `llvmkit-ir/tests/derived_struct_schema.rs::a_hand_built_different_body_is_refused`.
+#[test]
+fn a_different_existing_body_is_refused() {
+    #[derive(llvmkit_macros::IrStruct)]
+    struct Point {
+        x: i32,
+        y: i32,
+    }
+    let Point { x, y } = Point { x: 1, y: 2 };
+    let _ = x + y;
+
+    let module = module_new!("parsed-point").expect("fresh brand");
+    let module = parse_into(module, "%Point = type { i64 }\n").expect("parse into succeeds");
+    assert_eq!(
+        module.get_or_insert_struct_of::<Point>(),
+        Err(IrError::StructBodyMismatch {
+            name: "Point".into(),
+        })
+    );
 }
 
 /// llvmkit-specific (**no upstream counterpart**): upstream's file entry points

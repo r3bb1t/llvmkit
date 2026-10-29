@@ -110,7 +110,10 @@ use super::module::{
     Unverified,
 };
 use super::struct_body_state::StructBodyDyn;
-use super::struct_schema::{FieldOf, IntoIrField, IrField, StructFieldAt, StructSchema};
+use super::struct_schema::{
+    FieldLayout, FieldOf, IntoIrField, IrField, Minting, SchemaValue, StructFieldAt, StructSchema,
+    StructSchemaValue,
+};
 use super::sync_scope::SyncScope;
 use super::term_open_state::{Closed, Open};
 use super::r#type::TypeSlotAccess;
@@ -811,8 +814,8 @@ where
     }
 
     /// The builder's [`ModuleView`], which is how it reaches the
-    /// user-implementable schema traits ([`IrField::ir_type`],
-    /// [`StructSchema::ir_type`], [`FunctionReturn::ir_type`], …).
+    /// user-implementable typed-signature traits ([`FunctionReturn::ir_type`],
+    /// `FunctionParam::ir_type`, …).
     ///
     /// Those traits used to be declared against `&Module<Unverified>`, and the
     /// builder — which stores only `&'ctx ModuleCore`, because
@@ -856,23 +859,29 @@ where
         Ok(Type::new(slot, self.mutable_ref()))
     }
 
-    /// [`IrField::ir_type`] for `T`.
+    /// The type of field kind `T`, minted in this builder's module from its
+    /// layout — so it needs no admission.
     #[inline]
     fn schema_ir_type<T>(&self) -> IrResult<Type<'ctx, B>>
     where
         T: IrField,
     {
-        self.admit_type(T::ir_type(self.schema_view())?)
+        <T::Layout as FieldLayout>::mint_type(
+            self.mutable_ref(),
+            &mut Minting::new(),
+            CrateOnly(()),
+        )
     }
 
-    /// [`StructSchema::ir_type`] for `S`.
+    /// Schema `S`'s struct type, minted in this builder's module.
     #[inline]
     fn schema_struct_type<Sch>(&self) -> IrResult<StructType<'ctx, StructBodyDyn, B>>
     where
         Sch: StructSchema,
     {
-        let ty = self.admit_type(Sch::ir_type(self.schema_view())?)?;
-        Ok(StructType::new(ty.slot_trusting_same_module(), ty.module))
+        let module = self.mutable_ref();
+        let slot = module.mint_struct_of::<Sch>(&mut Minting::new())?;
+        Ok(StructType::new(slot, module))
     }
 
     /// Position the builder at the end of the block named by a storable
@@ -3889,20 +3898,25 @@ where
             &[index],
         )?;
         let leaf = Type::<B, ReadOnly>::new(leaf_ty, self.module);
-        if !Field::matches_ir_type(leaf) {
-            // `matches_ir_type` is finer than the kind for every schema marker
-            // that has structure — an integer marker compares the width, a
-            // struct schema compares the name — so a rejection whose kind
-            // agrees is reachable, and `expected_kind_label` alone rendered
-            // "expected integer, got integer". `ir_type` is the schema's own
-            // type, which is what the check actually compares against.
+        if !<Field::Layout as FieldLayout>::matches_type(leaf, CrateOnly(())) {
+            // The layout match is finer than the kind for every layout that
+            // has structure — an integer layout compares the width, a struct
+            // schema compares the name — so a rejection whose kind agrees is
+            // reachable, and `expected_kind_label` alone rendered "expected
+            // integer, got integer". The layout's own type is what the check
+            // actually compares against.
             return Err(IrError::TypeIdentityMismatch {
-                expected: Field::ir_type(ModuleView::<B>::new(self.module))?.rendered(),
+                expected: self.schema_ir_type::<Field>()?.rendered(),
                 got: leaf.rendered(),
             });
         }
         let raw = self.view(self.extract_value(aggregate, [index], name)?);
-        Field::value_from_ir_value(raw)
+        // The read has the leaf's type — `extract_value` refuses a fold of
+        // any other — and the leaf is the layout's type.
+        Ok(Field::wrap(<Field::Layout as FieldLayout>::value_of(
+            raw,
+            CrateOnly(()),
+        )))
     }
 
     /// Insert a typed field value into a named-struct schema aggregate.
@@ -3924,7 +3938,15 @@ where
         let aggregate = aggregate.into_ir_field(module)?;
         let value = value.into_ir_field(module)?;
         let raw = self.view(self.insert_value(aggregate, value, [index], name)?);
-        <S as IrField>::value_from_ir_value(raw)
+        // `IntoLayoutValue` is open — the derive implements it in the user's
+        // crate — so an aggregate lift may hand back a struct of another type;
+        // the result is checked against `S` before it is wrapped.
+        Ok(<S::Value<'ctx, B, Mutable> as StructSchemaValue<
+            'ctx,
+            S,
+            B,
+            Mutable,
+        >>::from_schema_value(SchemaValue::try_new(raw)?))
     }
 
     // ---- Vector ops: extractelement / insertelement / shufflevector ----
@@ -5378,7 +5400,11 @@ where
     {
         let ty = self.schema_ir_type::<T>()?;
         let raw = self.view(self.load(ty, ptr.as_pointer_value(), name)?);
-        T::value_from_ir_value(raw)
+        // A load's result has the type it loads: the layout's.
+        Ok(T::wrap(<T::Layout as FieldLayout>::value_of(
+            raw,
+            CrateOnly(()),
+        )))
     }
 
     /// Same as [`Self::typed_load`] plus an explicit alignment.
@@ -5395,7 +5421,11 @@ where
     {
         let ty = self.schema_ir_type::<T>()?;
         let raw = self.view(self.load_with_align(ty, ptr.as_pointer_value(), align, name)?);
-        T::value_from_ir_value(raw)
+        // A load's result has the type it loads: the layout's.
+        Ok(T::wrap(<T::Layout as FieldLayout>::value_of(
+            raw,
+            CrateOnly(()),
+        )))
     }
 
     fn load_inner<N>(
@@ -6341,7 +6371,7 @@ where
     where
         S: StructSchema,
         A: crate::AddrSpace,
-        S::FieldParams: StructFieldAt<I>,
+        S::Fields: StructFieldAt<I>,
         Name: AsRef<str>,
     {
         let struct_ty = self.schema_struct_type::<S>()?;
@@ -11276,7 +11306,11 @@ where
         let ty = parent.schema_ir_type::<T>()?;
         let payload = self.payload(ty.slot_trusting_same_module())?;
         let inst = parent.load_inner(payload, name)?;
-        T::value_from_ir_value(inst.to_erased())
+        // A load's result has the type it loads: the layout's.
+        Ok(T::wrap(<T::Layout as FieldLayout>::value_of(
+            inst.to_erased(),
+            CrateOnly(()),
+        )))
     }
 
     /// Emit with an explicit pointee type; the caller narrows the
@@ -11557,8 +11591,8 @@ pub mod select_narrow_token {
     /// against the arm type. Only this crate can mint it (private field,
     /// `pub(crate)` constructor), so downstream code can *name* the type in
     /// trait impls but cannot call `from_select_value` with a forged value.
-    /// Follows the `ValidatedStructValue` capability-token precedent
-    /// (`struct_schema.rs`).
+    /// Follows the precedent of `struct_schema.rs`'s `ValidatedStructValue`
+    /// token, since replaced there by the `SchemaValue` carrier.
     #[derive(Debug)]
     pub struct SelectNarrow<'a> {
         _private: PhantomData<&'a ()>,

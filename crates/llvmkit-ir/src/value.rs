@@ -2191,8 +2191,8 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> StructValue<'ctx, B, C> {
     /// `v`'s runtime type is a struct type. The body stays erased
     /// (`StructBodyDyn`), so — as with [`PointerValue`] and unlike the
     /// int/float handles — the only claim forged here is the kind itself; a
-    /// schema-typed wrapper is minted separately against a
-    /// `ValidatedStructValue` witness. See
+    /// schema-typed value is a separate claim, carried by
+    /// `SchemaValue` (`struct_schema.rs`). See
     /// `IntValue::from_value_unchecked` for the full account of the
     /// obligation.
     ///

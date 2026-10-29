@@ -2174,11 +2174,14 @@ moves to `Constant::kind`.
     associated-type-projection limitation), so its callers annotate / turbofish
     the result.
 - **A proof token that *carries* the validated `TypeSlot`** (residual after the
-  unforgeable-markers cycle). The crate has five capability tokens -- `WrapWitness`
+  unforgeable-markers cycle). The crate's capability tokens -- `WrapWitness`
   (`element.rs`), `ValidatedFunctionParams` / `ValidatedCallResult`
-  (`function_signature.rs`), `SelectNarrow` (`ir_builder.rs`), `ValidatedStructValue`
-  (`struct_schema.rs`) -- each defending the *external* boundary and each a *unit*
-  marker that proves "a check happened", not *which* type. The unforgeable-markers
+  (`function_signature.rs`), `SelectNarrow` (`ir_builder.rs`) -- each defend the
+  *external* boundary and each is a *unit* marker that proves "a check happened",
+  not *which* type. `struct_schema.rs`'s `ValidatedStructValue` was one until the
+  type-constructor validity plan's Task 14 replaced it with `SchemaValue`, a
+  carrier that holds the checked struct value and names its schema in its type --
+  this item's shape, for struct schemas. The unforgeable-markers
   cycle made the builder's **int / float / pointer append surface** structural instead:
   a marker is attached to a freshly-appended instruction only through the typed-append
   constructor family (`append_int_{like,at,load}`, `append_fp_{like,at,load}`,
@@ -2231,9 +2234,11 @@ deferred it.
   element typing is still deferred to T4, so `fold_gep_dyn`/`fold_select_dyn`
   stay erased + runtime-checked (documented in `ir_builder/folder.rs` trait
   rustdoc).
-- **`[F; N]` `IrField` arrays** -- fixed-size array fields in `#[derive(IrStruct)]`
-  schemas; would let derived structs model `[i32; 4]`-shaped LLVM array
-  members directly instead of requiring a hand-written wrapper.
+- ~~**`[F; N]` `IrField` arrays**~~ -- done (type-constructor validity plan,
+  Task 14): a `[T; N]` field whose kind is laid out as `bool`, `i8`…`i128` or a
+  float kind is an LLVM `[N x elem]`, read as `ArrayValue<_, ArrLen<N>>`. Arrays
+  of `Width<N>`, pointers and structs stay out: a typed array value names its
+  element by a vector-element marker (`VecElem`), and they have none.
 - **Typed vector-GEP handles** -- `IrBuilder::gep_erased` builds a `<N x ptr>`
   base and `<N x iM>` indices, and returns the erased `ValueId` because a
   vector GEP's result is no `PointerValue`. The typed tier (`gep`,
@@ -2264,7 +2269,10 @@ deferred it.
   `&Module<..., Unverified>`, so `field_gep` no longer wraps a temporary
   module token to call `S::ir_type(...)` — `Module::from_core` is gone with it.
   Type construction is preservation-neutral, which is why the view already
-  carried the constructor surface.
+  carried the constructor surface. (`IrField::ir_type` and
+  `StructSchema::field_types` / `ir_type` have since left the user-implementable
+  surface: a field names a sealed `FieldLayout` and llvmkit mints its type —
+  the type-constructor validity plan's Task 14.)
 - ~~**`proptest` `undef_var` index randomization** -- the auto-SSA property
   test suite's undefined-variable-read fixture hardcodes `Some(0)` as the
   undefined variable index instead of drawing from `0..var_count`; a one-line
