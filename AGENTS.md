@@ -368,7 +368,7 @@ anchors, not as an exhaustive inventory):
     │   │   ├── lib.rs
     │   │   ├── type.rs              # Type + TypeData + IrType / TypeKind
     │   │   ├── derived_types.rs     # IntType/FloatType/StructType/VectorType/ArrayType
-    │   │   ├── typed_pointer_type.rs # TypedPointerType (IR-level typed pointer)
+    │   │   ├── typed_pointer_type.rs # TypedPointerType (analysis-only; not an IR type)
     │   │   ├── typed_pointer_value.rs # TypedPointerValue (Rust-side pointee schema)
     │   │   ├── module.rs            # Module + ModuleId + ModuleRef + ModuleView + module_new!
     │   │   ├── value_id.rs          # the storable id family + ViewIn (sealed)

@@ -83,6 +83,7 @@ fn typestate_compile_fail() {
     // no `SpaceDyn` pointer for a `Ptr` field, no storable id.
     t.compile_fail("tests/compile_fail/build_with_dyn_pointer.rs");
     t.compile_fail("tests/compile_fail/build_with_id.rs");
+    t.compile_fail("tests/compile_fail/typed_pointer_is_not_an_ir_type.rs");
     t.compile_fail("tests/compile_fail/cross_module_value_brand.rs");
     t.compile_fail("tests/compile_fail/cross_module_global_initializer_brand.rs");
     t.compile_fail("tests/compile_fail/cross_module_branch_target.rs");

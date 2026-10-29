@@ -390,7 +390,7 @@ pub use sync_scope::SyncScope;
 pub use target_library_info::{LibFunc, TargetLibraryInfo};
 pub use r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeKind};
 pub use type_components::{ArrayElement, VectorElement, lanes};
-pub use typed_pointer_type::TypedPointerType;
+pub use typed_pointer_type::{TypedPointee, TypedPointerElement, TypedPointerType};
 pub use typed_pointer_value::TypedPointerValue;
 pub use unnamed_addr::UnnamedAddr;
 pub use r#use::Use;

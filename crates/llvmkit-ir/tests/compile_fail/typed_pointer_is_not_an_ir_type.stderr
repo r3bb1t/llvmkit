@@ -1,0 +1,26 @@
+error[E0277]: `TypedPointerType<'_, DynBrand>` is not an LLVM IR type
+  --> tests/compile_fail/typed_pointer_is_not_an_ir_type.rs:13:15
+   |
+13 |     let _ = m.function_type(m.void_type(), [tp]);
+   |               ^^^^^^^^^^^^^ expected an IR type handle (`IntType`, `PointerType`, `Type`, …)
+   |
+   = help: the trait `IrType<'_, DynBrand>` is not implemented for `TypedPointerType<'_, DynBrand>`
+   = note: an analysis-only type such as `TypedPointerType` never appears in LLVM IR (`TypedPointerType.h`: "not legal to use this type ... in LLVM IR")
+   = help: the following other types implement trait `IrType<'ctx, B>`:
+             AggregateType<'ctx, B, C>
+             AnyTypeEnum<'ctx, B, C>
+             ArrayType<'ctx, E, L, B, C>
+             BasicMetadataTypeEnum<'ctx, B, C>
+             BasicTypeEnum<'ctx, B, C>
+             FloatType<'ctx, K, B, C>
+             FunctionType<'ctx, B, C>
+             IntType<'ctx, W, B, C>
+           and $N others
+note: required by a bound in `Module::<B>::function_type`
+  --> src/module.rs
+   |
+   |     pub fn function_type<I, R, T>(
+   |            ------------- required by a bound in this associated function
+...
+   |         T: IrType<'ctx, B>,
+   |            ^^^^^^^^^^^^^^^ required by this bound in `Module::<B>::function_type`

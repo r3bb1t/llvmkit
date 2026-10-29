@@ -732,6 +732,70 @@ whose struct rows left `KNOWN_DISAGREEMENTS` with this change.
 
 </details>
 
+### D20 — A typed pointer is no IR type, so no derived type holds one
+
+**Severity:** model-gap — no `.ll` text reaches it: the parser lowers a typed
+pointer's spelling (`i32*`) to an opaque `ptr`, and no textual syntax builds a
+`TypedPointerType`.
+**Where:** `crates/llvmkit-ir/src/typed_pointer_type.rs` (`TypedPointerType`,
+`TypedPointee`, `TypedPointerElement`), `crates/llvmkit-ir/src/llvm_context.rs`
+(the typed-pointer table beside the type arena).
+
+**LLVM:** `TypedPointerType` is a `Type` subclass (`TypedPointerTyID`) that the
+DXIL and SPIR-V backends build in their analyses
+(`lib/Target/DirectX/DirectXIRPasses/PointerTypeAnalysis.cpp`,
+`lib/Target/SPIRV/SPIRVGlobalRegistry.cpp`, among others), and derived types may
+contain one: `VectorType::isValidElementType` admits `TypedPointerTyID`, and
+`ArrayType`, `StructType` and `FunctionType` do not exclude it. Its header says
+"It is not legal to use this type, or derived types containing this type, in
+LLVM IR", and `Value::Value`'s `checkType` asserts "Cannot have values with
+typed pointer types" — both rules unchecked in a release build.
+
+**llvmkit:** a typed pointer is not an IR type at all. `TypedPointerType` does
+not implement `IrType` and has no route to `Type`, and it is interned in a
+table of its own, so no `Type`, no value and no vector, array, struct or
+function type can hold one; `TypedPointerType::of` builds one from a valid
+pointee (a typed pointer included) and cannot fail, and
+`Module::typed_pointer_type` checks a runtime `Type` pointee
+(`TypedPointerType::isValidElementType`, `IrError::InvalidTypeComponent`) after
+its module (`IrError::ForeignType`). It prints as `TypePrinting::print` prints
+one, `typedptr(<pointee>, <addrspace>)`.
+
+**Why:** llvmkit has no backends (code generation is out of scope), and the
+upstream header calls these types illegal in IR. The old model was a `Type`
+variant: it printed `i32*`, which re-parses as an opaque `ptr` — a different
+type — and `AnyTypeEnum::from` of one built a `PointerType` over the
+typed-pointer slot, whose `address_space` `expect`s a `Pointer` payload and
+would have panicked (derived by reading `derived_types.rs` at `8e8292c`, not
+run).
+
+**Fix:** none — deliberate. Reopen with the first DXIL or SPIR-V analysis that
+needs typed derived types, as an analysis-side type family rather than IR
+types.
+
+**Guarded by:** `crates/llvmkit-ir/tests/type_components.rs::a_typed_pointer_prints_as_the_asm_writer_does`,
+`crates/llvmkit-ir/tests/type_components.rs::an_erased_typed_pointer_refuses_an_invalid_pointee`,
+`crates/llvmkit-ir/tests/cross_module_handles.rs::the_typed_pointer_constructor_rejects_a_pointee_from_another_module`,
+and `crates/llvmkit-ir/tests/compile_fail/typed_pointer_is_not_an_ir_type.rs`
+(a typed pointer as a function parameter fails on `IrType`'s own message).
+
+<details>
+<summary>Evidence (2026-10-29, vendored llvmorg-22.1.4, tree over `8e8292c`)</summary>
+
+- `rg -n "not legal to use this type" llvm/include/llvm/IR/TypedPointerType.h`
+  → the class comment; `rg -n "Cannot have values with typed pointer types"
+  llvm/lib/IR/Value.cpp` → `checkType`'s assert.
+- `rg -n -A6 "^bool VectorType::isValidElementType" llvm/lib/IR/Type.cpp` →
+  `ElemTy->getTypeID() == TypedPointerTyID` among the admitted kinds.
+- `rg -l "TypedPointerType::get\(" llvm/lib/Target` → five files under
+  `DirectX/` and `SPIRV/`.
+- rust-analyzer findReferences before the change: `TypeData::TypedPointer` 20,
+  `TypeKind::TypedPointer` 6, `TypeKindLabel::TypedPointer` 4,
+  `Type::is_typed_pointer` 2, `Module::typed_pointer_type` 3 (each count
+  including the declaration); every arm was deleted with its variant.
+
+</details>
+
 ---
 
 ---

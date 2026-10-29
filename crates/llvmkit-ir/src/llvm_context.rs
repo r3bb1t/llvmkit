@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use super::value::{GlobalFieldKind, ValueUse};
 use crate::constant::{ConstantData, ConstantExprData};
 use crate::instr_types::{CallAttributeData, CallAttributesSlot};
-use crate::r#type::{StructBody, TypeData, TypeSlot};
+use crate::r#type::{StructBody, TypeData, TypeSlot, TypedPointeeSlot, TypedPointerSlot};
 use crate::value::{ValueData, ValueKindData, ValueSlot};
 
 /// What [`Context::get_or_create_named_struct`] answered with: the identified
@@ -82,7 +82,12 @@ pub(crate) struct Context {
     /// `named_struct_types` (which is unordered). Lets the printer emit the
     /// `%Name = type {...}` identity block in declaration order.
     named_struct_order: RefCell<Vec<TypeSlot>>,
-    typed_pointer_types: RefCell<HashMap<(TypeSlot, u32), TypeSlot>>,
+    /// Typed pointers — `(pointee, address space)` records in a table of their
+    /// own, not in the type arena: a typed pointer is no IR type, so no
+    /// `TypeSlot` names one. Indexed by `TypedPointerSlot`; uniqued through
+    /// `typed_pointer_ids`, as `TypedPointerType::get` uniques per context.
+    typed_pointers: RefCell<Vec<(TypedPointeeSlot, u32)>>,
+    typed_pointer_ids: RefCell<HashMap<(TypedPointeeSlot, u32), TypedPointerSlot>>,
     target_ext_types: RefCell<HashMap<TargetExtKey, TypeSlot>>,
 
     // ---- Value arena. Like the type arena, `boxcar::Vec` gives
@@ -200,7 +205,8 @@ impl Context {
             literal_struct_types: RefCell::new(HashMap::new()),
             named_struct_types: RefCell::new(HashMap::new()),
             named_struct_order: RefCell::new(Vec::new()),
-            typed_pointer_types: RefCell::new(HashMap::new()),
+            typed_pointers: RefCell::new(Vec::new()),
+            typed_pointer_ids: RefCell::new(HashMap::new()),
             target_ext_types: RefCell::new(HashMap::new()),
             values: boxcar::Vec::new(),
             int_constants: RefCell::new(HashMap::new()),
@@ -409,17 +415,31 @@ impl Context {
         id
     }
 
-    pub(crate) fn typed_pointer_type(&self, pointee: TypeSlot, addr_space: u32) -> TypeSlot {
+    /// The typed pointer to `pointee` in `addr_space`, uniqued. Mirrors
+    /// `TypedPointerType::get`'s `ASTypedPointerTypes` lookup.
+    pub(crate) fn typed_pointer_type(
+        &self,
+        pointee: TypedPointeeSlot,
+        addr_space: u32,
+    ) -> TypedPointerSlot {
         let key = (pointee, addr_space);
-        if let Some(&id) = self.typed_pointer_types.borrow().get(&key) {
+        if let Some(&id) = self.typed_pointer_ids.borrow().get(&key) {
             return id;
         }
-        let id = self.push(TypeData::TypedPointer {
-            pointee,
-            addr_space,
-        });
-        self.typed_pointer_types.borrow_mut().insert(key, id);
+        let mut table = self.typed_pointers.borrow_mut();
+        let id = TypedPointerSlot::from_index(table.len());
+        table.push(key);
+        self.typed_pointer_ids.borrow_mut().insert(key, id);
         id
+    }
+
+    /// The `(pointee, address space)` record behind `slot`.
+    pub(crate) fn typed_pointer_data(&self, slot: TypedPointerSlot) -> (TypedPointeeSlot, u32) {
+        self.typed_pointers
+            .borrow()
+            .get(slot.table_index())
+            .copied()
+            .unwrap_or_else(|| unreachable!("a TypedPointerSlot indexes its own context's table"))
     }
 
     pub(crate) fn target_ext_type(
@@ -580,9 +600,6 @@ impl Context {
                         .iter()
                         .any(|&elem| self.type_reaches_type(elem, target, visited))
                 })
-            }
-            TypeData::TypedPointer { pointee, .. } => {
-                self.type_reaches_type(*pointee, target, visited)
             }
             TypeData::TargetExt(data) => data
                 .type_params

@@ -3,8 +3,8 @@
 
 use llvmkit_ir::{
     ArrLenDyn, ArrayType, ConstantFolder, Dyn, ElemDyn, IntrinsicId, IrBuilder, IrBuilderFolder,
-    IrError, LenDyn, Linkage, Module, ShuffleMaskElem, TypeKindLabel, TypePosition, VectorType,
-    constant_fold_shuffle_vector_instruction, lanes,
+    IrError, LenDyn, Linkage, Module, ShuffleMaskElem, TypeKindLabel, TypePosition, TypedPointee,
+    TypedPointerType, VectorType, constant_fold_shuffle_vector_instruction, lanes,
 };
 
 /// `VectorType::of` keeps the element marker and builds in the element's own
@@ -361,6 +361,64 @@ fn a_struct_refuses_an_invalid_element() {
     }
     view.packed_struct_type([view_i32, view.x86_amx_type()])
         .expect("x86_amx is a struct element");
+}
+
+/// A typed pointer prints as AsmWriter prints one — `typedptr(<pointee>,
+/// <addrspace>)`, `TypePrinting::print`'s `TypedPointerTyID` arm — and nests,
+/// as `TypedPointerType::isValidElementType` allows. llvmkit-specific (the
+/// printer arm has no upstream test).
+#[test]
+fn a_typed_pointer_prints_as_the_asm_writer_does() {
+    let m = Module::dynamic("components");
+    let inner = TypedPointerType::of(m.i32_type(), 0);
+    assert_eq!(inner.to_string(), "typedptr(i32, 0)");
+    let outer = TypedPointerType::of(inner, 3);
+    assert_eq!(outer.to_string(), "typedptr(typedptr(i32, 0), 3)");
+    assert!(matches!(outer.pointee(), TypedPointee::Typed(p) if p == inner));
+    assert_eq!(outer.address_space(), 3);
+}
+
+/// The erased constructor refuses a pointee `TypedPointerType::isValidElementType`
+/// refuses (`void`, `label`, `metadata`, `token`, `x86_amx`), mirroring the
+/// `assert` in `TypedPointerType::get` (`lib/IR/TypedPointerType.cpp`).
+/// llvmkit-specific (D10).
+#[test]
+fn an_erased_typed_pointer_refuses_an_invalid_pointee() {
+    let m = Module::dynamic("components");
+    assert!(matches!(
+        m.typed_pointer_type(m.void_type(), 0),
+        Err(IrError::InvalidTypeComponent {
+            position: TypePosition::PointerElement,
+            kind: TypeKindLabel::Void,
+        })
+    ));
+    let ok = m
+        .typed_pointer_type(m.i32_type(), 0)
+        .expect("an integer pointee is valid");
+    assert_eq!(ok, TypedPointerType::of(m.i32_type(), 0));
+
+    let view = m.as_view();
+    for (pointee, kind) in [
+        (view.void_type().as_type(), TypeKindLabel::Void),
+        (view.label_type().as_type(), TypeKindLabel::Label),
+        (view.metadata_type().as_type(), TypeKindLabel::Metadata),
+        (view.token_type().as_type(), TypeKindLabel::Token),
+        (view.x86_amx_type(), TypeKindLabel::X86Amx),
+    ] {
+        let refused = view.typed_pointer_type(pointee, 0);
+        assert!(
+            matches!(
+                refused,
+                Err(IrError::InvalidTypeComponent {
+                    position: TypePosition::PointerElement,
+                    kind: k,
+                }) if k == kind
+            ),
+            "{refused:?}"
+        );
+    }
+    view.typed_pointer_type(view.ptr_type(1), 2)
+        .expect("a pointer pointee is valid");
 }
 
 /// The function-type constructors refuse a result `FunctionType::isValidReturnType`

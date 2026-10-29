@@ -5728,9 +5728,7 @@ fn pointer_addr_space<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     ty: Type<'ctx, B, C>,
 ) -> Option<u32> {
     match ty.data() {
-        TypeData::Pointer { addr_space } | TypeData::TypedPointer { addr_space, .. } => {
-            Some(*addr_space)
-        }
+        TypeData::Pointer { addr_space } => Some(*addr_space),
         TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
             pointer_addr_space(Type::new(*elem, module_ref_from_type(ty)))
         }
@@ -6435,10 +6433,6 @@ fn type_bit_width<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         TypeKind::FixedVector | TypeKind::ScalableVector => {
             let (elem, _, _) = ty.data().as_vector()?;
             type_bit_width(Type::new(elem, module_ref_from_type(ty)), dl)
-        }
-        TypeKind::TypedPointer => {
-            let (_, addr_space) = ty.data().as_typed_pointer()?;
-            Some(dl.pointer_size_in_bits(addr_space))
         }
         TypeKind::Void
         | TypeKind::Half

@@ -854,6 +854,46 @@ fn the_function_type_constructors_reject_a_type_from_another_module() {
         .expect("a same-module function type");
 }
 
+/// The typed-pointer constructor — on `Module` and on `ModuleView` — rejects a
+/// pointee from another module: its slot would name a different type in this
+/// module's arena. Handed the other module's `void`, which is also no pointee,
+/// it still answers `ForeignType`: the module check runs before the pointee
+/// check.
+///
+/// No upstream counterpart: `TypedPointerType::get` takes a `Type *`, uniqued
+/// per `LLVMContext`.
+#[test]
+fn the_typed_pointer_constructor_rejects_a_pointee_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let view = home.as_view();
+    let foreign_i32 = foreign.i32_type().as_type();
+    let foreign_void = foreign.void_type().as_type();
+    let problems = not_refused(vec![
+        (
+            "typed_pointer_type",
+            without_value(home.typed_pointer_type(foreign_i32, 0)),
+        ),
+        (
+            "view.typed_pointer_type",
+            without_value(view.typed_pointer_type(foreign_i32, 0)),
+        ),
+        (
+            "typed_pointer_type(void)",
+            without_value(home.typed_pointer_type(foreign_void, 0)),
+        ),
+        (
+            "view.typed_pointer_type(void)",
+            without_value(view.typed_pointer_type(foreign_void, 0)),
+        ),
+    ]);
+    assert!(problems.is_empty(), "{problems:#?}");
+
+    // Positive control: the receiving module's own pointee.
+    home.typed_pointer_type(home.i32_type(), 0)
+        .expect("a same-module typed pointer");
+}
+
 /// The array constructor — on `Module` and on `ModuleView` — rejects an
 /// element type from another module: its slot would name a different type in
 /// this module's arena. The second list hands each the other module's `void`,

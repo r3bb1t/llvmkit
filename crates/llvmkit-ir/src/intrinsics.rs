@@ -932,8 +932,9 @@ enum Unmangleable {
     /// unique name, which llvmkit does not do.
     UnnamedStruct,
     /// A type `getMangledTypeStr` reaches its `llvm_unreachable("Unhandled
-    /// type")` arm with: `token`, `label`, and a typed pointer, which is not a
-    /// `PointerType` and has no arm of its own.
+    /// type")` arm with: `token` and `label`. (Upstream reaches it with a
+    /// typed pointer too, which is not a `PointerType` and has no arm of its
+    /// own; in llvmkit a typed pointer is no `Type`, so none arrives here.)
     Unhandled,
 }
 
@@ -944,7 +945,7 @@ fn append_mangled_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     out: &mut String,
 ) -> Result<(), Unmangleable> {
     match ty.data() {
-        TypeData::Token | TypeData::Label | TypeData::TypedPointer { .. } => {
+        TypeData::Token | TypeData::Label => {
             return Err(Unmangleable::Unhandled);
         }
         TypeData::Void => out.push_str("isVoid"),
@@ -2952,7 +2953,6 @@ mod tests {
         for ty in [
             Type::new(context.token(), module_ref),
             Type::new(context.label(), module_ref),
-            module.typed_pointer_type(i32_ty, 0).as_type(),
         ] {
             assert!(
                 matches!(

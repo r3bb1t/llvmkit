@@ -109,6 +109,7 @@ use super::struct_body_state::{BodySet, Opaque};
 use super::struct_schema::{FieldList, Minting, StructOf, StructSchema};
 use super::r#type::{
     IrType, MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeData, TypeSlot, TypeSlotAccess,
+    TypedPointeeSlot,
 };
 use super::type_components::{lanes, require_component};
 use super::typed_pointer_type::TypedPointerType;
@@ -858,21 +859,28 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
         PointerType::new(self.core.ctx.ptr_type(N), self)
     }
 
-    /// Legacy typed pointer `T*` in address space `addr_space`.
+    /// Typed pointer to `pointee` in `addr_space`. Mirrors
+    /// `TypedPointerType::get`: its `isValidElementType` assert is
+    /// [`require_component`]; a pointee of another module is refused with
+    /// [`IrError::ForeignType`] first.
     pub(crate) fn typed_pointer_type<T>(
         self,
         pointee: T,
         addr_space: u32,
-    ) -> TypedPointerType<'ctx, B, C>
+    ) -> IrResult<TypedPointerType<'ctx, B, C>>
     where
         T: IrType<'ctx, B>,
     {
-        // boundary (F1): refused by Task 26
-        let pointee_id = pointee.as_type().slot_trusting_same_module();
-        TypedPointerType::new(
-            self.core.ctx.typed_pointer_type(pointee_id, addr_space),
+        let pointee = pointee.as_type();
+        // Boundary: the caller's pointee, admitted against this module.
+        let slot = pointee.slot_in(self.id())?;
+        require_component(TypePosition::PointerElement, pointee)?;
+        Ok(TypedPointerType::new(
+            self.core
+                .ctx
+                .typed_pointer_type(TypedPointeeSlot::Ir(slot), addr_space),
             self,
-        )
+        ))
     }
 
     /// `[len x elem]`. Mirrors `ArrayType::get`: its `isValidElementType`
@@ -1770,13 +1778,31 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         self.read_only_ref().ptr_type_in::<N>()
     }
 
-    /// Legacy typed pointer `T*` in address space `addr_space`.
+    /// Typed pointer `typedptr(<pointee>, <addrspace>)` — an analysis-only
+    /// type, which no IR type contains (`TypedPointerType.h`). For a typed
+    /// pointee, [`TypedPointerType::of`] cannot fail.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidTypeComponent`] for a pointee
+    /// `TypedPointerType::isValidElementType` refuses (`void`, `label`,
+    /// `metadata`, `token`, `x86_amx`); [`IrError::ForeignType`] for one of
+    /// another module, checked first.
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// let view = m.as_view();
+    /// assert_eq!(view.typed_pointer_type(view.i32_type(), 0)?.to_string(), "typedptr(i32, 0)");
+    /// assert!(view.typed_pointer_type(view.void_type(), 0).is_err());
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
     #[inline]
     pub fn typed_pointer_type<T>(
         self,
         pointee: T,
         addr_space: u32,
-    ) -> TypedPointerType<'ctx, B, ReadOnly>
+    ) -> IrResult<TypedPointerType<'ctx, B, ReadOnly>>
     where
         T: IrType<'ctx, B>,
     {
@@ -4634,11 +4660,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.capability_ref().ptr_type_in::<N>()
     }
 
+    /// Typed pointer `typedptr(<pointee>, <addrspace>)` — an analysis-only
+    /// type; see [`ModuleView::typed_pointer_type`].
+    ///
+    /// # Errors
+    ///
+    /// As [`ModuleView::typed_pointer_type`]: an invalid pointee
+    /// ([`IrError::InvalidTypeComponent`]) or one of another module
+    /// ([`IrError::ForeignType`]).
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// assert_eq!(m.typed_pointer_type(m.i32_type(), 0)?.to_string(), "typedptr(i32, 0)");
+    /// assert!(m.typed_pointer_type(m.void_type(), 0).is_err());
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
     pub fn typed_pointer_type<T>(
         &'ctx self,
         pointee: T,
         addr_space: u32,
-    ) -> TypedPointerType<'ctx, B>
+    ) -> IrResult<TypedPointerType<'ctx, B>>
     where
         T: IrType<'ctx, B>,
     {

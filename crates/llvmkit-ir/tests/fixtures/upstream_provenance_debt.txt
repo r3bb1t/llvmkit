@@ -167,7 +167,6 @@ crates/llvmkit-ir/src/vec_len.rs::len_dyn_has_no_static_lane_count
 crates/llvmkit-ir/src/vec_len.rs::len_reports_static_lane_count
 crates/llvmkit-ir/src/vec_len.rs::static_vec_len_exposes_const
 crates/llvmkit-ir/src/verifier.rs::phi_with_invalid_result_type_rejected
-crates/llvmkit-ir/src/verifier.rs::phi_with_typed_pointer_result_type_verifies
 crates/llvmkit-ir/src/worklist.rs::pop_skips_non_instruction_id_without_panicking
 crates/llvmkit-ir/src/worklist.rs::pop_skips_terminator_id
 crates/llvmkit-ir/src/worklist.rs::push_dedups_and_pop_is_lifo

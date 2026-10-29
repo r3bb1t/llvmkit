@@ -1662,9 +1662,6 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> From<Type<'ctx, B, C>>
             TypeKind::TargetExt => {
                 Self::TargetExt(TargetExtType::new(t.slot_trusting_same_module(), m))
             }
-            TypeKind::TypedPointer => {
-                Self::Pointer(PointerType::new(t.slot_trusting_same_module(), m))
-            }
         }
     }
 }

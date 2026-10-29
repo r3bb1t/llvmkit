@@ -693,9 +693,6 @@ impl DataLayout {
         match module.context().type_data(id) {
             TypeData::Label => u64::from(self.pointer_size_in_bits(0)),
             TypeData::Pointer { addr_space } => u64::from(self.pointer_size_in_bits(*addr_space)),
-            TypeData::TypedPointer { addr_space, .. } => {
-                u64::from(self.pointer_size_in_bits(*addr_space))
-            }
             TypeData::Array { elem, n } => {
                 n.saturating_mul(self.type_alloc_size_inner(module, *elem).saturating_mul(8))
             }
@@ -753,10 +750,6 @@ impl DataLayout {
                 align_to(bytes, a)
             }
             TypeData::Pointer { addr_space } => {
-                let size = u64::from(self.pointer_size(*addr_space));
-                align_to(size, self.pointer_abi_align(*addr_space))
-            }
-            TypeData::TypedPointer { addr_space, .. } => {
                 let size = u64::from(self.pointer_size(*addr_space));
                 align_to(size, self.pointer_abi_align(*addr_space))
             }
@@ -826,13 +819,6 @@ impl DataLayout {
                 }
             }
             TypeData::Pointer { addr_space } => {
-                if abi_or_pref {
-                    self.pointer_abi_align(*addr_space)
-                } else {
-                    self.pointer_pref_align(*addr_space)
-                }
-            }
-            TypeData::TypedPointer { addr_space, .. } => {
                 if abi_or_pref {
                     self.pointer_abi_align(*addr_space)
                 } else {

@@ -73,6 +73,41 @@ impl TypeSlot {
     }
 }
 
+/// Index into a context's typed-pointer table — a table of its own, beside
+/// the type arena, because a typed pointer is no IR type
+/// (`TypedPointerType.h`: "not legal to use this type ... in LLVM IR"), so no
+/// [`TypeSlot`] may name one. Crate-internal like [`TypeSlot`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct TypedPointerSlot(NonZeroU32);
+
+impl TypedPointerSlot {
+    /// Build from a 0-based table index. Stored as `index + 1` so the
+    /// underlying value is always non-zero.
+    #[inline]
+    pub(crate) fn from_index(index: usize) -> Self {
+        let raw =
+            u32::try_from(index + 1).expect("typed-pointer table overflow (>u32::MAX entries)");
+        Self(NonZeroU32::new(raw).expect("idx + 1 > 0"))
+    }
+
+    /// Recover the 0-based table index.
+    #[inline]
+    pub(crate) fn table_index(self) -> usize {
+        // Subtraction is sound: every TypedPointerSlot was produced by
+        // `from_index`, which guarantees the value is in `1..=u32::MAX`.
+        let nz = u32::from(self.0);
+        usize::try_from(nz - 1).expect("u32 fits in usize on supported targets")
+    }
+}
+
+/// What a typed pointer's slot points at: an IR type, or another typed
+/// pointer (`TypedPointerType::isValidElementType` admits one).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum TypedPointeeSlot {
+    Ir(TypeSlot),
+    Typed(TypedPointerSlot),
+}
+
 // --------------------------------------------------------------------------
 // Internal payload
 // --------------------------------------------------------------------------
@@ -130,12 +165,6 @@ pub(crate) enum TypeData {
         min: NonZeroU32,
     },
     Struct(StructTypeData),
-    /// Typed pointer (legacy, only used by a few GPU targets in LLVM 22).
-    /// Mirrors `TypedPointerType` (`TypedPointerType.h`).
-    TypedPointer {
-        pointee: TypeSlot,
-        addr_space: u32,
-    },
     TargetExt(TargetExtTypeData),
 }
 
@@ -170,7 +199,6 @@ impl TypeData {
             TypeData::FixedVector { .. } => TypeKindLabel::FixedVector,
             TypeData::ScalableVector { .. } => TypeKindLabel::ScalableVector,
             TypeData::Struct(_) => TypeKindLabel::Struct,
-            TypeData::TypedPointer { .. } => TypeKindLabel::TypedPointer,
             TypeData::TargetExt(_) => TypeKindLabel::TargetExt,
         }
     }
@@ -241,18 +269,6 @@ impl TypeData {
     pub(crate) fn as_struct(&self) -> Option<&StructTypeData> {
         if let Self::Struct(s) = self {
             Some(s)
-        } else {
-            None
-        }
-    }
-    #[inline]
-    pub(crate) fn as_typed_pointer(&self) -> Option<(TypeSlot, u32)> {
-        if let Self::TypedPointer {
-            pointee,
-            addr_space,
-        } = *self
-        {
-            Some((pointee, addr_space))
         } else {
             None
         }
@@ -560,7 +576,6 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Type<'ctx, B, C> {
             TypeData::FixedVector { .. } => TypeKind::FixedVector,
             TypeData::ScalableVector { .. } => TypeKind::ScalableVector,
             TypeData::Struct(_) => TypeKind::Struct,
-            TypeData::TypedPointer { .. } => TypeKind::TypedPointer,
             TypeData::TargetExt(_) => TypeKind::TargetExt,
         }
     }
@@ -598,14 +613,6 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Type<'ctx, B, C> {
     #[inline]
     pub fn is_pointer(self) -> bool {
         matches!(self.data(), TypeData::Pointer { .. })
-    }
-    /// Legacy *typed* pointer (`i32*`), mirroring `TypedPointerType`. Distinct
-    /// from [`Self::is_pointer`], which is the opaque `ptr` — a first-class data
-    /// type just the same, so anywhere that accepts a pointer value (a `phi`
-    /// result, say) must accept both.
-    #[inline]
-    pub fn is_typed_pointer(self) -> bool {
-        matches!(self.data(), TypeData::TypedPointer { .. })
     }
     #[inline]
     pub fn is_function(self) -> bool {
@@ -803,7 +810,6 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Type<'ctx, B, C> {
     pub fn pointer_address_space(self) -> Option<u32> {
         match self.data() {
             TypeData::Pointer { addr_space } => Some(*addr_space),
-            TypeData::TypedPointer { addr_space, .. } => Some(*addr_space),
             _ => None,
         }
     }
@@ -834,11 +840,14 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Type<'ctx, B, C> {
     /// Mirrors `VectorType::isValidElementType` — the one *allow*-list in the
     /// family: integers, floats, pointers, and target extension types that
     /// declare `CanBeVectorElement`.
+    ///
+    /// Upstream also admits `TypedPointerTyID`, for the vectors a DXIL or
+    /// SPIR-V backend builds in its analyses. llvmkit has no IR type that is a
+    /// typed pointer (`TypedPointerType` is analysis-only, as its header
+    /// requires), so the arm has nothing to admit.
     pub fn is_valid_vector_element(self) -> bool {
         match self.data() {
-            TypeData::Integer { .. } | TypeData::Pointer { .. } | TypeData::TypedPointer { .. } => {
-                true
-            }
+            TypeData::Integer { .. } | TypeData::Pointer { .. } => true,
             TypeData::TargetExt(_) => crate::derived_types::TargetExtType::try_from(self)
                 .is_ok_and(|t| {
                     t.has_property(crate::derived_types::TargetExtProperty::CanBeVectorElement)
@@ -897,7 +906,6 @@ pub enum TypeKind {
     FixedVector,
     ScalableVector,
     Struct,
-    TypedPointer,
     TargetExt,
 }
 
@@ -1011,18 +1019,6 @@ impl<'ctx, B: ModuleBrand, C: Capability> fmt::Display for Type<'ctx, B, C> {
                     f.write_str(" }")
                 }
             }
-            TypeData::TypedPointer {
-                pointee,
-                addr_space: 0,
-            } => write!(f, "{}*", Type::new(*pointee, self.module)),
-            TypeData::TypedPointer {
-                pointee,
-                addr_space,
-            } => write!(
-                f,
-                "{} addrspace({addr_space})*",
-                Type::new(*pointee, self.module)
-            ),
             TypeData::TargetExt(t) => {
                 write!(f, "target(\"{}\"", t.name)?;
                 for tp in t.type_params.iter() {
@@ -1123,8 +1119,7 @@ fn is_sized(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot>) -> b
         | TypeData::PpcFp128
         | TypeData::X86Amx
         | TypeData::Integer { .. }
-        | TypeData::Pointer { .. }
-        | TypeData::TypedPointer { .. } => true,
+        | TypeData::Pointer { .. } => true,
         TypeData::Array { elem, .. }
         | TypeData::FixedVector { elem, .. }
         | TypeData::ScalableVector { elem, .. } => is_sized(module, *elem, visited),
@@ -1238,6 +1233,12 @@ pub(crate) mod sealed {
 /// not an extension point. Bound generic code with `T: IrType<'ctx>`
 /// when a function should accept any type without enumerating every
 /// concrete handle.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not an LLVM IR type",
+    label = "expected an IR type handle (`IntType`, `PointerType`, `Type`, …)",
+    note = "an analysis-only type such as `TypedPointerType` never appears in LLVM IR \
+            (`TypedPointerType.h`: \"not legal to use this type ... in LLVM IR\")"
+)]
 pub trait IrType<'ctx, B: ModuleBrand>:
     sealed::Sealed + Copy + Sized + core::fmt::Debug + CapabilityOf
 {

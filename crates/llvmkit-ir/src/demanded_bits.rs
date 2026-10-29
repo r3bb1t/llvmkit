@@ -1452,7 +1452,6 @@ fn int_scalar_bit_width<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         | TypeKind::Array
         | TypeKind::Pointer { .. }
         | TypeKind::Struct
-        | TypeKind::TypedPointer
         | TypeKind::TargetExt => None,
     }
 }

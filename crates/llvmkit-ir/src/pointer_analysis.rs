@@ -1764,7 +1764,7 @@ fn signed_ap_int(value: i64, bits: u32) -> ApInt {
 }
 
 fn is_pointer<'ctx, B: ModuleBrand + 'ctx, C: Capability>(ty: Type<'ctx, B, C>) -> bool {
-    matches!(ty.kind(), TypeKind::Pointer { .. } | TypeKind::TypedPointer)
+    matches!(ty.kind(), TypeKind::Pointer { .. })
 }
 
 fn instruction_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(

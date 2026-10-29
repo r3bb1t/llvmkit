@@ -2950,9 +2950,7 @@ fn int_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 
 fn pointer_address_space<B: ModuleBrand, C: Capability>(ty: Type<'_, B, C>) -> Option<u32> {
     match ty.data() {
-        TypeData::Pointer { addr_space } | TypeData::TypedPointer { addr_space, .. } => {
-            Some(*addr_space)
-        }
+        TypeData::Pointer { addr_space } => Some(*addr_space),
         _ => None,
     }
 }
@@ -3001,9 +2999,7 @@ fn is_non_integral_pointer_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     dl: &DataLayout,
 ) -> bool {
     match ty.data() {
-        TypeData::Pointer { addr_space } | TypeData::TypedPointer { addr_space, .. } => {
-            dl.is_non_integral_address_space(*addr_space)
-        }
+        TypeData::Pointer { addr_space } => dl.is_non_integral_address_space(*addr_space),
         TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
             is_non_integral_pointer_type(Type::new(*elem, ty.module), dl)
         }

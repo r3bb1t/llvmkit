@@ -92,8 +92,6 @@ pub enum TypeKindLabel {
     FixedVector,
     /// A scalable vector type (`<vscale x N x T>`).
     ScalableVector,
-    /// A typed (non-opaque) pointer type.
-    TypedPointer,
     /// A target extension type (`target("...")`).
     TargetExt,
 }
@@ -122,7 +120,6 @@ impl fmt::Display for TypeKindLabel {
             TypeKindLabel::Array => "array",
             TypeKindLabel::FixedVector => "fixed-vector",
             TypeKindLabel::ScalableVector => "scalable-vector",
-            TypeKindLabel::TypedPointer => "typed-pointer",
             TypeKindLabel::TargetExt => "target-ext",
         };
         f.write_str(s)
