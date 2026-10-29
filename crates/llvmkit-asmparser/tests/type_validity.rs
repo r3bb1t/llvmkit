@@ -8,19 +8,20 @@
 //! error in `LLParser` — and an `assert` is compiled out of a release build.
 //!
 //! Over the agreement grid below (6 containers × 25 element kinds, 150 cells),
-//! llvmkit's builder accepts every cell its parser refuses outside the vector,
-//! array and struct containers: 7 cells are built but not parsed, none is
-//! parsed but not built, and where both accept they make the same type.
-//! Measured at the commit that makes the struct constructors refuse an invalid
-//! element (parent `9b4bce3`) by running
+//! llvmkit's builder and parser agree on every cell: none is built but not
+//! parsed, none is parsed but not built, and where both accept they make the
+//! same type. Measured at the commit that makes the function-type constructors
+//! refuse an invalid result or parameter (parent `ad8261a`) by running
 //! `cargo +1.96.0 test --release -p llvmkit-asmparser --test type_validity`
-//! with `KNOWN_DISAGREEMENTS` emptied; it was 46 at `5ce065f`, before the
-//! vector constructors refused their 28, 18 at the commit that adds
-//! `llvmkit_ir::VectorType::of` (parent `dcde8b6`), before the array
-//! constructor refused its 6, and 12 at the commit that adds
+//! with `KNOWN_DISAGREEMENTS` empty. Built but not parsed, it was 46 at
+//! `5ce065f`, before the vector constructors refused their 28; 18 at the
+//! commit that adds `llvmkit_ir::VectorType::of` (parent `dcde8b6`), before the
+//! array constructor refused its 6; 12 at the commit that adds
 //! `llvmkit_ir::ArrayType::of` (parent `bb7e518`), before the struct
-//! constructors refused their 5. Each of those cells is a type a module built
-//! in Rust can hold and print, and no parser reads back.
+//! constructors refused their 5; and 7 at the commit that makes them refuse
+//! (parent `9b4bce3`), before the function-type constructors refused their 7.
+//! Each of those cells was a type a module built in Rust could hold and print,
+//! and no parser read back.
 
 use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_asmparser::{SlotMapping, parse_type, parse_type_at_beginning, parse_type_with_slots};
@@ -264,7 +265,7 @@ fn element<'m>(m: &'m Module<DynBrand>, text: &str) -> Result<Type<'m, DynBrand>
             .as_type(),
         "<2 x i32>" => VectorType::of(m.i32_type(), lanes::<2>()).as_type(),
         "<vscale x 2 x i32>" => VectorType::scalable_of(m.i32_type(), lanes::<2>()).as_type(),
-        "i32 ()" => m.function_type_no_parameters(i32_ty).as_type(),
+        "i32 ()" => m.function_type_no_parameters(i32_ty)?.as_type(),
         "target(\"llvm.test.vectorelement\")" => target("llvm.test.vectorelement"),
         "target(\"spirv.Image\")" => target("spirv.Image"),
         "target(\"aarch64.svcount\")" => target("aarch64.svcount"),
@@ -327,8 +328,8 @@ impl Container {
             Container::ScalableVector => m.scalable_vector_type(element, lanes::<2>())?.as_type(),
             Container::Array => m.array_type(element, 2)?.as_type(),
             Container::Struct => m.struct_type([element])?.as_type(),
-            Container::FunctionReturn => m.function_type_no_parameters(element).as_type(),
-            Container::FunctionParameter => m.function_type(m.void_type(), [element]).as_type(),
+            Container::FunctionReturn => m.function_type_no_parameters(element)?.as_type(),
+            Container::FunctionParameter => m.function_type(m.void_type(), [element])?.as_type(),
         })
     }
 }
@@ -337,17 +338,7 @@ impl Container {
 /// refuses them. Each task of the type-constructor plan removes its own rows;
 /// the list ends empty and is then deleted. A task that removes rows here
 /// re-measures the module doc's "built but not parsed" count in that commit.
-const KNOWN_DISAGREEMENTS: &[(&str, &str)] = &[
-    // function return — removed by Task 5.
-    ("function return", "label"),
-    ("function return", "metadata"),
-    ("function return", "i32 ()"),
-    // function parameter — removed by Task 5.
-    ("function parameter", "void"),
-    ("function parameter", "label"),
-    ("function parameter", "%opaque"),
-    ("function parameter", "i32 ()"),
-];
+const KNOWN_DISAGREEMENTS: &[(&str, &str)] = &[];
 
 /// The builder accepts a derived type exactly when the parser accepts its
 /// spelling, over every container × element kind of the grid — and where both

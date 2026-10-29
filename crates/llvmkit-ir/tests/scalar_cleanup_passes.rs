@@ -11,7 +11,7 @@ use llvmkit_ir::{
 fn instsimplify_pass_folds_constant_add() -> Result<(), IrError> {
     let m = module_new!("instsimplify-pass")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -54,7 +54,7 @@ fn instsimplify_pass_folds_constant_add() -> Result<(), IrError> {
 fn instsimplify_user_cascade_folds_dependent_add_chain() -> Result<(), IrError> {
     let m = module_new!("instsimplify-user-cascade")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -97,7 +97,7 @@ fn instsimplify_user_cascade_folds_dependent_add_chain() -> Result<(), IrError> 
 fn dce_pass_erases_dead_integer_chain_and_preserves_store() -> Result<(), IrError> {
     let m = module_new!("dce-pass")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(m.void_type().as_type());
+    let fn_ty = m.function_type_no_parameters(m.void_type().as_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -131,7 +131,7 @@ fn dce_pass_erases_dead_integer_chain_and_preserves_store() -> Result<(), IrErro
 fn instsimplify_and_dce_pipeline_folds_and_erases() -> Result<(), IrError> {
     let m = module_new!("scalar-cleanup")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -169,7 +169,7 @@ fn instsimplify_pass_keeps_load_from_interposable_constant_global() -> Result<()
     let weak = m.add_global_constant("weak_g", i32_ty.const_int(42_i32))?;
     m.view(weak).set_linkage(&m, Linkage::WeakAny);
     let strong = m.add_global_constant("strong_g", i32_ty.const_int(7_i32))?;
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -212,7 +212,7 @@ fn dce_removes_unordered_atomic_load_keeps_ordered_and_volatile() -> Result<(), 
     let m = module_new!("dce-loads")?;
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()]);
+    let fn_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -260,9 +260,9 @@ fn dce_keeps_store_fence_and_call() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type().as_type();
-    let sink_ty = m.function_type_no_parameters(void_ty);
+    let sink_ty = m.function_type_no_parameters(void_ty)?;
     let sink = m.add_function_dyn("sink", sink_ty, Linkage::External)?;
-    let fn_ty = m.function_type(void_ty, [ptr_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -299,7 +299,7 @@ fn instsimplify_terminates_on_ordered_atomic_load_from_constant() -> Result<(), 
     let m = module_new!("is-atomic")?;
     let i32_ty = m.i32_type();
     let g = m.add_global_constant("g", i32_ty.const_int(7_i32))?;
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -342,7 +342,7 @@ fn instsimplify_terminates_on_ordered_atomic_load_from_constant() -> Result<(), 
 fn instsimplify_folds_uniform_phi() -> Result<(), IrError> {
     let m = module_new!("is-uniform-join")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let l = m.view(f).append_basic_block(&m, "l");
@@ -400,7 +400,7 @@ fn instsimplify_folds_uniform_phi() -> Result<(), IrError> {
 fn instsimplify_folds_self_referential_uniform_phi() -> Result<(), IrError> {
     let m = module_new!("is-selfref-loop")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     // loop(%p: i32): the loop-header head-phi param is the loop-carried value.
@@ -452,7 +452,7 @@ fn instsimplify_folds_self_referential_uniform_phi() -> Result<(), IrError> {
 fn instsimplify_keeps_non_uniform_phi() -> Result<(), IrError> {
     let m = module_new!("is-nonuniform-join")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let l = m.view(f).append_basic_block(&m, "l");
@@ -506,7 +506,7 @@ fn instsimplify_keeps_non_uniform_phi() -> Result<(), IrError> {
 fn uniform_phi_fold_cascades_to_users() -> Result<(), IrError> {
     let m = module_new!("is-cascade")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let l = m.view(f).append_basic_block(&m, "l");
@@ -574,7 +574,7 @@ fn uniform_phi_fold_cascades_to_users() -> Result<(), IrError> {
 fn instsimplify_leaves_unreachable_blocks_alone() -> Result<(), IrError> {
     let m = module_new!("instsimplify-unreachable")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     // Nothing branches to `dead`, so it is not reachable from the entry block.

@@ -6557,7 +6557,7 @@ mod tests {
         let i32_ty = m.i32_type();
         let ptr1_ty = m.ptr_type(1);
         let ptr_vec_ty = VectorType::of(ptr1_ty, lanes::<2>());
-        let fn_ty = m.function_type_no_parameters(m.void_type());
+        let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, crate::Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
 

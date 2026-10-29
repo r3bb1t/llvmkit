@@ -10,7 +10,9 @@ use llvmkit_ir::{Linkage, Module, UnnamedAddr};
 fn declare(name: &str, value: UnnamedAddr) -> String {
     let m = Module::dynamic("u");
     let void = m.void_type();
-    let fn_ty = m.function_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let fn_ty = m
+        .function_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())
+        .expect("valid function type");
     let f = m
         .function_builder::<(), _>(name, fn_ty)
         .linkage(Linkage::External)

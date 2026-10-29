@@ -10,7 +10,7 @@ use llvmkit_ir::{Dyn, IrBuilder, Linkage, Module};
 fn main() {
     let m = Module::dynamic("lock");
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty).expect("valid function type");
     let f = m
         .add_function_dyn("f", fn_ty, Linkage::External)
         .expect("function");

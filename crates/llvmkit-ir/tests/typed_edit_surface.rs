@@ -235,7 +235,7 @@ fn build_callbr_caller<'ctx, B: ModuleBrand + 'ctx>(
     m: &'ctx Module<B, llvmkit_ir::Unverified>,
 ) -> IrResult<CallerFixture<B>> {
     let void_ty = m.void_type();
-    let asm_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let asm_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let asm = m.inline_asm(
         asm_ty,
         "",

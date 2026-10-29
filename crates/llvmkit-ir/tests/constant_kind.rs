@@ -374,7 +374,7 @@ fn a_global_widened_to_a_constant_is_a_global_value() -> IrResult<()> {
     assert!(!as_constant.is_constant_data());
     let f = m.add_function_dyn(
         "f",
-        m.function_type_no_parameters(m.void_type()),
+        m.function_type_no_parameters(m.void_type())?,
         Linkage::External,
     )?;
     let address = m.view(f).as_global_constant_ptr();
@@ -494,7 +494,7 @@ fn a_compact_form_is_classified_as_upstream_folds_it() -> IrResult<()> {
     let m = Module::dynamic("constants");
     let f = m.add_function_dyn(
         "f",
-        m.function_type_no_parameters(m.void_type()),
+        m.function_type_no_parameters(m.void_type())?,
         Linkage::External,
     )?;
     assert!(matches!(

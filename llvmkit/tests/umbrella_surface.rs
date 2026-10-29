@@ -18,7 +18,7 @@ use llvmkit::ir::{Dyn, IrBuilder, Linkage, Module};
 fn umbrella_reexports_build_print_and_reparse() -> Result<(), Box<dyn std::error::Error>> {
     let module = Module::dynamic("umbrella_surface");
     let void_type = module.void_type();
-    let function_type = module.function_type_no_parameters(void_type);
+    let function_type = module.function_type_no_parameters(void_type)?;
     let f = module.add_function_dyn("f", function_type, Linkage::External)?;
     let entry = module.view(f).append_basic_block(&module, "entry");
     let builder = IrBuilder::new_for::<Dyn>(&module).position_at_end(entry);

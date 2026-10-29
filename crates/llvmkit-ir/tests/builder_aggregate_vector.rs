@@ -26,7 +26,7 @@ fn extract_value_struct_field0() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()])?;
-    let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()])?;
     let f = m.add_function_dyn("instructions.aggregateops", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -51,7 +51,7 @@ fn extract_value_array_index() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
     let arr_ty = ArrayType::of(i8_ty, 3);
-    let fn_ty = m.function_type(void_ty.as_type(), [arr_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [arr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -78,7 +78,7 @@ fn extract_value_nested_indices() -> Result<(), IrError> {
     let void_ty = m.void_type();
     let inner = m.struct_type([i32_ty.as_type()])?;
     let outer = m.struct_type([i8_ty.as_type(), inner.as_type()])?;
-    let fn_ty = m.function_type(void_ty.as_type(), [outer.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [outer.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -106,7 +106,7 @@ fn extract_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()])?;
-    let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -137,7 +137,7 @@ fn extract_value_rejects_out_of_range_array_index() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let arr_ty = ArrayType::of(i32_ty, 0);
-    let fn_ty = m.function_type(void_ty.as_type(), [arr_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [arr_ty.as_type()])?;
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -167,7 +167,7 @@ fn extract_value_rejects_out_of_range_struct_index() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()])?;
-    let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()])?;
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -198,7 +198,7 @@ fn insert_value_struct_field0() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()])?;
-    let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -223,7 +223,7 @@ fn insert_value_array_index_zero() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
     let arr_ty = ArrayType::of(i8_ty, 3);
-    let fn_ty = m.function_type(void_ty.as_type(), [arr_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [arr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -253,7 +253,7 @@ fn insert_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()])?;
-    let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -287,7 +287,7 @@ fn extract_element_vector_i8_index() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
     let vec_ty = VectorType::of(f32_ty, lanes::<4>());
-    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type()])?;
     let f = m.add_function_dyn("instructions.vectorops", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -317,7 +317,7 @@ fn insert_element_vector_float_at_i8() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
     let vec_ty = VectorType::of(f32_ty, lanes::<4>());
-    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -348,7 +348,7 @@ fn shuffle_vector_zeroinitializer_mask() -> Result<(), IrError> {
     let f32_ty = m.f32_type();
     let void_ty = m.void_type();
     let vec_ty = VectorType::of(f32_ty, lanes::<4>());
-    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -377,7 +377,7 @@ fn shuffle_vector_explicit_mask_print() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let vec_ty = VectorType::of(i32_ty, lanes::<4>());
-    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -413,7 +413,7 @@ fn shuffle_vector_scalable_zero_mask_splat() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let vec_ty = VectorType::scalable_of(i32_ty, lanes::<4>());
-    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()])?;
     let f = m.add_function_dyn("non_const_shufflevector", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -445,7 +445,7 @@ fn shuffle_vector_scalable_poison_mask() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let vec_ty = VectorType::scalable_of(i32_ty, lanes::<4>());
-    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -476,7 +476,7 @@ fn shuffle_vector_scalable_rejects_a_non_splat_mask() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let vec_ty = VectorType::scalable_of(i32_ty, lanes::<4>());
-    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -513,7 +513,7 @@ fn shuffle_vector_rejects_an_out_of_range_mask_lane() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let vec_ty = VectorType::of(i32_ty, lanes::<2>());
-    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -557,7 +557,7 @@ fn shuffle_vector_scalable_constant_operand_survives_folding() -> Result<(), IrE
     let global_ptr = m.view(my_global).as_global_constant_ptr();
     let vec_ty = m.scalable_vector_type(global_ptr.ty(), lanes::<4>())?;
     let no_parameters: [llvmkit_ir::Type<'_, _>; 0] = [];
-    let fn_ty = m.function_type(vec_ty.as_type(), no_parameters);
+    let fn_ty = m.function_type(vec_ty.as_type(), no_parameters)?;
     let f = m.add_function_dyn("ret_scalable_vector_ptr", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -732,7 +732,7 @@ fn the_three_aggregate_index_walks_agree_at_the_u32_boundary() -> Result<(), IrE
     let void_ty = m.void_type();
     // One element past `u32::MAX`, so the largest legal index is `u32::MAX`.
     let arr_ty = ArrayType::of(i8_ty, u64::from(u32::MAX) + 1);
-    let fn_ty = m.function_type(void_ty.as_type(), [arr_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [arr_ty.as_type()])?;
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

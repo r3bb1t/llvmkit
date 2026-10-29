@@ -1009,25 +1009,44 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
     }
 
     /// Function type, variadic or not.
+    ///
+    /// Mirrors `FunctionType::FunctionType` (`lib/IR/Type.cpp`): the result is
+    /// checked first (`isValidReturnType`), then each parameter in order
+    /// (`isValidArgumentType`). Upstream `assert`s both; here each is
+    /// [`IrError::InvalidTypeComponent`], after the component's module check
+    /// ([`IrError::ForeignType`]).
     pub(super) fn raw_function_type<I, R, T>(
         self,
         return_type: R,
         parameters: I,
         is_var_arg: bool,
-    ) -> FunctionType<'ctx, B, C>
+    ) -> IrResult<FunctionType<'ctx, B, C>>
     where
         I: IntoIterator<Item = T>,
         R: IrType<'ctx, B>,
         T: IrType<'ctx, B>,
     {
-        // boundary (F1): refused by Task 26
-        let ret = return_type.as_type().slot_trusting_same_module();
-        // boundary (F1): refused by Task 26
-        let params: Box<[TypeSlot]> = parameters
+        let owner = self.id();
+        let return_type = return_type.as_type();
+        // Boundary: the caller's result type, admitted against this module.
+        let ret = return_type.slot_in(owner)?;
+        require_component(TypePosition::FunctionReturn, return_type)?;
+        let params = parameters
             .into_iter()
-            .map(|t| t.as_type().slot_trusting_same_module())
-            .collect();
-        FunctionType::new(self.core.ctx.function_type(ret, params, is_var_arg), self)
+            .enumerate()
+            .map(|(index, parameter)| {
+                let parameter = parameter.as_type();
+                // Boundary: each caller parameter type, admitted against this
+                // module.
+                let slot = parameter.slot_in(owner)?;
+                require_component(TypePosition::FunctionParameter { index }, parameter)?;
+                Ok(slot)
+            })
+            .collect::<IrResult<Box<[TypeSlot]>>>()?;
+        Ok(FunctionType::new(
+            self.core.ctx.function_type(ret, params, is_var_arg),
+            self,
+        ))
     }
 
     /// Get or create the identified struct type `%name`, body unset.
@@ -1943,12 +1962,30 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     }
 
     /// Function type `ret (params...)`.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidTypeComponent`] for a result
+    /// `FunctionType::isValidReturnType` refuses (a function, `label` or
+    /// `metadata`) or a parameter `isValidArgumentType` refuses (not first
+    /// class, or `label`), the result checked first; [`IrError::ForeignType`]
+    /// for a component of another module, checked before its kind.
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// let view = m.as_view();
+    /// let ty = view.function_type(view.i32_type(), [view.i64_type()])?;
+    /// assert_eq!(ty.to_string(), "i32 (i64)");
+    /// assert!(view.function_type(view.void_type(), [view.label_type()]).is_err());
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
     #[inline]
     pub fn function_type<I, R, T>(
         self,
         return_type: R,
         parameters: I,
-    ) -> FunctionType<'ctx, B, ReadOnly>
+    ) -> IrResult<FunctionType<'ctx, B, ReadOnly>>
     where
         I: IntoIterator<Item = T>,
         R: IrType<'ctx, B>,
@@ -1959,12 +1996,26 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     }
 
     /// Variadic function type `ret (params..., ...)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`function_type`](Self::function_type).
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// let view = m.as_view();
+    /// let ty = view.variadic_function_type(view.i32_type(), [view.ptr_type(0)])?;
+    /// assert_eq!(ty.to_string(), "i32 (ptr, ...)");
+    /// assert!(view.variadic_function_type(view.label_type(), [view.ptr_type(0)]).is_err());
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
     #[inline]
     pub fn variadic_function_type<I, R, T>(
         self,
         return_type: R,
         parameters: I,
-    ) -> FunctionType<'ctx, B, ReadOnly>
+    ) -> IrResult<FunctionType<'ctx, B, ReadOnly>>
     where
         I: IntoIterator<Item = T>,
         R: IrType<'ctx, B>,
@@ -1980,8 +2031,26 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     /// otherwise have to spell it. This pins the element type for them —
     /// `function_type_no_parameters(ret)` is exactly
     /// `function_type(ret, [] as [Type; 0])`.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidTypeComponent`] for a result
+    /// `FunctionType::isValidReturnType` refuses, [`IrError::ForeignType`] for
+    /// one of another module.
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// let view = m.as_view();
+    /// assert_eq!(view.function_type_no_parameters(view.void_type())?.to_string(), "void ()");
+    /// assert!(view.function_type_no_parameters(view.metadata_type()).is_err());
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
     #[inline]
-    pub fn function_type_no_parameters<R>(self, return_type: R) -> FunctionType<'ctx, B, ReadOnly>
+    pub fn function_type_no_parameters<R>(
+        self,
+        return_type: R,
+    ) -> IrResult<FunctionType<'ctx, B, ReadOnly>>
     where
         R: IrType<'ctx, B>,
     {
@@ -1995,11 +2064,25 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     /// Variadic sibling of
     /// [`function_type_no_parameters`](Self::function_type_no_parameters):
     /// `ret (...)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`function_type_no_parameters`](Self::function_type_no_parameters).
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// let view = m.as_view();
+    /// let ty = view.variadic_function_type_no_parameters(view.i32_type())?;
+    /// assert_eq!(ty.to_string(), "i32 (...)");
+    /// assert!(view.variadic_function_type_no_parameters(view.label_type()).is_err());
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
     #[inline]
     pub fn variadic_function_type_no_parameters<R>(
         self,
         return_type: R,
-    ) -> FunctionType<'ctx, B, ReadOnly>
+    ) -> IrResult<FunctionType<'ctx, B, ReadOnly>>
     where
         R: IrType<'ctx, B>,
     {
@@ -4047,7 +4130,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// assert_eq!(m.instruction_count(), 0);
     ///
     /// let i32_ty = m.i32_type();
-    /// let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    /// let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     /// let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     /// let entry = m.view(f).append_basic_block(&m, "entry");
     ///
@@ -4869,11 +4952,26 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     }
 
     /// Function type `ret (params...)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`ModuleView::function_type`]: an invalid result or parameter
+    /// ([`IrError::InvalidTypeComponent`]), or a component of another module
+    /// ([`IrError::ForeignType`]).
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// let ty = m.function_type(m.void_type(), [m.i32_type(), m.i32_type()])?;
+    /// assert_eq!(ty.to_string(), "void (i32, i32)");
+    /// assert!(m.function_type(m.i32_type(), [m.void_type()]).is_err());
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
     pub fn function_type<I, R, T>(
         &'ctx self,
         return_type: R,
         parameters: I,
-    ) -> FunctionType<'ctx, B>
+    ) -> IrResult<FunctionType<'ctx, B>>
     where
         I: IntoIterator<Item = T>,
         R: IrType<'ctx, B>,
@@ -4884,11 +4982,24 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     }
 
     /// Variadic function type `ret (params..., ...)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`function_type`](Self::function_type).
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// let ty = m.variadic_function_type(m.i32_type(), [m.ptr_type(0)])?;
+    /// assert_eq!(ty.to_string(), "i32 (ptr, ...)");
+    /// assert!(m.variadic_function_type(m.i32_type(), [m.label_type()]).is_err());
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
     pub fn variadic_function_type<I, R, T>(
         &'ctx self,
         return_type: R,
         parameters: I,
-    ) -> FunctionType<'ctx, B>
+    ) -> IrResult<FunctionType<'ctx, B>>
     where
         I: IntoIterator<Item = T>,
         R: IrType<'ctx, B>,
@@ -4901,7 +5012,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// A function type with no parameters. Avoids the empty-iterator
     /// inference cliff of [`function_type`](Self::function_type); see
     /// [`ModuleView::function_type_no_parameters`].
-    pub fn function_type_no_parameters<R>(&'ctx self, return_type: R) -> FunctionType<'ctx, B>
+    ///
+    /// # Errors
+    ///
+    /// An invalid result ([`IrError::InvalidTypeComponent`]) or one of
+    /// another module ([`IrError::ForeignType`]).
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// assert_eq!(m.function_type_no_parameters(m.i64_type())?.to_string(), "i64 ()");
+    /// assert!(m.function_type_no_parameters(m.label_type()).is_err());
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
+    pub fn function_type_no_parameters<R>(
+        &'ctx self,
+        return_type: R,
+    ) -> IrResult<FunctionType<'ctx, B>>
     where
         R: IrType<'ctx, B>,
     {
@@ -4914,10 +5041,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
 
     /// Variadic sibling of
     /// [`function_type_no_parameters`](Self::function_type_no_parameters).
+    ///
+    /// # Errors
+    ///
+    /// As [`function_type_no_parameters`](Self::function_type_no_parameters).
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// assert_eq!(m.variadic_function_type_no_parameters(m.void_type())?.to_string(), "void (...)");
+    /// assert!(m.variadic_function_type_no_parameters(m.metadata_type()).is_err());
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
     pub fn variadic_function_type_no_parameters<R>(
         &'ctx self,
         return_type: R,
-    ) -> FunctionType<'ctx, B>
+    ) -> IrResult<FunctionType<'ctx, B>>
     where
         R: IrType<'ctx, B>,
     {
@@ -4936,7 +5075,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     {
         let ret = Ret::ir_type(self.as_view())?;
         let params = Params::ir_types(self.as_view())?;
-        Ok(self.function_type(ret, params))
+        self.function_type(ret, params)
     }
 
     /// Fixed-arity typed function type from a Rust function-pointer
@@ -4958,7 +5097,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     {
         let ret = Ret::ir_type(self.as_view())?;
         let params = Params::ir_types(self.as_view())?;
-        Ok(self.variadic_function_type(ret, params))
+        self.variadic_function_type(ret, params)
     }
 
     /// Variadic typed function type from a Rust function-pointer schema.

@@ -55,7 +55,7 @@ impl<B: ModuleBrand> FunctionPass<B> for SplitEntryPass {
 fn reshape_pass_preserves_and_repairs_dominator_tree() -> Result<(), IrError> {
     let m = module_new!("witnessed-preservation")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let next = m.view(f).append_basic_block(&m, "next");
@@ -115,7 +115,7 @@ fn reshape_pass_preserves_and_repairs_dominator_tree() -> Result<(), IrError> {
 fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
     let m = module_new!("split-phi")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     // `Dyn`-marked throughout so every block/label the pass-context API
     // hands back (always `Dyn`) matches the builder's return marker without
     // a widening conversion (there isn't one — see `IntoBasicBlockLabel`).
@@ -231,7 +231,7 @@ fn split_block_refuses_an_instruction_of_another_block_without_mutating() -> Res
 
     let m = module_new!("split-block-foreign-block")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let next = m.view(f).append_basic_block(&m, "next");
@@ -331,7 +331,9 @@ fn build_diamond<'ctx, B: ModuleBrand + 'ctx>(
     m: &'ctx Module<B, llvmkit_ir::Unverified>,
 ) -> DiamondBuild<B> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m
+        .function_type(i32_ty, [i32_ty.as_type()])
+        .expect("valid function type");
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let left = m.view(f).append_basic_block(m, "left");
@@ -711,7 +713,9 @@ fn build_switch_redirect<'ctx, B: ModuleBrand + 'ctx>(
     m: &'ctx Module<B, llvmkit_ir::Unverified>,
 ) -> SwitchRedirectBuild<B> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m
+        .function_type(i32_ty, [i32_ty.as_type()])
+        .expect("valid function type");
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let dflt = m.view(f).append_basic_block(m, "dflt");
@@ -989,7 +993,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RemoveCondBrThen {
 fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
     let m = module_new!("redirect-condbr")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let old = m.view(f).append_basic_block(&m, "old");
@@ -1067,7 +1071,7 @@ fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
 fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
     let m = module_new!("remove-condbr")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let keep = m.view(f).append_basic_block(&m, "keep");
@@ -1138,7 +1142,7 @@ fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
 fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
     let m = module_new!("redirect-br")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let old = m.view(f).append_basic_block(&m, "old");
@@ -1205,7 +1209,9 @@ fn build_cond_br_pair<'ctx, B: ModuleBrand + 'ctx>(
     then_is_new: bool,
 ) -> CondBrPairBuild<B> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m
+        .function_type(i32_ty, [i32_ty.as_type()])
+        .expect("valid function type");
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let old = m.view(f).append_basic_block(m, "old");
@@ -1344,7 +1350,7 @@ fn build_cond_br_both_arms_phi<'ctx, B: ModuleBrand + 'ctx>(
     m: &'ctx Module<B, llvmkit_ir::Unverified>,
 ) -> IrResult<(llvmkit_ir::FunctionId<Dyn, B>, BlockId<Dyn, B>)> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let src = m.view(f).append_basic_block(m, "src");

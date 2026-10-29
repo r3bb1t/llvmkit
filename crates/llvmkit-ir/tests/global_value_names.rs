@@ -44,7 +44,8 @@ fn a_taken_name_is_uniqued_with_a_dot_and_the_module_counter() {
     let f = m
         .add_function_dyn(
             "f",
-            m.function_type_no_parameters(m.void_type()),
+            m.function_type_no_parameters(m.void_type())
+                .expect("valid function type"),
             Linkage::External,
         )
         .expect("@f");
@@ -145,7 +146,8 @@ fn every_global_kind_renames_and_prints_under_its_new_name() {
     let resolver = m
         .add_function_dyn(
             "resolver",
-            m.function_type_no_parameters(ptr_ty),
+            m.function_type_no_parameters(ptr_ty)
+                .expect("valid function type"),
             Linkage::External,
         )
         .expect("@resolver");
@@ -236,7 +238,8 @@ fn renaming_a_function_recomputes_its_intrinsic_identity() {
     let plain = m
         .add_function_dyn(
             "plain",
-            m.function_type_no_parameters(m.void_type()),
+            m.function_type_no_parameters(m.void_type())
+                .expect("valid function type"),
             Linkage::External,
         )
         .expect("@plain");
@@ -298,7 +301,8 @@ fn a_mismatched_function_holding_an_intrinsic_name_is_renamed_invalid() {
     let stale = m
         .add_function_dyn(
             "stale",
-            m.function_type_no_parameters(m.i32_type()),
+            m.function_type_no_parameters(m.i32_type())
+                .expect("valid function type"),
             Linkage::External,
         )
         .expect("@stale");
@@ -337,7 +341,8 @@ fn a_same_typed_definition_holding_an_intrinsic_name_is_returned() {
     let body = m
         .add_function_dyn(
             "body",
-            m.function_type_no_parameters(m.void_type()),
+            m.function_type_no_parameters(m.void_type())
+                .expect("valid function type"),
             Linkage::External,
         )
         .expect("@body");
@@ -376,7 +381,8 @@ fn a_rename_onto_an_intrinsic_name_with_another_signature_stores_no_identity() {
     let f = m
         .add_function_dyn(
             "f",
-            m.function_type_no_parameters(m.void_type()),
+            m.function_type_no_parameters(m.void_type())
+                .expect("valid function type"),
             Linkage::External,
         )
         .expect("@f");
@@ -409,7 +415,8 @@ fn is_intrinsic_answers_the_llvm_prefix_alone() {
     let f = m
         .add_function_dyn(
             "f",
-            m.function_type_no_parameters(m.void_type()),
+            m.function_type_no_parameters(m.void_type())
+                .expect("valid function type"),
             Linkage::External,
         )
         .expect("@f");
@@ -443,7 +450,8 @@ fn a_name_with_a_nul_byte_is_refused_and_changes_nothing() {
     let f = m
         .add_function_dyn(
             "f",
-            m.function_type(m.void_type(), [i32_ty.as_type()]),
+            m.function_type(m.void_type(), [i32_ty.as_type()])
+                .expect("valid function type"),
             Linkage::External,
         )
         .expect("@f");
@@ -497,7 +505,7 @@ fn a_void_value_refuses_a_name() -> Result<(), IrError> {
     let ptr_ty = m.ptr_type(0);
     let f = m.add_function_dyn(
         "f",
-        m.function_type(m.void_type(), [i32_ty.as_type(), ptr_ty.as_type()]),
+        m.function_type(m.void_type(), [i32_ty.as_type(), ptr_ty.as_type()])?,
         Linkage::External,
     )?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -537,7 +545,7 @@ fn a_void_value_refuses_a_name() -> Result<(), IrError> {
 fn inline_asm_and_metadata_values_refuse_a_name() -> Result<(), IrError> {
     let m = Module::dynamic("m");
     let asm = m.inline_asm(
-        m.function_type_no_parameters(m.void_type()),
+        m.function_type_no_parameters(m.void_type())?,
         "nop",
         "",
         InlineAsmOptions::new(),
@@ -591,7 +599,7 @@ fn declaring_an_intrinsic_over_a_same_typed_definition_leaves_its_arguments_alon
     let ptr_ty = m.ptr_type(0);
     let f = m.add_function_dyn(
         "f",
-        m.function_type(m.void_type(), [ptr_ty.as_type(), m.i32_type().as_type()]),
+        m.function_type(m.void_type(), [ptr_ty.as_type(), m.i32_type().as_type()])?,
         Linkage::External,
     )?;
     m.view(f).param(0)?.set_name(&m, "p")?;
@@ -638,7 +646,7 @@ fn a_refused_intrinsic_declaration_leaves_a_mismatched_holder_alone() -> Result<
     let other = Module::dynamic("other");
     let holder = m.add_function_dyn(
         "holder",
-        m.function_type_no_parameters(m.void_type()),
+        m.function_type_no_parameters(m.void_type())?,
         Linkage::External,
     )?;
     m.view(holder).set_name(&m, "llvm.ctpop.i32")?;

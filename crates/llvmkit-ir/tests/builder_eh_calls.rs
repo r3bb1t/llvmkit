@@ -21,10 +21,10 @@ use llvmkit_ir::{
 fn invoke_void_to_unwind() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let void_ty = m.void_type();
-    let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let callee = m.add_function_dyn("f.fastcc", callee_ty, Linkage::External)?;
     m.view(callee).set_calling_conv(&m, CallingConv::FAST);
-    let caller_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let caller_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let caller = m.add_function_dyn("instructions.terminators", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let normal = m.view(caller).append_basic_block(&m, "defaultdest");
@@ -109,7 +109,7 @@ fn callbr_void_with_one_indirect_dest() -> Result<(), IrError> {
     let bool_ty = m.bool_type();
     let void_ty = m.void_type();
     let callee = m.get_or_insert_intrinsic_declaration_by_name("llvm.amdgcn.kill")?;
-    let caller_ty = m.function_type(void_ty.as_type(), [bool_ty.as_type()]);
+    let caller_ty = m.function_type(void_ty.as_type(), [bool_ty.as_type()])?;
     let caller = m.add_function_dyn("test_kill", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let kill = m.view(caller).append_basic_block(&m, "kill");
@@ -152,14 +152,14 @@ fn callbr_void_with_one_indirect_dest() -> Result<(), IrError> {
 fn callbr_two_indirect_dests_print_form() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let void_ty = m.void_type();
-    let asm_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let asm_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let asm = m.inline_asm(
         asm_ty,
         "",
         "~{flags},!i",
         InlineAsmOptions::new().side_effects(),
     );
-    let caller_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let caller_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let caller = m.add_function_dyn("foo", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let bb1 = m.view(caller).append_basic_block(&m, "1");
@@ -206,8 +206,8 @@ fn an_indirect_invoke_refuses_a_return_marker_its_type_does_not_have() -> Result
     let m = module_new!("a")?;
     let void_ty = m.void_type();
     let ptr_ty = m.ptr_type(0);
-    let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
-    let caller_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
+    let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
+    let caller_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let first = m.view(caller).append_basic_block(&m, "first");
     let second = m.view(caller).append_basic_block(&m, "second");
@@ -268,10 +268,10 @@ fn the_indirect_and_inline_asm_call_sites_honour_a_call_site_type_override() -> 
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
-    let fallback = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
-    let override_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()]);
+    let fallback = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
+    let override_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()])?;
     let asm = m.inline_asm(fallback, "nop", "", InlineAsmOptions::new());
-    let caller_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type(), i32_ty.as_type()]);
+    let caller_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type(), i32_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let fp = PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(m.view(caller).param(0)?)?;
     let v = m.view(caller).param(1)?;

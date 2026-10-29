@@ -222,7 +222,7 @@ fn verifier_rejects_nonconstant_immarg_operand() -> Result<(), IrError> {
     let i1_ty = m.bool_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let caller_ty = m.function_type(void_ty.as_type(), [i32_ty.as_type(), i1_ty.as_type()]);
+    let caller_ty = m.function_type(void_ty.as_type(), [i32_ty.as_type(), i1_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let descriptor = IntrinsicDescriptor::new(IntrinsicId::ABS, [i32_ty.as_type()])?;
     let abs = m.get_or_insert_intrinsic_declaration(&descriptor)?;
@@ -256,7 +256,7 @@ fn descriptor_call_builder_returns_intrinsic_view() -> Result<(), IrError> {
     let i1_ty = m.bool_type();
     let i32_ty = m.i32_type();
     let descriptor = IntrinsicDescriptor::new(IntrinsicId::ABS, [i32_ty.as_type()])?;
-    let caller_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()]);
+    let caller_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -291,7 +291,7 @@ fn mem_intrinsic_wrapper_narrows_generated_memory_call() -> Result<(), IrError> 
     let caller_ty = m.function_type(
         m.void_type().as_type(),
         [ptr_ty.as_type(), ptr_ty.as_type(), i64_ty.as_type()],
-    );
+    )?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -330,7 +330,7 @@ fn mem_intrinsic_wrapper_narrows_generated_inline_memory_calls() -> Result<(), I
     let caller_ty = m.function_type(
         m.void_type().as_type(),
         [ptr_ty.as_type(), ptr_ty.as_type(), i64_ty.as_type()],
-    );
+    )?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -384,7 +384,7 @@ fn lifetime_intrinsic_wrapper_narrows_generated_lifetime_call() -> Result<(), Ir
     let m = module_new!("intrinsic-lifetime-wrapper")?;
     let ptr_ty = m.ptr_type(0);
     let descriptor = IntrinsicDescriptor::new(IntrinsicId::LIFETIME_START, [ptr_ty.as_type()])?;
-    let caller_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()]);
+    let caller_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -407,7 +407,7 @@ fn descriptor_call_builder_rejects_wrong_argument_count() -> Result<(), IrError>
     let m = module_new!("intrinsic-call-arity")?;
     let i32_ty = m.i32_type();
     let descriptor = IntrinsicDescriptor::new(IntrinsicId::ABS, [i32_ty.as_type()])?;
-    let caller_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()]);
+    let caller_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -528,12 +528,20 @@ fn target_extension_overload_name_round_trips() -> Result<(), IrError> {
 
 /// Mirrors `llvm/lib/IR/Intrinsics.cpp::getMangledTypeStr`: function overload
 /// suffixes close with `f`, preserve `vararg`, and can contain named structs.
+///
+/// `%Point` has a body: a function parameter must be first class
+/// (`FunctionType::isValidArgumentType` through `Type::isFirstClassType`),
+/// which an opaque struct is not, and `FunctionType::FunctionType` asserts it.
+/// The mangled suffix spells the struct's name either way (the `s_` arm of
+/// `getMangledTypeStr`).
 #[test]
 fn function_and_named_struct_mangled_overload_suffix_round_trips() -> Result<(), IrError> {
     let m = module_new!("intrinsic-function-struct-overload")?;
-    let point = m.get_or_insert_named_struct("Point").as_type();
+    let point_struct = m.get_or_insert_named_struct("Point");
+    m.set_struct_body_dyn(point_struct, [m.i32_type().as_type()], false)?;
+    let point = point_struct.as_type();
     let fn_overload = m
-        .variadic_function_type(m.i32_type().as_type(), [point, m.ptr_type(0).as_type()])
+        .variadic_function_type(m.i32_type().as_type(), [point, m.ptr_type(0).as_type()])?
         .as_type();
     let name = "llvm.dx.resource.handlefrombinding.f_i32s_Pointsp0varargf";
     let id = IntrinsicId::lookup(name).expect("dx function overload intrinsic");
@@ -627,7 +635,7 @@ fn asm_writer_prints_generated_intrinsic_immediate_argument_comments() -> Result
     let id = IntrinsicId::lookup("llvm.nvvm.tensormap.replace.fill.mode")
         .expect("nvvm tensormap replace fill mode intrinsic");
     let descriptor = IntrinsicDescriptor::new(id, [ptr_ty.as_type()])?;
-    let caller_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()]);
+    let caller_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

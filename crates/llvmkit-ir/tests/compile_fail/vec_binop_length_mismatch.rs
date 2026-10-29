@@ -14,7 +14,7 @@ fn main() {
     let v4 = VectorType::of(i32_ty, lanes::<4>());
     let v2 = VectorType::of(i32_ty, lanes::<2>());
     let void_ty = m.void_type();
-    let fn_ty = m.function_type(void_ty.as_type(), [v4.as_type(), v2.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [v4.as_type(), v2.as_type()]).expect("valid function type");
     let f = m.add_function_dyn("g", fn_ty, Linkage::External).unwrap();
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

@@ -25,7 +25,7 @@ impl ModuleBrand for Right {}
 fn main() -> Result<(), IrError> {
     let left = Module::branded::<Left, _>("left")?;
     let point_ty = left.as_view().get_or_insert_struct_of::<Point>()?;
-    let fn_ty = left.function_type(left.void_type(), [point_ty.as_type()]);
+    let fn_ty = left.function_type(left.void_type(), [point_ty.as_type()])?;
     let left_fn = left.add_function_dyn("left", fn_ty, Linkage::External)?;
     let left_point = PointValue::try_from(left.view(left_fn).param(0)?)?;
 

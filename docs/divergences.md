@@ -163,6 +163,29 @@ the public `TryFrom<Value>` impls of `GlobalVariable`, `GlobalAlias`,
 impls unwrap a `GlobalValueRef` whose referent is their kind, as D3 says the
 wrapper *is* the global.
 
+**Also open — instruction operands, and with them an intrinsic's
+address-taken guard (accepts-invalid).** An instruction operand built from
+`FunctionValue::as_global_constant_ptr` records its edge against the wrapper
+too, so the function's own use list never sees the instruction. The
+Verifier's port of `F.hasAddressTaken` (`function_address_is_taken`, behind
+`Verifier::visitFunction`'s `Invalid user of intrinsic instruction!` check)
+walks that list, so a builder-made `call void @sink(ptr @llvm.bswap.i32)`
+verifies clean where upstream rejects it — the call is a user of the
+intrinsic and the use is not its callee (derived from `Verifier::visitFunction`
+and `Function::hasAddressTaken`; llvmkit's half observed). Text cannot spell
+the call — the parser refuses `ptr @f` as a call argument (gap **G20** in
+`docs/fixture-coverage.md`) — so only the builder reaches it. The
+global-initializer form, `@g1 = global ptr @llvm.bswap.i32`, is refused, its
+edge unwrapped as above. Found at Task 5 of the type-constructor plan
+(2026-10-29, over `ad8261a`): `crates/llvmkit-ir/tests/verifier_basic.rs::intrinsic_declaration_used_as_non_callee_operand_is_rejected`
+had passed only by building `void (i32 (i32))`, a function type
+`FunctionType::FunctionType` asserts against, and handing it the function's
+own value; rewritten with a `ptr` parameter and `as_global_constant_ptr`, the
+call form verified clean, and the test now pins the initializer form. Fix:
+unwrap the wrapper where an instruction operand's edge is registered, as
+`use_edge_target` does for global fields, then restore the call form in that
+test.
+
 ### D4 — Two uses by the same user are indistinguishable
 
 **Severity:** wrong-output (narrow)

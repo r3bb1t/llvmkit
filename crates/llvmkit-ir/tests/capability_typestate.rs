@@ -62,7 +62,8 @@ fn a_verified_modules_values_are_read_only() {
     let f = m
         .add_function_dyn(
             "f",
-            m.function_type_no_parameters(i32_ty),
+            m.function_type_no_parameters(i32_ty)
+                .expect("valid function type"),
             Linkage::External,
         )
         .expect("f");
@@ -91,7 +92,8 @@ fn a_builder_admits_a_read_only_operand_and_refuses_a_foreign_one() {
     let f = m
         .add_function_dyn(
             "f",
-            m.function_type_no_parameters(i32_ty),
+            m.function_type_no_parameters(i32_ty)
+                .expect("valid function type"),
             Linkage::External,
         )
         .expect("f");
@@ -143,7 +145,8 @@ fn a_verified_modules_globals_functions_and_comdats_are_read_only() {
     let f = m
         .add_function_dyn(
             "f",
-            m.function_type(i32_ty, [i32_ty.as_type()]),
+            m.function_type(i32_ty, [i32_ty.as_type()])
+                .expect("valid function type"),
             Linkage::External,
         )
         .expect("f");
@@ -152,7 +155,8 @@ fn a_verified_modules_globals_functions_and_comdats_are_read_only() {
     let resolver = m
         .add_function_dyn(
             "resolver",
-            m.function_type_no_parameters(m.ptr_type(0)),
+            m.function_type_no_parameters(m.ptr_type(0))
+                .expect("valid function type"),
             Linkage::Internal,
         )
         .expect("resolver");
@@ -164,7 +168,8 @@ fn a_verified_modules_globals_functions_and_comdats_are_read_only() {
     let ifunc = m
         .ifunc_builder(
             "i",
-            m.function_type_no_parameters(m.void_type()),
+            m.function_type_no_parameters(m.void_type())
+                .expect("valid function type"),
             m.view(resolver).as_global_constant_ptr(),
         )
         .build()
@@ -326,14 +331,16 @@ fn a_builder_admits_a_read_only_callee_and_refuses_a_foreign_one() {
     let callee = m
         .add_function_dyn(
             "callee",
-            m.function_type_no_parameters(i32_ty),
+            m.function_type_no_parameters(i32_ty)
+                .expect("valid function type"),
             Linkage::External,
         )
         .expect("callee");
     let f = m
         .add_function_dyn(
             "f",
-            m.function_type_no_parameters(i32_ty),
+            m.function_type_no_parameters(i32_ty)
+                .expect("valid function type"),
             Linkage::External,
         )
         .expect("f");
@@ -345,7 +352,9 @@ fn a_builder_admits_a_read_only_callee_and_refuses_a_foreign_one() {
     let other_callee = other
         .add_function_dyn(
             "callee",
-            other.function_type_no_parameters(other.i32_type()),
+            other
+                .function_type_no_parameters(other.i32_type())
+                .expect("valid function type"),
             Linkage::External,
         )
         .expect("other callee");
@@ -519,7 +528,7 @@ fn a_verified_modules_blocks_and_instructions_are_read_only() -> Result<(), IrEr
     let callee = m.add_typed_function::<i32, (), _>("callee", Linkage::External)?;
     let f = m.add_function_dyn(
         "f",
-        m.function_type(m.void_type().as_type(), [ptr_ty.as_type()]),
+        m.function_type(m.void_type().as_type(), [ptr_ty.as_type()])?,
         Linkage::External,
     )?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -704,7 +713,7 @@ fn read_only_predicates_take_each_operand_at_its_own_capability() -> Result<(), 
     // `add nuw` and `udiv exact`, then read back through the verified module.
     let f = m.add_function_dyn(
         "f",
-        m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]),
+        m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?,
         Linkage::External,
     )?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -748,7 +757,7 @@ fn the_function_analyses_read_a_function_of_either_capability() -> Result<(), Ir
     let i32_ty = m.i32_type();
     let f = m.add_function_dyn(
         "f",
-        m.function_type(i32_ty, [i32_ty.as_type()]),
+        m.function_type(i32_ty, [i32_ty.as_type()])?,
         Linkage::External,
     )?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -883,7 +892,8 @@ fn an_inspect_pass_sees_only_read_only_instruction_views() {
     let f = m
         .add_function_dyn(
             "f",
-            m.function_type_no_parameters(i32_ty),
+            m.function_type_no_parameters(i32_ty)
+                .expect("valid function type"),
             Linkage::External,
         )
         .expect("f");
@@ -963,7 +973,7 @@ fn the_value_tracking_analyses_read_values_of_either_capability() -> Result<(), 
     let i32_ty = m.i32_type();
     let f = m.add_function_dyn(
         "f",
-        m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]),
+        m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?,
         Linkage::External,
     )?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -1181,7 +1191,7 @@ fn a_patch_body_pass_builds_with_a_type_read_through_its_view() -> Result<(), Ir
     let i32_ty = m.i32_type();
     let f = m.add_function_dyn(
         "f",
-        m.function_type(i32_ty, [i32_ty.as_type()]),
+        m.function_type(i32_ty, [i32_ty.as_type()])?,
         Linkage::External,
     )?;
     let parameter: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;

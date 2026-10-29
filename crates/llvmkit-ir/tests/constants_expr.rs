@@ -122,7 +122,7 @@ fn constant_expr_ptrtoaddr_round_trips() -> Result<(), IrError> {
 fn blockaddress_constant_round_trips() -> Result<(), IrError> {
     let m = module_new!("blockaddress_const")?;
     let void_ty = m.void_type();
-    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let addr = m.block_address(m.view(f), &entry)?;
@@ -143,7 +143,7 @@ fn blockaddress_constant_round_trips() -> Result<(), IrError> {
 fn blockaddress_constant_uses_function_address_space() -> Result<(), IrError> {
     let m = module_new!("blockaddress_addrspace_const")?;
     let void_ty = m.void_type();
-    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m
         .function_builder::<(), _>("f", fn_ty)
         .linkage(Linkage::External)

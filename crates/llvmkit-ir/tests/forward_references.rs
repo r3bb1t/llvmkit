@@ -23,7 +23,7 @@ use llvmkit_ir::{BinaryOpcode, IntBinOpFlags, IrBuilder, IrError, Linkage, NoFol
 fn rauw_repoints_instruction_operands() -> Result<(), IrError> {
     let m = module_new!("fwd-instruction")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -62,7 +62,7 @@ fn rauw_reinterns_constant_users() -> Result<(), IrError> {
     let m = module_new!("fwd-constant")?;
     let i32_ty = m.i32_type();
     let array_ty = m.array_type_n::<i32, 2>();
-    let fn_ty = m.function_type(array_ty.as_type(), [i32_ty.as_type()]);
+    let fn_ty = m.function_type(array_ty.as_type(), [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -99,7 +99,7 @@ fn rauw_reinterns_constant_users() -> Result<(), IrError> {
 fn rauw_survives_a_self_reference() -> Result<(), IrError> {
     let m = module_new!("fwd-self")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -248,7 +248,7 @@ fn rauw_inside_a_constant_rejects_a_non_constant_replacement() -> Result<(), IrE
     let m = module_new!("fwd-constant-mismatch")?;
     let i32_ty = m.i32_type();
     let array_ty = m.array_type_n::<i32, 2>();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     m.view(f).append_basic_block(&m, "entry");
 

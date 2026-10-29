@@ -36,7 +36,7 @@ fn a_typed_pointer_type_carries_its_address_space() {
 #[test]
 fn narrowing_a_dyn_pointer_checks_its_address_space() -> Result<(), IrError> {
     let m = Module::dynamic("spaces");
-    let fn_ty = m.function_type(m.void_type(), [m.ptr_type(1).as_type()]);
+    let fn_ty = m.function_type(m.void_type(), [m.ptr_type(1).as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let arg: PointerValue<'_, SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let one: Result<PointerValue<'_, Space<1>, _>, IrError> = PointerValue::try_from(arg);
@@ -147,7 +147,7 @@ fn ptr_means_address_space_zero() -> Result<(), IrError> {
         "{text}"
     );
 
-    let fn_ty = m.function_type_no_parameters(m.ptr_type(1).as_type());
+    let fn_ty = m.function_type_no_parameters(m.ptr_type(1).as_type())?;
     m.add_function_dyn("ret_one", fn_ty, Linkage::External)?;
     assert!(m.function::<Ptr>("ret_one").is_err());
     assert!(m.function::<Ptr<1>>("ret_one")?.is_some());

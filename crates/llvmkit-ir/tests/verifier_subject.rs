@@ -134,7 +134,7 @@ fn a_whole_function_finding_names_the_function() -> Result<(), IrError> {
 fn a_body_finding_names_the_function_and_its_block() -> Result<(), IrError> {
     let m = module_new!("subject")?;
     let void = m.void_type();
-    let fn_ty = m.function_type_no_parameters(void);
+    let fn_ty = m.function_type_no_parameters(void)?;
     let f = m.add_function_dyn("empty", fn_ty, Linkage::External)?;
     let _entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -251,7 +251,9 @@ fn no_verifier_failure_stores_a_sigil() -> Result<(), IrError> {
     };
     let unterminated = {
         let m = module_new!("subject")?;
-        let fn_ty = m.function_type_no_parameters(m.void_type());
+        let fn_ty = m
+            .function_type_no_parameters(m.void_type())
+            .expect("valid function type");
         let f = m.add_function_dyn("empty", fn_ty, Linkage::External)?;
         let _entry = m.view(f).append_basic_block(&m, "entry");
         m.verify_borrowed().expect_err("invalid")

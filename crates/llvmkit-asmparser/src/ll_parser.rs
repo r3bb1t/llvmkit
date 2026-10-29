@@ -7552,7 +7552,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
 
         let params: Vec<Type<'ctx, B>> = args.iter().map(|arg| arg.ty).collect();
-        let fn_ty = function_type_with_variadic(self.module, ret, params, var_args);
+        // The result was refused above and each parameter where it was parsed
+        // (`parse_argument_list`), as `LLParser::parseFunctionType` and
+        // `parseArgumentList` do, so the constructor's own refusal is a
+        // backstop only: `FunctionType::get` runs with nothing after it that
+        // can fail.
+        let fn_ty = function_type_with_variadic(self.module, ret, params, var_args)
+            .map_err(|e| self.builder_err("function type", e))?;
         Ok(fn_ty.as_type())
     }
 
@@ -11623,7 +11629,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let suffix = self.parse_optional_function_suffix(&mut attrs)?;
         self.check_function_attribute_rules(&suffix, &attrs, ret_ty, ret_ty_loc)?;
 
-        let fn_ty = function_type_with_variadic(self.module, ret_ty, params, var_args);
+        // The result and each parameter were refused where they were parsed,
+        // as `LLParser::parseFunctionHeader` and `parseArgumentList` do, so the
+        // constructor's own refusal is a backstop only.
+        let fn_ty = function_type_with_variadic(self.module, ret_ty, params, var_args)
+            .map_err(|e| self.builder_err_at(decl_loc, "function type", e))?;
         match resolve_intrinsic_name(&name) {
             IntrinsicNameResolution::NonIntrinsic => {}
             IntrinsicNameResolution::UnknownIntrinsic => {
@@ -11940,7 +11950,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.check_function_attribute_rules(&suffix, &attrs, ret_ty, ret_ty_loc)?;
         let function_metadata = self.parse_optional_function_metadata()?;
 
-        let fn_ty = function_type_with_variadic(self.module, ret_ty, param_types, var_args);
+        // As in `parse_declare`: the result and each parameter were refused
+        // where they were parsed, so this refusal is a backstop only.
+        let fn_ty = function_type_with_variadic(self.module, ret_ty, param_types, var_args)
+            .map_err(|e| self.builder_err_at(decl_loc, "function type", e))?;
         let forward_ref =
             self.claim_function_forward_ref(&name, &name_id, address_space, decl_loc)?;
         // `Fn = Function::Create(FT, ExternalLinkage, AddrSpace, FunctionName,
@@ -14278,12 +14291,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         self.message_at(ret_ty_loc, "Invalid result type for LLVM function")
                     );
                 }
+                // Each argument type was refused where it was parsed
+                // (`parse_parameter_list`, as `LLParser::parseParameterList`
+                // does), so the constructor's own refusal is a backstop only.
                 function_type_with_variadic(
                     self.module,
                     callee_ty,
                     arg_list.iter().map(|arg| arg.ty),
                     false,
                 )
+                .map_err(|e| self.builder_err_at(ret_ty_loc, "function type", e))?
             }
         };
         // `CalleeID.StrVal` survives `convertValIDToValue` upstream because
@@ -15415,12 +15432,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         self.message_at(ret_ty_loc, "Invalid result type for LLVM function")
                     );
                 }
+                // As in `parse_call`: each argument type was refused where it
+                // was parsed, so this refusal is a backstop only.
                 function_type_with_variadic(
                     self.module,
                     callee_ty,
                     arg_list.iter().map(|arg| arg.ty),
                     false,
                 )
+                .map_err(|e| self.builder_err_at(ret_ty_loc, "function type", e))?
             }
         };
         // `parseInvoke` resolves the callee before the argument loop, exactly
@@ -15555,12 +15575,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         self.message_at(ret_ty_loc, "Invalid result type for LLVM function")
                     );
                 }
+                // As in `parse_call`: each argument type was refused where it
+                // was parsed, so this refusal is a backstop only.
                 function_type_with_variadic(
                     self.module,
                     callee_ty,
                     arg_list.iter().map(|arg| arg.ty),
                     false,
                 )
+                .map_err(|e| self.builder_err_at(ret_ty_loc, "function type", e))?
             }
         };
         // `parseCallBr` resolves the callee before the argument loop, exactly
@@ -16832,7 +16855,7 @@ fn function_type_with_variadic<'ctx, B, I, R, T>(
     return_type: R,
     parameters: I,
     var_args: bool,
-) -> llvmkit_ir::FunctionType<'ctx, B>
+) -> IrResult<llvmkit_ir::FunctionType<'ctx, B>>
 where
     B: ModuleBrand + 'ctx,
     I: IntoIterator<Item = T>,

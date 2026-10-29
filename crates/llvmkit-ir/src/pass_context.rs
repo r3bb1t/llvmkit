@@ -3478,7 +3478,7 @@ mod tests {
     fn inspect_cx_reads_analysis_and_reports_all() -> Result<(), IrError> {
         let m = crate::module_new!("inspect-cx")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.function_type_no_parameters(i32_ty);
+        let fn_ty = m.function_type_no_parameters(i32_ty)?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -3515,7 +3515,7 @@ mod tests {
     fn patchbody_mutate_erase_reports_cfg_floor() -> Result<(), IrError> {
         let m = crate::module_new!("patch-cx")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -3579,7 +3579,7 @@ mod tests {
     fn patchbody_reaches_types_through_module_view() -> Result<(), IrError> {
         let m = crate::module_new!("patch-types")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.function_type_no_parameters(i32_ty);
+        let fn_ty = m.function_type_no_parameters(i32_ty)?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -3623,7 +3623,7 @@ mod tests {
     fn patchbody_builder_at_witnesses_dirty() -> Result<(), IrError> {
         let m = crate::module_new!("patch-builder-dirty")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         // A second, deliberately-open block so an end-of-block insert point
@@ -3666,7 +3666,7 @@ mod tests {
     fn terminator_does_not_narrow_to_non_terminator() -> Result<(), IrError> {
         let m = crate::module_new!("patch-term")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -3693,7 +3693,7 @@ mod tests {
     fn patchbody_analysis_available_during_mutation() -> Result<(), IrError> {
         let m = crate::module_new!("patch-analysis")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -3725,7 +3725,7 @@ mod tests {
     fn body_instructions_early_inc_erase_of_yielded() -> Result<(), IrError> {
         let m = crate::module_new!("body-cursor")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -3766,7 +3766,7 @@ mod tests {
     fn reshape_cfg_floor_is_none() -> Result<(), IrError> {
         let m = crate::module_new!("reshape-cx")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.function_type_no_parameters(i32_ty);
+        let fn_ty = m.function_type_no_parameters(i32_ty)?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -3804,7 +3804,7 @@ mod tests {
     fn reshape_cfg_noop_preserves_everything() -> Result<(), IrError> {
         let m = crate::module_new!("reshape-noop")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.function_type_no_parameters(i32_ty);
+        let fn_ty = m.function_type_no_parameters(i32_ty)?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -3838,7 +3838,7 @@ mod tests {
         use crate::CfgUpdate;
         let m = crate::module_new!("reshape-cfgupdate")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.function_type_no_parameters(i32_ty);
+        let fn_ty = m.function_type_no_parameters(i32_ty)?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let next = m.view(f).append_basic_block(&m, "next");
@@ -3902,7 +3902,7 @@ mod tests {
     fn analysis_repaired_reflects_the_edit() -> Result<(), IrError> {
         let m = crate::module_new!("reshape-repaired")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.function_type_no_parameters(i32_ty);
+        let fn_ty = m.function_type_no_parameters(i32_ty)?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let next = m.view(f).append_basic_block(&m, "next");
@@ -3958,7 +3958,7 @@ mod tests {
     fn inspect_modcx_reads_analysis_and_reports_all() -> Result<(), IrError> {
         let m = crate::module_new!("inspect-modcx")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.function_type_no_parameters(i32_ty);
+        let fn_ty = m.function_type_no_parameters(i32_ty)?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -3999,7 +3999,7 @@ mod tests {
     fn rewrite_module_mutate_reports_none_floor() -> Result<(), IrError> {
         let m = crate::module_new!("rewrite-modcx")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.function_type_no_parameters(i32_ty);
+        let fn_ty = m.function_type_no_parameters(i32_ty)?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -4040,7 +4040,7 @@ mod tests {
     fn patch_functions_visits_defs_and_can_patch() -> Result<(), IrError> {
         let m = crate::module_new!("foreach-modcx")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
 
         // Definition `f1` with a dead `add` we can erase.
         let f1 = m.add_function_dyn("f1", fn_ty, Linkage::External)?;
@@ -4123,7 +4123,7 @@ mod tests {
     fn worklist_operand_cascade_reaches_fixpoint() -> Result<(), IrError> {
         let m = crate::module_new!("wl-cascade")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -4165,7 +4165,7 @@ mod tests {
     fn erase_pushes_operands_onto_active_worklist() -> Result<(), IrError> {
         let m = crate::module_new!("wl-erase-push")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -4227,7 +4227,9 @@ mod tests {
         // setup that used to ride the closure's `?` reports by `expect`.
         let m = crate::module_new!("wl-nested").expect("fresh module");
         let i32_ty = m.i32_type();
-        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+        let fn_ty = m
+            .function_type(i32_ty, [i32_ty.as_type()])
+            .expect("valid function type");
         let f = m
             .add_function_dyn("f", fn_ty, Linkage::External)
             .expect("function");
@@ -4257,7 +4259,7 @@ mod tests {
     fn module_view_into_iter_yields_functions_in_order() -> Result<(), IrError> {
         let m = crate::module_new!("mv-into-iter")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.function_type_no_parameters(i32_ty);
+        let fn_ty = m.function_type_no_parameters(i32_ty)?;
         m.add_function_dyn("first", fn_ty, Linkage::External)?;
         m.add_function_dyn("second", fn_ty, Linkage::External)?;
         m.add_function_dyn("third", fn_ty, Linkage::External)?;
@@ -4283,7 +4285,7 @@ mod tests {
     fn function_view_into_iter_yields_blocks_in_order() -> Result<(), IrError> {
         let m = crate::module_new!("fv-into-iter")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.function_type_no_parameters(i32_ty);
+        let fn_ty = m.function_type_no_parameters(i32_ty)?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let exit = m.view(f).append_basic_block(&m, "exit");
@@ -4315,7 +4317,7 @@ mod tests {
     fn basic_block_view_into_iter_yields_instructions_in_order() -> Result<(), IrError> {
         let m = crate::module_new!("bbv-into-iter")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

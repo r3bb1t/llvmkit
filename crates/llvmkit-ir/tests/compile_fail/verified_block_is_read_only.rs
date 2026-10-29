@@ -37,7 +37,7 @@ fn main() {
     let g = other
         .add_function_dyn(
             "g",
-            other.function_type_no_parameters(other.void_type()),
+            other.function_type_no_parameters(other.void_type()).expect("valid function type"),
             Linkage::External,
         )
         .expect("g");
@@ -48,7 +48,7 @@ fn main() {
     let f = m
         .add_function_dyn(
             "f",
-            m.function_type_no_parameters(i32_ty),
+            m.function_type_no_parameters(i32_ty).expect("valid function type"),
             Linkage::External,
         )
         .expect("f");

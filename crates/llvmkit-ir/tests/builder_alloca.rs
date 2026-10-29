@@ -16,7 +16,7 @@ fn alloca_plain() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.function_type(ptr_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let fn_ty = m.function_type(ptr_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("a", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -35,7 +35,7 @@ fn alloca_array_size() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.function_type(ptr_ty.as_type(), [i32_ty.as_type()]);
+    let fn_ty = m.function_type(ptr_ty.as_type(), [i32_ty.as_type()])?;
     let f = m.add_function_dyn("a", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -54,7 +54,7 @@ fn alloca_aligned() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.function_type(ptr_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let fn_ty = m.function_type(ptr_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("a", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

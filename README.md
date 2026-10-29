@@ -375,7 +375,7 @@ use llvmkit_ir::{IrBuilder, IrError, Len, Linkage, VectorValue, module_new};
 fn typed_vec() -> Result<(), IrError> {
     let m = module_new!("demo")?;
     let v4i32 = m.vector_type_n::<i32, 4>(); // VectorType<'_, i32, Len<4>>
-    let fn_ty = m.function_type(m.i32_type().as_type(), [v4i32.as_type(), v4i32.as_type()]);
+    let fn_ty = m.function_type(m.i32_type().as_type(), [v4i32.as_type(), v4i32.as_type()])?;
     let f = m.add_function_dyn("vadd", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::at_end(entry);

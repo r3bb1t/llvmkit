@@ -41,7 +41,7 @@ where
 {
     let m = Module::dynamic(name);
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()])?;
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -260,7 +260,7 @@ fn sext_and_trunc_arms_never_over_report() -> Result<(), IrError> {
     let m = Module::dynamic("nsb-casts");
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty.as_type());
+    let fn_ty = m.function_type_no_parameters(i32_ty.as_type())?;
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);

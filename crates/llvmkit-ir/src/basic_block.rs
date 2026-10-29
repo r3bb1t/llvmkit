@@ -1854,7 +1854,9 @@ mod tests {
     fn erased_block_value_narrows_to_dyn_params_label() {
         let m = crate::module_new!("bp-slice1-narrow").expect("fresh module");
         let void_ty = m.void_type().as_type();
-        let fn_ty = m.function_type_no_parameters(void_ty);
+        let fn_ty = m
+            .function_type_no_parameters(void_ty)
+            .expect("valid function type");
         let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
         let bb = m.view(f).append_basic_block(&m, "entry");
 
@@ -1876,7 +1878,9 @@ mod tests {
     fn label_to_erased_round_trips_to_dyn_params() {
         let m = crate::module_new!("bp-slice1-roundtrip").expect("fresh module");
         let void_ty = m.void_type().as_type();
-        let fn_ty = m.function_type_no_parameters(void_ty);
+        let fn_ty = m
+            .function_type_no_parameters(void_ty)
+            .expect("valid function type");
         let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
         let bb = m.view(f).append_basic_block(&m, "entry");
         let label = bb.label();

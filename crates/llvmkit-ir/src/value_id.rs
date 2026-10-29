@@ -1294,7 +1294,7 @@ mod tests {
     fn block_id_slot_in_refuses_an_id_of_another_module() -> Result<(), IrError> {
         let home = Module::dynamic("home");
         let foreign = Module::dynamic("foreign");
-        let fn_ty = home.function_type_no_parameters(home.void_type());
+        let fn_ty = home.function_type_no_parameters(home.void_type())?;
         let f = home.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = home.view(f).append_basic_block(&home, "entry");
         let id = entry.id();

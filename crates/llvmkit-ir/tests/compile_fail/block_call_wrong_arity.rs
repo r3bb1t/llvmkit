@@ -19,7 +19,7 @@ use llvmkit_ir::{IrBuilder, Linkage, Module, Type};
 fn main() {
     let m = Module::dynamic("c");
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, Vec::<Type<_>>::new());
+    let fn_ty = m.function_type(i32_ty, Vec::<Type<_>>::new()).expect("valid function type");
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
 
     let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m);

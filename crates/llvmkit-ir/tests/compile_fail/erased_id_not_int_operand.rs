@@ -37,7 +37,7 @@ where
 fn main() {
     let m = Module::dynamic("c");
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]).expect("valid function type");
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
 
     // Mint an *erased* id from a typed handle.

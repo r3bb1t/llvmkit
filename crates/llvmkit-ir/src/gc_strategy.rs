@@ -17,7 +17,7 @@
 //! use llvmkit_ir::{IrError, Linkage, gc_strategy, module_new};
 //!
 //! let m = module_new!("gc")?;
-//! let fn_ty = m.function_type_no_parameters(m.void_type());
+//! let fn_ty = m.function_type_no_parameters(m.void_type())?;
 //! let f = m.add_function_dyn("collected", fn_ty, Linkage::External)?;
 //! m.view(f).set_gc(&m, gc_strategy::STATEPOINT_EXAMPLE);
 //! assert_eq!(m.view(f).gc().as_deref(), Some("statepoint-example"));

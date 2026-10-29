@@ -31,7 +31,7 @@ use llvmkit_ir::{
 fn function_value_prints_declare_line() -> Result<(), IrError> {
     let m = module_new!("declare_display")?;
     let void = m.void_type();
-    let fn_ty = m.function_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let fn_ty = m.function_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("ext", fn_ty, Linkage::External)?;
 
     assert_eq!(format!("{}", m.view(f)), "declare void @ext()\n");
@@ -44,7 +44,7 @@ fn function_value_prints_declare_line() -> Result<(), IrError> {
 fn function_value_define_matches_module_output() -> Result<(), IrError> {
     let m = module_new!("define_display")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("add", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -81,7 +81,7 @@ fn function_value_define_matches_module_output() -> Result<(), IrError> {
 fn basic_block_display_matches_the_module_printer() -> Result<(), IrError> {
     let m = module_new!("block_display")?;
     let void = m.void_type();
-    let fn_ty = m.function_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let fn_ty = m.function_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let exit = m.view(f).append_basic_block(&m, "exit");
@@ -143,7 +143,7 @@ fn typed_handles_agree_with_erased_value() -> Result<(), IrError> {
     let f32_ty = m.f32_type();
     let ptr_ty = m.ptr_type(0);
 
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

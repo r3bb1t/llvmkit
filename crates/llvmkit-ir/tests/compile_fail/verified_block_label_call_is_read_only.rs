@@ -28,7 +28,7 @@ fn main() {
     let f = m
         .add_function_dyn(
             "f",
-            m.function_type(i32_ty, Vec::<Type<_>>::new()),
+            m.function_type(i32_ty, Vec::<Type<_>>::new()).expect("valid function type"),
             Linkage::External,
         )
         .expect("f");

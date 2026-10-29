@@ -24,7 +24,7 @@ fn main() {
     let void_ty = m.void_type();
     let fn_ty = m.function_type(
         void_ty.as_type(),
-        [i32_ty.as_type(), i64_ty.as_type()]);
+        [i32_ty.as_type(), i64_ty.as_type()]).expect("valid function type");
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
     let entry = m.view(f).append_basic_block(&m, "entry");
     let dest = m.view(f).append_basic_block(&m, "dest");

@@ -801,7 +801,7 @@ fn gep_empty_indices_fold_to_base_pointer() -> Result<(), IrError> {
 fn analysis_instruction_fold_uses_apint_binary_folder() -> Result<(), IrError> {
     let m = module_new!("analysis-fold")?;
     let ty = m.int_type_n::<257>();
-    let fn_ty = m.function_type_no_parameters(ty);
+    let fn_ty = m.function_type_no_parameters(ty)?;
     let f = m.add_function_dyn("wide", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -824,7 +824,7 @@ fn analysis_instruction_fold_uses_apint_binary_folder() -> Result<(), IrError> {
 fn analysis_instruction_fold_exact_udiv_inexact_matches_plain_udiv() -> Result<(), IrError> {
     let m = module_new!("analysis-exact-fold")?;
     let ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(ty);
+    let fn_ty = m.function_type_no_parameters(ty)?;
     let f = m.add_function_dyn("exact", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -851,7 +851,7 @@ fn analysis_instruction_fold_exact_udiv_inexact_matches_plain_udiv() -> Result<(
 fn analysis_instruction_fold_exact_udiv_undef_identity() -> Result<(), IrError> {
     let m = module_new!("analysis-exact-fold-identity")?;
     let ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(ty);
+    let fn_ty = m.function_type_no_parameters(ty)?;
     let f = m.add_function_dyn("exact", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -1778,7 +1778,7 @@ fn compare_global_pointer_relations_fold() -> Result<(), IrError> {
     assert_eq!(same_eq, bool_ty.const_int(true).as_constant());
 
     let void_ty = m.void_type();
-    let fn_ty = m.function_type_no_parameters(void_ty.as_type());
+    let fn_ty = m.function_type_no_parameters(void_ty.as_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::Internal)?;
     let f_entry = m.view(f).append_basic_block(&m, "entry");
     let f_addr = m.block_address(m.view(f), &f_entry)?;
@@ -2864,7 +2864,7 @@ fn function_ptr_and_mask_folds_to_zero(
         m.set_data_layout(DataLayout::parse(layout)?);
     }
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(m.void_type());
+    let fn_ty = m.function_type_no_parameters(m.void_type())?;
     let f = m
         .function_builder::<(), _>("f", fn_ty)
         .align(function_align)

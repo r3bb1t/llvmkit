@@ -53,7 +53,9 @@ type OpenBlock<'m> = BasicBlock<'m, Dyn, Unterminated, DynBrand>;
 
 /// `i32 f()` in `module`, with an empty block named `name` to build into.
 fn open_block<'m>(module: &'m Module<DynBrand>, name: &str) -> OpenBlock<'m> {
-    let fn_ty = module.function_type_no_parameters(module.i32_type());
+    let fn_ty = module
+        .function_type_no_parameters(module.i32_type())
+        .expect("valid function type");
     let f = module
         .add_function_dyn(name, fn_ty, Linkage::External)
         .expect("function");
@@ -75,16 +77,18 @@ fn builder_with_parameters<'m>(
     module: &'m Module<DynBrand>,
     name: &str,
 ) -> (PositionedBuilder<'m>, [Value<'m, DynBrand>; 5]) {
-    let fn_ty = module.function_type(
-        module.i32_type(),
-        [
-            module.i32_type().as_type(),
-            module.i64_type().as_type(),
-            module.f32_type().as_type(),
-            module.f64_type().as_type(),
-            module.ptr_type(0).as_type(),
-        ],
-    );
+    let fn_ty = module
+        .function_type(
+            module.i32_type(),
+            [
+                module.i32_type().as_type(),
+                module.i64_type().as_type(),
+                module.f32_type().as_type(),
+                module.f64_type().as_type(),
+                module.ptr_type(0).as_type(),
+            ],
+        )
+        .expect("valid function type");
     let f = module
         .add_function_dyn(name, fn_ty, Linkage::External)
         .expect("function");
@@ -110,7 +114,9 @@ fn builder_with_targets<'m>(
     module: &'m Module<DynBrand>,
     name: &str,
 ) -> (PositionedBuilder<'m>, OpenBlock<'m>, OpenBlock<'m>) {
-    let fn_ty = module.function_type_no_parameters(module.i32_type());
+    let fn_ty = module
+        .function_type_no_parameters(module.i32_type())
+        .expect("valid function type");
     let f = module
         .add_function_dyn(name, fn_ty, Linkage::External)
         .expect("function");
@@ -364,7 +370,9 @@ fn a_select_arm_rejects_a_value_from_another_module() {
 fn a_callee_rejects_a_function_from_another_module() {
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
-    let foreign_ty = foreign.function_type_no_parameters(foreign.i32_type());
+    let foreign_ty = foreign
+        .function_type_no_parameters(foreign.i32_type())
+        .expect("valid function type");
     let g = foreign
         .add_function_dyn("g", foreign_ty, Linkage::External)
         .expect("g");
@@ -746,6 +754,106 @@ fn the_struct_constructors_reject_an_element_from_another_module() {
     assert!(problems.is_empty(), "{problems:#?}");
 }
 
+/// The four function-type constructors — `function_type`,
+/// `variadic_function_type`, `function_type_no_parameters` and
+/// `variadic_function_type_no_parameters`, on `Module` and on `ModuleView` —
+/// reject a result type from another module, and the two with parameters a
+/// parameter type from another module: its slot would name a different type in
+/// this module's arena. The last list hands the parameter constructors the other
+/// module's `label`, which is also no function parameter, and still expects
+/// `ForeignType`: each component's module check runs before its kind check.
+///
+/// No upstream counterpart: `FunctionType::get` takes `Type *`s, uniqued per
+/// `LLVMContext`.
+#[test]
+fn the_function_type_constructors_reject_a_type_from_another_module() {
+    let home = Module::dynamic("home");
+    let foreign = Module::dynamic("foreign");
+    let view = home.as_view();
+    let home_i32 = home.i32_type().as_type();
+    let foreign_i32 = foreign.i32_type().as_type();
+    let problems = not_refused(vec![
+        (
+            "function_type(result)",
+            without_value(home.function_type(foreign_i32, [home_i32])),
+        ),
+        (
+            "variadic_function_type(result)",
+            without_value(home.variadic_function_type(foreign_i32, [home_i32])),
+        ),
+        (
+            "function_type_no_parameters",
+            without_value(home.function_type_no_parameters(foreign_i32)),
+        ),
+        (
+            "variadic_function_type_no_parameters",
+            without_value(home.variadic_function_type_no_parameters(foreign_i32)),
+        ),
+        (
+            "view.function_type(result)",
+            without_value(view.function_type(foreign_i32, [home_i32])),
+        ),
+        (
+            "view.variadic_function_type(result)",
+            without_value(view.variadic_function_type(foreign_i32, [home_i32])),
+        ),
+        (
+            "view.function_type_no_parameters",
+            without_value(view.function_type_no_parameters(foreign_i32)),
+        ),
+        (
+            "view.variadic_function_type_no_parameters",
+            without_value(view.variadic_function_type_no_parameters(foreign_i32)),
+        ),
+    ]);
+    assert!(problems.is_empty(), "{problems:#?}");
+
+    let problems = not_refused(vec![
+        (
+            "function_type(parameter)",
+            without_value(home.function_type(home_i32, [home_i32, foreign_i32])),
+        ),
+        (
+            "variadic_function_type(parameter)",
+            without_value(home.variadic_function_type(home_i32, [home_i32, foreign_i32])),
+        ),
+        (
+            "view.function_type(parameter)",
+            without_value(view.function_type(home_i32, [home_i32, foreign_i32])),
+        ),
+        (
+            "view.variadic_function_type(parameter)",
+            without_value(view.variadic_function_type(home_i32, [home_i32, foreign_i32])),
+        ),
+    ]);
+    assert!(problems.is_empty(), "{problems:#?}");
+
+    let foreign_label = foreign.label_type().as_type();
+    let problems = not_refused(vec![
+        (
+            "function_type(label)",
+            without_value(home.function_type(home_i32, [foreign_label])),
+        ),
+        (
+            "variadic_function_type(label)",
+            without_value(home.variadic_function_type(home_i32, [foreign_label])),
+        ),
+        (
+            "view.function_type(label)",
+            without_value(view.function_type(home_i32, [foreign_label])),
+        ),
+        (
+            "view.variadic_function_type(label)",
+            without_value(view.variadic_function_type(home_i32, [foreign_label])),
+        ),
+    ]);
+    assert!(problems.is_empty(), "{problems:#?}");
+
+    // Positive control: every component the receiving module's own.
+    home.function_type(home_i32, [home_i32])
+        .expect("a same-module function type");
+}
+
 /// The array constructor — on `Module` and on `ModuleView` — rejects an
 /// element type from another module: its slot would name a different type in
 /// this module's arena. The second list hands each the other module's `void`,
@@ -804,7 +912,9 @@ fn a_comdat_from_another_module_is_refused() {
     foreign_comdat.set_selection_kind(&foreign, SelectionKind::Largest);
     let own = home.get_or_insert_comdat("c");
     let i32_ty = home.i32_type();
-    let void_fn = home.function_type_no_parameters(home.void_type());
+    let void_fn = home
+        .function_type_no_parameters(home.void_type())
+        .expect("valid function type");
     let g = home.add_global("g", i32_ty.const_int(0i32)).expect("g");
     let f = home
         .add_function_dyn("f", void_fn, Linkage::External)
@@ -983,7 +1093,9 @@ fn constant_expr_rejects_a_type_or_operand_from_another_module() {
 fn block_address_rejects_a_block_from_another_module() {
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
-    let foreign_ty = foreign.function_type_no_parameters(foreign.i32_type());
+    let foreign_ty = foreign
+        .function_type_no_parameters(foreign.i32_type())
+        .expect("valid function type");
     let g = foreign
         .add_function_dyn("g", foreign_ty, Linkage::External)
         .expect("g");
@@ -1032,7 +1144,9 @@ fn forward_ref_placeholder_rejects_a_type_or_replacement_from_another_module() {
 fn global_wrapping_constants_reject_a_global_from_another_module() {
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
-    let foreign_ty = foreign.function_type_no_parameters(foreign.i32_type());
+    let foreign_ty = foreign
+        .function_type_no_parameters(foreign.i32_type())
+        .expect("valid function type");
     let g = foreign
         .add_function_dyn("g", foreign_ty, Linkage::External)
         .expect("g");
@@ -1538,8 +1652,12 @@ fn a_phi_pad_or_va_arg_rejects_a_type_from_another_module() {
 fn a_call_site_rejects_a_callee_or_function_type_from_another_module() {
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
-    let home_fn_ty = home.function_type_no_parameters(home.i32_type());
-    let foreign_fn_ty = foreign.function_type_no_parameters(foreign.i32_type());
+    let home_fn_ty = home
+        .function_type_no_parameters(home.i32_type())
+        .expect("valid function type");
+    let foreign_fn_ty = foreign
+        .function_type_no_parameters(foreign.i32_type())
+        .expect("valid function type");
     let h = home
         .add_function_dyn("h", home_fn_ty, Linkage::External)
         .expect("h");
@@ -1644,8 +1762,12 @@ fn a_call_site_rejects_a_callee_or_function_type_from_another_module() {
 fn invoke_and_callbr_reject_a_callee_or_function_type_from_another_module() {
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
-    let home_fn_ty = home.function_type_no_parameters(home.i32_type());
-    let foreign_fn_ty = foreign.function_type_no_parameters(foreign.i32_type());
+    let home_fn_ty = home
+        .function_type_no_parameters(home.i32_type())
+        .expect("valid function type");
+    let foreign_fn_ty = foreign
+        .function_type_no_parameters(foreign.i32_type())
+        .expect("valid function type");
     let h = home
         .add_function_dyn("h", home_fn_ty, Linkage::External)
         .expect("h");
@@ -1833,7 +1955,9 @@ fn deopt_inputs<'ctx>(
 fn an_operand_bundle_input_from_another_module_is_refused() {
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
-    let home_fn_ty = home.function_type_no_parameters(home.i32_type());
+    let home_fn_ty = home
+        .function_type_no_parameters(home.i32_type())
+        .expect("valid function type");
     let h = home
         .add_function_dyn("h", home_fn_ty, Linkage::External)
         .expect("h");
@@ -2213,9 +2337,12 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
 fn detached_call_sites_and_their_copies_refuse_another_modules_operands() {
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
-    let home_fn_ty = home.function_type(home.i32_type().as_type(), [home.i32_type().as_type()]);
-    let foreign_fn_ty =
-        foreign.function_type(foreign.i32_type().as_type(), [foreign.i32_type().as_type()]);
+    let home_fn_ty = home
+        .function_type(home.i32_type().as_type(), [home.i32_type().as_type()])
+        .expect("valid function type");
+    let foreign_fn_ty = foreign
+        .function_type(foreign.i32_type().as_type(), [foreign.i32_type().as_type()])
+        .expect("valid function type");
     let h = home
         .add_function_dyn("h", home_fn_ty, Linkage::External)
         .expect("h");
@@ -2539,7 +2666,9 @@ fn restore_insert_point_rejects_an_insert_point_from_another_module() {
 fn a_block_argument_edge_rejects_a_value_or_predecessor_from_another_module() {
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
-    let fn_ty = home.function_type_no_parameters(home.i32_type());
+    let fn_ty = home
+        .function_type_no_parameters(home.i32_type())
+        .expect("valid function type");
     let f = home
         .add_function_dyn("f", fn_ty, Linkage::External)
         .expect("f");
@@ -2592,8 +2721,12 @@ fn a_block_argument_edge_rejects_a_value_or_predecessor_from_another_module() {
 fn append_block_with_params_rejects_a_function_or_type_from_another_module() {
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
-    let home_fn_ty = home.function_type_no_parameters(home.i32_type());
-    let foreign_fn_ty = foreign.function_type_no_parameters(foreign.i32_type());
+    let home_fn_ty = home
+        .function_type_no_parameters(home.i32_type())
+        .expect("valid function type");
+    let foreign_fn_ty = foreign
+        .function_type_no_parameters(foreign.i32_type())
+        .expect("valid function type");
     let h = home
         .add_function_dyn("h", home_fn_ty, Linkage::External)
         .expect("h");
@@ -2727,10 +2860,12 @@ fn an_ssa_session_rejects_a_block_or_variable_from_another_module() {
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
     let declare = |module: &Module<DynBrand>| {
-        let fn_ty = module.function_type(
-            module.void_type(),
-            [module.bool_type().as_type(), module.i32_type().as_type()],
-        );
+        let fn_ty = module
+            .function_type(
+                module.void_type(),
+                [module.bool_type().as_type(), module.i32_type().as_type()],
+            )
+            .expect("valid function type");
         module
             .add_function_dyn("f", fn_ty, Linkage::External)
             .expect("function")
@@ -2845,7 +2980,9 @@ fn function_with_an_add(
     module: &Module<DynBrand>,
     name: &str,
 ) -> (FunctionId<Dyn, DynBrand>, ValueId<DynBrand>) {
-    let fn_ty = module.function_type(module.i32_type(), [module.i32_type().as_type()]);
+    let fn_ty = module
+        .function_type(module.i32_type(), [module.i32_type().as_type()])
+        .expect("valid function type");
     let f = module
         .add_function_dyn(name, fn_ty, Linkage::External)
         .expect("function");
@@ -3141,7 +3278,9 @@ fn an_operand_or_clause_setter_rejects_a_handle_from_another_module() {
     let (_, switch) = switcher
         .switch_dyn(home.i32_type().const_int(0i32), default, "")
         .expect("switch");
-    let h_ty = home.function_type_no_parameters(home.i32_type());
+    let h_ty = home
+        .function_type_no_parameters(home.i32_type())
+        .expect("valid function type");
     let h = home
         .add_function_dyn("h", h_ty, Linkage::External)
         .expect("h");
@@ -3782,8 +3921,12 @@ fn a_symbol_delta_rejects_a_global_from_another_module() {
 fn a_function_builder_rejects_a_signature_or_constant_from_another_module() {
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
-    let home_ty = home.function_type_no_parameters(home.i32_type());
-    let foreign_ty = foreign.function_type_no_parameters(foreign.i32_type());
+    let home_ty = home
+        .function_type_no_parameters(home.i32_type())
+        .expect("valid function type");
+    let foreign_ty = foreign
+        .function_type_no_parameters(foreign.i32_type())
+        .expect("valid function type");
     let foreign_constant = foreign.i32_type().const_int(5i32);
     let foreign_null = foreign.ptr_type(0).const_null();
     let before = (format!("{home}"), format!("{foreign}"));
@@ -4120,17 +4263,23 @@ fn a_type_entry_rejects_a_type_from_another_module() {
     let foreign = Module::dynamic("foreign");
     let home_i32 = home.i32_type().as_type();
     let foreign_i32 = foreign.i32_type().as_type();
-    let foreign_fn = foreign.function_type_no_parameters(foreign.void_type());
+    let foreign_fn = foreign
+        .function_type_no_parameters(foreign.void_type())
+        .expect("valid function type");
     let home_struct = home.opaque_struct("S").expect("opaque");
     let home_struct_dyn = home.opaque_struct("T").expect("opaque").as_dyn();
     let foreign_struct = foreign.opaque_struct("S").expect("opaque");
     let abs = llvmkit_ir::IntrinsicId::ABS;
     let memcpy = llvmkit_ir::IntrinsicId::MEMCPY;
-    let home_abs_ty = home.function_type(home.i32_type(), [home_i32, home.i1_type().as_type()]);
-    let foreign_abs_ty = foreign.function_type(
-        foreign.i32_type(),
-        [foreign_i32, foreign.i1_type().as_type()],
-    );
+    let home_abs_ty = home
+        .function_type(home.i32_type(), [home_i32, home.i1_type().as_type()])
+        .expect("valid function type");
+    let foreign_abs_ty = foreign
+        .function_type(
+            foreign.i32_type(),
+            [foreign_i32, foreign.i1_type().as_type()],
+        )
+        .expect("valid function type");
     let foreign_abs =
         llvmkit_ir::IntrinsicDescriptor::new(abs, [foreign_i32]).expect("foreign descriptor");
     let home_ptr = home.ptr_type(0).as_type();

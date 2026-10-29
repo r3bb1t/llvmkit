@@ -103,17 +103,23 @@ fn function_type_round_trip() {
     let i32 = m.i32_type();
     let i64 = m.i64_type();
     let void = m.void_type();
-    let ft = m.function_type(void.as_type(), [i32.as_type(), i64.as_type()]);
+    let ft = m
+        .function_type(void.as_type(), [i32.as_type(), i64.as_type()])
+        .expect("valid function type");
     assert_eq!(ft.return_type(), void.as_type());
     assert_eq!(ft.params().count(), 2);
     assert!(!ft.is_var_arg());
 
     // Same shape interns to the same handle.
-    let ft2 = m.function_type(void.as_type(), [i32.as_type(), i64.as_type()]);
+    let ft2 = m
+        .function_type(void.as_type(), [i32.as_type(), i64.as_type()])
+        .expect("valid function type");
     assert_eq!(ft.as_type(), ft2.as_type());
 
     // varargs differs.
-    let ft_va = m.variadic_function_type(void.as_type(), [i32.as_type(), i64.as_type()]);
+    let ft_va = m
+        .variadic_function_type(void.as_type(), [i32.as_type(), i64.as_type()])
+        .expect("valid function type");
     assert_ne!(ft.as_type(), ft_va.as_type());
     assert!(ft_va.is_var_arg());
 }
@@ -228,6 +234,7 @@ fn sized_refinement_accepts_sized_rejects_unsized() {
         m.token_type().as_type(),
         m.wasm_exnref_type().as_type(),
         m.function_type_no_parameters(m.void_type().as_type())
+            .expect("valid function type")
             .as_type(),
         m.get_or_insert_named_struct("Opaque").as_type(),
     ];
@@ -246,6 +253,7 @@ fn first_class_predicate_rejects_function_void_opaque() {
     assert!(!m.void_type().as_type().is_first_class());
     assert!(
         !m.function_type_no_parameters(m.void_type().as_type())
+            .expect("valid function type")
             .as_type()
             .is_first_class()
     );

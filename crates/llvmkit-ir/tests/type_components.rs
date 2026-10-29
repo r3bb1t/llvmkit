@@ -336,7 +336,9 @@ fn a_struct_refuses_an_invalid_element() {
         (view.label_type().as_type(), TypeKindLabel::Label),
         (view.metadata_type().as_type(), TypeKindLabel::Metadata),
         (
-            view.function_type_no_parameters(view.void_type()).as_type(),
+            view.function_type_no_parameters(view.void_type())
+                .expect("valid function type")
+                .as_type(),
             TypeKindLabel::Function,
         ),
         (view.token_type().as_type(), TypeKindLabel::Token),
@@ -361,6 +363,104 @@ fn a_struct_refuses_an_invalid_element() {
         .expect("x86_amx is a struct element");
 }
 
+/// The function-type constructors refuse a result `FunctionType::isValidReturnType`
+/// refuses and a parameter `isValidArgumentType` refuses, naming the
+/// parameter. Mirrors the two `assert`s in `FunctionType::FunctionType`
+/// (`lib/IR/Type.cpp`), which check the result first, then each parameter in
+/// order; llvmkit-specific (D10).
+///
+/// The second half runs every refused result and parameter kind through the
+/// four constructors on the `ModuleView` receiver, as
+/// `a_struct_refuses_an_invalid_element` does for structs.
+#[test]
+fn a_function_type_refuses_an_invalid_result_or_parameter() {
+    let m = Module::dynamic("components");
+    let i32_ty = m.i32_type().as_type();
+    assert!(matches!(
+        m.function_type_no_parameters(m.label_type()),
+        Err(IrError::InvalidTypeComponent {
+            position: TypePosition::FunctionReturn,
+            kind: TypeKindLabel::Label,
+        })
+    ));
+    let refused = m.function_type(m.void_type(), [i32_ty, m.void_type().as_type()]);
+    assert!(matches!(
+        refused,
+        Err(IrError::InvalidTypeComponent {
+            position: TypePosition::FunctionParameter { index: 1 },
+            kind: TypeKindLabel::Void,
+        })
+    ));
+    assert_eq!(
+        refused.expect_err("refused above").to_string(),
+        "invalid type for function argument (parameter 1): void"
+    );
+    // The result is checked before any parameter.
+    assert!(matches!(
+        m.variadic_function_type(m.metadata_type(), [m.label_type().as_type()]),
+        Err(IrError::InvalidTypeComponent {
+            position: TypePosition::FunctionReturn,
+            kind: TypeKindLabel::Metadata,
+        })
+    ));
+    m.function_type(m.token_type(), [m.metadata_type().as_type()])
+        .expect("token results and metadata parameters are valid");
+
+    let view = m.as_view();
+    let view_i32 = view.i32_type().as_type();
+    let function = view
+        .function_type_no_parameters(view.void_type())
+        .expect("a void function type")
+        .as_type();
+    for (result, kind) in [
+        (function, TypeKindLabel::Function),
+        (view.label_type().as_type(), TypeKindLabel::Label),
+        (view.metadata_type().as_type(), TypeKindLabel::Metadata),
+    ] {
+        for refused in [
+            view.function_type(result, [view_i32]).map(|_| ()),
+            view.variadic_function_type(result, [view_i32]).map(|_| ()),
+            view.function_type_no_parameters(result).map(|_| ()),
+            view.variadic_function_type_no_parameters(result)
+                .map(|_| ()),
+        ] {
+            assert!(
+                matches!(
+                    refused,
+                    Err(IrError::InvalidTypeComponent {
+                        position: TypePosition::FunctionReturn,
+                        kind: k,
+                    }) if k == kind
+                ),
+                "{refused:?}"
+            );
+        }
+    }
+    for (parameter, kind) in [
+        (view.void_type().as_type(), TypeKindLabel::Void),
+        (view.label_type().as_type(), TypeKindLabel::Label),
+        (function, TypeKindLabel::Function),
+    ] {
+        for refused in [
+            view.function_type(view.void_type(), [view_i32, parameter])
+                .map(|_| ()),
+            view.variadic_function_type(view.void_type(), [view_i32, parameter])
+                .map(|_| ()),
+        ] {
+            assert!(
+                matches!(
+                    refused,
+                    Err(IrError::InvalidTypeComponent {
+                        position: TypePosition::FunctionParameter { index: 1 },
+                        kind: k,
+                    }) if k == kind
+                ),
+                "{refused:?}"
+            );
+        }
+    }
+}
+
 /// The builder's `shuffle_vector` refuses an empty mask, whose result would be
 /// a zero-lane vector, with `IrError::InvalidShuffleMaskLength`: the
 /// `ShuffleVectorInst` constructor computes its type as
@@ -371,7 +471,7 @@ fn a_struct_refuses_an_invalid_element() {
 fn the_builder_refuses_a_shuffle_with_an_empty_mask() -> Result<(), IrError> {
     let m = Module::dynamic("components");
     let vec_ty = VectorType::of(m.i32_type(), lanes::<2>());
-    let fn_ty = m.function_type(m.void_type(), [vec_ty.as_type(), vec_ty.as_type()]);
+    let fn_ty = m.function_type(m.void_type(), [vec_ty.as_type(), vec_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -444,7 +544,7 @@ fn constant_folding_a_shuffle_with_an_empty_mask_does_not_fold() -> Result<(), I
 #[test]
 fn a_splat_of_a_non_vector_element_is_refused() -> Result<(), IrError> {
     let m = Module::dynamic("components");
-    let fn_ty = m.function_type_no_parameters(m.void_type());
+    let fn_ty = m.function_type_no_parameters(m.void_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

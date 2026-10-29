@@ -244,7 +244,7 @@ fn struct_schema_params_are_branded_wrappers() -> Result<(), IrError> {
 fn struct_schema_try_new_wraps_raw_struct() -> Result<(), IrError> {
     let m = module_new!("schema")?;
     let point_ty = m.get_or_insert_struct_of::<Point>()?;
-    let fn_ty = m.function_type(m.void_type(), [point_ty.as_type()]);
+    let fn_ty = m.function_type(m.void_type(), [point_ty.as_type()])?;
     let f = m.add_function_dyn("raw_take_point", fn_ty, Linkage::External)?;
     let point = Hand::from_schema_value(SchemaValue::<Point, _>::try_new(m.view(f).param(0)?)?);
     assert_eq!(
@@ -260,7 +260,7 @@ fn struct_schema_try_new_wraps_raw_struct() -> Result<(), IrError> {
 fn struct_schema_try_new_rejects_wrong_schema() -> Result<(), IrError> {
     let m = module_new!("schema")?;
     let rect_ty = m.get_or_insert_struct_of::<Rect>()?;
-    let fn_ty = m.function_type(m.void_type(), [rect_ty.as_type()]);
+    let fn_ty = m.function_type(m.void_type(), [rect_ty.as_type()])?;
     let f = m.add_function_dyn("raw_take_rect", fn_ty, Linkage::External)?;
     // Two identified structs both label `struct`, so reporting only the kinds
     // rendered "type mismatch: expected struct, got struct" — an assertion
@@ -313,7 +313,7 @@ fn struct_fields_unpacks_manual_schema_into_params() -> Result<(), IrError> {
 fn struct_schema_extracts_and_inserts_typed_fields() -> Result<(), IrError> {
     let m = module_new!("schema")?;
     let point_ty = m.get_or_insert_struct_of::<Point>()?;
-    let fn_ty = m.function_type(m.void_type(), [point_ty.as_type()]);
+    let fn_ty = m.function_type(m.void_type(), [point_ty.as_type()])?;
     let f = m.add_function_dyn("edit", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -337,7 +337,7 @@ fn struct_schema_extracts_and_inserts_typed_fields() -> Result<(), IrError> {
 fn struct_schema_extract_field_mismatch_does_not_append_instruction() -> Result<(), IrError> {
     let m = module_new!("schema")?;
     let point_ty = m.get_or_insert_struct_of::<Point>()?;
-    let fn_ty = m.function_type(m.void_type(), [point_ty.as_type()]);
+    let fn_ty = m.function_type(m.void_type(), [point_ty.as_type()])?;
     let f = m.add_function_dyn("bad_extract", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -374,7 +374,7 @@ fn insert_field_refuses_a_lift_of_another_struct_type() -> Result<(), IrError> {
     let m = module_new!("schema")?;
     let literal = m.struct_type([m.i32_type(), m.i32_type()])?;
     let point_ty = m.get_or_insert_struct_of::<Point>()?;
-    let fn_ty = m.function_type(m.void_type(), [literal.as_type()]);
+    let fn_ty = m.function_type(m.void_type(), [literal.as_type()])?;
     let f = m.add_function_dyn("forged", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -427,7 +427,7 @@ fn struct_schema_can_be_function_return() -> Result<(), IrError> {
 fn nested_struct_schema_accessors_return_nested_wrapper() -> Result<(), IrError> {
     let m = module_new!("schema")?;
     let rect_ty = m.get_or_insert_struct_of::<Rect>()?;
-    let fn_ty = m.function_type(m.void_type(), [rect_ty.as_type()]);
+    let fn_ty = m.function_type(m.void_type(), [rect_ty.as_type()])?;
     let f = m.add_function_dyn("read", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

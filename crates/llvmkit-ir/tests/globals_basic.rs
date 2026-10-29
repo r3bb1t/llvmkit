@@ -496,7 +496,8 @@ fn an_unnamed_object_in_an_empty_named_comdat_prints_a_bare_comdat() {
     let f = m
         .add_function_dyn(
             "",
-            m.function_type_no_parameters(m.void_type()),
+            m.function_type_no_parameters(m.void_type())
+                .expect("valid function type"),
             Linkage::External,
         )
         .expect("unnamed function");
@@ -746,7 +747,7 @@ fn const_vector_initializer() {
 fn function_pointer_global_initializer_verifies() -> Result<(), IrError> {
     let m = module_new!("fnptr_init")?;
     let void_ty = m.void_type();
-    let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
     let init = m.view(callee).as_global_constant_ptr();
     m.add_global_constant("slot", init)?;
@@ -767,7 +768,7 @@ fn function_pointer_aggregate_initializer_prints_ptr_base() -> Result<(), IrErro
     let m = module_new!("fnptr_agg")?;
     let void_ty = m.void_type();
     let ptr_ty = m.ptr_type(0);
-    let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
     let arr_ty = ArrayType::of(ptr_ty, 1);
     let elem = m.view(callee).as_aggregate_ptr(0);
@@ -1188,14 +1189,14 @@ fn an_ifunc_resolver_is_stripped_through_a_compact_zero_offset_getelementptr() -
     let ptr_ty = m.ptr_type(0);
     let resolver = m.add_function_dyn(
         "resolver",
-        m.function_type_no_parameters(ptr_ty),
+        m.function_type_no_parameters(ptr_ty)?,
         Linkage::Internal,
     )?;
     let entry = m.view(resolver).append_basic_block(&m, "entry");
     IrBuilder::with_folder(&m, NoFolder)
         .position_at_end(entry)
         .ret(ptr_ty.const_null())?;
-    let ifunc_ty = m.function_type_no_parameters(m.void_type());
+    let ifunc_ty = m.function_type_no_parameters(m.void_type())?;
 
     m.ifunc_builder("zero", ifunc_ty, m.view(resolver).as_aggregate_ptr(0))
         .build()?;
