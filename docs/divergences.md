@@ -715,7 +715,8 @@ type-constructor plan's Task 9).
 `crates/llvmkit-ir/tests/type_components.rs::demangling_a_struct_name_creates_no_struct`,
 and the agreement law
 `crates/llvmkit-asmparser/tests/type_validity.rs::the_builder_and_the_parser_agree_on_every_derived_type`,
-whose struct rows left `KNOWN_DISAGREEMENTS` with this change.
+whose struct rows left its list of cells allowed to disagree with this change
+(the list was deleted once the function-type rows left it too).
 
 <details>
 <summary>Evidence (2026-10-18, vendored llvmorg-22.1.4)</summary>

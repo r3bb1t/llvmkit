@@ -10,10 +10,12 @@
 //! Over the agreement grid below (6 containers × 25 element kinds, 150 cells),
 //! llvmkit's builder and parser agree on every cell: none is built but not
 //! parsed, none is parsed but not built, and where both accept they make the
-//! same type. Measured at the commit that makes the function-type constructors
-//! refuse an invalid result or parameter (parent `ad8261a`) by running
+//! same type — the law below pins it. Measured at the commit that makes the
+//! function-type constructors refuse an invalid result or parameter (parent
+//! `ad8261a`) by running
 //! `cargo +1.96.0 test --release -p llvmkit-asmparser --test type_validity`
-//! with `KNOWN_DISAGREEMENTS` empty. Built but not parsed, it was 46 at
+//! with the list of cells allowed to disagree empty; the list has since been
+//! deleted. Built but not parsed, it was 46 at
 //! `5ce065f`, before the vector constructors refused their 28; 18 at the
 //! commit that adds `llvmkit_ir::VectorType::of` (parent `dcde8b6`), before the
 //! array constructor refused its 6; 12 at the commit that adds
@@ -336,15 +338,11 @@ impl Container {
     }
 }
 
-/// `(container, element)` pairs the builder still accepts while the parser
-/// refuses them. Each task of the type-constructor plan removes its own rows;
-/// the list ends empty and is then deleted. A task that removes rows here
-/// re-measures the module doc's "built but not parsed" count in that commit.
-const KNOWN_DISAGREEMENTS: &[(&str, &str)] = &[];
-
 /// The builder accepts a derived type exactly when the parser accepts its
 /// spelling, over every container × element kind of the grid — and where both
-/// accept, they make the same type.
+/// accept, they make the same type. Pins all 150 cells: the list of cells
+/// allowed to disagree, which the type-constructor plan emptied task by task,
+/// is gone, so any cell where the two halves part is a failure naming it.
 ///
 /// llvmkit-specific law (D10, D11), no upstream counterpart: LLVM's builder
 /// half is an `assert`, and no upstream unit test exercises one of these
@@ -356,14 +354,12 @@ fn the_builder_and_the_parser_agree_on_every_derived_type() {
     let m = Module::dynamic("agreement");
     let slots = grid_slots(&m);
     let mut unexpected = Vec::new();
-    let mut seen = Vec::new();
     for container in Container::ALL {
         for &text in ELEMENTS {
             let element = element(&m, text).expect("every grid element builds");
             let spelled = container.spell(text);
             let built = container.build(&m, element);
             let parsed = parse_type_with_slots(spelled.as_bytes(), &m, &slots);
-            let pair = (container.label(), text);
             match (built, parsed) {
                 (Ok(built), Ok(parsed)) => {
                     if built != parsed {
@@ -374,7 +370,6 @@ fn the_builder_and_the_parser_agree_on_every_derived_type() {
                     }
                 }
                 (Err(_), Err(_)) => {}
-                (Ok(_), Err(_)) if KNOWN_DISAGREEMENTS.contains(&pair) => seen.push(pair),
                 (built, parsed) => unexpected.push(format!(
                     "{}: `{spelled}` built={} parsed={}",
                     container.label(),
@@ -384,14 +379,7 @@ fn the_builder_and_the_parser_agree_on_every_derived_type() {
             }
         }
     }
-    let stale: Vec<_> = KNOWN_DISAGREEMENTS
-        .iter()
-        .filter(|pair| !seen.contains(pair))
-        .collect();
-    assert!(
-        unexpected.is_empty() && stale.is_empty(),
-        "unexpected: {unexpected:#?}\nstale: {stale:#?}"
-    );
+    assert!(unexpected.is_empty(), "unexpected: {unexpected:#?}");
 }
 
 /// Each element's spelling parses to the very type [`element`] builds — the
