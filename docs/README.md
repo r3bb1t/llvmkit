@@ -16,9 +16,10 @@ reached, correct as of its date and not maintained afterwards.
 | [`llvm/test/Assembler` coverage](fixture-coverage.md) | Every upstream fixture classified `ported` / `blocked-model` / `N/A`, with the named gap per blocked row. The file states its own completeness derivation and how to compute the per-class tallies. |
 | [Leftover API-rewrite work](leftover-api-rewrite-work.md) | The residue of the handle-and-error rewrite: what it reached, understood, and deliberately did not close. Narrower than `future-work.md` — every entry exists because that program's own changes created or exposed it. |
 
-Start with the repository [`README.md`](../README.md) for the quick tour and
-[`CHANGELOG.md`](../CHANGELOG.md) for the 0.0.4 migration — each break is spelled
-out under the cycle that made it.
+Start with the repository [`README.md`](../README.md) for the quick tour. The
+0.0.4 migration is recorded in the commit history — each breaking commit (`!`)
+spells out what it broke; [`CHANGELOG.md`](../CHANGELOG.md) is a placeholder
+until the next version is released.
 
 Three more repository-root documents are not in the table above because they are
 not user guides, but they are where a specific kind of question is answered:

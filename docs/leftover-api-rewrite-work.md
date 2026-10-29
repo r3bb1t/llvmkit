@@ -116,8 +116,8 @@ placed*, not *is placed*"; it is recorded there, not scheduled.
 These three sections recorded what stood between llvmkit and porting
 `InstructionsTest.AlterCallBundles` and `AlterInvokeBundles` whole. Both now
 port whole (`crates/llvmkit-ir/tests/builder_call.rs`), so the sections
-graduated out; `CHANGELOG.md`'s *Added — call sites created in no block, and
-copied with other bundles* has the shipped surface. What each one recorded,
+graduated out; commit `c29c879` (*call sites created in no block, and copied
+with other bundles*) has the shipped surface. What each one recorded,
 and where it went:
 
 - **§2, detached creation.** The primitive is `create_detached_instruction`
@@ -169,8 +169,9 @@ module's token unlocking a *verified* module — is closed for the routes the
 capability program reached. The mutators on a handle now need `C: CanMutate`,
 and a handle reached from a verified module is `ReadOnly`, so
 `a.view(g).set_linkage(&b, …)` on a verified `a` no longer compiles
-(`CHANGELOG.md` `[Unreleased]`, *Fixed, for the routes that reach a global or
-function without passing through a block or instruction*). The foreign-token
+(commit `c1562d3`, *a verified module's globals and functions are read-only by
+type*, for the routes that reach a global or function without passing through a
+block or instruction). The foreign-token
 reproduction this section used to ask for is now a compile-fail fixture,
 `compile_fail/verified_value_cannot_be_renamed.rs`, beside
 `compile_fail/verified_global_cannot_be_mutated.rs`.
@@ -373,8 +374,8 @@ than from a command run here, and each is marked where it appears:
 - the 21-commit span of Task 24 (§ frame) — re-derivable from `git log`
   (`git log --oneline 17b293e^..4da9711 | wc -l` → 21 at `7d0540c`);
 - the statement that a foreign `DynBrand` token unlocks a verified module (§5) —
-  no longer a premise: `CHANGELOG.md` `[Unreleased]` records it as having
-  compiled before the capability program, and
+  no longer a premise: commit `c1562d3` records it as having compiled before
+  the capability program, and
   `compile_fail/verified_value_cannot_be_renamed.rs` is the reproduction, now
   refused.
 

@@ -1438,7 +1438,7 @@ sequenced:
    | ~~**3d**~~ ✅ | ~37 | **done 2026-08-02** across six sub-slices: |
    | 3d-i ✅ | 7 | **done 2026-08-02**: `add`, `sub`, `multiply`, `smax`/`smin`/`umax`/`umin`. These are exactly what `computeOverflowFor*` in 3e needs, which is why they went first. |
    | 3d-ii ✅ | 5 | **done 2026-08-02**: `udiv`, `sdiv`, `urem`, `srem`, plus `abs` pulled forward from 3d-v because `srem` needs it. |
-   | 3d-iii ✅ | 7 | **done 2026-08-02**: `binary_and`, `binary_or`, `binary_xor`, `binary_not`, `shl`, `lshr`, `ashr`. Found and fixed a real `ApInt::ashr` bug on the way — see the CHANGELOG. |
+   | 3d-iii ✅ | 7 | **done 2026-08-02**: `binary_and`, `binary_or`, `binary_xor`, `binary_not`, `shl`, `lshr`, `ashr`. Found and fixed a real `ApInt::ashr` bug on the way — see commit `d405fb5`. |
    | 3d-iv ✅ | 8 | **done 2026-08-02**: the saturating family. Six share one frame (`saturating_pairwise`); `smul_sat` needs all four corners and `sshl_sat` picks its shift by endpoint sign. |
    | 3d-v ✅ | 3 | **done 2026-08-02**: `ctlz`, `cttz`, `ctpop` (`abs` landed in 3d-ii). |
    | 3d-vi ✅ | 8 | **done 2026-08-02**: `binary_op`, `overflowing_binary_op`, `intrinsic`, `is_intrinsic_supported`, `add_with_no_wrap`, `sub_with_no_wrap`, `multiply_with_no_wrap`, `smul_fast`. **`shlWithNoWrap` is not ported** — it is three helper functions (`computeShlNUW`, `computeShlNSWWithNNegLHS`, `computeShlNSWWithNegLHS`) plus a dispatcher, and no llvmkit caller needs it yet; `overflowing_binary_op` sends `shl` to the plain `shl`, which is sound and only weaker. |
@@ -2658,7 +2658,7 @@ than pending:
 ## Constant-folding parity — deferred / known divergences (2026-07-23)
 
 The `feature-29/constfold-parity` cycle fixed the divergences a three-agent
-audit found against vendored `llvmorg-22.1.4` (see CHANGELOG "Constant-folding
+audit found against vendored `llvmorg-22.1.4` (merge `75b55c5`, "constant-folding
 parity"). A whole-branch review confirmed no mis-folds and no over-folds; the
 items below are the deferred / known-remaining points.
 
@@ -2984,7 +2984,7 @@ The analysis above was right about the shape of the debt and right that the
 **The `docs/divergences.md` evidence blocks are not part of this debt and were
 never swept.** They are dated snapshots of one verification pass, so their
 coordinates are the record of what was checked; the guard exempts them by rule,
-as it does `CHANGELOG.md`'s released sections and all of `docs/design/`. That
+as it does all of `docs/design/`. That
 file's header now says so instead of promising a sweep.
 
 ## Docs — `mirror` rows that hand-write their IR (found 2026-08-20, fix round 3)

@@ -279,8 +279,8 @@ this surface and fixed the handful of divergences it found — one real bug
 (`icmp` of a global vs `null` in a non-zero address space) plus several
 safe-but-not-identical over-precisions and previously-declined folds; a
 whole-branch review confirmed no mis-folds and no over-folds remained. See the
-CHANGELOG ("Constant-folding parity with LLVM 22.1.4") and `docs/future-work.md`
-for the fixes. Two of the four points that audit deferred have since closed:
+merge `75b55c5` ("constant-folding parity with LLVM 22.1.4") and
+`docs/future-work.md` for the fixes. Two of the four points that audit deferred have since closed:
 **constant uniquing** (2026-08-01 — `GlobalValueRef`, `GepOffset`,
 `SymbolDelta`, and `SymbolDeltaPlus` now intern on their structural
 fingerprint, so identity comparison is structural everywhere; the law is pinned
@@ -989,7 +989,8 @@ Guidelines sweep that followed it:
   RFC-430 casing, iterator returns, the Load/Store/Alloca builders, typed
   module flags and `NamedMetadataId`, asmparser root re-exports and honest
   error messages, and `llvmkit-tablegen` as a crate with a library API. Every
-  item in it is breaking; all of it is spelled out in `CHANGELOG.md`.
+  item in it is breaking; the program's commits, merged as `91665fa`, record
+  each break.
 
 ### Stage 2: Parser completeness and release hygiene — **parser done; publish remains**
 
@@ -1096,8 +1097,9 @@ through 0.0.3. What is left:
       "default-feature guess" is no longer a hypothetical.
 - [ ] Add a `cargo package --workspace` step to CI. It is the gate that proves
       the published artifact builds, and nothing in CI covers it today.
-- [ ] Give `[0.0.4]` a date in `CHANGELOG.md` and collapse the two
-      "unreleased" headings into one at release time.
+- [ ] Decide what `CHANGELOG.md` says at release time. It is a placeholder
+      until the next version is released; the commit history is the record
+      of the changes until then.
 - [ ] Re-point the rustdoc comments that cite `docs/…` paths; `docs/`
       sits outside every package directory, so those references dangle for a
       docs.rs reader.

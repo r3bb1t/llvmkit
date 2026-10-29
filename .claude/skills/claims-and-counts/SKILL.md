@@ -1,6 +1,6 @@
 ---
 name: claims-and-counts
-description: Use when about to write a number, a count, or an "all / every / none / every call site / no test does X / the only one" sentence into CHANGELOG.md, UPSTREAM.md, docs/, a commit message, a test doc comment, or a report returned to a caller. Also use when re-deriving, repairing, or repeating a count that already exists in a file, and when a count or a completeness claim is itself the requested deliverable.
+description: Use when about to write a number, a count, or an "all / every / none / every call site / no test does X / the only one" sentence into UPSTREAM.md, docs/, a commit message, a test doc comment, or a report returned to a caller. Also use when re-deriving, repairing, or repeating a count that already exists in a file, and when a count or a completeness claim is itself the requested deliverable.
 ---
 
 # Claims and counts

@@ -294,7 +294,7 @@ a named brand is re-issued once the previous module drops — the runtime
 `IrError::ForeignValueId` (or `None` from `try_view`, or a panic from `view`).
 
 `IrError` is exhaustive (no `#[non_exhaustive]`), so a `match` on it needs no
-`_` arm, and a new variant is a breaking change flagged in `CHANGELOG.md`.
+`_` arm, and a new variant is a breaking change flagged in its commit (`!`).
 
 ## Module brand
 

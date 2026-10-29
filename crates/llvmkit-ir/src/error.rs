@@ -1197,8 +1197,8 @@ impl DataLayoutError {
 /// Crate-wide error.
 ///
 /// Variants are added incrementally as new subsystems land, and the enum is
-/// **exhaustive**: a new variant is a breaking change, flagged in
-/// `CHANGELOG.md` under the pre-1.0 policy.
+/// **exhaustive**: a new variant is a breaking change, flagged as one (`!`)
+/// in its commit under the pre-1.0 policy.
 ///
 /// That is the deliberate trade. `#[non_exhaustive]` would make each addition
 /// non-breaking, but it does so by handing every downstream `match` a `_ =>`
