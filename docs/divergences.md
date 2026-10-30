@@ -1030,6 +1030,33 @@ ported, such as `load_i8_from_i9`, `load_ptr_from_i8_data` and `load_i40_struct_
 **Guarded by:** `crates/llvmkit-ir/tests/constant_folding_analysis.rs::load_from_const_ptr_oob_returns_poison`
 pins the second bullet. Nothing pins the rest.
 
+### D27 — `constant_fold_instruction` does not count a global as a constant operand
+
+**Severity:** model-gap. Observed while writing
+`crates/llvmkit-asmparser/tests/pointer_analysis.rs::a_getelementptr_of_a_scalable_source_is_not_constant_folded`,
+whose fixture uses a constant `getelementptr` as its base for this reason.
+**Where:** `crates/llvmkit-ir/src/constant_folding.rs` — `constant_fold_instruction`,
+through `constant_from_id`.
+
+**LLVM:** `ConstantFoldInstruction` folds when every operand is `isa<Constant>`. A
+`GlobalVariable` is a `Constant`, so `load i32, ptr @g` and
+`getelementptr [8 x <4 x i32>], ptr @g, i64 4` both reach
+`ConstantFoldInstOperands`.
+
+**llvmkit:** `constant_from_id` admits only `ValueKindData::Constant`. A global named
+directly by an instruction is its own slot, of `ValueKindData::GlobalVariable`, so
+the routine answers `None`. A `ConstantData::GlobalValueRef` wrapping the same global,
+or a constant expression over it, folds.
+
+**Why:** no reason is recorded. `constant_from_id` is a slot-level read shared across
+the file, and a global's own slot is not `ValueKindData::Constant`.
+
+**Fix:** have `constant_fold_instruction` wrap a global operand as
+`as_global_constant_ptr` does, and port the fixtures of
+`test/Transforms/InstSimplify/ConstProp/loads.ll` through this entry.
+
+**Guarded by:** nothing: this entry records what was left.
+
 ---
 
 ---

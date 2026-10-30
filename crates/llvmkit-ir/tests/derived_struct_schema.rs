@@ -1,7 +1,7 @@
 use llvmkit_ir::{
-    ArrLen, ArrayValue, Capability, ConstantFolder, FloatValue, IntValue, IrBuilder, IrError,
-    IrField, IrStruct, LayoutValue, Linkage, Module, ModuleBrand, NoFolder, PointerValue, Ptr,
-    Space, StructFields, module_new,
+    AddressSpace, ArrLen, ArrayValue, Capability, ConstantFolder, FloatValue, IntValue, IrBuilder,
+    IrError, IrField, IrStruct, LayoutValue, Linkage, Module, ModuleBrand, NoFolder, PointerValue,
+    Ptr, Space, StructFields, address_space, module_new,
 };
 
 #[derive(IrStruct)]
@@ -513,8 +513,8 @@ fn a_narrowed_space_dyn_pointer_goes_through_try_build() -> Result<(), IrError> 
     assert_eq!(
         PointerValue::<Space<0>, _>::try_from(far).map(|_| ()),
         Err(IrError::AddressSpaceMismatch {
-            expected: 0,
-            got: 1,
+            expected: AddressSpace::DEFAULT,
+            got: address_space::<1>(),
         })
     );
 

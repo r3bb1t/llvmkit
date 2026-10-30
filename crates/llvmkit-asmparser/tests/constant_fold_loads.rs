@@ -6,9 +6,9 @@
 //! the same question one step in, with the offset the `getelementptr` would
 //! have given. The globals are upstream's, verbatim.
 //!
-//! Not here, each for a reason it says itself: `test_array_of_zero_size_array`,
-//! because llvmkit spells `[4294967295 x [0 x i32]] zeroinitializer` as a list
-//! of that many elements; and every fixture that needs `ReadDataFromGlobal`
+//! Two kinds are left out. `test_array_of_zero_size_array`, because llvmkit
+//! spells `[4294967295 x [0 x i32]] zeroinitializer` as a list of that many
+//! elements. And every fixture that needs `ReadDataFromGlobal`
 //! (`docs/divergences.md` D26), such as `load_i8_from_i9` and the
 //! `load_i40_*_padding` group.
 

@@ -3221,13 +3221,10 @@ above superseded ones the supplement made without being able to verify them
 Derived at the commit that adds this entry: `rg -l
 "[Aa]ddr[Ss]pace|AddressSpace|addrspace" llvm/unittests/IR/*.cpp` names 9 files;
 taking from each the `TEST`, `TEST_F` and `TEST_P` whose body holds a match gives
-18 tests; and `rg -c -F` over `UPSTREAM.md` finds no row for these 6. None tests
-what a type constructor does with an address space; those ports are done.
+18 tests; and `rg -c -F` over `UPSTREAM.md` found no row for 6 of them. A sixth,
+`TEST(DataLayout, NonIntegralHelpers)`, has since been ported, which leaves these 5.
+None tests what a type constructor does with an address space; those ports are done.
 
-- `TEST(DataLayout, NonIntegralHelpers)` needs
-  `DataLayout::mustNotIntroduceIntToPtr` and `mustNotIntroducePtrToInt`, which
-  `rg -n "must_not" crates/llvmkit-ir/src/data_layout.rs` does not find. The
-  queries beside them exist.
 - `TEST(AsmWriterTest, PrintAddrspaceWithNullOperand)` prints a `CallInst` after
   `dropAllReferences` has nulled its operands. `rg -n "drop_all_references"
   crates/llvmkit-ir/src` finds nothing, so llvmkit has no such state to print.

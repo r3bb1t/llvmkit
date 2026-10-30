@@ -882,6 +882,7 @@ Two failure modes are worth naming, because both have shipped:
 | `crates/llvmkit-ir/tests/data_layout_round_trip.rs::get_pointer_pref_alignment_table` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, GetPointerPrefAlignment)` | port |
 | `crates/llvmkit-ir/tests/data_layout_round_trip.rs::address_space_name` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, AddressSpaceName)` | port |
 | `crates/llvmkit-ir/tests/data_layout_round_trip.rs::is_non_integral_address_space` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, IsNonIntegralAddressSpace)` | port |
+| `crates/llvmkit-ir/tests/data_layout_round_trip.rs::non_integral_helpers` | `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, NonIntegralHelpers)` | port |
 | `crates/llvmkit-ir/tests/data_layout_round_trip.rs::x86_64_linux_round_trip` | `lib/IR/AsmWriter.cpp::printModule` (`target datalayout` line round-trips through `getStringRepresentation`) | llvmkit-specific |
 | `crates/llvmkit-ir/tests/data_layout_round_trip.rs::aarch64_darwin_round_trip` | `lib/Target/AArch64/AArch64TargetMachine.cpp` (Triple -> layout-string mapping) | llvmkit-specific |
 | `crates/llvmkit-ir/tests/data_layout_round_trip.rs::wasm32_round_trip` | `lib/Target/WebAssembly/WebAssemblyTargetMachine.cpp` | llvmkit-specific |
@@ -1259,6 +1260,7 @@ Two failure modes are worth naming, because both have shipped:
 | `crates/llvmkit-ir/tests/intrinsic_declarations.rs::upstream_ir_builder_create_intrinsic_vector` | `unittests/IR/IntrinsicsTest.cpp::TEST_F(IntrinsicsTest, IRBuilderCreateIntrinsicVector)` | port |
 | `crates/llvmkit-ir/tests/intrinsic_declarations.rs::upstream_ir_builder_create_intrinsic_address_space` | `unittests/IR/IntrinsicsTest.cpp::TEST_F(IntrinsicsTest, IRBuilderCreateIntrinsicAddressSpace)` | port |
 | `crates/llvmkit-ir/tests/intrinsic_declarations.rs::upstream_ir_builder_create_intrinsic_var_arg` | `unittests/IR/IntrinsicsTest.cpp::TEST_F(IntrinsicsTest, IRBuilderCreateIntrinsicVarArg)` | port |
+| `crates/llvmkit-ir/tests/intrinsic_declarations.rs::a_parameter_past_the_table_is_refused_by_the_intrinsics_name` | no upstream counterpart — `MatchIntrinsicTypes_NoMatchArg` names no intrinsic; pins that `llvm/lib/IR/Intrinsics.cpp::matchIntrinsicType`'s `Infos.empty()` and `IITDescriptor::VarArg` refusals answer `IrError::IntrinsicSignatureMismatch` with the intrinsic's name | llvmkit-specific regression (D11) |
 | `crates/llvmkit-ir/tests/intrinsic_declarations.rs::a_signature_no_overload_fits_is_refused` | `llvm/lib/IR/Intrinsics.cpp::Intrinsic::getOrInsertDeclaration`'s `MatchIntrinsicTypes_Match` assert | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_intrinsics.rs::a_default_intrinsic_declaration_takes_the_program_address_space` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader`'s `parseOptionalProgramAddrSpace`, against llvmkit's own intrinsic-declaration guard | llvmkit-specific (regression) |
 | `crates/llvmkit-ir/tests/vector_types.rs::upstream_fixed_length` | `unittests/IR/VectorTypesTest.cpp::TEST(VectorTypesTest, FixedLength)` | port |

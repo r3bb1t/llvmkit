@@ -18,6 +18,7 @@
 
 use core::fmt;
 
+use crate::addr_space::AddressSpace;
 use crate::instr_types::{CastOpcode, OperandBundleTag};
 
 /// Whether a failure indicates a bug in llvmkit.
@@ -1400,9 +1401,9 @@ pub enum IrError {
     #[error("pointer address space mismatch: expected addrspace({expected}), got addrspace({got})")]
     AddressSpaceMismatch {
         /// Address space the API required.
-        expected: u32,
+        expected: AddressSpace,
         /// Address space actually supplied.
-        got: u32,
+        got: AddressSpace,
     },
 
     /// `set_struct_body_dyn` called twice on the same named struct.

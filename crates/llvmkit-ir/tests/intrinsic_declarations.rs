@@ -11,8 +11,8 @@
 
 use llvmkit_ir::{
     Constant, ConstantFolder, Dyn, DynBrand, ElemDyn, FunctionValue, IntoConstantValue,
-    IntrinsicId, IntrinsicInst, IrBuilder, LenDyn, Linkage, Module, Positioned, Type, VectorType,
-    lanes,
+    IntrinsicId, IntrinsicInst, IrBuilder, IrError, LenDyn, Linkage, Module, Positioned, Type,
+    VectorType, lanes,
 };
 
 fn intrinsic(name: &str) -> IntrinsicId {
@@ -337,4 +337,53 @@ fn a_signature_no_overload_fits_is_refused() {
     let refused = m.get_or_insert_intrinsic_declaration_by_signature(id, i32_ty, [i32_ty, i64_ty]);
     assert!(refused.is_err(), "{refused:?}");
     assert!(m.function_dyn("llvm.umax.i32").is_none());
+}
+
+/// **No upstream counterpart**: upstream's `MatchIntrinsicTypes_NoMatchArg` names
+/// no intrinsic, so the error is llvmkit's. Pins that both of
+/// `matchIntrinsicType`'s refusals of a parameter name the intrinsic asked about:
+/// `if (Infos.empty()) return true`, "If we ran out of descriptors, there are too
+/// many arguments", and `case IITDescriptor::VarArg: return true`. The signature
+/// each table does accept is the positive control.
+#[test]
+fn a_parameter_past_the_table_is_refused_by_the_intrinsics_name() {
+    let f = Fixture::set_up();
+    let m = &f.m;
+    let i1_ty = m.bool_type().as_type();
+    let i32_ty = m.i32_type().as_type();
+    let i64_ty = m.i64_type().as_type();
+    let void_ty = m.void_type();
+    let mismatch = |name: &str| {
+        Some(IrError::IntrinsicSignatureMismatch {
+            name: name.to_owned(),
+        })
+    };
+
+    let abs = intrinsic("llvm.abs");
+    let extra_parameter = m
+        .function_type(i32_ty, [i32_ty, i1_ty, i32_ty])
+        .expect("a valid function type");
+    assert_eq!(
+        abs.match_signature(m.into(), extra_parameter).err(),
+        mismatch("llvm.abs")
+    );
+    let fits = m
+        .function_type(i32_ty, [i32_ty, i1_ty])
+        .expect("a valid function type");
+    assert!(abs.match_signature(m.into(), fits).is_ok());
+
+    let stackmap = intrinsic("llvm.experimental.stackmap");
+    let parameter_for_the_vararg = m
+        .function_type(void_ty, [i64_ty, i32_ty, i32_ty])
+        .expect("a valid function type");
+    assert_eq!(
+        stackmap
+            .match_signature(m.into(), parameter_for_the_vararg)
+            .err(),
+        mismatch("llvm.experimental.stackmap")
+    );
+    let fits = m
+        .typed_varargs_function_type::<(), (i64, i32)>()
+        .expect("a valid function type");
+    assert!(stackmap.match_signature(m.into(), fits).is_ok());
 }

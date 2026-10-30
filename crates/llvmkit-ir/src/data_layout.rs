@@ -104,10 +104,6 @@ pub struct PointerSpec {
     /// Symbolic name (`p1(global):...` -> `"global"`). Empty string
     /// if no name is set.
     address_space_name: String,
-    /// Whether this address space is non-integral (set by `ni:<as>`
-    /// specs after primary parsing). Mirrors the post-pass in
-    /// `parseLayoutString`.
-    non_integral: bool,
 }
 
 impl PointerSpec {
@@ -127,7 +123,6 @@ impl PointerSpec {
             has_unstable_repr: false,
             has_external_state: false,
             address_space_name: String::new(),
-            non_integral: false,
         }
     }
 
@@ -187,9 +182,13 @@ impl PointerSpec {
         &self.address_space_name
     }
 
+    /// `DataLayout::isNonIntegralAddressSpace`'s condition: the pointer is more
+    /// than an address, because its index is narrower than its bits, or
+    /// because of either flag. `ni:<as>` is one way to set a flag, not the
+    /// only way to answer `true`.
     #[inline]
     pub const fn is_non_integral(&self) -> bool {
-        self.non_integral
+        self.bit_width != self.index_bit_width || self.has_unstable_repr || self.has_external_state
     }
 
     #[inline]
@@ -197,15 +196,12 @@ impl PointerSpec {
         self.is_non_integral()
     }
 
-    fn with_non_integral(mut self, non_integral: bool) -> Self {
-        self.non_integral = non_integral;
-        self
-    }
-
+    /// The post-pass of `parseLayoutString`: `ni:<as>` overrides any `p[e][u]`,
+    /// so a `ni` space is unstable and has no external state.
     fn into_non_integral_address_space(mut self, address_space: AddressSpace) -> Self {
         self.address_space = address_space;
         self.has_unstable_repr = true;
-        self.non_integral = true;
+        self.has_external_state = false;
         self
     }
 }
@@ -473,8 +469,10 @@ impl DataLayout {
     }
 
     /// Mirrors `DataLayout::getNonStandardAddressSpaces`. Yields the
-    /// address spaces with an explicit pointer spec (every spec
-    /// except `0`), in spec order.
+    /// address spaces whose pointer spec is non-integral, in spec order:
+    /// `HasUnstableRepresentation`, `HasExternalState`, or a `BitWidth` other
+    /// than the `IndexBitWidth`. A spec that is none of those is standard
+    /// however its address space is numbered.
     ///
     /// Borrows the layout — a [`DataLayout`] has no interior mutability, so
     /// nothing has to be copied out. No [`ExactSizeIterator`]: the length is a
@@ -485,11 +483,11 @@ impl DataLayout {
     /// [`ExactSizeIterator`]: core::iter::ExactSizeIterator
     pub fn non_standard_address_spaces(
         &self,
-    ) -> impl DoubleEndedIterator<Item = u32> + FusedIterator + Clone + '_ {
+    ) -> impl DoubleEndedIterator<Item = AddressSpace> + FusedIterator + Clone + '_ {
         self.pointer_specs
             .iter()
-            .filter(|s| s.address_space() != 0)
-            .map(|s| s.address_space().get())
+            .filter(|s| s.is_non_integral())
+            .map(PointerSpec::address_space)
     }
 
     /// Mirrors `DataLayout::getStructPrefAlignment` (the protected
@@ -506,25 +504,66 @@ impl DataLayout {
         self.struct_abi_align
     }
 
-    /// Mirrors `DataLayout::getNonIntegralAddressSpaces` (yields
-    /// every address space marked by `ni:<as>...`, in spec order).
+    /// Every address space [`is_non_integral_address_space`] answers `true`
+    /// for that has a spec of its own, in spec order. **No upstream
+    /// counterpart**, and no more than a second name for
+    /// [`non_standard_address_spaces`](Self::non_standard_address_spaces), whose
+    /// filter is the same condition.
     ///
     /// Borrowing and filtering, so no [`ExactSizeIterator`]; see
     /// [`non_standard_address_spaces`](Self::non_standard_address_spaces).
     ///
     /// [`ExactSizeIterator`]: core::iter::ExactSizeIterator
+    /// [`is_non_integral_address_space`]: Self::is_non_integral_address_space
     pub fn non_integral_address_spaces(
         &self,
-    ) -> impl DoubleEndedIterator<Item = u32> + FusedIterator + Clone + '_ {
-        self.pointer_specs
-            .iter()
-            .filter(|s| s.is_non_integral())
-            .map(|s| s.address_space().get())
+    ) -> impl DoubleEndedIterator<Item = AddressSpace> + FusedIterator + Clone + '_ {
+        self.non_standard_address_spaces()
     }
 
     /// Mirrors `DataLayout::isNonIntegralAddressSpace`.
     pub fn is_non_integral_address_space(&self, addr_space: AddressSpace) -> bool {
         self.pointer_spec(addr_space).is_non_integral()
+    }
+
+    /// Mirrors `DataLayout::isNonIntegralPointerType(Type *)`: `false` for
+    /// anything but a pointer or a vector of them.
+    pub fn is_non_integral_pointer_type<B: ModuleBrand, C: Capability>(
+        &self,
+        ty: Type<'_, B, C>,
+    ) -> bool {
+        scalar_pointer_address_space(ty)
+            .is_some_and(|space| self.is_non_integral_address_space(space))
+    }
+
+    /// Mirrors `DataLayout::mustNotIntroduceIntToPtr(unsigned)`.
+    pub fn must_not_introduce_int_to_ptr(&self, addr_space: AddressSpace) -> bool {
+        self.has_unstable_representation(addr_space) || self.has_external_state(addr_space)
+    }
+
+    /// Mirrors `DataLayout::mustNotIntroducePtrToInt(unsigned)`.
+    pub fn must_not_introduce_ptr_to_int(&self, addr_space: AddressSpace) -> bool {
+        self.has_unstable_representation(addr_space)
+    }
+
+    /// Mirrors `DataLayout::mustNotIntroduceIntToPtr(Type *)`: `false` for
+    /// anything but a pointer or a vector of them.
+    pub fn must_not_introduce_int_to_ptr_for_type<B: ModuleBrand, C: Capability>(
+        &self,
+        ty: Type<'_, B, C>,
+    ) -> bool {
+        scalar_pointer_address_space(ty)
+            .is_some_and(|space| self.must_not_introduce_int_to_ptr(space))
+    }
+
+    /// Mirrors `DataLayout::mustNotIntroducePtrToInt(Type *)`: `false` for
+    /// anything but a pointer or a vector of them.
+    pub fn must_not_introduce_ptr_to_int_for_type<B: ModuleBrand, C: Capability>(
+        &self,
+        ty: Type<'_, B, C>,
+    ) -> bool {
+        scalar_pointer_address_space(ty)
+            .is_some_and(|space| self.must_not_introduce_ptr_to_int(space))
     }
 
     /// Mirrors `DataLayout::hasUnstableRepresentation(unsigned)`.
@@ -969,13 +1008,7 @@ impl DataLayout {
             .binary_search_by_key(&spec.address_space(), |s| s.address_space())
         {
             Ok(idx) => {
-                // Mirrors the upstream `update existing` arm: keep
-                // the existing `non_integral` flag because that is
-                // applied later by the post-pass in
-                // `parse_layout_string`.
-                let kept_non_integral = self.pointer_specs[idx].is_non_integral();
-                let non_integral = kept_non_integral || spec.is_non_integral();
-                self.pointer_specs[idx] = spec.with_non_integral(non_integral);
+                self.pointer_specs[idx] = spec;
             }
             Err(idx) => {
                 self.pointer_specs.insert(idx, spec);
@@ -1661,6 +1694,16 @@ pub(crate) fn target_ext_layout_type(module: &ModuleCore, id: TypeSlot) -> Optio
 // --------------------------------------------------------------------------
 
 #[inline]
+/// `dyn_cast<PointerType>(Ty->getScalarType())`'s address space.
+fn scalar_pointer_address_space<B: ModuleBrand, C: Capability>(
+    ty: Type<'_, B, C>,
+) -> Option<AddressSpace> {
+    match ty.scalar_type().data() {
+        TypeData::Pointer { addr_space } => Some(*addr_space),
+        _ => None,
+    }
+}
+
 fn is_power_of_two(v: u64) -> bool {
     v != 0 && (v & (v - 1)) == 0
 }

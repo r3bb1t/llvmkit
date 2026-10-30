@@ -232,11 +232,11 @@ fn a_typed_pointer_type_carries_its_address_space() {
 /// An address space is 24 bits, and [`AddressSpace`] holds no more:
 /// `Type::setSubclassData` (`include/llvm/IR/Type.h`) asserts that a pointer's
 /// fits, and `LLParser::parseOptionalAddrSpace` refuses anything wider. So
-/// every route that names an address space takes one
-/// (`rg -n "(addr|address)_space: u32" crates` prints nothing, measured on top
-/// of `5af2503`). llvmkit-specific regression (D10): `ptr_type(1 << 24)` built
-/// `ptr addrspace(16777216)`, which no parser reads back. The largest space is
-/// the positive control.
+/// every route that names an address space takes, returns or yields one. The two
+/// commands in the module docs of `addr_space.rs` check that, and both print
+/// nothing, measured on top of `de3f63c`. llvmkit-specific regression (D10):
+/// `ptr_type(1 << 24)` built `ptr addrspace(16777216)`, which no parser reads back.
+/// The largest space is the positive control.
 #[test]
 fn an_address_space_holds_24_bits() {
     assert_eq!(AddressSpace::new(0xFF_FFFF), Some(AddressSpace::MAX));
@@ -270,8 +270,8 @@ fn narrowing_a_dyn_pointer_checks_its_address_space() -> Result<(), IrError> {
     assert_eq!(
         zero.err(),
         Some(IrError::AddressSpaceMismatch {
-            expected: 0,
-            got: 1
+            expected: AddressSpace::DEFAULT,
+            got: address_space::<1>(),
         })
     );
     let one = one?;
@@ -441,8 +441,8 @@ fn ptr_means_address_space_zero() -> Result<(), IrError> {
             .with_typed_signature::<fn(Ptr)>()
             .map(|_| ()),
         Err(IrError::AddressSpaceMismatch {
-            expected: 0,
-            got: 1,
+            expected: AddressSpace::DEFAULT,
+            got: address_space::<1>(),
         })
     );
     assert!(

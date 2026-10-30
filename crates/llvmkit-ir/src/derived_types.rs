@@ -272,10 +272,7 @@ impl<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability> TryFrom<Type<'ctx, B, C>
         if let Some(expected) = A::static_space()
             && expected != got
         {
-            return Err(IrError::AddressSpaceMismatch {
-                expected,
-                got: got.get(),
-            });
+            return Err(IrError::AddressSpaceMismatch { expected, got });
         }
         Ok(Self::new(t.slot_trusting_same_module(), t.module))
     }

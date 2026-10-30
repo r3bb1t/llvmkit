@@ -556,10 +556,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Type<'ctx, B, C> {
         Err(match (expected_data.as_integer(), got_data.as_integer()) {
             (Some(lhs), Some(rhs)) => IrError::OperandWidthMismatch { lhs, rhs },
             _ => match (expected_data.as_pointer(), got_data.as_pointer()) {
-                (Some(expected), Some(got)) => IrError::AddressSpaceMismatch {
-                    expected: expected.get(),
-                    got: got.get(),
-                },
+                (Some(expected), Some(got)) => IrError::AddressSpaceMismatch { expected, got },
                 // Every failure here is an *identity* mismatch — the guard
                 // above compares slots within one module — so the kinds can
                 // agree while the types differ. Reporting labels alone rendered

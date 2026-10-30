@@ -605,23 +605,156 @@ fn address_space_name() {
     assert_eq!(dl.named_address_space("missing"), None);
 }
 
-/// Mirrors `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, IsNonIntegralAddressSpace)`.
+/// Port of `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, IsNonIntegralAddressSpace)`,
+/// whole and in order. `non_integral_address_spaces` has no upstream counterpart
+/// and is asked beside `getNonStandardAddressSpaces` to pin that they agree.
 #[test]
 fn is_non_integral_address_space() {
+    let two = address_space::<2>();
+    let top = address_space::<16777215>();
+    let spaces = |dl: &DataLayout| dl.non_standard_address_spaces().collect::<Vec<_>>();
+
     let default = DataLayout::default();
-    assert!(default.non_standard_address_spaces().next().is_none());
+    assert!(spaces(&default).is_empty());
     assert!(!default.is_non_integral_address_space(address_space::<0>()));
     assert!(!default.is_non_integral_address_space(address_space::<1>()));
 
     let custom = parse("ni:2:16777215");
+    assert_eq!(spaces(&custom), [two, top]);
     assert_eq!(
         custom.non_integral_address_spaces().collect::<Vec<_>>(),
-        vec![2u32, 16777215u32]
+        [two, top]
     );
     assert!(!custom.is_non_integral_address_space(address_space::<0>()));
     assert!(!custom.is_non_integral_address_space(address_space::<1>()));
-    assert!(custom.is_non_integral_address_space(address_space::<2>()));
-    assert!(custom.is_non_integral_address_space(address_space::<16777215>()));
+    assert!(custom.is_non_integral_address_space(two));
+    assert!(custom.must_not_introduce_int_to_ptr(two));
+    assert!(custom.must_not_introduce_ptr_to_int(two));
+    assert!(custom.is_non_integral_address_space(top));
+    assert!(custom.must_not_introduce_int_to_ptr(top));
+    assert!(custom.must_not_introduce_ptr_to_int(top));
+
+    // Pointers are marked as non-integral if the address size != total size
+    for layout in ["p2:64:64:64:32", "p2:128:64:64:64"] {
+        let dl = parse(layout);
+        assert!(dl.is_non_integral_address_space(two), "{layout}");
+        assert!(!dl.has_unstable_representation(two), "{layout}");
+        assert!(!dl.has_external_state(two), "{layout}");
+        assert!(!dl.must_not_introduce_int_to_ptr(two), "{layout}");
+        assert!(!dl.must_not_introduce_ptr_to_int(two), "{layout}");
+        assert_eq!(spaces(&dl), [two], "{layout}");
+    }
+    // Pointers can be marked as unstable using 'pu'
+    for layout in ["pu2:64:64:64:64", "pu2:64:64:64:32"] {
+        let dl = parse(layout);
+        // Note: isNonIntegralAddressSpace returns true for even with index ==
+        assert!(dl.is_non_integral_address_space(two), "{layout}");
+        assert!(dl.has_unstable_representation(two), "{layout}");
+        assert!(!dl.has_external_state(two), "{layout}");
+        assert!(dl.must_not_introduce_ptr_to_int(two), "{layout}");
+        assert!(dl.must_not_introduce_int_to_ptr(two), "{layout}");
+        assert_eq!(spaces(&dl), [two], "{layout}");
+    }
+
+    // Non-integral pointers with external state ('e' flag).
+    for layout in ["pe2:64:64:64:32", "pe2:64:64:64:64"] {
+        let dl = parse(layout);
+        assert!(dl.is_non_integral_address_space(two), "{layout}");
+        assert!(dl.has_external_state(two), "{layout}");
+        assert!(dl.must_not_introduce_int_to_ptr(two), "{layout}");
+        assert!(!dl.must_not_introduce_ptr_to_int(two), "{layout}");
+        assert!(!dl.has_unstable_representation(two), "{layout}");
+        assert_eq!(spaces(&dl), [two], "{layout}");
+    }
+
+    // It is also possible to have both unstable representation and external state
+    for layout in ["peu2:64:64:64:32", "pue2:128:64:64:64"] {
+        let dl = parse(layout);
+        assert!(dl.is_non_integral_address_space(two), "{layout}");
+        assert!(dl.has_external_state(two), "{layout}");
+        assert!(custom.must_not_introduce_int_to_ptr(two), "{layout}");
+        assert!(custom.must_not_introduce_ptr_to_int(two), "{layout}");
+        assert!(dl.has_unstable_representation(two), "{layout}");
+        assert_eq!(spaces(&dl), [two], "{layout}");
+    }
+
+    // For backwards compatibility, the ni DataLayout part overrides any
+    // p[e][u].
+    for layout in [
+        "ni:2-p2:64:64:64:32",
+        "ni:2-pu2:64:64:64:32",
+        "ni:2-pu2:64:64:64:32",
+        "p2:64:64:64:32-ni:2",
+        "pu2:64:64:64:32-ni:2",
+        "pe2:64:64:64:32-ni:2",
+        "peeee2:64:64:64:32-pu2:64:64:64:32-ni:2",
+    ] {
+        let dl = parse(layout);
+        assert!(dl.is_non_integral_address_space(two), "{layout}");
+        assert!(dl.has_unstable_representation(two), "{layout}");
+        // The external state property is new and not expected for existing uses of
+        // non-integral pointers, so existing :ni data layouts should not set it.
+        assert!(!dl.has_external_state(two), "{layout}");
+        assert_eq!(spaces(&dl), [two], "{layout}");
+    }
+}
+
+/// Port of `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, NonIntegralHelpers)`.
+/// `mustNotIntroduceIntToPtr(Type *)` and `mustNotIntroducePtrToInt(Type *)` are the
+/// `_for_type` forms, because Rust has no overload. Upstream's `Ctx` is a module
+/// here, which is what mints a type.
+#[test]
+fn non_integral_helpers() {
+    let dl = parse("p1:128:128:128:64-pu2:32:32:32:32-pu3:64:64:64:32-pe4:64:64:64:32");
+    assert_eq!(
+        dl.non_standard_address_spaces().collect::<Vec<_>>(),
+        [
+            address_space::<1>(),
+            address_space::<2>(),
+            address_space::<3>(),
+            address_space::<4>(),
+        ]
+    );
+    let m = module_new!("m").expect("fresh module");
+    for (space, non_integral, unstable, external_state, _size) in [
+        (address_space::<0>(), false, false, false, 64),
+        (address_space::<1>(), true, false, false, 128),
+        (address_space::<2>(), true, true, false, 32),
+        (address_space::<3>(), true, true, false, 64),
+        (address_space::<4>(), true, false, true, 64),
+    ] {
+        assert_eq!(non_integral, dl.is_non_integral_address_space(space));
+        assert_eq!(unstable, dl.has_unstable_representation(space));
+        assert_eq!(external_state, dl.has_external_state(space));
+        let avoid_int_to_ptr = unstable || external_state;
+        assert_eq!(avoid_int_to_ptr, dl.must_not_introduce_int_to_ptr(space));
+        let avoid_ptr_to_int = unstable;
+        assert_eq!(avoid_ptr_to_int, dl.must_not_introduce_ptr_to_int(space));
+        let ptr_ty = m.ptr_type(space);
+        for ty in [
+            ptr_ty.as_type(),
+            VectorType::of(ptr_ty, lanes::<2>()).as_type(),
+            VectorType::scalable_of(ptr_ty, lanes::<1>()).as_type(),
+        ] {
+            assert_eq!(
+                avoid_ptr_to_int,
+                dl.must_not_introduce_ptr_to_int_for_type(ty)
+            );
+            assert_eq!(
+                avoid_int_to_ptr,
+                dl.must_not_introduce_int_to_ptr_for_type(ty)
+            );
+            // The old API should return true for both unstable and non-integral.
+            assert_eq!(
+                unstable || non_integral,
+                dl.is_non_integral_pointer_type(ty)
+            );
+        }
+        // Both helpers gracefully handle non-pointer, non-vector-of-pointers:
+        let i1_ty = m.bool_type().as_type();
+        assert!(!dl.must_not_introduce_ptr_to_int_for_type(i1_ty));
+        assert!(!dl.must_not_introduce_int_to_ptr_for_type(i1_ty));
+    }
 }
 
 // ---------------------------------------------------------------------------

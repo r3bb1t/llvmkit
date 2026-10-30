@@ -20,8 +20,8 @@
 //! convention unless noted otherwise.
 
 use llvmkit_ir::{
-    FloatValue, IntPredicate, IntValue, IrError, Linkage, Module, ModuleBrand, NoFolder,
-    PointerValue, Ptr, SsaBuilder, SsaState, module_new,
+    AddressSpace, FloatValue, IntPredicate, IntValue, IrError, Linkage, Module, ModuleBrand,
+    NoFolder, PointerValue, Ptr, SsaBuilder, SsaState, address_space, module_new,
 };
 use proptest::prelude::*;
 
@@ -797,8 +797,8 @@ fn pointer_var_wrong_addrspace_def_rejected() -> Result<(), IrError> {
     assert_eq!(
         err,
         IrError::AddressSpaceMismatch {
-            expected: 0,
-            got: 1
+            expected: AddressSpace::DEFAULT,
+            got: address_space::<1>(),
         }
     );
     assert_eq!(

@@ -1604,8 +1604,8 @@ pub(crate) fn constant_fold_load_through_bitcast_trusting_same_module<
         // above may legally coerce non-integral pointers, but direct
         // pointer/int casts require both sides to agree on non-integrality.
         if src_size == dest_size
-            && is_non_integral_pointer_type(value.ty(), dl)
-                == is_non_integral_pointer_type(dest_ty, dl)
+            && dl.is_non_integral_pointer_type(value.ty())
+                == dl.is_non_integral_pointer_type(dest_ty)
         {
             let opcode = load_through_bitcast_opcode(value.ty(), dest_ty);
             if cast_is_valid(opcode, value.ty(), dest_ty)
@@ -2046,9 +2046,9 @@ fn scaled_offset(index: &ApInt, scale: u64, index_bits: u32) -> ApInt {
 ///    it first reads `GEP->getInRange()` and again inside the merge loop. Any
 ///    GEP — outer or merged-through — carrying `in_range` stops the fold
 ///    immediately rather than dropping or mis-adjusting the range.
-///  - **No null/`inttoptr`-base fold**: llvmkit models
-///    neither `DataLayout::mustNotIntroduceIntToPtr` nor `APInt::insertBits`.
-///    Rather than mis-canonicalising a from-null (or from-`inttoptr`-of-a-
+///  - **No null/`inttoptr`-base fold**: this port stops short of upstream's
+///    `inttoptr` result, which [`DataLayout::must_not_introduce_int_to_ptr`]
+///    guards. Rather than mis-canonicalising a from-null (or from-`inttoptr`-of-a-
 ///    nonzero-constant) GEP into a `getelementptr i8, ptr null, ...` form
 ///    upstream would instead fold to `inttoptr`, this bails to `None`
 ///    whenever the fully-merged base is null or `inttoptr` of a nonzero
@@ -2510,10 +2510,15 @@ fn all_ones_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 /// The vector `ty`, every lane the constant `lane` builds for its element, or
 /// `None` when `ty` is no vector or `lane` has no constant to give. llvmkit
 /// spells a scalable splat as `min_len` equal lanes (`VectorType::const_vector`).
-fn vector_of_lanes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+fn vector_of_lanes<'ctx, B, C, F>(
     ty: Type<'ctx, B, C>,
-    lane: fn(Type<'ctx, B, C>) -> IrResult<Option<Constant<'ctx, B, C>>>,
-) -> IrResult<Option<Constant<'ctx, B, C>>> {
+    lane: F,
+) -> IrResult<Option<Constant<'ctx, B, C>>>
+where
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+    F: FnOnce(Type<'ctx, B, C>) -> IrResult<Option<Constant<'ctx, B, C>>>,
+{
     let Some((element, lanes, _)) = ty.data().as_vector() else {
         return Ok(None);
     };
@@ -3148,19 +3153,6 @@ fn index_bits_for_constant_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             index_bits_for_constant_offset(base, dl)
         }
         _ => None,
-    }
-}
-
-fn is_non_integral_pointer_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    ty: Type<'ctx, B, C>,
-    dl: &DataLayout,
-) -> bool {
-    match ty.data() {
-        TypeData::Pointer { addr_space } => dl.is_non_integral_address_space(*addr_space),
-        TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
-            is_non_integral_pointer_type(Type::new(*elem, ty.module), dl)
-        }
-        _ => false,
     }
 }
 

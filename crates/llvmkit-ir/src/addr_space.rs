@@ -22,10 +22,17 @@
 //! point.
 //!
 //! [`AddressSpace`] is the run-time number itself, and it holds only what LLVM
-//! can: 24 bits. Every route that names an address space takes one, so a wider
-//! number is refused once, where it becomes an [`AddressSpace`], and nothing
-//! past that point can fail. `rg -n "(addr|address)_space: u32" crates` prints
-//! nothing, measured on top of `5af2503`.
+//! can: 24 bits. Every route that names an address space takes, returns or yields
+//! one, so a wider number is refused once, where it becomes an [`AddressSpace`],
+//! and nothing past that point can fail. [`AddressSpace::get`] and `u32::from` are
+//! the deliberate way back to a number. Two commands check the rest, and both
+//! print nothing, measured on top of `de3f63c`:
+//! `rg -n "(addr|address)_spaces?\w*: *(Vec<|&\[|Option<)?u32" crates` for what a
+//! route takes or holds, and
+//! `rg -nU "fn \w*space\w*(<[^>]*>)?\([^)]*\)\s*->\s*[^{;]*\bu32\b" crates` for what
+//! it returns or yields. They search by name, so they do not reach
+//! [`IrError::AddressSpaceMismatch`](crate::IrError::AddressSpaceMismatch), whose
+//! fields are `expected` and `got`. Those are [`AddressSpace`] too.
 
 use core::fmt;
 
@@ -127,11 +134,11 @@ pub trait AddrSpace: sealed::Sealed + Copy + 'static + fmt::Debug {
     /// ([`SpaceDyn`]). Analog of [`IntWidth::static_bits`](crate::IntWidth::static_bits).
     ///
     /// ```
-    /// # use llvmkit_ir::{AddrSpace, Space, SpaceDyn};
-    /// assert_eq!(Space::<3>::static_space(), Some(3));
+    /// # use llvmkit_ir::{AddrSpace, Space, SpaceDyn, address_space};
+    /// assert_eq!(Space::<3>::static_space(), Some(address_space::<3>()));
     /// assert_eq!(SpaceDyn::static_space(), None);
     /// ```
-    fn static_space() -> Option<u32>;
+    fn static_space() -> Option<AddressSpace>;
 }
 
 /// Const-generic marker for a statically known address space. Analog of
@@ -143,8 +150,8 @@ pub trait AddrSpace: sealed::Sealed + Copy + 'static + fmt::Debug {
 pub struct Space<const N: u32>;
 impl<const N: u32> AddrSpace for Space<N> {
     #[inline]
-    fn static_space() -> Option<u32> {
-        Some(N)
+    fn static_space() -> Option<AddressSpace> {
+        Some(address_space::<N>())
     }
 }
 
@@ -155,7 +162,7 @@ impl<const N: u32> AddrSpace for Space<N> {
 pub struct SpaceDyn;
 impl AddrSpace for SpaceDyn {
     #[inline]
-    fn static_space() -> Option<u32> {
+    fn static_space() -> Option<AddressSpace> {
         None
     }
 }
