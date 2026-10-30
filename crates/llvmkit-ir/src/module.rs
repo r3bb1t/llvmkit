@@ -5343,6 +5343,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Params: FunctionParamList,
         Name: AsRef<str>,
     {
+        self.check_function_name(name.as_ref())?;
         let signature = self.typed_function_type::<Ret, Params>()?;
         let function = self.declare_function::<Ret::Marker>(name.as_ref(), signature, linkage)?;
         TypedFunctionValue::<Ret, Params, B>::try_from_function(function).map(|f| f.id())
@@ -5359,6 +5360,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Sig: FunctionSignature,
         Name: AsRef<str>,
     {
+        self.check_function_name(name.as_ref())?;
         let signature = self.typed_function_type_of::<Sig>()?;
         let function = self.declare_function::<<Sig::Ret as FunctionReturn>::Marker>(
             name.as_ref(),
@@ -5382,6 +5384,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Params: FunctionParamList,
         Name: AsRef<str>,
     {
+        self.check_function_name(name.as_ref())?;
         let signature = self.typed_varargs_function_type::<Ret, Params>()?;
         let function = self.declare_function::<Ret::Marker>(name.as_ref(), signature, linkage)?;
         TypedVarArgsFunctionValue::<Ret, Params, B>::try_from_function(function).map(|f| f.id())
@@ -5398,6 +5401,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Sig: FunctionSignature,
         Name: AsRef<str>,
     {
+        self.check_function_name(name.as_ref())?;
         let signature = self.typed_varargs_function_type_of::<Sig>()?;
         let function = self.declare_function::<<Sig::Ret as FunctionReturn>::Marker>(
             name.as_ref(),
@@ -5406,6 +5410,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         )?;
         TypedVarArgsFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(function)
             .map(|f| f.id())
+    }
+
+    /// The refusals [`declare_function`](Self::declare_function) has, which
+    /// read only the name. A typed constructor asks first, so a refused name
+    /// mints no part of its signature.
+    fn check_function_name(&'ctx self, name: &str) -> IrResult<()> {
+        reject_reserved_intrinsic_name(name)?;
+        if !name.is_empty() && self.core().named_value(name).is_some() {
+            return Err(IrError::DuplicateFunctionName {
+                name: name.to_owned(),
+            });
+        }
+        Ok(())
     }
 
     /// Shared declaration tail for every public constructor: name
@@ -5430,12 +5447,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     where
         R: ReturnMarker,
     {
-        reject_reserved_intrinsic_name(name)?;
-        if !name.is_empty() && self.core().named_value(name).is_some() {
-            return Err(IrError::DuplicateFunctionName {
-                name: name.to_owned(),
-            });
-        }
+        self.check_function_name(name)?;
         Ok(self.capability_ref().push_function(
             name,
             signature,

@@ -5566,8 +5566,10 @@ where
         A: crate::AddrSpace,
         Name: AsRef<str>,
     {
+        // Lifted first: a refused pointer mints no part of `T`.
+        let ptr = ptr.into_pointer_value(self.mutable_ref())?;
         let ty = self.schema_ir_type::<T>()?;
-        let raw = self.view(self.load(ty, ptr.as_pointer_value(), name)?);
+        let raw = self.view(self.load(ty, ptr, name)?);
         // A load's result has the type it loads: the layout's.
         Ok(T::wrap(<T::Layout as FieldLayout>::value_of(
             raw,
@@ -5587,8 +5589,10 @@ where
         A: crate::AddrSpace,
         Name: AsRef<str>,
     {
+        // Lifted first: a refused pointer mints no part of `T`.
+        let ptr = ptr.into_pointer_value(self.mutable_ref())?;
         let ty = self.schema_ir_type::<T>()?;
-        let raw = self.view(self.load_with_align(ty, ptr.as_pointer_value(), align, name)?);
+        let raw = self.view(self.load_with_align(ty, ptr, align, name)?);
         // A load's result has the type it loads: the layout's.
         Ok(T::wrap(<T::Layout as FieldLayout>::value_of(
             raw,
@@ -6427,11 +6431,12 @@ where
         let callee = callee.into_pointer_value(self.mutable_ref())?;
         let module = self.mutable_ref();
         plan_signature_mint::<Sig::Ret, Sig::Params, B>(module)?;
+        // Lowered before the mint: a refused argument mints no part of `Sig`.
+        let arg_ids = args.lower(self.mutable_ref(), CrateOnly(()))?.0;
         let ret = <Sig::Ret as FunctionReturn>::ir_type(module)?;
         let params = <Sig::Params as FunctionParamList>::ir_types(module)?;
         let fn_ty = self.schema_view().function_type(ret, params)?;
         let callee_v = IsValue::as_erased(callee);
-        let arg_ids = args.lower(self.mutable_ref(), CrateOnly(()))?.0;
         let payload = CallInstData::new(
             callee_v.slot_trusting_same_module(),
             fn_ty.slot_trusting_same_module(),
@@ -6620,8 +6625,10 @@ where
         S::Fields: StructFieldAt<I>,
         Name: AsRef<str>,
     {
+        // Lifted first: a refused pointer mints no part of `S`.
+        let ptr = ptr.into_pointer_value(self.mutable_ref())?;
         let struct_ty = self.schema_struct_type::<S>()?;
-        let raw = self.view(self.struct_gep(struct_ty, ptr.as_pointer_value(), I, name)?);
+        let raw = self.view(self.struct_gep(struct_ty, ptr, I, name)?);
         Ok(raw.with_pointee::<FieldOf<S, I>>())
     }
 
@@ -6642,14 +6649,11 @@ where
         Idx: IntoIntValue<'ctx, W, B>,
         Name: AsRef<str>,
     {
-        let elem_ty = self.schema_ir_type::<T>()?;
+        // Lifted first: a refused operand mints no part of `T`.
+        let ptr = ptr.into_pointer_value(self.mutable_ref())?;
         let idx_value = index.into_int_value(self.mutable_ref())?;
-        let raw = self.view(self.gep(
-            elem_ty,
-            ptr.as_pointer_value(),
-            core::iter::once(idx_value.as_dyn()),
-            name,
-        )?);
+        let elem_ty = self.schema_ir_type::<T>()?;
+        let raw = self.view(self.gep(elem_ty, ptr, core::iter::once(idx_value.as_dyn()), name)?);
         Ok(raw.with_pointee::<T>())
     }
 
@@ -6669,11 +6673,13 @@ where
         Idx: IntoIntValue<'ctx, W, B>,
         Name: AsRef<str>,
     {
-        let elem_ty = self.schema_ir_type::<T>()?;
+        // Lifted first: a refused operand mints no part of `T`.
+        let ptr = ptr.into_pointer_value(self.mutable_ref())?;
         let idx_value = index.into_int_value(self.mutable_ref())?;
+        let elem_ty = self.schema_ir_type::<T>()?;
         let raw = self.view(self.inbounds_gep(
             elem_ty,
-            ptr.as_pointer_value(),
+            ptr,
             core::iter::once(idx_value.as_dyn()),
             name,
         )?);
@@ -11556,6 +11562,10 @@ where
         T: IrField,
     {
         let parent = self.parent;
+        // Replayed first: a pointer `load_from` refused mints no part of `T`.
+        if let Err(error) = &self.ptr {
+            return Err(error.clone());
+        }
         let ty = parent.schema_ir_type::<T>()?;
         let payload = self.payload(ty.slot_trusting_same_module())?;
         let inst = parent.load_inner(payload, name);

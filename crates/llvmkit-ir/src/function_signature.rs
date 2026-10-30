@@ -172,11 +172,6 @@ pub trait FunctionParam: Sized + 'static {
         Ok(())
     }
 
-    /// Check whether an existing raw parameter type matches this schema.
-    fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
-    where
-        B: ModuleBrand + 'ctx;
-
     /// Keep `arg`'s type as this schema says it is; see
     /// [`FunctionReturn::hold_ir_type`].
     #[doc(hidden)]
@@ -931,15 +926,6 @@ impl<const AS: u32> FunctionParam for Ptr<AS> {
         Ok(module.as_view().ptr_type_in::<AS>().as_type())
     }
 
-    /// A pointer in address space `AS` exactly.
-    #[inline]
-    fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
-    where
-        B: ModuleBrand + 'ctx,
-    {
-        PointerType::<Space<AS>, B, C>::try_from(ty).is_ok()
-    }
-
     #[inline]
     fn validate_argument<'ctx, B>(arg: Argument<'ctx, B, ReadOnly>) -> IrResult<()>
     where
@@ -1020,14 +1006,6 @@ macro_rules! impl_int_signature_marker {
                 B: ModuleBrand + 'ctx,
             {
                 Ok(module.as_view().$method().as_type())
-            }
-
-            #[inline]
-            fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
-            where
-                B: ModuleBrand + 'ctx,
-            {
-                matches!(ty.kind(), TypeKind::Integer { bits } if bits == $bits)
             }
 
             #[inline]
@@ -1120,14 +1098,6 @@ impl<const N: u32> FunctionParam for Width<N> {
     }
 
     #[inline]
-    fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
-    where
-        B: ModuleBrand + 'ctx,
-    {
-        matches!(ty.kind(), TypeKind::Integer { bits } if bits == N)
-    }
-
-    #[inline]
     fn validate_argument<'ctx, B>(arg: Argument<'ctx, B, ReadOnly>) -> IrResult<()>
     where
         B: ModuleBrand + 'ctx,
@@ -1209,14 +1179,6 @@ macro_rules! impl_float_signature_marker {
                 B: ModuleBrand + 'ctx,
             {
                 Ok(module.as_view().$method().as_type())
-            }
-
-            #[inline]
-            fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
-            where
-                B: ModuleBrand + 'ctx,
-            {
-                matches!(ty.kind(), $kind)
             }
 
             #[inline]

@@ -504,23 +504,6 @@ impl DataLayout {
         self.struct_abi_align
     }
 
-    /// Every address space [`is_non_integral_address_space`] answers `true`
-    /// for that has a spec of its own, in spec order. **No upstream
-    /// counterpart**, and no more than a second name for
-    /// [`non_standard_address_spaces`](Self::non_standard_address_spaces), whose
-    /// filter is the same condition.
-    ///
-    /// Borrowing and filtering, so no [`ExactSizeIterator`]; see
-    /// [`non_standard_address_spaces`](Self::non_standard_address_spaces).
-    ///
-    /// [`ExactSizeIterator`]: core::iter::ExactSizeIterator
-    /// [`is_non_integral_address_space`]: Self::is_non_integral_address_space
-    pub fn non_integral_address_spaces(
-        &self,
-    ) -> impl DoubleEndedIterator<Item = AddressSpace> + FusedIterator + Clone + '_ {
-        self.non_standard_address_spaces()
-    }
-
     /// Mirrors `DataLayout::isNonIntegralAddressSpace`.
     pub fn is_non_integral_address_space(&self, addr_space: AddressSpace) -> bool {
         self.pointer_spec(addr_space).is_non_integral()

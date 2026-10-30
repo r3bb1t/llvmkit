@@ -1813,14 +1813,6 @@ where
     }
 
     #[inline]
-    fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
-    where
-        B: ModuleBrand + 'ctx,
-    {
-        <S as FieldLayout>::matches_type(ty, CrateOnly(()))
-    }
-
-    #[inline]
     fn hold_argument<'ctx, B>(arg: Argument<'ctx, B, ReadOnly>, token: CrateOnly)
     where
         B: ModuleBrand + 'ctx,

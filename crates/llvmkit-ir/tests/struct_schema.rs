@@ -1,7 +1,7 @@
 use llvmkit_ir::{
-    Capability, Dyn, Fp128, Half, IntValue, IntoErasedValue, IntoIrField, IntoLayoutValue,
-    IrBuilder, IrError, Linkage, ModuleBrand, ModuleRef, Mutable, Ptr, SchemaValue, StructFields,
-    StructSchema, StructSchemaValue, StructValue, Value, Width, X86Fp80, module_new,
+    Align, Capability, Dyn, Fp128, Half, IntValue, IntoErasedValue, IntoIrField, IntoLayoutValue,
+    IrBuilder, IrError, Linkage, Module, ModuleBrand, ModuleRef, Mutable, Ptr, SchemaValue,
+    StructFields, StructSchema, StructSchemaValue, StructValue, Value, Width, X86Fp80, module_new,
 };
 use llvmkit_macros::Branded;
 
@@ -443,6 +443,132 @@ fn a_refused_signature_mints_no_part_of_it() -> Result<(), IrError> {
     );
     assert!(m.named_struct("Fresh").is_none());
     assert_eq!(format!("{m}"), before);
+    b.ret_void();
+    Ok(())
+}
+
+/// llvmkit-specific regression (D8): `declare_function` read the name after the
+/// signature was minted, so a refused name left `%Fresh` behind. Each of its
+/// refusals is here, on each of the four typed routes: a name another global
+/// holds, a known intrinsic's name, and a `llvm.` name that is neither.
+#[test]
+fn a_refused_name_mints_no_part_of_a_signature() -> Result<(), IrError> {
+    let m = module_new!("schema")?;
+    m.add_typed_function::<(), (), _>("taken", Linkage::External)?;
+    let before = format!("{m}");
+
+    for (name, refused) in [
+        (
+            "taken",
+            IrError::DuplicateFunctionName {
+                name: "taken".to_owned(),
+            },
+        ),
+        (
+            "llvm.abs.i32",
+            IrError::ReservedIntrinsicName {
+                name: "llvm.abs.i32".to_owned(),
+            },
+        ),
+        (
+            "llvm.not.an.intrinsic",
+            IrError::UnknownIntrinsic {
+                name: "llvm.not.an.intrinsic".to_owned(),
+            },
+        ),
+    ] {
+        let refused = Err(refused);
+        assert_eq!(
+            m.add_typed_function::<Fresh, (), _>(name, Linkage::External)
+                .map(|_| ()),
+            refused
+        );
+        assert_eq!(
+            m.add_typed_function_of::<fn() -> Fresh, _>(name, Linkage::External)
+                .map(|_| ()),
+            refused
+        );
+        assert_eq!(
+            m.add_typed_varargs_function::<Fresh, (), _>(name, Linkage::External)
+                .map(|_| ()),
+            refused
+        );
+        assert_eq!(
+            m.add_typed_varargs_function_of::<fn() -> Fresh, _>(name, Linkage::External)
+                .map(|_| ()),
+            refused
+        );
+    }
+    assert!(m.named_struct("Fresh").is_none());
+    assert_eq!(format!("{m}"), before);
+    Ok(())
+}
+
+/// llvmkit-specific regression (D8): what an entry can still refuse after it
+/// mints a schema's type. Each mint here was followed by the lift of an operand
+/// another module owns, which `Module::dynamic` lets through the brand, so the
+/// refusal left `%Fresh` behind. The lift comes first now. `%Point` is the
+/// positive control: the same call with this module's operand mints it.
+#[test]
+fn a_refused_operand_mints_no_part_of_a_schema() -> Result<(), IrError> {
+    let other = Module::dynamic("other");
+    let g = other.add_typed_function::<(), (), _>("g", Linkage::External)?;
+    let other_entry = other.view(g).append_basic_block(&other, "entry");
+    let other_builder = IrBuilder::new_for::<()>(&other).position_at_end(other_entry);
+    let foreign = other_builder.typed_alloca::<i32, _>("p")?;
+    let foreign_int = other.i32_type().const_int(1_i32);
+
+    let m = Module::dynamic("schema");
+    let f = m.add_typed_function::<(), (), _>("f", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
+    let slot = b.typed_alloca::<i32, _>("slot")?;
+    let before = format!("{m}");
+
+    let foreign_pointer = || foreign.as_pointer_value().with_pointee::<Fresh>();
+    let local_pointer = || slot.as_pointer_value().with_pointee::<Fresh>();
+    let refused = |result: Result<(), IrError>| {
+        assert_eq!(result, Err(IrError::ForeignValueId));
+    };
+    refused(b.typed_load(foreign_pointer(), "a").map(|_| ()));
+    refused(
+        b.typed_load_with_align(foreign_pointer(), Align::ONE, "b")
+            .map(|_| ()),
+    );
+    refused(
+        b.load_from(foreign_pointer())
+            .typed::<Fresh>("c")
+            .map(|_| ()),
+    );
+    refused(
+        b.field_gep::<Fresh, _, 0, _>(foreign_pointer(), "d")
+            .map(|_| ()),
+    );
+    refused(
+        b.element_gep::<Fresh, _, i32, _, _>(foreign_pointer(), 1_i32, "e")
+            .map(|_| ()),
+    );
+    refused(
+        b.element_gep::<Fresh, _, i32, _, _>(local_pointer(), foreign_int, "f")
+            .map(|_| ()),
+    );
+    refused(
+        b.inbounds_element_gep::<Fresh, _, i32, _, _>(foreign_pointer(), 1_i32, "g")
+            .map(|_| ()),
+    );
+    refused(
+        b.inbounds_element_gep::<Fresh, _, i32, _, _>(local_pointer(), foreign_int, "h")
+            .map(|_| ()),
+    );
+    refused(
+        b.indirect_call::<fn(i32) -> Fresh, _, _, _>(slot, (foreign_int,), "i")
+            .map(|_| ()),
+    );
+    assert!(m.named_struct("Fresh").is_none());
+    assert_eq!(format!("{m}"), before);
+
+    b.typed_load(slot.as_pointer_value().with_pointee::<Point>(), "control")?;
+    assert!(m.named_struct("Point").is_some());
     b.ret_void();
     Ok(())
 }

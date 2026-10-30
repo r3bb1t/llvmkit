@@ -606,8 +606,7 @@ fn address_space_name() {
 }
 
 /// Port of `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, IsNonIntegralAddressSpace)`,
-/// whole and in order. `non_integral_address_spaces` has no upstream counterpart
-/// and is asked beside `getNonStandardAddressSpaces` to pin that they agree.
+/// whole and in order.
 #[test]
 fn is_non_integral_address_space() {
     let two = address_space::<2>();
@@ -621,10 +620,6 @@ fn is_non_integral_address_space() {
 
     let custom = parse("ni:2:16777215");
     assert_eq!(spaces(&custom), [two, top]);
-    assert_eq!(
-        custom.non_integral_address_spaces().collect::<Vec<_>>(),
-        [two, top]
-    );
     assert!(!custom.is_non_integral_address_space(address_space::<0>()));
     assert!(!custom.is_non_integral_address_space(address_space::<1>()));
     assert!(custom.is_non_integral_address_space(two));
