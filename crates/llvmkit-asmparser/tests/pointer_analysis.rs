@@ -882,21 +882,24 @@ define void @f(ptr %ptr) {
 /// whose `getelementptr` of a scalable source stays, and adds the array form
 /// the same guard covers: `ConstantFoldInstOperandsImpl` asks
 /// `ConstantExpr::isSupportedGetElementPtr`, which is `!SrcElemTy->isScalableTy()`,
-/// before `SymbolicallyEvaluateGEP`. The base of the array form is itself a
-/// constant `getelementptr`, because `SymbolicallyEvaluateGEP` has something to
-/// fold there. A zero index gives that routine a constant offset, so only the
-/// guard stops `%array_zero`. The fixed source is the positive control.
+/// before `SymbolicallyEvaluateGEP`. `@f` is llvmkit's own. A zero index gives
+/// that routine a constant offset, so only the guard stops `%array_zero`. The
+/// fixed source is the positive control.
 #[test]
 fn a_getelementptr_of_a_scalable_source_is_not_constant_folded() {
     let module = parse(
         r#"
 @g = constant [1024 x i8] zeroinitializer
 
+define ptr @getelementptr_not_constant_foldable(i64 %x) {
+  %ptr = getelementptr <vscale x 4 x i32>, ptr null, i64 1
+  ret ptr %ptr
+}
+
 define void @f() {
-  %not_foldable = getelementptr <vscale x 4 x i32>, ptr null, i64 1
-  %array = getelementptr [8 x <vscale x 4 x i32>], ptr getelementptr (i8, ptr @g, i64 1), i64 4
-  %array_zero = getelementptr [8 x <vscale x 4 x i32>], ptr getelementptr (i8, ptr @g, i64 1), i64 0
-  %control = getelementptr [8 x <4 x i32>], ptr getelementptr (i8, ptr @g, i64 1), i64 4
+  %array = getelementptr [8 x <vscale x 4 x i32>], ptr @g, i64 4
+  %array_zero = getelementptr [8 x <vscale x 4 x i32>], ptr @g, i64 0
+  %control = getelementptr [8 x <4 x i32>], ptr @g, i64 4
   ret void
 }
 "#,
@@ -907,7 +910,7 @@ define void @f() {
         constant_fold_instruction(&instruction, &data_layout, None).expect("the fold succeeds")
     };
 
-    assert_eq!(fold("not_foldable"), None);
+    assert_eq!(fold("ptr"), None);
     assert_eq!(fold("array"), None);
     assert_eq!(fold("array_zero"), None);
     assert!(fold("control").is_some());

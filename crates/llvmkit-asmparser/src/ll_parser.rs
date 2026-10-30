@@ -9175,9 +9175,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         self.global_forward_ref(None, Some(id), ty, loc)
     }
+    /// A global in value position. `getGlobalVal` returns the `GlobalValue *`,
+    /// whose `getType` is `ptr`. A function's own value has its signature for a
+    /// type (`docs/divergences.md` D3), so it stands here as the `ptr` constant
+    /// naming it: `icmp ule ptr null, @f` compares two pointers.
     fn global_ref_to_value(&self, r: GlobalRef<'ctx, B>) -> llvmkit_ir::Value<'ctx, B> {
         match r {
-            GlobalRef::Function(f) => f.as_erased(),
+            GlobalRef::Function(f) => f.as_global_constant_ptr().as_erased(),
             GlobalRef::Variable(g) => g.as_erased(),
             GlobalRef::Alias(a) => a.as_erased(),
             GlobalRef::Ifunc(i) => i.as_erased(),

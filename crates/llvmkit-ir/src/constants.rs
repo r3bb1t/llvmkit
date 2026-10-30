@@ -38,7 +38,7 @@ use super::constant_fold::{
     constant_fold_extract_element_instruction_trusting_same_module,
     constant_fold_get_element_ptr_trusting_same_module,
     constant_fold_insert_element_instruction_trusting_same_module,
-    constant_fold_shuffle_vector_instruction_trusting_same_module,
+    constant_fold_shuffle_vector_instruction_trusting_same_module, constant_from_id,
     shufflevector_mask_from_constant,
 };
 use super::data_layout::DataLayout;
@@ -1768,11 +1768,7 @@ fn constant_expr_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 ) -> Option<Vec<Constant<'ctx, B, C>>> {
     operands
         .iter()
-        .map(|id| {
-            let data = module.value_data(*id);
-            matches!(&data.kind, ValueKindData::Constant(_))
-                .then(|| constant_handle::<B, _, _>(*id, module, data.ty))
-        })
+        .map(|id| constant_from_id(module, *id))
         .collect()
 }
 

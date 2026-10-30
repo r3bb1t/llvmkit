@@ -46,7 +46,6 @@ const AUDITED: &[(&str, &str, usize, &str)] = &[
     ),
     ("constant_folding.rs", "build_canonical_i8_gep", 1, INTERNED),
     ("constant_folding.rs", "constant_fold_constant", 1, INTERNED),
-    ("constant_folding.rs", "constant_from_id", 1, GUARDED),
     (
         "constant_folding.rs",
         "constant_id_guaranteed_not_to_be_undef_or_poison",
@@ -62,7 +61,6 @@ const AUDITED: &[(&str, &str, usize, &str)] = &[
         1,
         INTERNED,
     ),
-    ("constant_folding.rs", "zero_constant_for_type", 1, INTERNED),
     ("constants.rs", "as_constant", 4, REMINT),
     ("constants.rs", "constant_handle", 1, INTERNED),
     ("function.rs", "as_aggregate_ptr", 1, INTERNED),

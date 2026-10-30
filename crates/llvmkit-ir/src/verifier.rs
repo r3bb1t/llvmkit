@@ -4347,8 +4347,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     .to_owned(),
             ));
         };
-        let input_data = self.module.context().value_data(*input);
-        let ValueKindData::Function(_) = &input_data.kind else {
+        // A function in value position is the interned `ptr @f`, which *is* the
+        // function (`docs/divergences.md` D3).
+        let input_function =
+            crate::pointer_analysis::global_value_or_self(Value::<B, ReadOnly>::from_parts(
+                *input,
+                self.module,
+                self.module.context().value_data(*input).ty,
+            ));
+        let ValueKindData::Function(_) = &input_function.data().kind else {
             return Err(self.fail(
                 f,
                 bb,
@@ -4358,7 +4365,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     .to_owned(),
             ));
         };
-        let input_function = Value::<B, ReadOnly>::from_parts(*input, self.module, input_data.ty);
 
         // `Intrinsic::ID IID = Fn->getIntrinsicID(); if (IID) … else …`
         let intrinsic_id = crate::intrinsics::descriptor_for_callee(input_function)

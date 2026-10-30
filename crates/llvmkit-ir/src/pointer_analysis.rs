@@ -1294,7 +1294,7 @@ pub(crate) fn strip_pointer_casts_and_aliases<'ctx, B: ModuleBrand + 'ctx, C: Ca
 
 /// The global an interned `ptr @g` constant names, or `value` itself — the
 /// D3 reading [`strip_pointer_casts_and_offsets`] applies at every step.
-fn global_value_or_self<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+pub(crate) fn global_value_or_self<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
 ) -> Value<'ctx, B, C> {
     match &value.data().kind {

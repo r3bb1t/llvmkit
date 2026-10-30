@@ -14,7 +14,7 @@ use super::constant::{
     ConstantExprInRange, ConstantExprOpcode, ConstantKind, is_poison, is_undef,
 };
 use super::constant_fold::{
-    constant_fold_binary_instruction_trusting_same_module,
+    all_ones_constant_for_type, constant_fold_binary_instruction_trusting_same_module,
     constant_fold_cast_instruction_trusting_same_module,
     constant_fold_compare_instruction_trusting_same_module,
     constant_fold_extract_element_instruction_trusting_same_module,
@@ -23,11 +23,9 @@ use super::constant_fold::{
     constant_fold_insert_value_instruction_trusting_same_module,
     constant_fold_select_instruction_trusting_same_module,
     constant_fold_shuffle_vector_instruction_trusting_same_module, constant_fold_unary_instruction,
-    shufflevector_mask_from_constant,
+    constant_from_id, null_constant_for_type, shufflevector_mask_from_constant,
 };
-use super::constants::{
-    ConstantExprOptions, ConstantFloatValue, ConstantIntValue, GepTypeCursor, intern_aggregate,
-};
+use super::constants::{ConstantExprOptions, ConstantFloatValue, ConstantIntValue, GepTypeCursor};
 use super::data_layout::DataLayout;
 use super::denormal_mode::{DenormalMode, DenormalModeKind, DenormalModeSide};
 use super::derived_types::{FloatType, IntType, PointerType, VectorType};
@@ -424,7 +422,7 @@ pub(crate) fn constant_fold_load_from_uniform_value_trusting_same_module<
         return Ok(None);
     }
     if constant.is_null_value() && !matches!(ty.data(), TypeData::X86Amx) {
-        return zero_constant_for_type(ty);
+        return null_constant_for_type(ty);
     }
     if constant.is_all_ones_value() && (ty.is_int_or_int_vector() || ty.is_float_or_float_vector())
     {
@@ -2462,78 +2460,6 @@ fn gep_index_for_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }
 }
 
-/// Mirrors `Constant::getNullValue`, as far as `ConstantFoldLoadFromUniformValue`
-/// needs. `None` covers upstream's `llvm_unreachable` for a type with no null
-/// constant, and the aggregates, token and target types `docs/divergences.md`
-/// D26 lists: a `ConstantAggregateZero` costs upstream nothing, but llvmkit's
-/// zero array is a list of every element, at whatever length the load names.
-fn zero_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    ty: Type<'ctx, B, C>,
-) -> IrResult<Option<Constant<'ctx, B, C>>> {
-    if let Ok(int_ty) = IntType::<IntDyn, B, C>::try_from(ty) {
-        return Ok(Some(int_ty.const_zero().as_constant()));
-    }
-    if let Ok(float_ty) = FloatType::<FloatDyn, B, C>::try_from(ty) {
-        let zero = ApFloat::zero(float_ty.semantics(), ApFloatSign::Positive);
-        return Ok(Some(float_ty.const_ap_float(&zero)?.as_constant()));
-    }
-    if matches!(ty.data(), TypeData::Pointer { .. }) {
-        let module = ty.module;
-        let id = module
-            .context()
-            .intern_constant_null(ty.slot_trusting_same_module());
-        return Ok(Some(Constant::from_parts(Value::from_parts(
-            id,
-            module,
-            ty.slot_trusting_same_module(),
-        ))));
-    }
-    vector_of_lanes(ty, zero_constant_for_type)
-}
-
-/// Mirrors `Constant::getAllOnesValue`, whose callers ask only of an integer or
-/// a float, or a vector of either.
-fn all_ones_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    ty: Type<'ctx, B, C>,
-) -> IrResult<Option<Constant<'ctx, B, C>>> {
-    if let Ok(int_ty) = IntType::<IntDyn, B, C>::try_from(ty) {
-        return Ok(Some(int_ty.const_all_ones().as_constant()));
-    }
-    if let Ok(float_ty) = FloatType::<FloatDyn, B, C>::try_from(ty) {
-        let bits = ApInt::all_ones(float_ty.semantics().bit_width());
-        let value = ApFloat::from_bits(float_ty.semantics(), &bits)?;
-        return Ok(Some(float_ty.const_ap_float(&value)?.as_constant()));
-    }
-    vector_of_lanes(ty, all_ones_constant_for_type)
-}
-
-/// The vector `ty`, every lane the constant `lane` builds for its element, or
-/// `None` when `ty` is no vector or `lane` has no constant to give. llvmkit
-/// spells a scalable splat as `min_len` equal lanes (`VectorType::const_vector`).
-fn vector_of_lanes<'ctx, B, C, F>(
-    ty: Type<'ctx, B, C>,
-    lane: F,
-) -> IrResult<Option<Constant<'ctx, B, C>>>
-where
-    B: ModuleBrand + 'ctx,
-    C: Capability,
-    F: FnOnce(Type<'ctx, B, C>) -> IrResult<Option<Constant<'ctx, B, C>>>,
-{
-    let Some((element, lanes, _)) = ty.data().as_vector() else {
-        return Ok(None);
-    };
-    let Some(value) = lane(Type::new(element, ty.module))? else {
-        return Ok(None);
-    };
-    let Ok(lanes) = usize::try_from(lanes.get()) else {
-        return Ok(None);
-    };
-    let slot = value.as_erased().slot_trusting_same_module();
-    Ok(Some(
-        intern_aggregate(ty, vec![slot; lanes].into_boxed_slice()).as_constant(),
-    ))
-}
-
 fn folded_constants_from_ids<'ctx, B, C: Capability, I>(
     module: ModuleRef<'ctx, B, C>,
     ids: I,
@@ -3087,15 +3013,6 @@ fn cast_constant_expr_opcode(opcode: CastOpcode) -> Option<ConstantExprOpcode> {
         | CastOpcode::UiToFp
         | CastOpcode::SiToFp => None,
     }
-}
-
-fn constant_from_id<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    module: ModuleRef<'ctx, B, C>,
-    id: ValueSlot,
-) -> Option<Constant<'ctx, B, C>> {
-    let data = module.context().value_data(id);
-    matches!(&data.kind, ValueKindData::Constant(_))
-        .then(|| Constant::from_parts(Value::from_parts(id, module, data.ty)))
 }
 
 fn int_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(

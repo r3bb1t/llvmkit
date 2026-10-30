@@ -33,7 +33,10 @@ use super::derived_types::{ArrayType, FloatType, IntType, PointerType, StructTyp
 use super::element::ElemDyn;
 use super::float_kind::FloatDyn;
 use super::gep_no_wrap_flags::GepNoWrapFlags;
+use super::global_alias::GlobalAlias;
+use super::global_ifunc::GlobalIfunc;
 use super::global_value::Linkage;
+use super::global_variable::GlobalVariable;
 use super::instr_types::{BinaryOpcode, CastOpcode, ShuffleMaskElem, UnaryOpcode};
 use super::instruction::{InstructionKindData, InstructionView};
 use super::int_width::IntDyn;
@@ -43,7 +46,7 @@ use super::type_components::lanes;
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{IsValue, Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use super::vec_len::LenDyn;
-use super::{IrError, IrResult, RoundingMode};
+use super::{Dyn, FunctionValue, IrError, IrResult, RoundingMode};
 
 /// Dispatch an instruction to the target-independent pure-constant folds
 /// mirrored from `llvm/lib/IR/ConstantFold.cpp`.
@@ -195,12 +198,13 @@ where
             else {
                 return Ok(None);
             };
-            constant_fold_get_element_ptr_trusting_same_module(
-                Type::new(gep.source_ty, module),
-                pointer,
-                &indices,
-                None,
-            )
+            let source_ty = Type::new(gep.source_ty, module);
+            // `ConstantExpr::isSupportedGetElementPtr`, which
+            // `ConstantFoldInstOperandsImpl` asks before it folds anything.
+            if source_ty.is_scalable() {
+                return Ok(None);
+            }
+            constant_fold_get_element_ptr_trusting_same_module(source_ty, pointer, &indices, None)
         }
         InstructionKindData::Add(_)
         | InstructionKindData::Sub(_)
@@ -308,7 +312,13 @@ fn binary_instruction_parts(
     Some((opcode, data.lhs.get(), data.rhs.get()))
 }
 
-fn constant_from_id<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+/// `dyn_cast<Constant>(V)` for the value at `id`.
+///
+/// `isa<Constant>` is true of every `GlobalValue` upstream. llvmkit stores each
+/// global kind in its own [`ValueKindData`] variant, so each is answered here as
+/// the constant its `as_global_constant_ptr` names, which is the form the rest
+/// of the folder reads (`docs/divergences.md` D3).
+pub(crate) fn constant_from_id<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     module: ModuleRef<'ctx, B, C>,
     id: ValueSlot,
 ) -> Option<Constant<'ctx, B, C>> {
@@ -317,13 +327,21 @@ fn constant_from_id<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         ValueKindData::Constant(_) => {
             Some(Constant::from_parts(Value::from_parts(id, module, data.ty)))
         }
+        ValueKindData::Function(_) => Some(
+            FunctionValue::<Dyn, B, C>::from_parts_unchecked(id, module).as_global_constant_ptr(),
+        ),
+        ValueKindData::GlobalAlias(_) => {
+            Some(GlobalAlias::from_parts_unchecked(id, module, data.ty).as_global_constant_ptr())
+        }
+        ValueKindData::GlobalIfunc(_) => {
+            Some(GlobalIfunc::from_parts_unchecked(id, module, data.ty).as_global_constant_ptr())
+        }
+        ValueKindData::GlobalVariable(_) => {
+            Some(GlobalVariable::from_parts_unchecked(id, module, data.ty).as_global_constant_ptr())
+        }
         ValueKindData::Argument { .. }
         | ValueKindData::BasicBlock(_)
-        | ValueKindData::Function(_)
         | ValueKindData::Instruction(_)
-        | ValueKindData::GlobalAlias(_)
-        | ValueKindData::GlobalIfunc(_)
-        | ValueKindData::GlobalVariable(_)
         | ValueKindData::MetadataAsValue(_)
         | ValueKindData::InlineAsm(_) => None,
     }
@@ -2744,7 +2762,9 @@ fn fold_float_predicate(predicate: FloatPredicate, cmp: ApFloatCmpResult) -> boo
     }
 }
 
-fn null_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+/// Mirrors `Constant::getNullValue`, as far as a caller here needs. `None`
+/// covers upstream's `llvm_unreachable` for a type with no null constant.
+pub(crate) fn null_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     ty: Type<'ctx, B, C>,
 ) -> IrResult<Option<Constant<'ctx, B, C>>> {
     if let Ok(int_ty) = IntType::<IntDyn, B, C>::try_from(ty) {
@@ -3056,7 +3076,9 @@ fn type_bit_width_for_bitcast<B: ModuleBrand, C: Capability>(ty: Type<'_, B, C>)
     None
 }
 
-fn all_ones_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+/// Mirrors `Constant::getAllOnesValue`, whose callers ask only of an integer or
+/// a float, or a vector of either.
+pub(crate) fn all_ones_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     ty: Type<'ctx, B, C>,
 ) -> IrResult<Option<Constant<'ctx, B, C>>> {
     if let Ok(int_ty) = IntType::<IntDyn, B, C>::try_from(ty) {
