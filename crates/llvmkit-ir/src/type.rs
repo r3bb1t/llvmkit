@@ -34,6 +34,7 @@ use crate::addr_space::AddressSpace;
 use crate::capability::{Capability, CapabilityOf, Mutable};
 use crate::error::RenderedType;
 use crate::error::{IrError, IrResult};
+use crate::llvm_context::Context;
 use crate::module::{ModuleBrand, ModuleCore, ModuleId, ModuleRef, ModuleView};
 
 /// Minimum legal integer width. Mirrors `IntegerType::MIN_INT_BITS`
@@ -324,63 +325,32 @@ pub(crate) struct StructTypeData {
 /// The name is not the discriminator. llvmkit used to spell literal-ness as
 /// `name.is_none()`, which cannot represent an *anonymous identified* struct
 /// — exactly what `%0 = type {i32}` is.
+///
+/// An identified struct's name can be replaced or removed
+/// (`StructType::setName`), so it is an index into the context's list of every
+/// name a struct has held, not a string here. `StructType::name` hands out a
+/// `&'ctx str`, so a replaced name has to stay alive: upstream's own test reads
+/// the old name across the rename (`TEST(TypesTest, StructType)`, PR13522).
 #[derive(Debug)]
 pub(crate) enum StructIdentity {
     Literal,
-    Identified { name: StructName },
-}
-
-/// An identified struct's name, which `StructType::setName` can replace or
-/// remove.
-///
-/// `StructType::name` hands out a `&'ctx str`, so a name stays alive after it
-/// is replaced: every name the struct has held stays in `held`, and `current`
-/// says which one it holds now. Upstream's own test reads the old name across
-/// the rename (`TEST(TypesTest, StructType)`, PR13522), which C++ needed
-/// `setName`'s delayed free to survive.
-#[derive(Debug)]
-pub(crate) struct StructName {
-    held: boxcar::Vec<String>,
-    current: Cell<Option<usize>>,
-}
-
-impl StructName {
-    /// A name for a struct that starts with `name`, or with none.
-    pub(crate) fn new(name: Option<String>) -> Self {
-        let held = boxcar::Vec::new();
-        let current = Cell::new(name.map(|name| held.push(name)));
-        Self { held, current }
-    }
-
-    #[inline]
-    fn get(&self) -> Option<&str> {
-        let index = self.current.get()?;
-        self.held.get(index).map(String::as_str)
-    }
-
-    pub(crate) fn set(&self, name: String) {
-        self.current.set(Some(self.held.push(name)));
-    }
-
-    pub(crate) fn remove(&self) {
-        self.current.set(None);
-    }
+    Identified { name: Cell<Option<usize>> },
 }
 
 impl StructIdentity {
     /// The declared name, for an identified struct that has one.
     #[inline]
-    pub(crate) fn name(&self) -> Option<&str> {
+    pub(crate) fn name<'a>(&self, context: &'a Context) -> Option<&'a str> {
         match self {
             Self::Literal => None,
-            Self::Identified { name } => name.get(),
+            Self::Identified { name } => context.struct_name(name.get()?),
         }
     }
 
     /// `true` for an identified struct with no name, the kind `%0` is.
     #[inline]
     pub(crate) fn is_anonymous_identified(&self) -> bool {
-        matches!(self, Self::Identified { .. }) && self.name().is_none()
+        matches!(self, Self::Identified { name } if name.get().is_none())
     }
 
     #[inline]
@@ -1027,7 +997,7 @@ impl<'ctx, B: ModuleBrand, C: Capability> fmt::Display for Type<'ctx, B, C> {
                 // its position among the module's anonymous identified structs
                 // (`TypePrinting::NumberedTypes`). Only a literal struct spells
                 // its body inline.
-                if let Some(name) = s.identity.name() {
+                if let Some(name) = s.identity.name(self.module.module().context()) {
                     return crate::asm_writer::fmt_llvm_name(f, "%", name);
                 }
                 if s.identity.is_anonymous_identified() {

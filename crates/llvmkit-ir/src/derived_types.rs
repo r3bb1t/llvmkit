@@ -1455,7 +1455,7 @@ impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx, C: Capability>
             .as_struct()
             .expect("StructType invariant: wraps Struct")
             .identity
-            .name()
+            .name(self.module.context())
     }
     /// `true` for a literal struct — `{ i32, float }`, the anonymous
     /// structurally-uniqued form. Mirrors `StructType::isLiteral`.

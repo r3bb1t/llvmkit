@@ -83,6 +83,9 @@ pub(crate) struct Context {
     /// `named_struct_types` (which is unordered). Lets the printer emit the
     /// `%Name = type {...}` identity block in declaration order.
     named_struct_order: RefCell<Vec<TypeSlot>>,
+    /// Every name an identified struct has held, append-only: `StructType::name`
+    /// hands out a `&'ctx str`, which has to outlive a rename.
+    struct_names: boxcar::Vec<String>,
     /// The next suffix a renamed struct's colliding name takes. Mirrors
     /// `LLVMContextImpl::NamedStructTypesUniqueID`.
     named_struct_types_unique_id: Cell<u32>,
@@ -209,6 +212,7 @@ impl Context {
             literal_struct_types: RefCell::new(HashMap::new()),
             named_struct_types: RefCell::new(HashMap::new()),
             named_struct_order: RefCell::new(Vec::new()),
+            struct_names: boxcar::Vec::new(),
             named_struct_types_unique_id: Cell::new(0),
             typed_pointers: RefCell::new(Vec::new()),
             typed_pointer_ids: RefCell::new(HashMap::new()),
@@ -483,7 +487,7 @@ impl Context {
         }
         let id = self.push(TypeData::Struct(crate::r#type::StructTypeData {
             identity: crate::r#type::StructIdentity::Identified {
-                name: crate::r#type::StructName::new(Some(name.to_owned())),
+                name: Cell::new(Some(self.struct_names.push(name.to_owned()))),
             },
             body: RefCell::new(None),
         }));
@@ -502,12 +506,17 @@ impl Context {
     pub(crate) fn create_anonymous_identified_struct(&self) -> TypeSlot {
         let id = self.push(TypeData::Struct(crate::r#type::StructTypeData {
             identity: crate::r#type::StructIdentity::Identified {
-                name: crate::r#type::StructName::new(None),
+                name: Cell::new(None),
             },
             body: RefCell::new(None),
         }));
         self.named_struct_order.borrow_mut().push(id);
         id
+    }
+
+    /// The name at `index` in the list of every name a struct has held.
+    pub(crate) fn struct_name(&self, index: usize) -> Option<&str> {
+        self.struct_names.get(index).map(String::as_str)
     }
 
     /// Rename the identified struct `id`, or remove its name with an empty
@@ -523,7 +532,7 @@ impl Context {
         let crate::r#type::StructIdentity::Identified { name: held } = &data.identity else {
             unreachable!("set_struct_name invariant: Module::set_struct_name refuses a literal");
         };
-        let old = data.identity.name();
+        let old = data.identity.name(self);
         if old.unwrap_or_default() == name {
             return;
         }
@@ -534,7 +543,7 @@ impl Context {
         }
 
         if name.is_empty() {
-            held.remove();
+            held.set(None);
             return;
         }
 
@@ -546,7 +555,7 @@ impl Context {
             unique = format!("{name}.{suffix}");
         }
         table.insert(unique.clone(), id);
-        held.set(unique);
+        held.set(Some(self.struct_names.push(unique)));
     }
 
     /// This anonymous identified struct's position among the module's
@@ -595,12 +604,12 @@ impl Context {
         let mut slot = s.body.borrow_mut();
         if slot.is_some() {
             return Err(crate::IrError::StructBodyAlreadySet {
-                name: s.identity.name().unwrap_or_default().to_owned(),
+                name: s.identity.name(self).unwrap_or_default().to_owned(),
             });
         }
         if self.body_would_be_recursive(id, &body) {
             return Err(crate::IrError::RecursiveStructBody {
-                name: s.identity.name().unwrap_or_default().to_owned(),
+                name: s.identity.name(self).unwrap_or_default().to_owned(),
             });
         }
         *slot = Some(body);

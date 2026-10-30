@@ -3725,7 +3725,7 @@ pub(super) fn fmt_module_with_options(
             // Identified structs print their identity block here; an
             // anonymous one is numbered rather than named, exactly as
             // `AsmWriter::printTypeIdentities` does.
-            match s.identity.name() {
+            match s.identity.name(m.context()) {
                 Some(name) => fmt_llvm_name(f, "%", name)?,
                 None => match m.context().anonymous_identified_struct_number(id) {
                     Some(number) => write!(f, "%{number}")?,

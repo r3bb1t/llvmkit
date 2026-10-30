@@ -98,7 +98,7 @@ fn a_missing_global_is_declared_in_the_default_globals_address_space() {
     let foreign_ty = foreign.i32_type();
     assert!(matches!(
         m.get_or_insert_global("declared", foreign_ty),
-        Err(IrError::ForeignType { .. })
+        Err(IrError::ForeignType)
     ));
 
     let signature = m
