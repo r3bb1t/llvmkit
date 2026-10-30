@@ -14,11 +14,12 @@
 //!   so the `CHECK` line is the oracle.
 
 use llvmkit_asmparser::parser;
+use llvmkit_ir::constant_folding::constant_fold_instruction;
 use llvmkit_ir::eh_personalities::{EhPersonality, classify_eh_personality};
 use llvmkit_ir::{
-    BytewiseValue, DynBrand, Module, Unverified, Value, ValueTrackingQuery,
-    argument_aliasing_to_returned_pointer, constant_string_info, find_alloca_for_value,
-    find_inserted_value, is_bytewise_value,
+    BytewiseValue, DynBrand, InstructionView, Module, Unverified, Value, ValueTrackingQuery,
+    argument_aliasing_to_returned_pointer, constant_data_array_info, constant_string_info,
+    find_alloca_for_value, find_inserted_value, is_bytewise_value,
     is_intrinsic_returning_pointer_aliasing_argument_without_capturing, is_known_not_poison,
     only_used_by_lifetime_markers, only_used_by_lifetime_markers_or_droppable_instructions,
     pointer_base_with_constant_offset, string_length, underlying_object,
@@ -822,4 +823,128 @@ define void @test() {
         !is_known_not_poison(named(&module, "opaque"), &query).expect("query succeeds"),
         "a call without `returned` is not proven"
     );
+}
+
+/// Ports the two `getelementptr`s of
+/// `test/Transforms/InstSimplify/gep.ll::gep_array_of_scalable_vectors_ptrdiff`,
+/// whose `CHECK` keeps the `sub` because neither offset is constant. llvmkit has
+/// no `computePointerDifference`, so the assertion is one step earlier, on the
+/// `GEPOperator::accumulateConstantOffset` that routine asks. The remaining
+/// lines have **no upstream counterpart** and pin the routine's other arms: a
+/// zero index crosses a scalable type (`vscale * n * 0 = 0`), a lane of a
+/// scalable vector is a fixed distance from its start because the indexed type
+/// is the element, and a narrow index is sign-extended (`sextOrTrunc`).
+#[test]
+fn a_scalable_stride_is_not_a_constant_offset() {
+    let module = parse(
+        r#"
+define void @f(ptr %ptr) {
+  %c1 = getelementptr inbounds [8 x <vscale x 4 x i32>], ptr %ptr, i64 4
+  %c2 = getelementptr inbounds [8 x <vscale x 4 x i32>], ptr %ptr, i64 6
+  %scalable = getelementptr inbounds <vscale x 4 x i32>, ptr %ptr, i64 1
+  %zero = getelementptr inbounds [8 x <vscale x 4 x i32>], ptr %ptr, i64 0, i64 0
+  %lane = getelementptr inbounds <vscale x 4 x i32>, ptr %ptr, i64 0, i64 1
+  %narrow = getelementptr inbounds i8, ptr %ptr, i32 -1
+  ret void
+}
+"#,
+    );
+    let data_layout = module.data_layout();
+    let function = module
+        .as_view()
+        .functions()
+        .next()
+        .expect("the fixture defines @f");
+    let ptr: Value<'_, DynBrand> = module
+        .view(function.id())
+        .param(0)
+        .expect("@f takes a pointer")
+        .as_erased();
+
+    for name in ["c1", "c2", "scalable"] {
+        let gep = named(&module, name);
+        assert_eq!(
+            pointer_base_with_constant_offset(gep, &data_layout, false),
+            (gep, 0),
+            "%{name} has no constant offset"
+        );
+    }
+    for (name, offset) in [("zero", 0), ("lane", 4), ("narrow", -1)] {
+        assert_eq!(
+            pointer_base_with_constant_offset(named(&module, name), &data_layout, false),
+            (ptr, offset),
+            "%{name}"
+        );
+    }
+}
+
+/// Ports `test/Transforms/InstSimplify/vscale.ll::getelementptr_not_constant_foldable`,
+/// whose `getelementptr` of a scalable source stays, and adds the array form
+/// the same guard covers: `ConstantFoldInstOperandsImpl` asks
+/// `ConstantExpr::isSupportedGetElementPtr`, which is `!SrcElemTy->isScalableTy()`,
+/// before `SymbolicallyEvaluateGEP`. The base of the array form is itself a
+/// constant `getelementptr`, because `SymbolicallyEvaluateGEP` has something to
+/// fold there. A zero index gives that routine a constant offset, so only the
+/// guard stops `%array_zero`. The fixed source is the positive control.
+#[test]
+fn a_getelementptr_of_a_scalable_source_is_not_constant_folded() {
+    let module = parse(
+        r#"
+@g = constant [1024 x i8] zeroinitializer
+
+define void @f() {
+  %not_foldable = getelementptr <vscale x 4 x i32>, ptr null, i64 1
+  %array = getelementptr [8 x <vscale x 4 x i32>], ptr getelementptr (i8, ptr @g, i64 1), i64 4
+  %array_zero = getelementptr [8 x <vscale x 4 x i32>], ptr getelementptr (i8, ptr @g, i64 1), i64 0
+  %control = getelementptr [8 x <4 x i32>], ptr getelementptr (i8, ptr @g, i64 1), i64 4
+  ret void
+}
+"#,
+    );
+    let data_layout = module.data_layout();
+    let fold = |name: &str| {
+        let instruction = InstructionView::try_from(named(&module, name)).expect("an instruction");
+        constant_fold_instruction(&instruction, &data_layout, None).expect("the fold succeeds")
+    };
+
+    assert_eq!(fold("not_foldable"), None);
+    assert_eq!(fold("array"), None);
+    assert_eq!(fold("array_zero"), None);
+    assert!(fold("control").is_some());
+}
+
+/// **No upstream counterpart**: upstream reports a fatal error, because
+/// `getConstantDataArrayInfo` reads a null initializer's `getTypeStoreSize` with
+/// `getFixedValue`, and `getPreferredAlign` compares `getTypeSizeInBits` with 128
+/// through the implicit `uint64_t` conversion. A scalable global is invalid
+/// (`Verifier::visitGlobalVariable`) but parses, so both routines can meet one.
+/// llvmkit declines instead (Doctrine D10): no slice, and no alignment for the
+/// `and (ptrtoint @g), mask` fold to read. The fixed array is the positive
+/// control for that fold: it is large enough to be raised to 16.
+#[test]
+fn a_scalable_global_has_no_fixed_size_to_read() {
+    let module = parse(
+        r#"
+@zero = constant <vscale x 1 x i8> zeroinitializer
+@large = global [32 x <vscale x 1 x i8>] zeroinitializer
+@control = global [32 x i8] zeroinitializer
+
+define void @f() {
+  %scalable = and i64 ptrtoint (ptr @large to i64), 15
+  %fixed = and i64 ptrtoint (ptr @control to i64), 15
+  ret void
+}
+"#,
+    );
+    let data_layout = module.data_layout();
+    let fold = |name: &str| {
+        let instruction = InstructionView::try_from(named(&module, name)).expect("an instruction");
+        constant_fold_instruction(&instruction, &data_layout, None).expect("the fold succeeds")
+    };
+
+    assert!(
+        constant_data_array_info(global_pointer(&module, "zero"), 8, 0, &data_layout).is_none()
+    );
+    assert_eq!(fold("scalable"), None);
+    assert!(fold("fixed").is_some());
 }

@@ -1463,9 +1463,11 @@ fn value_scalar_size_in_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     if let Some(width) = int_scalar_bit_width(value.ty()) {
         return width;
     }
-    u32::try_from(
-        dl.type_size_in_bits(erase_type(value.ty()))
-            .fixed_value_or_known_min(),
-    )
-    .unwrap_or(0)
+    // `DL.getTypeSizeInBits(T->getScalarType())`, read through `unsigned`. A
+    // scalar whose size is scalable, which upstream cannot convert, answers
+    // the 0 this has always answered a size that does not fit.
+    dl.type_size_in_bits(erase_type(value.ty().scalar_type()))
+        .fixed_value()
+        .and_then(|bits| u32::try_from(bits).ok())
+        .unwrap_or(0)
 }

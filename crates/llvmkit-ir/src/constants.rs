@@ -41,6 +41,7 @@ use super::constant_fold::{
     constant_fold_shuffle_vector_instruction_trusting_same_module,
     shufflevector_mask_from_constant,
 };
+use super::data_layout::DataLayout;
 use super::derived_types::{
     ArrayType, FloatType, IntType, PointerType, StructType, TargetExtProperty, TargetExtType,
     VectorType,
@@ -60,6 +61,7 @@ use super::r#type::{
     ElementCount, Type, TypeData, TypeSlot, TypeSlotAccess, is_int_or_int_vector,
     is_ptr_or_ptr_vector, scalar_type_slot,
 };
+use super::type_size::TypeSize;
 use super::value::{
     HasDebugLoc, HasName, IsValue, SetName, Typed, Value, ValueKindData, ValueSlot,
     ValueSlotAccess, ValueUse, sealed,
@@ -2274,6 +2276,104 @@ pub(crate) fn gep_indexed_type(
         current = type_at_gep_index(module, current, *index)?;
     }
     Some(current)
+}
+
+/// One position of a walk over a `getelementptr`'s indices. Mirrors
+/// `generic_gep_type_iterator` (`GetElementPtrTypeIterator.h`), whose `CurTy`
+/// holds one of the three things [`GepStepKind`] names.
+///
+/// The first index strides whole source types whatever the source is, so a
+/// walk that matches on the kind of the type it stands on gets the first index
+/// wrong: that is what this type is for.
+#[derive(Branded)]
+#[branded(Clone, Copy)]
+pub(crate) struct GepTypeCursor<'ctx, B: ModuleBrand, C: Capability> {
+    kind: GepStepKind,
+    ty: Type<'ctx, B, C>,
+}
+
+/// What `CurTy` holds, and what [`GepTypeCursor`]'s `ty` is for each.
+#[derive(Clone, Copy)]
+enum GepStepKind {
+    /// A plain `Type *`, which is the type indexed: the source type under the
+    /// first index, or an array's element.
+    Sequential,
+    /// A `VectorType *`; `ty` is its element.
+    Vector,
+    /// A `StructType *`; `ty` is the struct.
+    Struct,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GepTypeCursor<'ctx, B, C> {
+    /// `gep_type_begin`.
+    pub(crate) fn begin(source_ty: Type<'ctx, B, C>) -> Self {
+        Self {
+            kind: GepStepKind::Sequential,
+            ty: source_ty,
+        }
+    }
+
+    /// `getIndexedType`. A struct's is the field `index` names, and `None` when
+    /// it names none.
+    pub(crate) fn indexed_type(self, index: ValueSlot) -> Option<Type<'ctx, B, C>> {
+        match self.kind {
+            GepStepKind::Sequential | GepStepKind::Vector => Some(self.ty),
+            GepStepKind::Struct => {
+                let module = self.ty.module;
+                let field =
+                    type_at_gep_index(module.module(), self.ty.slot_trusting_same_module(), index)?;
+                Some(Type::new(field, module))
+            }
+        }
+    }
+
+    /// `operator++`, from what [`Self::indexed_type`] answered. `None` is
+    /// upstream's null `CurTy`: a type no further index can step into.
+    pub(crate) fn after(indexed_ty: Type<'ctx, B, C>) -> Option<Self> {
+        let module = indexed_ty.module;
+        match indexed_ty.data() {
+            TypeData::Array { elem, .. } => Some(Self {
+                kind: GepStepKind::Sequential,
+                ty: Type::new(*elem, module),
+            }),
+            TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
+                Some(Self {
+                    kind: GepStepKind::Vector,
+                    ty: Type::new(*elem, module),
+                })
+            }
+            TypeData::Struct(_) => Some(Self {
+                kind: GepStepKind::Struct,
+                ty: indexed_ty,
+            }),
+            _ => None,
+        }
+    }
+
+    /// `getStructTypeOrNull`.
+    pub(crate) fn struct_type(self) -> Option<Type<'ctx, B, C>> {
+        matches!(self.kind, GepStepKind::Struct).then_some(self.ty)
+    }
+
+    /// The field a struct's `index` names, or `None` when this is no struct's
+    /// step or `index` names no field.
+    pub(crate) fn struct_field(self, index: ValueSlot) -> Option<usize> {
+        let struct_ty = self.struct_type()?;
+        struct_gep_field_index(
+            struct_ty.module.module(),
+            struct_ty.slot_trusting_same_module(),
+            index,
+        )
+    }
+
+    /// `getSequentialElementStride`, whose `assert` that a vector's element is
+    /// byte-addressable is not a release build's behaviour and is not ported.
+    pub(crate) fn sequential_element_stride(self, data_layout: &DataLayout) -> TypeSize {
+        match self.kind {
+            GepStepKind::Vector => data_layout.type_store_size(self.ty),
+            GepStepKind::Sequential | GepStepKind::Struct => data_layout.type_alloc_size(self.ty),
+        }
+    }
 }
 
 /// Mirrors `GetElementPtrInst::getTypeAtIndex(Type *, Value *)`: a struct

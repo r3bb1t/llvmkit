@@ -952,7 +952,7 @@ impl DataLayout {
             if ty_align.value() > alignment.value() {
                 alignment = ty_align;
             }
-            member_offsets.push(size.known_min_value());
+            member_offsets.push(size);
             size = size.saturating_add(self.type_alloc_size_inner(module, elem));
         }
         if !size.is_scalable() && !size.known_min_value().is_multiple_of(alignment.value()) {
@@ -1016,7 +1016,7 @@ pub struct StructLayoutInfo {
     size: TypeSize,
     alignment: Align,
     is_padded: bool,
-    member_offsets: Vec<u64>,
+    member_offsets: Vec<TypeSize>,
 }
 
 impl StructLayoutInfo {
@@ -1028,7 +1028,7 @@ impl StructLayoutInfo {
         member_offsets: Offsets,
     ) -> Self
     where
-        Offsets: Into<Vec<u64>>,
+        Offsets: Into<Vec<TypeSize>>,
     {
         let member_offsets = member_offsets.into();
         Self {
@@ -1039,11 +1039,6 @@ impl StructLayoutInfo {
         }
     }
 
-    /// The known minimum of [`size_in_bytes`](Self::size_in_bytes).
-    #[inline]
-    pub fn size_bytes(&self) -> u64 {
-        self.size.known_min_value()
-    }
     /// Mirrors `StructLayout::getSizeInBytes`.
     #[inline]
     pub fn size_in_bytes(&self) -> TypeSize {
@@ -1071,33 +1066,31 @@ impl StructLayoutInfo {
     }
     /// All member byte offsets in declaration order.
     #[inline]
-    pub fn member_offsets(&self) -> &[u64] {
+    pub fn member_offsets(&self) -> &[TypeSize] {
         &self.member_offsets
     }
     /// Mirrors `StructLayout::getElementOffset`.
-    pub fn element_offset(&self, index: usize) -> u64 {
+    pub fn element_offset(&self, index: usize) -> TypeSize {
         self.member_offsets()[index]
     }
     /// Mirrors `StructLayout::getElementOffsetInBits`.
-    pub fn element_offset_in_bits(&self, index: usize) -> u64 {
-        self.member_offsets()[index].saturating_mul(8)
+    pub fn element_offset_in_bits(&self, index: usize) -> TypeSize {
+        self.member_offsets()[index].saturating_scaled(8)
     }
-    /// Mirrors `StructLayout::getElementContainingOffset`. Returns
-    /// the index of the field that contains the byte offset, or
-    /// `None` for an out-of-range offset.
+    /// Mirrors `StructLayout::getElementContainingOffset`. Returns the index
+    /// of the field that contains the byte offset, or `None` for an
+    /// out-of-range offset, and for a struct of scalable size, which upstream
+    /// asserts on: a byte offset names no field of one.
     pub fn element_containing_offset(&self, byte_offset: u64) -> Option<usize> {
-        if byte_offset >= self.size_bytes() {
+        if byte_offset >= self.size.fixed_value()? {
             return None;
         }
-        // upper_bound: greatest index whose member_offset <= byte_offset.
-        match self
-            .member_offsets()
-            .binary_search_by(|m| m.cmp(&byte_offset))
-        {
-            Ok(idx) => Some(idx),
-            Err(0) => None,
-            Err(idx) => Some(idx - 1),
-        }
+        // Multiple fields can have the same offset if any of them are zero
+        // sized. For example, in { i32, [0 x i32], i32 }, searching for offset
+        // 4 will stop at the i32 in the end.
+        self.member_offsets()
+            .partition_point(|offset| offset.known_min_value() <= byte_offset)
+            .checked_sub(1)
     }
 }
 

@@ -9,8 +9,8 @@
 //! intentionally differs from upstream `FailedWithMessage` text.
 
 use llvmkit_ir::{
-    Align, DataLayout, DataLayoutError, ManglingMode, MaybeAlign, Module, TypeSize, VectorType,
-    address_space, lanes, module_new,
+    Align, ArrayType, DataLayout, DataLayoutError, ManglingMode, MaybeAlign, Module, TypeSize,
+    VectorType, address_space, lanes, module_new,
 };
 
 fn parse(s: &str) -> DataLayout {
@@ -806,9 +806,9 @@ fn struct_layout_simple() {
         .struct_type([i32_ty.as_type(), i64_ty.as_type()])
         .expect("valid struct elements");
     let layout = dl.struct_layout(st.as_type());
-    assert_eq!(layout.element_offset(0), 0);
+    assert_eq!(layout.element_offset(0), TypeSize::fixed(0));
     // i64 default ABI alignment is 4, so i64 placed at offset 4.
-    assert_eq!(layout.element_offset(1), 4);
+    assert_eq!(layout.element_offset(1), TypeSize::fixed(4));
     assert_eq!(layout.size_in_bytes(), TypeSize::fixed(12));
 }
 
@@ -824,9 +824,46 @@ fn struct_layout_packed() {
         .packed_struct_type([i8_ty.as_type(), i32_ty.as_type()])
         .expect("valid struct elements");
     let layout = dl.struct_layout(st.as_type());
-    assert_eq!(layout.element_offset(0), 0);
-    assert_eq!(layout.element_offset(1), 1);
+    assert_eq!(layout.element_offset(0), TypeSize::fixed(0));
+    assert_eq!(layout.element_offset(1), TypeSize::fixed(1));
     assert_eq!(layout.size_in_bytes(), TypeSize::fixed(5));
+}
+
+/// Mirrors `StructLayout::getElementOffset`, a `TypeSize`, and
+/// `StructLayout::getElementContainingOffset`. The upstream comment there is the
+/// fixed case: "in { i32, [0 x i32], i32 }, searching for offset 4 will stop at
+/// the i32 in the end". The scalable half has **no upstream counterpart**: upstream
+/// asserts "Cannot get element at offset for structure containing scalable
+/// vector types", and llvmkit answers `None`. A field of a scalable struct has
+/// a scalable offset, so reading it as a number takes a decision.
+#[test]
+fn a_struct_field_offset_says_whether_it_scales() {
+    let m = module_new!("m").expect("fresh module");
+    let dl = DataLayout::default();
+    let i32_ty = m.i32_type();
+    let fixed = m
+        .struct_type([
+            i32_ty.as_type(),
+            ArrayType::of(i32_ty, 0).as_type(),
+            i32_ty.as_type(),
+        ])
+        .expect("valid struct elements");
+    let fixed_layout = dl.struct_layout(fixed.as_type());
+    assert_eq!(fixed_layout.element_containing_offset(4), Some(2));
+    assert_eq!(fixed_layout.element_containing_offset(0), Some(0));
+    assert_eq!(fixed_layout.element_containing_offset(8), None);
+
+    let scalable_field = VectorType::scalable_of(i32_ty, lanes::<4>()).as_type();
+    let scalable = m
+        .struct_type([scalable_field, scalable_field])
+        .expect("valid struct elements");
+    let scalable_layout = dl.struct_layout(scalable.as_type());
+    assert_eq!(scalable_layout.element_offset(1), TypeSize::scalable(16));
+    assert_eq!(
+        scalable_layout.element_offset_in_bits(1),
+        TypeSize::scalable(128)
+    );
+    assert_eq!(scalable_layout.element_containing_offset(4), None);
 }
 
 /// Mirrors `DataLayout::getTypeSizeInBits`, `getTypeAllocSize` and the

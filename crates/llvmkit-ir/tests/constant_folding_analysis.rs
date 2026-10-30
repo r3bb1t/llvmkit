@@ -17,12 +17,12 @@ use llvmkit_ir::{
     TargetLibraryInfo, UnaryOpcode, attributes::AttributeStorage, constant_fold_binary_intrinsic,
     constant_fold_binary_op_operands, constant_fold_compare_inst_operands, constant_fold_constant,
     constant_fold_extract_element_instruction, constant_fold_fp_inst_operands,
-    constant_fold_inst_operands, constant_fold_integer_cast, constant_fold_load_from_uniform_value,
-    constant_fold_load_through_bitcast, constant_fold_unary_op_operand,
-    constant_offset_from_global, is_constant_offset_from_global, lossless_inv_cast,
-    lossless_signed_trunc, lossless_unsigned_trunc, module_new,
+    constant_fold_inst_operands, constant_fold_integer_cast, constant_fold_load_from_const,
+    constant_fold_load_from_uniform_value, constant_fold_load_through_bitcast,
+    constant_fold_unary_op_operand, constant_offset_from_global, is_constant_offset_from_global,
+    lossless_inv_cast, lossless_signed_trunc, lossless_unsigned_trunc, module_new,
 };
-use llvmkit_ir::{ArrayType, VectorType, lanes};
+use llvmkit_ir::{ArrayType, Constant, VectorType, lanes};
 
 /// llvmkit-specific subset of `ConstantFolding.cpp::ConstantFoldLoadFromConstPtr`:
 /// byte extraction from constant globals uses the module `DataLayout` endianness.
@@ -53,7 +53,9 @@ fn load_from_const_ptr_uses_little_endian_layout() -> Result<(), IrError> {
 }
 
 /// llvmkit-specific subset of `ConstantFolding.cpp::ConstantFoldLoadFromConst`:
-/// bytes past the end of a constant aggregate load as poison.
+/// bytes past the end of a constant aggregate load as poison. **This pins a
+/// difference**: upstream's `ReadDataFromGlobal` leaves those bytes zero, so its
+/// answer is `i32 7` (`docs/divergences.md` D26).
 #[test]
 fn load_from_const_ptr_oob_returns_poison() -> Result<(), IrError> {
     let m = module_new!("analysis-load-oob")?;
@@ -1545,5 +1547,287 @@ fn nested_gep_non_constant_index_intersects_inner_no_wrap_flags() -> Result<(), 
     )?;
     assert_ne!(folded.to_string(), wrongly_inbounds.to_string());
 
+    Ok(())
+}
+
+/// **No upstream counterpart**: no fixture loads from a scalable constant at a
+/// non-zero offset (a global cannot hold one, `Verifier::visitGlobalVariable`).
+/// Pins `ConstantFoldLoadFromConst`'s `!Size.isScalable()`, and that the uniform
+/// fold after it then answers. A scalable constant's size is not known here, so
+/// an offset past its known minimum is not out of bounds. The fixed vector of
+/// the same known minimum is the positive control: there the offset is past
+/// the end and the load is poison, even though the constant is uniform.
+#[test]
+fn a_load_past_the_known_minimum_of_a_scalable_constant_is_not_poison() -> Result<(), IrError> {
+    let m = module_new!("analysis-load-scalable-bounds")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i32_ty = m.i32_type();
+    let scalable = VectorType::scalable_of(i32_ty, lanes::<4>());
+    let fixed = VectorType::of(i32_ty, lanes::<4>());
+    let sixteen = ApInt::from_words(64, &[16]);
+
+    let scalable_zero = scalable.const_vector([i32_ty.const_zero(); 4])?;
+    assert_eq!(
+        constant_fold_load_from_const(
+            scalable_zero.as_constant(),
+            i32_ty.as_type(),
+            sixteen.clone(),
+            &dl,
+        )?,
+        Some(i32_ty.const_zero().as_constant())
+    );
+    assert_eq!(
+        constant_fold_load_from_const(
+            scalable.as_type().undef().as_constant(),
+            i32_ty.as_type(),
+            sixteen.clone(),
+            &dl,
+        )?,
+        Some(i32_ty.as_type().undef().as_constant())
+    );
+
+    let fixed_zero = fixed.const_vector([i32_ty.const_zero(); 4])?;
+    assert_eq!(
+        constant_fold_load_from_const(fixed_zero.as_constant(), i32_ty.as_type(), sixteen, &dl)?,
+        Some(i32_ty.as_type().poison().as_constant())
+    );
+    Ok(())
+}
+
+/// Ports the default-configuration results of the `store` of a scalable splat
+/// followed by a `load` in `test/Transforms/InstCombine/load-store-forward.ll`:
+/// `load_i32_store_nxv4i32`, `load_i64_store_nxv8i8`, `load_i64_store_nxv4i32`,
+/// `load_i8_store_nxv4i32`, `load_f32_store_nxv4f32`, `load_i32_store_nxv4f32`,
+/// `load_v4i32_store_nxv4i32`, `load_v4i16_store_nxv4i32`,
+/// `load_nxv4i8_store_nxv4i32`. Each stays a `load`, so each
+/// `ConstantFoldLoadFromConst(C, AccessTy, DL)` that
+/// `getAvailableLoadStore` (`Loads.cpp`) calls answers null.
+/// `load_i64_store_nxv4i8` is left out because its `isKnownLE` fails, so that
+/// fixture never reaches the routine. `load_v4i32_store_nxv4i32` is the one
+/// `operator==` decides: a fixed and a scalable size of 128 are different sizes.
+#[test]
+fn a_load_from_a_scalable_splat_is_not_folded() -> Result<(), IrError> {
+    let m = module_new!("analysis-load-scalable-splat")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i8_ty = m.i8_type();
+    let i16_ty = m.i16_type();
+    let i32_ty = m.i32_type();
+    let i64_ty = m.i64_type();
+    let f32_ty = m.f32_type();
+    let nxv4i32 = VectorType::scalable_of(i32_ty, lanes::<4>())
+        .const_vector([i32_ty.const_int(1_i32); 4])?
+        .as_constant();
+    let nxv8i8 = VectorType::scalable_of(i8_ty, lanes::<8>())
+        .const_vector([i8_ty.const_int(1_i8); 8])?
+        .as_constant();
+    let nxv4f32 = VectorType::scalable_of(f32_ty, lanes::<4>())
+        .const_vector([f32_ty.const_float(1.0); 4])?
+        .as_constant();
+
+    for (stored, load_ty) in [
+        (nxv4i32, i32_ty.as_type()),
+        (nxv8i8, i64_ty.as_type()),
+        (nxv4i32, i64_ty.as_type()),
+        (nxv4i32, i8_ty.as_type()),
+        (nxv4f32, f32_ty.as_type()),
+        (nxv4f32, i32_ty.as_type()),
+        (nxv4i32, VectorType::of(i32_ty, lanes::<4>()).as_type()),
+        (nxv4i32, VectorType::of(i16_ty, lanes::<4>()).as_type()),
+        (
+            nxv4i32,
+            VectorType::scalable_of(i8_ty, lanes::<4>()).as_type(),
+        ),
+    ] {
+        assert_eq!(
+            constant_fold_load_from_const(stored, load_ty, ApInt::zero(64), &dl)?,
+            None,
+            "load {load_ty} from {stored}"
+        );
+    }
+    Ok(())
+}
+
+/// **No upstream counterpart for the routine**: the input and the expected
+/// constant are `test/Transforms/GVN/vscale.ll`'s
+/// `load_v16i8_store_v4i32_forward_constant`, but GVN reaches that constant
+/// through `VNCoercion`, not `ConstantFoldLoadThroughBitcast`. Pins the routine's
+/// `SrcSize == DestSize` and `isKnownGE` on two scalable sizes, and `FoldBitCast`'s
+/// "`!isa<FixedVectorType>(C->getType())` returns `ConstantExpr::getBitCast`".
+#[test]
+fn a_scalable_splat_loads_through_a_bitcast_of_its_own_size() -> Result<(), IrError> {
+    let m = module_new!("analysis-load-scalable-bitcast")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i8_ty = m.i8_type();
+    let i32_ty = m.i32_type();
+    let nxv16i8 = VectorType::scalable_of(i8_ty, lanes::<16>()).as_type();
+    let splat =
+        VectorType::scalable_of(i32_ty, lanes::<4>()).const_vector([i32_ty.const_int(4_i32); 4])?;
+    let expected = m.constant_expr(
+        nxv16i8,
+        ConstantExprOpcode::BitCast,
+        [splat.as_erased()],
+        [],
+        [],
+        ConstantExprFlags::none(),
+    )?;
+
+    assert_eq!(
+        constant_fold_load_through_bitcast(splat.as_constant(), nxv16i8, &dl)?,
+        Some(expected)
+    );
+
+    // `FoldBitCast`'s first step, "Catch the obvious splat cases": a uniform
+    // operand answers as a constant of the new type, never as a `bitcast`.
+    let i64_ty = m.i64_type();
+    let nxv2i64 = VectorType::scalable_of(i64_ty, lanes::<2>());
+    let all_ones = VectorType::scalable_of(i32_ty, lanes::<4>())
+        .const_vector([i32_ty.const_all_ones(); 4])?
+        .as_constant();
+    assert_eq!(
+        constant_fold_cast_operand(CastOpcode::BitCast, all_ones, nxv2i64.as_type(), &dl)?,
+        Some(
+            nxv2i64
+                .const_vector([i64_ty.const_all_ones(); 2])?
+                .as_constant()
+        )
+    );
+    Ok(())
+}
+
+/// **No upstream counterpart**: pins the order of `ConstantFoldLoadFromConst`, whose
+/// uniform fold comes before `FoldReinterpretLoadFromConst` and so before any byte
+/// is read. A zero constant answers zero at a negative offset, which the byte route
+/// declines, and on a load that overruns the constant, which it calls poison.
+/// An offset past the end is the positive control: that check comes first.
+#[test]
+fn a_uniform_constant_answers_before_its_bytes_are_read() -> Result<(), IrError> {
+    let m = module_new!("analysis-load-uniform-order")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i8_ty = m.i8_type();
+    let i32_ty = m.i32_type();
+    let zero = ArrayType::of(i8_ty, 4)
+        .const_array([i8_ty.const_zero(); 4])?
+        .as_constant();
+    let load = |offset: u64| {
+        constant_fold_load_from_const(
+            zero,
+            i32_ty.as_type(),
+            ApInt::from_words(64, &[offset]),
+            &dl,
+        )
+    };
+
+    assert_eq!(load(2)?, Some(i32_ty.const_zero().as_constant()));
+    assert_eq!(load(u64::MAX)?, Some(i32_ty.const_zero().as_constant()));
+    assert_eq!(load(4)?, Some(i32_ty.as_type().poison().as_constant()));
+    Ok(())
+}
+
+/// **No upstream counterpart**: pins `ConstantFoldLoadThroughBitcast`'s
+/// `TypeSize::isKnownGE(SrcSize, DestSize)`. A fixed 128 bits is not known to
+/// hold a scalable 128 bits, whose run-time size can be larger, so the routine
+/// stops before its uniform fold. `ConstantFoldLoadFromConst` carries on to its
+/// own uniform fold, which does not read the load's size, and folds; that
+/// second answer is the positive control, and the reverse direction (a
+/// scalable source holds a fixed load) folds in the routine itself.
+#[test]
+fn a_fixed_constant_does_not_load_through_a_bitcast_to_a_scalable_type() -> Result<(), IrError> {
+    let m = module_new!("analysis-load-known-ge")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i32_ty = m.i32_type();
+    let i64_ty = m.i64_type();
+    let fixed_zero = VectorType::of(i32_ty, lanes::<4>())
+        .const_vector([i32_ty.const_zero(); 4])?
+        .as_constant();
+    let scalable = VectorType::scalable_of(i64_ty, lanes::<2>());
+    let scalable_zero = scalable
+        .const_vector([i64_ty.const_zero(); 2])?
+        .as_constant();
+
+    assert_eq!(
+        constant_fold_load_through_bitcast(fixed_zero, scalable.as_type(), &dl)?,
+        None
+    );
+    assert_eq!(
+        constant_fold_load_from_const(fixed_zero, scalable.as_type(), ApInt::zero(64), &dl)?,
+        Some(scalable_zero)
+    );
+    assert_eq!(
+        constant_fold_load_through_bitcast(scalable_zero, fixed_zero.ty(), &dl)?,
+        Some(fixed_zero)
+    );
+    Ok(())
+}
+
+/// **No upstream counterpart**: pins `getElementIndex` (`DataLayout.cpp`), whose
+/// "Skip over scalable or zero size elements" leaves an offset unsplit, so
+/// `getConstantAtOffset` finds no element at any non-zero offset into an array
+/// of scalable vectors. Offset 16 is element 1 only when `vscale` is 1. Offset 0
+/// is the positive control: the routine walks to the first element from there.
+#[test]
+fn a_load_at_an_offset_into_an_array_of_scalable_vectors_is_not_folded() -> Result<(), IrError> {
+    let m = module_new!("analysis-load-scalable-array")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i32_ty = m.i32_type();
+    let scalable = VectorType::scalable_of(i32_ty, lanes::<4>());
+    let splat = scalable.const_vector([i32_ty.const_int(1_i32); 4])?;
+    let array = ArrayType::of(scalable, 2)
+        .const_array([splat, splat])?
+        .as_constant();
+
+    assert_eq!(
+        constant_fold_load_from_const(
+            array,
+            scalable.as_type(),
+            ApInt::from_words(64, &[16]),
+            &dl,
+        )?,
+        None
+    );
+    assert_eq!(
+        constant_fold_load_from_const(array, scalable.as_type(), ApInt::zero(64), &dl)?,
+        Some(splat.as_constant())
+    );
+    Ok(())
+}
+
+/// **No upstream counterpart**: upstream reports a fatal error on both inputs,
+/// through the implicit `uint64_t` conversion of a scalable `TypeSize`.
+/// `getGEPIndexForOffset` compares the offset with a scalable struct's
+/// `getSizeInBytes`. `ReadDataFromGlobal` reads `getTypeAllocSize` of the empty
+/// array of scalable vectors, which ends a struct whose own size is fixed, when
+/// a load crosses into it. llvmkit declines instead (Doctrine D10).
+#[test]
+fn a_load_at_an_offset_into_a_scalable_struct_is_not_folded() -> Result<(), IrError> {
+    let m = module_new!("analysis-load-scalable-struct")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i32_ty = m.i32_type();
+    let scalable = VectorType::scalable_of(i32_ty, lanes::<4>());
+    let splat = scalable.const_vector([i32_ty.const_int(1_i32); 4])?;
+    let pair = m
+        .struct_type([scalable.as_type(), scalable.as_type()])?
+        .const_struct([splat, splat])?
+        .as_constant();
+
+    assert_eq!(
+        constant_fold_load_from_const(pair, scalable.as_type(), ApInt::from_words(64, &[16]), &dl,)?,
+        None
+    );
+
+    let empty_ty = ArrayType::of(scalable, 0);
+    let empty = empty_ty.const_array::<Constant<'_, _>, _>([])?;
+    let trailing = m
+        .struct_type([i32_ty.as_type(), empty_ty.as_type()])?
+        .const_struct([i32_ty.const_int(1_i32).as_constant(), empty.as_constant()])?
+        .as_constant();
+    assert_eq!(
+        constant_fold_load_from_const(
+            trailing,
+            i32_ty.as_type(),
+            ApInt::from_words(64, &[1]),
+            &dl,
+        )?,
+        None
+    );
     Ok(())
 }

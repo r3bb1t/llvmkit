@@ -913,40 +913,43 @@ The mark is no IR: it prints nowhere, and a verified module stays verified.
 `crates/llvmkit-ir/tests/struct_schema.rs::a_passing_signature_holds_every_struct_it_names`,
 `crates/llvmkit-ir/tests/struct_schema.rs::a_checked_field_read_holds_the_field_alone`.
 
-### D24 — Some readers of a scalable size take its known minimum where upstream branches or refuses
+### D24 — A reader of a size that upstream cannot take on a scalable one declines
 
 **Severity:** model-gap, by D19's reading of the table: the query answers, and
-upstream's stops or takes another branch. Derived by reading: no test exhibits it.
-**Where:** `crates/llvmkit-ir/src/type_size.rs` — `TypeSize::fixed_value_or_known_min`,
-whose callers `rg -n "fixed_value_or_known_min" crates/llvmkit-ir/src` lists;
-`crates/llvmkit-ir/src/constant_folding.rs` —
-`constant_fold_load_from_const_trusting_same_module` and
-`constant_fold_load_through_bitcast_trusting_same_module`;
-`crates/llvmkit-ir/src/value_tracking.rs` — the `getelementptr` arm of known bits.
+upstream's stops. No build of upstream answers: the `TypeSize` conversion below
+is a `reportFatalInternalError`, not an `assert`.
+**Where:** `crates/llvmkit-ir/src/constant_folding.rs` — `gep_index_for_offset` and
+`aggregate_to_store_bytes`; `crates/llvmkit-ir/src/value_tracking.rs` —
+`gep_known_bits_from_values`; `crates/llvmkit-ir/src/constant_fold.rs` —
+`global_pointer_alignment`; `crates/llvmkit-ir/src/pointer_analysis.rs` —
+`constant_data_array_info`.
 
-**LLVM:** `TypeSize::getFixedValue` asserts on a scalable size, and its implicit
-`uint64_t` conversion reports a fatal error (`TypeSize::operator ScalarTy`).
-Three readers branch instead. `ConstantFoldLoadFromConst` tests
-`!Size.isScalable()` before it folds an out-of-bounds load to poison.
-`ConstantFoldLoadThroughBitcast` compares with `TypeSize::isKnownGE` and
-`operator==`, both of which read scalability. `computeKnownBitsFromOperator`
-tests `Stride.isScalable()` for the stride of any index.
+**LLVM:** `TypeSize::getFixedValue` asserts on a scalable size, and the implicit
+`uint64_t` conversion (`TypeSize::operator ScalarTy`) reports a fatal error. Each
+of these routines reads a size one of those two ways, and each can meet a scalable
+one. `DataLayout::getGEPIndexForOffset` compares an offset with
+`getSizeInBytes`, on a constant struct of scalable vectors.
+`computeKnownBitsFromOperator` assigns `getElementOffset` to a `uint64_t`, on a
+field of such a struct inside an array, which `Verifier::visitGetElementPtrInst`
+does not refuse because the source is not itself a struct.
+`DataLayout::getPreferredAlign` compares `getTypeSizeInBits` with 128, and
+`getConstantDataArrayInfo` reads a null initializer's size with `getFixedValue`,
+both on a scalable global, which the verifier refuses but the parser reads.
+`ReadDataFromGlobal` reads `getTypeAllocSize` on a field of a fixed-size struct,
+which `{ i32, [0 x <vscale x 4 x i32>] }` has, past a load that crosses into it.
 
-**llvmkit:** each reads the known minimum, as it did when `DataLayout` answered a
-bare number, so a scalable size is treated as a fixed one of that value. The
-`getelementptr` arm does branch on scalability, by the indexed type's kind, so an
-array of scalable vectors takes the fixed path.
+**llvmkit:** each takes the decline its routine already has: no index, unknown
+bits, no alignment, no slice, no bytes.
 
-**Why:** `TypeSize` landed on 2026-10-30 as a change of type at these sites, with
-only `CastInst::castIsValid` changing its answer. A panic is not an option for the
-assert (Doctrine D10), and a reader that returns `None` on a scalable size would
-have changed each routine's verdict with no test behind it.
+**Why:** a query must not abort (Doctrine D10).
 
-**Fix:** port the three branches, now that `TypeSize::is_scalable` is there to
-test, and give each `fixed_value_or_known_min` caller the answer its routine wants
-on a scalable size. Each needs its own test.
+**Fix:** none owed — this is hardening of a fatal error, as D17 and D18 are of
+asserts.
 
-**Guarded by:** nothing: this entry records what was left.
+**Guarded by:**
+`crates/llvmkit-ir/tests/constant_folding_analysis.rs::a_load_at_an_offset_into_a_scalable_struct_is_not_folded`,
+`crates/llvmkit-asmparser/tests/value_tracking_gep.rs::a_scalable_field_offset_is_unknown`,
+`crates/llvmkit-asmparser/tests/pointer_analysis.rs::a_scalable_global_has_no_fixed_size_to_read`.
 
 ### D25 — A forward `dso_local_equivalent` that resolves to another address space is refused where upstream asserts
 
@@ -972,6 +975,60 @@ must not abort (Doctrine D10).
 is llvmkit's, because upstream's assert has none a user would see.
 
 **Guarded by:** `crates/llvmkit-asmparser/tests/parser_constants.rs::a_forward_dso_local_equivalent_is_in_the_default_globals_space`.
+
+### D26 — A load from a constant reads its bytes whole, not through `ReadDataFromGlobal`
+
+**Severity:** model-gap. Derived by reading, one arm at a time, against
+`FoldReinterpretLoadFromConst` and `ReadDataFromGlobal` (`ConstantFolding.cpp`).
+Only the second bullet below has a test, and it pins the difference.
+**Where:** `crates/llvmkit-ir/src/constant_folding.rs` —
+`fold_reinterpret_load_from_const`, `constant_to_store_bytes`,
+`zero_constant_for_type`, `fold_bitcast_with_layout`.
+
+**LLVM:** `FoldReinterpretLoadFromConst` is the last step of
+`ConstantFoldLoadFromConst`. It turns a load into an integer load of at most 32
+bytes and fills a zeroed buffer from `ReadDataFromGlobal`, which walks the
+constant to the bytes the load asks for. A non-integer load is that integer
+cast afterwards.
+
+**llvmkit:** `fold_reinterpret_load_from_const` keeps upstream's two scalable
+guards, then serialises the whole constant and slices it. So:
+
+- A negative offset declines. Upstream answers poison when no byte of the load
+  is in the constant, and otherwise folds with the missing low bytes zero.
+- A load that starts inside the constant and runs past its end is poison. Upstream
+  fills the bytes it cannot read with zero, so `load i32` of `[1 x i8] [i8 7]` is
+  `i32 7` there. The same goes for a load that reaches a scalar's padding.
+- Only an integer or float load folds. Upstream also folds a pointer or vector
+  load, through `FoldBitCast` and `inttoptr`.
+- An integer load wider than 32 bytes folds. Upstream declines.
+- An integer whose width is no whole number of bytes, and a float other than
+  `half`, `float` and `double`, serialise here. `ReadDataFromGlobal` answers `false`
+  for each.
+- An `undef` or `poison` element stops the fold, and so does an `inttoptr`
+  constant. Upstream reads the first as zero bytes and the second through its
+  operand.
+
+Two neighbours share the shape. `zero_constant_for_type` answers no array, struct,
+token or target type, so a load that the uniform fold could answer with
+`Constant::getNullValue` of one declines: a `ConstantAggregateZero` costs upstream
+nothing, and llvmkit's would be a list of every element at whatever length the
+load type names. `fold_bitcast_with_layout` answers a fixed bitcast from the same
+bytes, and declines one that has no bytes, where `FoldBitCast` works element by
+element and otherwise builds the `bitcast` expression.
+
+**Why:** the byte route predates the port of the rest of
+`ConstantFoldLoadFromConst`. Closing the scalable branches moved everything before
+it to upstream's order, and left this step as it was.
+
+**Fix:** port `FoldReinterpretLoadFromConst` and `ReadDataFromGlobal` whole, then
+`FoldBitCast`. Then `load_from_const_ptr_oob_returns_poison`, which pins the second
+bullet, becomes a port of its upstream answer, and the fixtures of
+`test/Transforms/InstSimplify/ConstProp/loads.ll` that need these routines can be
+ported, such as `load_i8_from_i9`, `load_ptr_from_i8_data` and `load_i40_struct_padding`.
+
+**Guarded by:** `crates/llvmkit-ir/tests/constant_folding_analysis.rs::load_from_const_ptr_oob_returns_poison`
+pins the second bullet. Nothing pins the rest.
 
 ---
 

@@ -10,8 +10,8 @@ use super::ap_int::Signedness;
 use super::capability::{Capability, Mutable};
 use super::cmp_predicate::{CmpPredicate, IntPredicate};
 use super::constant::{
-    Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprInRange,
-    ConstantExprOpcode, is_poison, is_undef,
+    Constant, ConstantData, ConstantDataKind, ConstantExprData, ConstantExprFlags,
+    ConstantExprInRange, ConstantExprOpcode, ConstantKind, is_poison, is_undef,
 };
 use super::constant_fold::{
     constant_fold_binary_instruction_trusting_same_module,
@@ -25,7 +25,9 @@ use super::constant_fold::{
     constant_fold_shuffle_vector_instruction_trusting_same_module, constant_fold_unary_instruction,
     shufflevector_mask_from_constant,
 };
-use super::constants::{ConstantExprOptions, ConstantFloatValue, ConstantIntValue};
+use super::constants::{
+    ConstantExprOptions, ConstantFloatValue, ConstantIntValue, GepTypeCursor, intern_aggregate,
+};
 use super::data_layout::DataLayout;
 use super::denormal_mode::{DenormalMode, DenormalModeKind, DenormalModeSide};
 use super::derived_types::{FloatType, IntType, PointerType, VectorType};
@@ -36,11 +38,13 @@ use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::global_variable::GlobalVariable;
 use super::instr_types::{BinaryOpcode, CastOpcode, PhiData, UnaryOpcode};
 use super::instruction::{InstructionKindData, InstructionView};
+use super::instructions::cast_is_valid;
 use super::int_width::IntDyn;
 use super::intrinsics::BinaryIntrinsic;
 use super::module::{ModuleBrand, ModuleRef};
 use super::target_library_info::{LibFunc, TargetLibraryInfo};
 use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeSlotAccess, erase_type};
+use super::type_size::TypeSize;
 use super::value::{IsValue, Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use super::vec_len::LenDyn;
 use super::{ApInt, Dyn, FunctionValue, IrError, IrResult};
@@ -294,47 +298,92 @@ pub(crate) fn constant_fold_load_from_const_trusting_same_module<
     offset: ApInt,
     dl: &DataLayout,
 ) -> IrResult<Option<Constant<'ctx, B, C>>> {
-    if offset.is_negative() {
-        return Ok(None);
-    }
-    let Some(start) = offset.try_zext_u64() else {
-        return Ok(None);
-    };
-    let alloc_size = dl
-        .type_alloc_size(erase_type(constant.ty()))
-        .fixed_value_or_known_min();
-    if start >= alloc_size {
-        return Ok(Some(ty.poison().as_constant()));
-    }
-    let load_size = dl
-        .type_store_size(erase_type(ty))
-        .fixed_value_or_known_min();
-    let Some(end) = start.checked_add(load_size) else {
-        return Ok(None);
-    };
     // Mirrors `ConstantFoldLoadFromConst` in
-    // `llvm/lib/Analysis/ConstantFolding.cpp`: first try the constant stored at
-    // the byte offset, then reinterpret it through the requested load type.
-    if let Some(at_offset) = constant_at_offset(constant, start, dl)?
+    // `llvm/lib/Analysis/ConstantFolding.cpp`, step for step.
+    if let Some(at_offset) = constant_at_offset(constant, &offset, dl)
         && let Some(folded) =
             constant_fold_load_through_bitcast_trusting_same_module(at_offset, ty, dl)?
     {
         return Ok(Some(folded));
     }
-    let bytes = match constant_to_store_bytes(constant, dl)? {
-        Some(bytes) => bytes,
-        None => return fold_uniform_constant_load(constant, ty, dl),
-    };
-    let Ok(start_index) = usize::try_from(start) else {
+
+    // Explicitly check for out-of-bounds access, so we return poison even if
+    // the constant is a uniform value. A scalable size is not known here.
+    if let Some(size) = dl.type_alloc_size(erase_type(constant.ty())).fixed_value()
+        && offset_sge(&offset, size)
+    {
+        return Ok(Some(ty.poison().as_constant()));
+    }
+
+    // Try an offset-independent fold of a uniform value.
+    if let Some(folded) =
+        constant_fold_load_from_uniform_value_trusting_same_module(constant, ty, dl)?
+    {
+        return Ok(Some(folded));
+    }
+
+    // Try hard to fold loads from bitcasted strange and non-type-safe things.
+    match offset.try_sext_i64() {
+        Some(offset) => fold_reinterpret_load_from_const(constant, ty, offset, dl),
+        None => Ok(None),
+    }
+}
+
+/// `Offset.sge(Size.getFixedValue())`: `APInt::sge(int64_t)`, whose `uint64_t`
+/// argument converts implicitly, and which answers by sign for an offset too
+/// wide for 64 bits.
+fn offset_sge(offset: &ApInt, size: u64) -> bool {
+    match offset.try_sext_i64() {
+        Some(offset) => offset >= size.cast_signed(),
+        None => !offset.is_negative(),
+    }
+}
+
+/// `FoldReinterpretLoadFromConst`, in two ported guards and a byte route.
+///
+/// The guards are upstream's two scalable ones. What follows them is not
+/// `ReadDataFromGlobal`: it reads the whole constant as bytes, which answers
+/// differently at an offset before the constant, on a load past its end, and
+/// on a load that is no integer or float (`docs/divergences.md` D26).
+fn fold_reinterpret_load_from_const<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+    load_ty: Type<'ctx, B, C>,
+    offset: i64,
+    dl: &DataLayout,
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
+    // Bail out early. Not expect to load from scalable global variable.
+    if matches!(load_ty.data(), TypeData::ScalableVector { .. }) {
+        return Ok(None);
+    }
+    // "TODO: We should be able to support scalable types."
+    if dl
+        .type_alloc_size(erase_type(constant.ty()))
+        .fixed_value()
+        .is_none()
+    {
+        return Ok(None);
+    }
+    // A load type that is no scalable vector but has a scalable size is an
+    // aggregate holding one, which upstream's non-integer arm refuses.
+    let Some(load_size) = dl.type_store_size(erase_type(load_ty)).fixed_value() else {
         return Ok(None);
     };
-    let Ok(end_index) = usize::try_from(end) else {
+    let Ok(start) = u64::try_from(offset) else {
+        return Ok(None);
+    };
+    let Some(end) = start.checked_add(load_size) else {
+        return Ok(None);
+    };
+    let Some(bytes) = constant_to_store_bytes(constant, dl)? else {
+        return Ok(None);
+    };
+    let (Ok(start_index), Ok(end_index)) = (usize::try_from(start), usize::try_from(end)) else {
         return Ok(None);
     };
     if end_index > bytes.len() {
-        return Ok(Some(ty.poison().as_constant()));
+        return Ok(Some(load_ty.poison().as_constant()));
     }
-    constant_from_store_bytes(ty, &bytes[start_index..end_index], dl)
+    constant_from_store_bytes(load_ty, &bytes[start_index..end_index], dl)
 }
 
 /// If `constant` has a uniform bit pattern, materialise that value as `ty`.
@@ -362,7 +411,26 @@ pub(crate) fn constant_fold_load_from_uniform_value_trusting_same_module<
     ty: Type<'ctx, B, C>,
     dl: &DataLayout,
 ) -> IrResult<Option<Constant<'ctx, B, C>>> {
-    fold_uniform_constant_load(constant, ty, dl)
+    // Mirrors `ConstantFoldLoadFromUniformValue`.
+    if is_poison(constant) {
+        return Ok(Some(ty.poison().as_constant()));
+    }
+    if is_undef(constant) {
+        return Ok(Some(ty.undef().as_constant()));
+    }
+    // If padding is needed when storing C to memory, then it isn't considered
+    // as uniform.
+    if !dl.type_size_equals_store_size(erase_type(constant.ty())) {
+        return Ok(None);
+    }
+    if constant.is_null_value() && !matches!(ty.data(), TypeData::X86Amx) {
+        return zero_constant_for_type(ty);
+    }
+    if constant.is_all_ones_value() && (ty.is_int_or_int_vector() || ty.is_float_or_float_vector())
+    {
+        return all_ones_constant_for_type(ty);
+    }
+    Ok(None)
 }
 
 /// Fold a cast using `DataLayout` where target-independent `ConstantFold.cpp`
@@ -760,6 +828,11 @@ where
                 return Ok(None);
             };
             let source_ty = Type::new(gep.source_ty, value.module);
+            // `ConstantExpr::isSupportedGetElementPtr`. The constant-expression
+            // arm needs no such line: `constant_expr` refuses that source.
+            if source_ty.is_scalable() {
+                return Ok(None);
+            }
             if let Some(folded) =
                 symbolically_evaluate_gep(source_ty, *pointer, indices, gep.flags, None, dl)?
             {
@@ -1263,7 +1336,7 @@ fn strip_and_accumulate_constant_offset<'ctx, B: ModuleBrand + 'ctx, C: Capabili
                         return (current, offset);
                     };
                     let Some(gep_offset) =
-                        constant_gep_offset(source_ty, index_ids, module, index_bits, dl)
+                        accumulate_constant_offset(source_ty, index_ids, index_bits, dl)
                     else {
                         return (current, offset);
                     };
@@ -1517,13 +1590,9 @@ pub(crate) fn constant_fold_load_through_bitcast_trusting_same_module<
         if value.ty() == dest_ty {
             return Ok(Some(value));
         }
-        // Upstream's `TypeSize::isKnownGE` and `operator==` read scalability as
-        // well; these two read the known minimum (`docs/divergences.md` D24).
-        let src_size = dl
-            .type_size_in_bits(erase_type(value.ty()))
-            .known_min_value();
-        let dest_size = dl.type_size_in_bits(erase_type(dest_ty)).known_min_value();
-        if src_size < dest_size {
+        let dest_size = dl.type_size_in_bits(erase_type(dest_ty));
+        let src_size = dl.type_size_in_bits(erase_type(value.ty()));
+        if !TypeSize::is_known_ge(src_size, dest_size) {
             return Ok(None);
         }
         if let Some(folded) =
@@ -1539,8 +1608,9 @@ pub(crate) fn constant_fold_load_through_bitcast_trusting_same_module<
                 == is_non_integral_pointer_type(dest_ty, dl)
         {
             let opcode = load_through_bitcast_opcode(value.ty(), dest_ty);
-            if let Some(folded) =
-                constant_fold_cast_operand_trusting_same_module(opcode, value, dest_ty, dl)?
+            if cast_is_valid(opcode, value.ty(), dest_ty)
+                && let Some(folded) =
+                    constant_fold_cast_operand_trusting_same_module(opcode, value, dest_ty, dl)?
             {
                 return Ok(Some(folded));
             }
@@ -1863,7 +1933,7 @@ fn constant_offset_from_global_with_offset<'ctx, B: ModuleBrand + 'ctx, C: Capab
                 let base = constant_from_id(module, *base_id)?;
                 let index_bits = index_bits_for_constant_offset(pointer, dl)
                     .or_else(|| index_bits_for_constant_offset(base, dl))?;
-                let gep_offset = constant_gep_offset(source_ty, index_ids, module, index_bits, dl)?;
+                let gep_offset = accumulate_constant_offset(source_ty, index_ids, index_bits, dl)?;
                 constant_offset_from_global_with_offset(
                     base,
                     offset.sext_or_trunc(index_bits).wrapping_add(&gep_offset),
@@ -1876,80 +1946,68 @@ fn constant_offset_from_global_with_offset<'ctx, B: ModuleBrand + 'ctx, C: Capab
     }
 }
 
-fn constant_gep_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+/// Mirrors `GEPOperator::accumulateConstantOffset` (`Operator.cpp`) for a
+/// source type and its indices: the byte offset they add, or `None` where
+/// upstream answers `false`. llvmkit has no `ExternalAnalysis` to pass, so any
+/// index that is no `ConstantInt` is that `false`, and the fast path for an `i8`
+/// source answers what the walk answers, so it is not spelled.
+pub(crate) fn accumulate_constant_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     source_ty: Type<'ctx, B, C>,
     index_ids: &[ValueSlot],
-    module: ModuleRef<'ctx, B, C>,
     index_bits: u32,
     dl: &DataLayout,
 ) -> Option<ApInt> {
     let mut offset = ApInt::zero(index_bits);
-    let mut current_ty = source_ty;
-    for (position, index_id) in index_ids.iter().copied().enumerate() {
-        let index = constant_gep_index(module, index_id, index_bits)?;
-        if position == 0 {
-            offset = offset.wrapping_add(&scaled_offset(
-                &index,
-                dl.type_alloc_size(erase_type(current_ty))
-                    .fixed_value_or_known_min(),
-                index_bits,
-            ));
+    let mut cursor = Some(GepTypeCursor::begin(source_ty));
+    for index_id in index_ids.iter().copied() {
+        let step = cursor?;
+        let indexed_ty = step.indexed_type(index_id)?;
+        cursor = GepTypeCursor::after(indexed_ty);
+
+        // Scalable vectors are multiplied by a runtime constant.
+        let scalable_type = indexed_ty.is_scalable();
+
+        let index = constant_gep_index(source_ty.module, index_id)?;
+        if index.is_zero() {
             continue;
         }
-
-        match current_ty.data() {
-            TypeData::Array { elem, .. } => {
-                let elem_ty = Type::new(*elem, module);
-                offset = offset.wrapping_add(&scaled_offset(
-                    &index,
-                    dl.type_alloc_size(erase_type(elem_ty))
-                        .fixed_value_or_known_min(),
-                    index_bits,
-                ));
-                current_ty = elem_ty;
-            }
-            TypeData::FixedVector { elem, .. } => {
-                let elem_ty = Type::new(*elem, module);
-                offset = offset.wrapping_add(&scaled_offset(
-                    &index,
-                    dl.type_alloc_size(erase_type(elem_ty))
-                        .fixed_value_or_known_min(),
-                    index_bits,
-                ));
-                current_ty = elem_ty;
-            }
-            TypeData::Struct(data) => {
-                if index.is_negative() {
-                    return None;
-                }
-                let field = usize::try_from(index.try_zext_u64()?).ok()?;
-                let body = data.body.borrow();
-                let elem = *body.as_ref()?.elements.get(field)?;
-                let layout = dl.struct_layout(erase_type(current_ty));
-                offset = offset.wrapping_add(&ApInt::from_words(
-                    index_bits,
-                    &[layout.element_offset(field)],
-                ));
-                current_ty = Type::new(elem, module);
-            }
-            TypeData::ScalableVector { .. } => return None,
-            _ => return None,
+        // If the type is scalable and the constant is not zero
+        // (vscale * n * 0 = 0) bailout.
+        if scalable_type {
+            return None;
         }
+        // Handle a struct index, which adds its field offset to the pointer.
+        if let Some(struct_ty) = step.struct_type() {
+            let field = step.struct_field(index_id)?;
+            // A scalable offset here is upstream's fatal `TypeSize` conversion:
+            // the field's own type is fixed, so the bailout above let it by.
+            let field_offset = dl
+                .struct_layout(erase_type(struct_ty))
+                .element_offset(field)
+                .fixed_value()?;
+            offset = offset.wrapping_add(&ApInt::from_words(index_bits, &[field_offset]));
+            continue;
+        }
+        let stride = step.sequential_element_stride(dl).fixed_value()?;
+        offset = offset.wrapping_add(&scaled_offset(
+            &index.sext_or_trunc(index_bits),
+            stride,
+            index_bits,
+        ));
     }
     Some(offset)
 }
 
+/// The index `id` names, at its own width, when it is a `ConstantInt`.
 fn constant_gep_index<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     module: ModuleRef<'ctx, B, C>,
     id: ValueSlot,
-    index_bits: u32,
 ) -> Option<ApInt> {
     let constant = constant_from_id(module, id)?;
     Some(
         ConstantIntValue::<IntDyn, B, C>::try_from(constant)
             .ok()?
-            .ap_int()
-            .sext_or_trunc(index_bits),
+            .ap_int(),
     )
 }
 
@@ -2025,7 +2083,6 @@ fn symbolically_evaluate_gep<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         return Ok(None);
     };
 
-    let module = pointer.module;
     // Internal: the indices are operands of one fold, already of `pointer`'s
     // module.
     let index_ids: Vec<ValueSlot> = indices
@@ -2035,8 +2092,7 @@ fn symbolically_evaluate_gep<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     // `Offset = APInt(BitWidth, DL.getIndexedOffsetInType(SrcElemTy, Ops[1..]), ...)`.
     // Bails (matching `for i in 1..: if (!isa<ConstantInt>(Ops[i])) return
     // nullptr;`) whenever an index isn't a plain scalar `ConstantInt`.
-    let Some(mut offset) = constant_gep_offset(source_ty, &index_ids, module, index_bits, dl)
-    else {
+    let Some(mut offset) = accumulate_constant_offset(source_ty, &index_ids, index_bits, dl) else {
         return Ok(None);
     };
 
@@ -2168,7 +2224,7 @@ fn peel_one_gep_level<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             let source_ty = Type::new(expr.source_ty?, module);
             let (base_id, index_ids) = expr.operands.split_first()?;
             let base = constant_from_id(module, *base_id)?;
-            let level_offset = constant_gep_offset(source_ty, index_ids, module, index_bits, dl)?;
+            let level_offset = accumulate_constant_offset(source_ty, index_ids, index_bits, dl)?;
             Some((base, level_offset))
         }
         _ => None,
@@ -2293,116 +2349,124 @@ fn build_canonical_i8_gep<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         .map(Some)
 }
 
+/// Mirrors `getConstantAtOffset` (`ConstantFolding.cpp`): the element of `base`
+/// that starts exactly `offset` bytes in.
 fn constant_at_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    constant: Constant<'ctx, B, C>,
-    offset: u64,
+    base: Constant<'ctx, B, C>,
+    offset: &ApInt,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B, C>>> {
-    if offset == 0 {
-        return Ok(Some(constant));
+) -> Option<Constant<'ctx, B, C>> {
+    if offset.is_zero() {
+        return Some(base);
     }
-    let ValueKindData::Constant(ConstantData::Aggregate(elements)) =
-        &constant.as_erased().data().kind
-    else {
-        return Ok(None);
-    };
-    let module = constant.module;
-    match constant.ty().data() {
-        TypeData::Array { elem, .. } => {
-            let elem_ty = Type::new(*elem, module);
-            let stride = dl
-                .type_alloc_size(erase_type(elem_ty))
-                .fixed_value_or_known_min();
-            constant_at_indexed_offset(elements, elem_ty, stride, module, offset, dl)
-        }
-        TypeData::FixedVector { elem, .. } => {
-            let elem_ty = Type::new(*elem, module);
-            if !dl.type_size_equals_store_size(erase_type(elem_ty)) {
-                return Ok(None);
-            }
-            let stride = dl
-                .type_store_size(erase_type(elem_ty))
-                .fixed_value_or_known_min();
-            constant_at_indexed_offset(elements, elem_ty, stride, module, offset, dl)
-        }
-        TypeData::Struct(_) => {
-            let layout = dl.struct_layout(erase_type(constant.ty()));
-            for (index, id) in elements.iter().copied().enumerate() {
-                let Some(element) = constant_from_id(module, id) else {
-                    return Ok(None);
-                };
-                let start = layout.element_offset(index);
-                let size = dl
-                    .type_alloc_size(erase_type(element.ty()))
-                    .fixed_value_or_known_min();
-                let Some(end) = start.checked_add(size) else {
-                    return Ok(None);
-                };
-                if offset < start {
-                    return Ok(None);
-                }
-                if offset < end {
-                    return constant_at_offset(element, offset - start, dl);
-                }
-            }
-            Ok(None)
-        }
-        _ => Ok(None),
+    if !matches!(
+        base.kind(),
+        ConstantKind::Aggregate(_) | ConstantKind::Data(ConstantDataKind::Sequential(_))
+    ) {
+        return None;
     }
+    let mut remaining = offset.clone();
+    let indices = gep_indices_for_offset(base.ty(), &mut remaining, dl);
+    let (first, walk) = indices.split_first()?;
+    if !remaining.is_zero() || !first.is_zero() {
+        return None;
+    }
+    let mut constant = base;
+    for index in walk {
+        if index.is_negative() || index.active_bits() >= 32 {
+            return None;
+        }
+        constant = constant.aggregate_element(u32::try_from(index.try_zext_u64()?).ok()?)?;
+    }
+    Some(constant)
 }
 
-fn constant_at_indexed_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    elements: &[ValueSlot],
-    elem_ty: Type<'ctx, B, C>,
-    stride: u64,
-    module: ModuleRef<'ctx, B, C>,
-    offset: u64,
-    dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B, C>>> {
-    if stride == 0 {
-        return Ok(None);
-    }
-    let index = offset / stride;
-    let Ok(index) = usize::try_from(index) else {
-        return Ok(None);
-    };
-    let Some(id) = elements.get(index).copied() else {
-        return Ok(None);
-    };
-    let Some(element) = constant_from_id(module, id) else {
-        return Ok(None);
-    };
-    if element.ty() != elem_ty {
-        return Ok(None);
-    }
-    constant_at_offset(element, offset % stride, dl)
-}
-
-fn fold_uniform_constant_load<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    constant: Constant<'ctx, B, C>,
+/// Mirrors `DataLayout::getGEPIndicesForOffset`.
+fn gep_indices_for_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     ty: Type<'ctx, B, C>,
+    offset: &mut ApInt,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B, C>>> {
-    if is_poison(constant) {
-        return Ok(Some(ty.poison().as_constant()));
+) -> Vec<ApInt> {
+    let mut element_ty = ty;
+    let mut indices = vec![element_index(
+        dl.type_alloc_size(erase_type(element_ty)),
+        offset,
+    )];
+    while !offset.is_zero() {
+        let Some(index) = gep_index_for_offset(&mut element_ty, offset, dl) else {
+            break;
+        };
+        indices.push(index);
     }
-    if is_undef(constant) {
-        return Ok(Some(ty.undef().as_constant()));
-    }
-    if !dl.type_size_equals_store_size(erase_type(constant.ty())) {
-        return Ok(None);
-    }
-    let Some(bytes) = constant_to_store_bytes(constant, dl)? else {
-        return Ok(None);
-    };
-    if bytes.iter().all(|byte| *byte == 0) {
-        return zero_constant_for_type(ty);
-    }
-    if bytes.iter().all(|byte| *byte == u8::MAX) {
-        return all_ones_constant_for_type(ty);
-    }
-    Ok(None)
+    indices
 }
+
+/// Mirrors `getElementIndex` (`DataLayout.cpp`).
+fn element_index(element_size: TypeSize, offset: &mut ApInt) -> ApInt {
+    let bit_width = offset.bit_width();
+    // Skip over scalable or zero size elements. Also skip element sizes larger
+    // than the positive index space, because the arithmetic below may not be
+    // correct in that case.
+    let division = element_size
+        .fixed_value()
+        .filter(|size| {
+            *size != 0 && u64::BITS - size.leading_zeros() <= bit_width.saturating_sub(1)
+        })
+        .map(|size| ApInt::from_words(bit_width, &[size]))
+        .and_then(|size| Some((offset.checked_sdiv(&size)?, size)));
+    let Some((mut index, size)) = division else {
+        return ApInt::zero(bit_width);
+    };
+    *offset = offset.wrapping_sub(&index.wrapping_mul(&size));
+    if offset.is_negative() {
+        // Prefer a positive remaining offset to allow struct indexing.
+        index = index.wrapping_sub(&ApInt::from_words(bit_width, &[1]));
+        *offset = offset.wrapping_add(&size);
+    }
+    index
+}
+
+/// Mirrors `DataLayout::getGEPIndexForOffset`. A struct's size and field
+/// offset are the implicit `TypeSize` conversion upstream, which is fatal on a
+/// scalable struct; here that is one more type no index can step into.
+fn gep_index_for_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    element_ty: &mut Type<'ctx, B, C>,
+    offset: &mut ApInt,
+    dl: &DataLayout,
+) -> Option<ApInt> {
+    let module = element_ty.module;
+    match element_ty.data() {
+        TypeData::Array { elem, .. } => {
+            *element_ty = Type::new(*elem, module);
+            Some(element_index(
+                dl.type_alloc_size(erase_type(*element_ty)),
+                offset,
+            ))
+        }
+        TypeData::Struct(data) => {
+            let layout = dl.struct_layout(erase_type(*element_ty));
+            let int_offset = offset.try_zext_u64()?;
+            if int_offset >= layout.size_in_bytes().fixed_value()? {
+                return None;
+            }
+            let field = layout.element_containing_offset(int_offset)?;
+            let field_offset = layout.element_offset(field).fixed_value()?;
+            *offset = offset.wrapping_sub(&ApInt::from_words(offset.bit_width(), &[field_offset]));
+            let element = *data.body.borrow().as_ref()?.elements.get(field)?;
+            *element_ty = Type::new(element, module);
+            Some(ApInt::from_words(32, &[u64::try_from(field).ok()?]))
+        }
+        // Vector GEPs are partially supported. We do not allow indexing into
+        // them in this API. Anything else is not an aggregate.
+        _ => None,
+    }
+}
+
+/// Mirrors `Constant::getNullValue`, as far as `ConstantFoldLoadFromUniformValue`
+/// needs. `None` covers upstream's `llvm_unreachable` for a type with no null
+/// constant, and the aggregates, token and target types `docs/divergences.md`
+/// D26 lists: a `ConstantAggregateZero` costs upstream nothing, but llvmkit's
+/// zero array is a list of every element, at whatever length the load names.
 fn zero_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     ty: Type<'ctx, B, C>,
 ) -> IrResult<Option<Constant<'ctx, B, C>>> {
@@ -2424,9 +2488,11 @@ fn zero_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             ty.slot_trusting_same_module(),
         ))));
     }
-    Ok(None)
+    vector_of_lanes(ty, zero_constant_for_type)
 }
 
+/// Mirrors `Constant::getAllOnesValue`, whose callers ask only of an integer or
+/// a float, or a vector of either.
 fn all_ones_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     ty: Type<'ctx, B, C>,
 ) -> IrResult<Option<Constant<'ctx, B, C>>> {
@@ -2438,7 +2504,29 @@ fn all_ones_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         let value = ApFloat::from_bits(float_ty.semantics(), &bits)?;
         return Ok(Some(float_ty.const_ap_float(&value)?.as_constant()));
     }
-    Ok(None)
+    vector_of_lanes(ty, all_ones_constant_for_type)
+}
+
+/// The vector `ty`, every lane the constant `lane` builds for its element, or
+/// `None` when `ty` is no vector or `lane` has no constant to give. llvmkit
+/// spells a scalable splat as `min_len` equal lanes (`VectorType::const_vector`).
+fn vector_of_lanes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
+    lane: fn(Type<'ctx, B, C>) -> IrResult<Option<Constant<'ctx, B, C>>>,
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
+    let Some((element, lanes, _)) = ty.data().as_vector() else {
+        return Ok(None);
+    };
+    let Some(value) = lane(Type::new(element, ty.module))? else {
+        return Ok(None);
+    };
+    let Ok(lanes) = usize::try_from(lanes.get()) else {
+        return Ok(None);
+    };
+    let slot = value.as_erased().slot_trusting_same_module();
+    Ok(Some(
+        intern_aggregate(ty, vec![slot; lanes].into_boxed_slice()).as_constant(),
+    ))
 }
 
 fn folded_constants_from_ids<'ctx, B, C: Capability, I>(
@@ -2696,10 +2784,11 @@ fn constant_to_store_bytes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             let Some(bits) = constant.ty().data().as_integer() else {
                 return Ok(None);
             };
-            let byte_len = usize_from_u64(
-                dl.type_store_size(erase_type(constant.ty()))
-                    .fixed_value_or_known_min(),
-            )?;
+            let Some(store_size) = dl.type_store_size(erase_type(constant.ty())).fixed_value()
+            else {
+                return Ok(None);
+            };
+            let byte_len = usize_from_u64(store_size)?;
             Ok(Some(apint_to_store_bytes(
                 &ApInt::from_words(bits, words),
                 byte_len,
@@ -2710,10 +2799,11 @@ fn constant_to_store_bytes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             let Ok(fp) = ConstantFloatValue::<FloatDyn, B, C>::try_from(constant) else {
                 return Ok(None);
             };
-            let byte_len = usize_from_u64(
-                dl.type_store_size(erase_type(constant.ty()))
-                    .fixed_value_or_known_min(),
-            )?;
+            let Some(store_size) = dl.type_store_size(erase_type(constant.ty())).fixed_value()
+            else {
+                return Ok(None);
+            };
+            let byte_len = usize_from_u64(store_size)?;
             Ok(Some(apint_to_store_bytes(
                 &fp.ap_float().to_bits(),
                 byte_len,
@@ -2728,10 +2818,11 @@ fn constant_to_store_bytes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                 return Ok(None);
             };
             let bits = dl.pointer_size_in_bits(addr_space);
-            let byte_len = usize_from_u64(
-                dl.type_store_size(erase_type(constant.ty()))
-                    .fixed_value_or_known_min(),
-            )?;
+            let Some(store_size) = dl.type_store_size(erase_type(constant.ty())).fixed_value()
+            else {
+                return Ok(None);
+            };
+            let byte_len = usize_from_u64(store_size)?;
             Ok(Some(apint_to_store_bytes(&ApInt::zero(bits), byte_len, dl)))
         }
         ValueKindData::Constant(ConstantData::Poison)
@@ -2749,10 +2840,10 @@ fn aggregate_to_store_bytes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     match ty.data() {
         TypeData::Array { elem, .. } => {
             let elem_ty = Type::new(*elem, module);
-            let elem_alloc = usize_from_u64(
-                dl.type_alloc_size(erase_type(elem_ty))
-                    .fixed_value_or_known_min(),
-            )?;
+            let Some(elem_alloc) = dl.type_alloc_size(erase_type(elem_ty)).fixed_value() else {
+                return Ok(None);
+            };
+            let elem_alloc = usize_from_u64(elem_alloc)?;
             let mut out = Vec::new();
             for id in elements.iter().copied() {
                 let data = module.context().value_data(id);
@@ -2767,10 +2858,10 @@ fn aggregate_to_store_bytes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         }
         TypeData::FixedVector { elem, .. } => {
             let elem_ty = Type::new(*elem, module);
-            let elem_store = usize_from_u64(
-                dl.type_store_size(erase_type(elem_ty))
-                    .fixed_value_or_known_min(),
-            )?;
+            let Some(elem_store) = dl.type_store_size(erase_type(elem_ty)).fixed_value() else {
+                return Ok(None);
+            };
+            let elem_store = usize_from_u64(elem_store)?;
             let mut out = Vec::new();
             for id in elements.iter().copied() {
                 let data = module.context().value_data(id);
@@ -2784,11 +2875,10 @@ fn aggregate_to_store_bytes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             Ok(Some(out))
         }
         TypeData::Struct(_) => {
-            let total = usize_from_u64(
-                dl.type_alloc_size(erase_type(ty))
-                    .fixed_value_or_known_min(),
-            )?;
-            let mut out = vec![0; total];
+            let Some(total) = dl.type_alloc_size(erase_type(ty)).fixed_value() else {
+                return Ok(None);
+            };
+            let mut out = vec![0; usize_from_u64(total)?];
             let layout = dl.struct_layout(erase_type(ty));
             for (index, id) in elements.iter().copied().enumerate() {
                 let data = module.context().value_data(id);
@@ -2796,7 +2886,10 @@ fn aggregate_to_store_bytes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                 let Some(bytes) = constant_to_store_bytes(element, dl)? else {
                     return Ok(None);
                 };
-                let start = usize_from_u64(layout.element_offset(index))?;
+                let Some(start) = layout.element_offset(index).fixed_value() else {
+                    return Ok(None);
+                };
+                let start = usize_from_u64(start)?;
                 let Some(end) = start.checked_add(bytes.len()) else {
                     return Ok(None);
                 };
@@ -2935,18 +3028,35 @@ fn fold_bitcast_with_layout<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     dest_ty: Type<'ctx, B, C>,
     dl: &DataLayout,
 ) -> IrResult<Option<Constant<'ctx, B, C>>> {
+    // `FoldBitCast`: "Catch the obvious splat cases."
+    if let Some(folded) =
+        constant_fold_load_from_uniform_value_trusting_same_module(operand, dest_ty, dl)?
+    {
+        return Ok(Some(folded));
+    }
     if let Some(folded) =
         constant_fold_cast_instruction_trusting_same_module(CastOpcode::BitCast, operand, dest_ty)?
     {
         return Ok(Some(folded));
     }
-    if dl
-        .type_store_size(erase_type(operand.ty()))
-        .fixed_value_or_known_min()
-        != dl
-            .type_store_size(erase_type(dest_ty))
-            .fixed_value_or_known_min()
+    // `FoldBitCast`: "Some of what follows may extend to cover scalable vectors
+    // but the current implementation is fixed length specific."
+    if matches!(operand.ty().data(), TypeData::ScalableVector { .. })
+        && cast_is_valid(CastOpcode::BitCast, operand.ty(), dest_ty)
     {
+        return operand
+            .module
+            .constant_expr(
+                dest_ty,
+                ConstantExprOpcode::BitCast,
+                [operand.as_erased()],
+                [],
+                [],
+                ConstantExprFlags::none(),
+            )
+            .map(Some);
+    }
+    if dl.type_store_size(erase_type(operand.ty())) != dl.type_store_size(erase_type(dest_ty)) {
         return Ok(None);
     }
     let Some(bytes) = constant_to_store_bytes(operand, dl)? else {

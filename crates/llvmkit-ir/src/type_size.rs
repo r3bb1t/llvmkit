@@ -75,14 +75,15 @@ impl TypeSize {
         }
     }
 
-    /// `getFixedValue`, or the implicit `uint64_t` conversion, for the routines
-    /// that read a size with one. Upstream asserts or reports a fatal error on
-    /// a scalable size there; llvmkit does not panic, so such a size answers its
-    /// known minimum, which is what these callers read before this type existed.
-    /// `docs/divergences.md` D24 lists them.
+    /// Mirrors `isKnownGE`: whether `lhs >= rhs` holds at every `vscale`. A
+    /// scalable side's size is at least its known minimum, so a fixed `lhs` is
+    /// never known to reach a scalable `rhs`.
     #[inline]
-    pub(crate) const fn fixed_value_or_known_min(self) -> u64 {
-        self.quantity
+    pub(crate) const fn is_known_ge(lhs: Self, rhs: Self) -> bool {
+        if lhs.scalable || !rhs.scalable {
+            return lhs.quantity >= rhs.quantity;
+        }
+        false
     }
 
     /// `operator*` by a count, saturating as llvmkit's size products always
@@ -147,5 +148,38 @@ mod tests {
             TypeSize::fixed(32).saturating_scaled(2),
             TypeSize::fixed(64)
         );
+    }
+
+    /// The fixed pair mirrors `unittests/Support/TypeSizeTest.cpp`'s
+    /// `static_assert` on `isKnownGE`, which it asks of `ElementCount`, a sibling
+    /// of the same `FixedOrScalableQuantity` routine. The scalable cases have **no
+    /// upstream counterpart** and are that routine read directly: a fixed side
+    /// is never known to reach a scalable one, because `vscale` can be large.
+    #[test]
+    fn a_fixed_size_is_never_known_to_reach_a_scalable_one() {
+        assert!(TypeSize::is_known_ge(
+            TypeSize::fixed(4),
+            TypeSize::fixed(4)
+        ));
+        assert!(!TypeSize::is_known_ge(
+            TypeSize::fixed(3),
+            TypeSize::fixed(4)
+        ));
+        assert!(TypeSize::is_known_ge(
+            TypeSize::scalable(4),
+            TypeSize::scalable(4)
+        ));
+        assert!(!TypeSize::is_known_ge(
+            TypeSize::scalable(3),
+            TypeSize::scalable(4)
+        ));
+        assert!(TypeSize::is_known_ge(
+            TypeSize::scalable(4),
+            TypeSize::fixed(4)
+        ));
+        assert!(!TypeSize::is_known_ge(
+            TypeSize::fixed(64),
+            TypeSize::scalable(4)
+        ));
     }
 }

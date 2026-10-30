@@ -37,6 +37,7 @@ use crate::capability::{Capability, Mutable};
 use crate::constant::{
     Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode,
 };
+use crate::constant_folding::accumulate_constant_offset;
 use crate::data_layout::DataLayout;
 use crate::gep_no_wrap_flags::GepNoWrapFlags;
 use crate::global_value::Linkage;
@@ -44,7 +45,7 @@ use crate::instr_types::{GepInstData, Opcode};
 use crate::instruction::{InstructionKindData, InstructionView};
 use crate::intrinsics::descriptor_for_callee;
 use crate::module::{ModuleBrand, ModuleRef};
-use crate::r#type::{Type, TypeData, TypeKind, TypeSlot};
+use crate::r#type::{Type, TypeKind};
 use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use crate::value_tracking::{returned_arg_operand, value_from_slot};
 use crate::{ApInt, Branded};
@@ -698,9 +699,9 @@ pub fn constant_data_array_info<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     let value_type = Type::new(data.value_type, module_ref(global));
 
     if is_null_constant(initializer) {
-        let size_in_bytes = data_layout
-            .type_store_size(value_type)
-            .fixed_value_or_known_min();
+        // `getFixedValue`, which asserts on a scalable global: an invalid one,
+        // but it parses, and it has no length to read.
+        let size_in_bytes = data_layout.type_store_size(value_type).fixed_value()?;
         let length = size_in_bytes / element_size_in_bytes;
         // An empty slice for an undersized constant, so callers can still fold
         // an otherwise-undefined library call into a well-defined expression.
@@ -1674,76 +1675,21 @@ fn peel_one_constant_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     None
 }
 
-/// The constant byte offset a `getelementptr` adds, or `None` when any index is
-/// not a constant or a type is not walkable.
+/// The constant byte offset a `getelementptr` adds, or `None` when
+/// `GEPOperator::accumulateConstantOffset` answers `false`.
 fn gep_constant_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     anchor: Value<'ctx, B, C>,
     data: &GepInstData,
     index_bits: u32,
     data_layout: &DataLayout,
 ) -> Option<ApInt> {
-    let module = module_ref(anchor);
-    let mut offset = ApInt::zero(index_bits);
-    let mut current = Type::new(data.source_ty, module);
-
-    for (position, index) in data.indices.iter().enumerate() {
-        let index = value_from_slot(anchor, index.get());
-        let ValueKindData::Constant(ConstantData::Int(words)) = &index.data().kind else {
-            return None;
-        };
-        let index_value = ApInt::from_words(index_bits, words).try_sext_i64()?;
-
-        if position == 0 {
-            // The leading index strides whole `source_ty`s.
-            let stride = i64::try_from(
-                data_layout
-                    .type_alloc_size(current)
-                    .fixed_value_or_known_min(),
-            )
-            .ok()?;
-            offset =
-                offset.wrapping_add(&signed_ap_int(index_value.checked_mul(stride)?, index_bits));
-            continue;
-        }
-
-        match current.kind() {
-            TypeKind::Struct => {
-                let field = usize::try_from(index_value).ok()?;
-                let byte = data_layout.struct_layout(current).element_offset(field);
-                offset = offset.wrapping_add(&signed_ap_int(i64::try_from(byte).ok()?, index_bits));
-                current = struct_field_type(current, field)?;
-            }
-            TypeKind::Array | TypeKind::FixedVector | TypeKind::ScalableVector => {
-                let element = element_type(current)?;
-                let stride = i64::try_from(
-                    data_layout
-                        .type_alloc_size(element)
-                        .fixed_value_or_known_min(),
-                )
-                .ok()?;
-                offset = offset
-                    .wrapping_add(&signed_ap_int(index_value.checked_mul(stride)?, index_bits));
-                current = element;
-            }
-            _ => return None,
-        }
-    }
-    Some(offset)
-}
-
-fn struct_field_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    ty: Type<'ctx, B, C>,
-    field: usize,
-) -> Option<Type<'ctx, B, C>> {
-    let TypeData::Struct(data) = ty.data() else {
-        return None;
-    };
-    let slot: TypeSlot = data
-        .body
-        .borrow()
-        .as_ref()
-        .and_then(|body| body.elements.get(field).copied())?;
-    Some(Type::new(slot, module_ref_from_type(ty)))
+    let indices: Vec<ValueSlot> = data.indices.iter().map(|index| index.get()).collect();
+    accumulate_constant_offset(
+        Type::new(data.source_ty, module_ref(anchor)),
+        &indices,
+        index_bits,
+        data_layout,
+    )
 }
 
 fn element_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(

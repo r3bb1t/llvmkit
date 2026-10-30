@@ -1,7 +1,8 @@
 use llvmkit_ir::{
     Analyses, ApInt, Constant, ConstantIntValue, DemandedBitsAnalysis, FunctionAnalysisManager,
     IntDyn, IntValue, IrBuilder, IrError, KnownBits, Linkage, NoFolder, SimplifyDemandedBitsPass,
-    ValueTrackingQuery, Width, ZextFlags, module_new, run_function_pass, simplify_demanded_bits,
+    ValueTrackingQuery, VectorType, Width, ZextFlags, lanes, module_new, run_function_pass,
+    simplify_demanded_bits,
 };
 
 fn bits(value: ApInt) -> String {
@@ -850,5 +851,39 @@ fn variable_lshr_with_known_amount_range_demands_reachable_source_bits() -> Resu
         bits(demanded.operand_demanded_bits(m.view(shifted).as_erased(), 0)?),
         "00000000000000000000000000001111"
     );
+    Ok(())
+}
+
+/// **No upstream counterpart**: pins `DemandedBits::getDemandedBits`'s
+/// `DL.getTypeSizeInBits(I->getType()->getScalarType())`. A non-integer value is
+/// reported all-ones at its scalar's width, fixed or scalable: not at the
+/// width of the whole vector, and not at a scalable vector's known minimum.
+#[test]
+fn a_vector_of_floats_is_demanded_at_its_scalar_width() -> Result<(), IrError> {
+    let m = module_new!("demanded-scalar-width")?;
+    let f32_ty = m.f32_type();
+    let fixed = VectorType::of(f32_ty, lanes::<4>());
+    let scalable = VectorType::scalable_of(f32_ty, lanes::<4>());
+    let fn_ty = m.function_type(
+        m.void_type(),
+        [fixed.as_type(), scalable.as_type(), f32_ty.as_type()],
+    )?;
+    let f = m.add_function_dyn("floats", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    b.ret_void()?;
+
+    let mut fam = FunctionAnalysisManager::new();
+    fam.register_pass(DemandedBitsAnalysis);
+    let demanded = fam.result::<DemandedBitsAnalysis, _>(m.view(f))?;
+
+    for index in 0..3 {
+        let value = m.view(f).param(index)?.as_erased();
+        assert_eq!(
+            demanded.demanded_bits(value).bit_width(),
+            32,
+            "parameter {index}"
+        );
+    }
     Ok(())
 }

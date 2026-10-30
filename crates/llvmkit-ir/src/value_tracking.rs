@@ -20,6 +20,7 @@ use crate::constant::{ConstantData, ConstantExprData, ConstantExprOpcode};
 use crate::constant_range::{
     ConstantRange, OverflowResult, PreferredRangeType, constant_ranges_from_metadata,
 };
+use crate::constants::{GepTypeCursor, constant_id_is_null_value};
 use crate::data_layout::DataLayout;
 use crate::dominator_tree::{DominatorTree, DominatorTreeAnalysis};
 use crate::function::FunctionValue;
@@ -5578,101 +5579,99 @@ where
         indices,
     } = input;
     let addr_space = pointer_addr_space(anchor.ty()).unwrap_or(crate::AddressSpace::DEFAULT);
-    let index_width = query.data_layout().index_size_in_bits(addr_space);
-    let mut offset = ApInt::zero(index_width);
-    let mut indexed_ty = source_ty;
-    let module = module_ref(anchor);
+    let data_layout = query.data_layout();
+    let index_width = data_layout.index_size_in_bits(addr_space);
+    // Accumulate the constant indices in a separate variable to minimize the
+    // number of calls to computeForAddSub.
+    let mut acc_const_indices = ApInt::zero(index_width);
+    let mut cursor = Some(GepTypeCursor::begin(Type::new(
+        source_ty,
+        module_ref(anchor),
+    )));
 
     for index_value in indices {
+        // TrailZ can only become smaller, short-circuit if we hit zero.
         if known.is_unknown() {
             break;
         }
-        let ty = Type::new(indexed_ty, module);
-        match ty.data() {
-            TypeData::Struct(_) => {
-                let Some(index_ap) = argument_constant(Some(index_value)) else {
-                    return Ok(KnownBits::unknown(width));
-                };
-                let Some(raw_index) = index_ap.try_zext_u64() else {
-                    return Ok(KnownBits::unknown(width));
-                };
-                let Ok(field_index) = usize::try_from(raw_index) else {
-                    return Ok(KnownBits::unknown(width));
-                };
-                let layout = query.data_layout().struct_layout(erase_type(ty));
-                offset = offset.wrapping_add(&ApInt::from_words(
-                    index_width,
-                    &[layout.element_offset(field_index)],
-                ));
-                if let Some(field_ty) = struct_field_type_id(ty, field_index) {
-                    indexed_ty = field_ty;
-                }
-            }
-            TypeData::Array { elem, .. } | TypeData::FixedVector { elem, .. } => {
-                let stride = query
-                    .data_layout()
-                    .type_alloc_size(erase_type(Type::new(*elem, module)))
-                    .known_min_value();
-                add_gep_index(
-                    &mut known,
-                    &mut offset,
-                    index_value,
-                    GepIndexScale {
-                        stride,
-                        index_width,
-                        pointer_width: width,
-                    },
-                    query,
-                    depth,
-                    stack,
-                )?;
-                indexed_ty = *elem;
-            }
-            TypeData::ScalableVector { elem, .. } => {
-                let stride = query
-                    .data_layout()
-                    .type_alloc_size(erase_type(Type::new(*elem, module)))
-                    .known_min_value();
-                let mut scale = KnownBits::unknown(index_width);
-                scale.set_known_zero_bits_from(stride.trailing_zeros());
-                add_gep_index_bits(
-                    &mut known,
-                    &KnownBits::mul(
-                        &compute_known_bits_inner(index_value, query, depth + 1, stack)?
-                            .sext_or_trunc(index_width),
-                        &scale,
-                    ),
-                    index_width,
-                    width,
+        let index_slot = index_value.slot_trusting_same_module();
+        // `GetElementPtrInst::getIndexedType` validated this walk when the GEP
+        // was built; a walk that stops anyway proves nothing.
+        let Some(step) = cursor else {
+            return Ok(KnownBits::unknown(width));
+        };
+        let Some(indexed_ty) = step.indexed_type(index_slot) else {
+            return Ok(KnownBits::unknown(width));
+        };
+        cursor = GepTypeCursor::after(indexed_ty);
+
+        // Handle case when index is zero.
+        if value_is_constant_zero(index_value) {
+            continue;
+        }
+
+        if let Some(struct_ty) = step.struct_type() {
+            // Handle struct member offset arithmetic.
+            let Some(field) = step.struct_field(index_slot) else {
+                return Ok(KnownBits::unknown(width));
+            };
+            // `uint64_t Offset = SL->getElementOffset(Idx)` is the implicit
+            // `TypeSize` conversion, fatal on a scalable offset. Nothing is
+            // known about such a field's address instead.
+            let layout = data_layout.struct_layout(erase_type(struct_ty));
+            let Some(field_offset) = layout.element_offset(field).fixed_value() else {
+                return Ok(KnownBits::unknown(width));
+            };
+            acc_const_indices =
+                acc_const_indices.wrapping_add(&ApInt::from_words(index_width, &[field_offset]));
+            continue;
+        }
+
+        // Handle array index arithmetic.
+        if !indexed_ty.is_sized() {
+            known = KnownBits::unknown(width);
+            break;
+        }
+
+        let stride = step.sequential_element_stride(data_layout);
+        let stride_in_bytes = stride.known_min_value();
+        if !stride.is_scalable() {
+            // Fast path for constant offset.
+            if let Some(index) = argument_constant(Some(index_value)) {
+                acc_const_indices = acc_const_indices.wrapping_add(
+                    &index
+                        .sext_or_trunc(index_width)
+                        .wrapping_mul(&ApInt::from_words(index_width, &[stride_in_bytes])),
                 );
-                indexed_ty = *elem;
-            }
-            _ => {
-                let stride = query
-                    .data_layout()
-                    .type_alloc_size(erase_type(ty))
-                    .known_min_value();
-                add_gep_index(
-                    &mut known,
-                    &mut offset,
-                    index_value,
-                    GepIndexScale {
-                        stride,
-                        index_width,
-                        pointer_width: width,
-                    },
-                    query,
-                    depth,
-                    stack,
-                )?;
+                continue;
             }
         }
-    }
 
-    if !known.is_unknown() && !offset.is_zero() {
+        let index_bits = compute_known_bits_inner(index_value, query, depth + 1, stack)?
+            .sext_or_trunc(index_width);
+        // Multiply by current sizeof type.
+        // &A[i] == A + i * sizeof(*A[i]).
+        let scaling_factor = if stride.is_scalable() {
+            // For scalable types the only thing we know about sizeof is that
+            // this is a multiple of the minimum size.
+            let mut factor = KnownBits::unknown(index_width);
+            factor.mark_low_bits_zero(stride_in_bytes.trailing_zeros().min(index_width));
+            factor
+        } else {
+            KnownBits::make_constant(ApInt::from_words(index_width, &[stride_in_bytes]))
+        };
         add_gep_index_bits(
             &mut known,
-            &KnownBits::make_constant(offset),
+            &KnownBits::mul(&index_bits, &scaling_factor),
+            index_width,
+            width,
+        );
+    }
+
+    if !known.is_unknown() && !acc_const_indices.is_zero() {
+        add_gep_index_bits(
+            &mut known,
+            &KnownBits::make_constant(acc_const_indices),
             index_width,
             width,
         );
@@ -5680,37 +5679,13 @@ where
     Ok(known)
 }
 
-#[derive(Clone, Copy)]
-struct GepIndexScale {
-    stride: u64,
-    index_width: u32,
-    pointer_width: u32,
-}
-
-fn add_gep_index<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    known: &mut KnownBits,
-    offset: &mut ApInt,
-    index_value: Value<'ctx, B, C>,
-    scale: GepIndexScale,
-    query: &ValueTrackingQuery<'a, 'ctx, B>,
-    depth: u32,
-    stack: &mut HashSet<ValueSlot>,
-) -> IrResult<()> {
-    if let Some(index) = argument_constant(Some(index_value)) {
-        let scaled = index
-            .sext_or_trunc(scale.index_width)
-            .wrapping_mul(&ApInt::from_words(scale.index_width, &[scale.stride]));
-        *offset = offset.wrapping_add(&scaled);
-        return Ok(());
-    }
-    let index_bits = compute_known_bits_inner(index_value, query, depth + 1, stack)?
-        .sext_or_trunc(scale.index_width);
-    let scaled = KnownBits::mul(
-        &index_bits,
-        &KnownBits::make_constant(ApInt::from_words(scale.index_width, &[scale.stride])),
-    );
-    add_gep_index_bits(known, &scaled, scale.index_width, scale.pointer_width);
-    Ok(())
+/// `CIndex && CIndex->isZeroValue()` for a `getelementptr` index, which is an
+/// integer or a vector of them, so `isZeroValue` is `isNullValue`.
+fn value_is_constant_zero<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> bool {
+    matches!(value.data().kind, ValueKindData::Constant(_))
+        && constant_id_is_null_value(value.module().core_ref(), value.slot_trusting_same_module())
 }
 
 fn add_gep_index_bits(
@@ -5739,19 +5714,6 @@ fn pointer_addr_space<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         }
         _ => None,
     }
-}
-
-fn struct_field_type_id<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    ty: Type<'ctx, B, C>,
-    field_index: usize,
-) -> Option<TypeSlot> {
-    let TypeData::Struct(data) = ty.data() else {
-        return None;
-    };
-    data.body
-        .borrow()
-        .as_ref()
-        .and_then(|body| body.elements.get(field_index).copied())
 }
 
 fn extract_element_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
