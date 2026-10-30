@@ -507,7 +507,9 @@ fn a_narrowed_space_dyn_pointer_goes_through_try_build() -> Result<(), IrError> 
     let node = m.get_or_insert_struct_of::<Node>()?;
     let n = node.try_build(&b, narrowed, "n")?;
 
-    let far = m.view(b.alloca_in::<1, _, _>(m.i32_type(), "far")?).as_dyn();
+    let far = m
+        .view(b.alloca_in::<1, _, _>(m.i32_type(), "far")?)
+        .as_dyn();
     assert_eq!(
         PointerValue::<Space<0>, _>::try_from(far).map(|_| ()),
         Err(IrError::AddressSpaceMismatch {

@@ -9804,10 +9804,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let Some((start, end)) = parsed.in_range else {
             return Ok(ConstantExprFlags::gep(parsed.no_wrap));
         };
-        let bit_width = self
-            .module
-            .data_layout()
-            .index_size_in_bits(address_space);
+        let bit_width = self.module.data_layout().index_size_in_bits(address_space);
         let in_range = ConstantExprInRange::new(
             start.extend_or_truncate(bit_width),
             end.extend_or_truncate(bit_width),

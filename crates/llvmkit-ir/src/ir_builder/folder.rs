@@ -247,9 +247,9 @@ pub trait IrBuilderFolder<'ctx, B: ModuleBrand + 'ctx> {
     //      the matching _dyn hook and re-narrow by TypeSlot, so a folder
     //      that only overrides the erased surface keeps today's
     //      semantics. Pointer-, vector-, and aggregate-result folds
-    //      (fold_gep_dyn, fold_select_dyn, ...) deliberately stay
-    //      erased: PointerValue does not statically pin the address
-    //      space and vector element typing is deferred (T4). ----
+    //      (fold_gep_dyn, fold_select_dyn, ...) stay erased: these hooks
+    //      predate PointerValue's Space<N> marker, and vector element
+    //      typing is deferred (T4). ----
 
     fn fold_int_bin_op<W: IntWidth>(
         &self,

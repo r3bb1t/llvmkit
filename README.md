@@ -306,7 +306,8 @@ let (placement,) = m.view(f).params();
 let rect = placement.normal_position(&b);
 let min = rect.min(&b);
 // A build starts from the struct type, the one fallible step; the build
-// itself needs no `?` (`try_build` takes any brand or folder, and storable ids).
+// itself needs no `?`. `try_build` takes any brand or folder and storable ids,
+// and a `SpaceDyn` pointer is narrowed first with `PointerValue::try_from`.
 let moved = m.get_or_insert_struct_of::<Point>()?.build(&b, min.x(&b), 7_i32, "moved");
 ```
 

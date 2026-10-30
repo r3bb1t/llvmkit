@@ -454,9 +454,21 @@ fn get_pointer_size_in_bits_table() {
     ];
     for (s, v0, v1, v2) in cases {
         let dl = parse(s);
-        assert_eq!(dl.pointer_size_in_bits(address_space::<0>()), *v0, "{s} AS 0");
-        assert_eq!(dl.pointer_size_in_bits(address_space::<1>()), *v1, "{s} AS 1");
-        assert_eq!(dl.pointer_size_in_bits(address_space::<2>()), *v2, "{s} AS 2");
+        assert_eq!(
+            dl.pointer_size_in_bits(address_space::<0>()),
+            *v0,
+            "{s} AS 0"
+        );
+        assert_eq!(
+            dl.pointer_size_in_bits(address_space::<1>()),
+            *v1,
+            "{s} AS 1"
+        );
+        assert_eq!(
+            dl.pointer_size_in_bits(address_space::<2>()),
+            *v2,
+            "{s} AS 2"
+        );
     }
 }
 
@@ -526,9 +538,21 @@ fn get_pointer_abi_alignment_table() {
     ];
     for (s, v0, v1, v2) in cases {
         let dl = parse(s);
-        assert_eq!(dl.pointer_abi_align(address_space::<0>()).value(), *v0, "{s} AS 0");
-        assert_eq!(dl.pointer_abi_align(address_space::<1>()).value(), *v1, "{s} AS 1");
-        assert_eq!(dl.pointer_abi_align(address_space::<2>()).value(), *v2, "{s} AS 2");
+        assert_eq!(
+            dl.pointer_abi_align(address_space::<0>()).value(),
+            *v0,
+            "{s} AS 0"
+        );
+        assert_eq!(
+            dl.pointer_abi_align(address_space::<1>()).value(),
+            *v1,
+            "{s} AS 1"
+        );
+        assert_eq!(
+            dl.pointer_abi_align(address_space::<2>()).value(),
+            *v2,
+            "{s} AS 2"
+        );
     }
 }
 
@@ -544,9 +568,21 @@ fn get_pointer_pref_alignment_table() {
     ];
     for (s, v0, v1, v2) in cases {
         let dl = parse(s);
-        assert_eq!(dl.pointer_pref_align(address_space::<0>()).value(), *v0, "{s} AS 0");
-        assert_eq!(dl.pointer_pref_align(address_space::<1>()).value(), *v1, "{s} AS 1");
-        assert_eq!(dl.pointer_pref_align(address_space::<2>()).value(), *v2, "{s} AS 2");
+        assert_eq!(
+            dl.pointer_pref_align(address_space::<0>()).value(),
+            *v0,
+            "{s} AS 0"
+        );
+        assert_eq!(
+            dl.pointer_pref_align(address_space::<1>()).value(),
+            *v1,
+            "{s} AS 1"
+        );
+        assert_eq!(
+            dl.pointer_pref_align(address_space::<2>()).value(),
+            *v2,
+            "{s} AS 2"
+        );
     }
 }
 
@@ -728,7 +764,10 @@ fn type_alloc_size_i64_default() {
     let dl = DataLayout::default();
     // Default i64 spec is `i64:32:64` (ABI=4, pref=8). So an i64
     // alloc-size rounds 8 up to 4-byte alignment -- still 8.
-    assert_eq!(dl.type_alloc_size(m.i64_type().as_type()), TypeSize::fixed(8));
+    assert_eq!(
+        dl.type_alloc_size(m.i64_type().as_type()),
+        TypeSize::fixed(8)
+    );
 }
 
 /// `llvmkit-specific`: mirrors `DataLayout::getABITypeAlign` for

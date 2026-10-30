@@ -219,6 +219,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> VectorType<'ctx, ElemDyn, LenDyn, B> {
     /// A scalable vector `<vscale x min_lanes x element>`, built in the
     /// element's own module. Cannot fail, for the reasons [`Self::of`] gives
     /// (`ScalableVectorType::get` asserts the same two rules).
+    ///
+    /// ```
+    /// # use llvmkit_ir::{Module, VectorType, lanes};
+    /// let m = Module::dynamic("doc");
+    /// assert_eq!(
+    ///     VectorType::scalable_of(m.f32_type(), lanes::<8>()).to_string(),
+    ///     "<vscale x 8 x float>"
+    /// );
+    /// ```
     pub fn scalable_of<T: VectorElement<'ctx, B>>(
         element: T,
         min_lanes: NonZeroU32,

@@ -10505,10 +10505,7 @@ where
 
     fn ptr_to_addr_result_type(&self, src_ty: Type<'ctx, B>) -> IrResult<Type<'ctx, B>> {
         let (addr_space, vector_shape) = self.ptr_to_addr_source_shape(src_ty)?;
-        let address_bits = self
-            .module
-            .data_layout()
-            .index_size_in_bits(addr_space);
+        let address_bits = self.module.data_layout().index_size_in_bits(addr_space);
         let int_ty = self.int_type_for_bits(address_bits)?.as_type();
         let Some((lanes, scalable)) = vector_shape else {
             return Ok(int_ty);

@@ -1519,7 +1519,9 @@ pub(crate) fn constant_fold_load_through_bitcast_trusting_same_module<
         }
         // Upstream's `TypeSize::isKnownGE` and `operator==` read scalability as
         // well; these two read the known minimum (`docs/divergences.md` D24).
-        let src_size = dl.type_size_in_bits(erase_type(value.ty())).known_min_value();
+        let src_size = dl
+            .type_size_in_bits(erase_type(value.ty()))
+            .known_min_value();
         let dest_size = dl.type_size_in_bits(erase_type(dest_ty)).known_min_value();
         if src_size < dest_size {
             return Ok(None);

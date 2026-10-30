@@ -4113,11 +4113,7 @@ fn ptr_to_int_same_size<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     let pointer = value_from_slot(value, data.src.get());
     let address_space = pointer_addr_space(pointer.ty())?;
     let result_width = value_bit_width(value, query.data_layout())?;
-    (result_width
-        == query
-            .data_layout()
-            .pointer_size_in_bits(address_space))
-    .then_some(pointer)
+    (result_width == query.data_layout().pointer_size_in_bits(address_space)).then_some(pointer)
 }
 
 // --------------------------------------------------------------------------
@@ -5504,9 +5500,7 @@ fn alloca_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     data: &AllocaInstData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> KnownBits {
-    let width = query
-        .data_layout()
-        .pointer_size_in_bits(data.addr_space);
+    let width = query.data_layout().pointer_size_in_bits(data.addr_space);
     let module = module_ref(value);
     let allocated_ty = erase_type(Type::new(data.allocated_ty, module));
     let align = data

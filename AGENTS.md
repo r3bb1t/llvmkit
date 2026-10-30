@@ -706,10 +706,10 @@ pub trait SelectArm<'ctx, B: ModuleBrand>: Sized + select_arm_sealed::Sealed {
 // interchangeable at the call site and at the binding.
 impl<'ctx, W: IntWidth,  B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for IntValue<'ctx, W, B>   { type Output = IntValueId<W, B>;     ... }
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for FloatValue<'ctx, K, B> { type Output = FloatValueId<K, B>;   ... }
-impl<'ctx,               B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for PointerValue<'ctx, B>  { type Output = PointerValueId<B>;    ... }
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for PointerValue<'ctx, A, B> { type Output = PointerValueId<A, B>; ... }
 impl<'ctx, W: IntWidth,  B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for IntValueId<W, B>       { type Output = IntValueId<W, B>;     ... }
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for FloatValueId<K, B>     { type Output = FloatValueId<K, B>;   ... }
-impl<'ctx,               B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for PointerValueId<B>      { type Output = PointerValueId<B>;    ... }
+impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for PointerValueId<A, B>   { type Output = PointerValueId<A, B>; ... }
 ```
 
 Each impl is concrete; the method monomorphises per arm category. Beats N per-category overload methods. `arm_value` takes a `ModuleRef` and returns `IrResult` for the same reason `IntoBasicBlockLabel::into_basic_block_label` does: every arm has to be module-checked, and a foreign id or handle is `IrError::ForeignValueId` rather than a silently same-numbered slot.

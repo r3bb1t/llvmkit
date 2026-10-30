@@ -3031,10 +3031,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                             "PtrToAddr result must be integral".to_owned(),
                         ));
                     };
-                    let index_bits = self
-                        .module
-                        .data_layout()
-                        .index_size_in_bits(addr_space);
+                    let index_bits = self.module.data_layout().index_size_in_bits(addr_space);
                     if dst_bits != index_bits || src_shape != dst_shape {
                         return Err(self.fail(
                             f,

@@ -792,8 +792,11 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Type<'ctx, B, C> {
     pub fn primitive_size_in_bits(self) -> TypeSize {
         // Upstream's `ETS.getFixedValue()`, behind an `assert`: an element is
         // never a vector, so its size is fixed.
-        let element_bits =
-            |elem: TypeSlot| Type::new(elem, self.module).primitive_size_in_bits().known_min_value();
+        let element_bits = |elem: TypeSlot| {
+            Type::new(elem, self.module)
+                .primitive_size_in_bits()
+                .known_min_value()
+        };
         match self.data() {
             TypeData::Half | TypeData::Bfloat => TypeSize::fixed(16),
             TypeData::Float => TypeSize::fixed(32),

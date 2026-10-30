@@ -145,8 +145,7 @@ fn a_wrong_fold_of_a_float_field_is_refused_with_both_types() -> Result<(), IrEr
     )
     .position_at_end(entry);
     let (ratio,) = m.view(f).params();
-    let Err(IrError::TypeIdentityMismatch { expected, got }) =
-        ratio.try_value(&wrong).map(|_| ())
+    let Err(IrError::TypeIdentityMismatch { expected, got }) = ratio.try_value(&wrong).map(|_| ())
     else {
         panic!("an `i64` is no fold of a `double` field");
     };

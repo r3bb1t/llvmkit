@@ -2679,9 +2679,7 @@ fn validate_gep_constant_expr(
     if let ConstantExprFlags::Gep(flags) = &data.flags
         && let Some(in_range) = flags.in_range()
     {
-        let index_bit_width = module
-            .data_layout()
-            .index_size_in_bits(base_addr_space);
+        let index_bit_width = module.data_layout().index_size_in_bits(base_addr_space);
         if in_range.bit_width() != index_bit_width {
             return Err(IrError::InvalidOperation {
                 message: "invalid getelementptr inrange bit width",

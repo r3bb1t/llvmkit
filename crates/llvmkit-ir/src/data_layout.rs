@@ -701,7 +701,9 @@ impl DataLayout {
         let element_bits =
             |elem: TypeSlot| self.type_size_in_bits_inner(module, elem).known_min_value();
         match module.context().type_data(id) {
-            TypeData::Label => TypeSize::fixed(u64::from(self.pointer_size_in_bits(AddressSpace::DEFAULT))),
+            TypeData::Label => {
+                TypeSize::fixed(u64::from(self.pointer_size_in_bits(AddressSpace::DEFAULT)))
+            }
             TypeData::Pointer { addr_space } => {
                 TypeSize::fixed(u64::from(self.pointer_size_in_bits(*addr_space)))
             }

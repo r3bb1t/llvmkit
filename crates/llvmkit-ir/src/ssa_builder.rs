@@ -1202,12 +1202,11 @@ where
         Ok(FloatValue::from_value_unchecked(value))
     }
 
-    /// Pointer twin of [`Self::def_int_var`]. Pointer variables pin an
-    /// address space via `var.ty` (`declare_pointer_var_in_addrspace`),
-    /// but [`PointerValue`] does not statically pin its address space --
-    /// `IntoPointerValue` happily lifts a pointer of ANY address space.
-    /// This side therefore never had a static marker to key on, and is
-    /// unconditional for the same reason the int and float sides now are:
+    /// Pointer twin of [`Self::def_int_var`]. A pointer variable keeps its
+    /// address space in `var.ty` (`declare_pointer_var_in_addrspace`) and in
+    /// its marker `A`, and `V::Space = A` holds the value to that marker by
+    /// type. A `SpaceDyn` variable's marker says nothing, so the check stays
+    /// unconditional, for the same reason the int and float sides are:
     /// a `TypeSlot` equality compare is negligible next to the rest of the
     /// work, and skipping it would silently accept a wrong-address-space
     /// write. Honest rather than optimised.
@@ -2491,8 +2490,8 @@ mod tests {
     }
 
     /// Pointer twin of [`def_int_var_rejects_forged_static_width_handle`],
-    /// completing the `def_*_var` trio. `PointerValue` pins no address space
-    /// statically, so its forge lies about the *kind*: an honest non-pointer
+    /// completing the `def_*_var` trio. A `SpaceDyn` marker claims no address
+    /// space, so its forge lies about the *kind*: an honest non-pointer
     /// cannot reach [`SsaBuilder::def_pointer_var`] (there is no
     /// `IntoPointerValue` impl for `IntValue`), and
     /// `PointerValue::from_value_unchecked` is the only door in --

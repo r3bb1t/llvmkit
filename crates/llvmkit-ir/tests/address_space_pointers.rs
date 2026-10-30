@@ -19,8 +19,8 @@ use llvmkit_ir::{
     AddressSpace, Align, ConstantIntValue, ConstantPointerNull, DataLayout, Dyn, InstructionKind,
     InstructionView, IntDyn, IntPredicate, IntValue, IntrinsicId, IrBuilder, IrError, IrStruct,
     Linkage, MaybeAlign, Module, NoFolder, PointerPhiInstId, PointerType, PointerValue,
-    PointerValueId, PointerVariable, Ptr, Space, SpaceDyn, SsaBuilder, SsaState,
-    TypedPointerValue, UnnamedAddr, address_space, module_new,
+    PointerValueId, PointerVariable, Ptr, Space, SpaceDyn, SsaBuilder, SsaState, TypedPointerValue,
+    UnnamedAddr, address_space, module_new,
 };
 
 /// Port of `unittests/IR/ValueTest.cpp::TEST(GlobalTest, CreateAddressSpace)`.
@@ -359,9 +359,9 @@ fn pointer_load_names_the_space_it_loads() -> Result<(), IrError> {
 
 /// `AssemblyWriter` prints an operand with its `GV->getType()`, which for a
 /// function is a pointer in the function's own address space, so a `P1` module
-/// spells `ptr addrspace(1) @f` inside a constant expression. llvmkit's
-/// `constant_ptr_operand_type` printed `ptr @f`, which the type of the
-/// expression then contradicted. llvmkit-specific (rule anchor): the shape is
+/// spells `ptr addrspace(1) @f` inside a constant expression. llvmkit printed
+/// `ptr @f`, which the type of the expression then contradicted.
+/// llvmkit-specific (rule anchor): the shape is
 /// `FunctionValue::as_aggregate_ptr`'s, which has no upstream counterpart.
 #[test]
 fn a_function_operand_prints_its_address_space() -> Result<(), IrError> {
@@ -397,8 +397,9 @@ fn a_pointer_compare_refuses_two_address_spaces() -> Result<(), IrError> {
     let far = m
         .view(b.alloca_in::<1, _, _>(m.i32_type(), "far")?)
         .as_dyn();
-    let Err(IrError::TypeIdentityMismatch { expected, got }) =
-        b.pointer_cmp(IntPredicate::Eq, near, far, "same").map(|_| ())
+    let Err(IrError::TypeIdentityMismatch { expected, got }) = b
+        .pointer_cmp(IntPredicate::Eq, near, far, "same")
+        .map(|_| ())
     else {
         panic!("`ptr` and `ptr addrspace(1)` compare as two types");
     };

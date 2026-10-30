@@ -2731,7 +2731,7 @@ where
         | TypeData::Fp128 => Err(intrinsic_mismatch()),
         _ => {
             let bits = elem.scalar_size_in_bits();
-            if bits == 0 || bits % 2 != 0 {
+            if bits == 0 || !bits.is_multiple_of(2) {
                 return Err(intrinsic_mismatch());
             }
             Ok(int_type(module, bits / 2))

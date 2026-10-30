@@ -759,11 +759,10 @@ fn dyn_float_var_wrong_kind_def_rejected() -> Result<(), IrError> {
 /// Pointer twin of [`dyn_int_var_wrong_width_def_rejected`]: a pointer
 /// variable declared in one address space
 /// (`declare_pointer_var_in_addrspace`) rejects a def whose lifted
-/// value is a pointer in a DIFFERENT address space. `PointerValue` never
-/// statically pins an address space, so this side never had a static
-/// marker to key on -- it is unconditional for the same reason the int
-/// and float sides now are: nothing between the caller and `current_def`
-/// re-checks the claim otherwise.
+/// value is a pointer in a DIFFERENT address space. A `SpaceDyn` variable's
+/// marker says nothing about the space, so the check is unconditional for
+/// the same reason the int and float sides are: nothing between the caller
+/// and `current_def` re-checks the claim otherwise.
 ///
 /// The error must NAME both address spaces. `TypeKindLabel::Pointer` carries
 /// no address space, so the `TypeMismatch { expected: Pointer, got: Pointer }`

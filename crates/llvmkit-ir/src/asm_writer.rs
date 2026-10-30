@@ -910,11 +910,7 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             );
             write!(f, "sub (i64 ptrtoint ({} ", global_value_type(hi))?;
             fmt_operand_ref(f, hi, None)?;
-            write!(
-                f,
-                " to i64), i64 ptrtoint ({} ",
-                global_value_type(lo)
-            )?;
+            write!(f, " to i64), i64 ptrtoint ({} ", global_value_type(lo))?;
             fmt_operand_ref(f, lo, None)?;
             f.write_str(" to i64))")
         }
@@ -934,17 +930,9 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                 module,
                 module.context().value_data(*lo_id).ty,
             );
-            write!(
-                f,
-                "add (i64 sub (i64 ptrtoint ({} ",
-                global_value_type(hi)
-            )?;
+            write!(f, "add (i64 sub (i64 ptrtoint ({} ", global_value_type(hi))?;
             fmt_operand_ref(f, hi, None)?;
-            write!(
-                f,
-                " to i64), i64 ptrtoint ({} ",
-                global_value_type(lo)
-            )?;
+            write!(f, " to i64), i64 ptrtoint ({} ", global_value_type(lo))?;
             fmt_operand_ref(f, lo, None)?;
             write!(f, " to i64)), i64 {addend})")
         }

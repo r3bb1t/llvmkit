@@ -5058,8 +5058,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// number. A name read earlier through [`StructType::name`] stays valid.
     ///
     /// Stricter than `setName`, which renames anything: a struct a schema
-    /// minted or confirmed keeps its name, because a
-    /// [`StructOf`](crate::StructOf) or a
+    /// minted or confirmed keeps its name, because a [`StructOf`] or a
     /// [`SchemaValue`](crate::SchemaValue) proves the struct is `%S`, and the
     /// builds that take no `?` rest on that proof.
     ///

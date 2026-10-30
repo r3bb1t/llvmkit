@@ -87,10 +87,11 @@ The four `N/A`s, each checked against `LLParser.cpp` rather than assumed:
 - `name is too long …` — see the divergence below.
 
 The remainder are almost all one shape: llvmkit runs the check at the same point
-and words it differently (`expected '}' to close struct body` where upstream
-says `expected '}' at end of struct`). They are concentrated in `parseValID`'s
-blockaddress and vector-splat forms (5), `parseArrayVectorType` (4) and `parsePHI`
-(2). **The count of 46 predates 0.0.4's funclet work** (2026-08-20), which
+and words it differently. This paragraph used to break them down by routine, with
+counts nothing in the tree can re-derive; two of the routines it named,
+`parseStructBody` and `parseArrayVectorType`, have since been ported, so the
+breakdown is gone rather than repaired. **The count of 46 predates 0.0.4's funclet
+work** (2026-08-20), which
 closed the `parseCatchSwitch` (4) and `parseCleanupRet` (3) messages this
 paragraph used to count under "funclet EH terminators", plus
 `expected 'from' after catchret` — the example this paragraph used to lead
