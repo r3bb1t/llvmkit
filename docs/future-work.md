@@ -1818,12 +1818,13 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
   element-atomic variants); lifetime intrinsics `CreateLifetimeStart/End` --
   NOTE: in LLVM 22 these take only a pointer (size argument removed, allocas
   only; verified against 22.1.4).
-- `CreateGlobalString` (needs globals + builder hookup; upstream
-  `CreateGlobalStringPtr` is deprecated in its favor), `CreateAssumption`
-  (takes operand bundles), the min/max family (`CreateMinNum`/`CreateMaxNum`
-  with `FMFSource`, plus
+- `CreateGlobalString`'s `M` and `AddNull` arguments
+  (`IrBuilder::global_string` writes into the builder's module and always adds
+  the NUL), `CreateAssumption` (takes operand bundles), the min/max family
+  (`CreateMinNum`/`CreateMaxNum` with `FMFSource`, plus
   `CreateMinimum`/`CreateMaximum`/`CreateMinimumNum`/`CreateMaximumNum`), the
-  intrinsic helper family (`CreateIntrinsic` 3 overloads,
+  intrinsic helper family (the `CreateIntrinsic` overloads other than
+  `(RetTy, ID, Args)`, which is `IrBuilder::intrinsic_call_by_signature`;
   `CreateUnaryIntrinsic`, `CreateBinaryIntrinsic` -- the latter returns
   `Value*` because it folds), `CreateStepVector`, `CreateAggregateRet`
   (explicitly deferred in AGENTS.md).
@@ -3213,6 +3214,29 @@ propagate with `?` has cost nothing yet") none is narrowed here. Re-derive
 before acting on any of these — several of the counts and dead-branch claims
 above superseded ones the supplement made without being able to verify them
 (see the `primitive_to_type` entry).
+
+## Tests — upstream tests that mention an address space and are not ported (found 2026-10-30)
+
+Derived at the commit that adds this entry: `rg -l
+"[Aa]ddr[Ss]pace|AddressSpace|addrspace" llvm/unittests/IR/*.cpp` names 9 files;
+taking from each the `TEST`, `TEST_F` and `TEST_P` whose body holds a match gives
+18 tests; and `rg -c -F` over `UPSTREAM.md` finds no row for these 6. None tests
+what a type constructor does with an address space; those ports are done.
+
+- `TEST(DataLayout, NonIntegralHelpers)` needs
+  `DataLayout::mustNotIntroduceIntToPtr` and `mustNotIntroducePtrToInt`, which
+  `rg -n "must_not" crates/llvmkit-ir/src/data_layout.rs` does not find. The
+  queries beside them exist.
+- `TEST(AsmWriterTest, PrintAddrspaceWithNullOperand)` prints a `CallInst` after
+  `dropAllReferences` has nulled its operands. `rg -n "drop_all_references"
+  crates/llvmkit-ir/src` finds nothing, so llvmkit has no such state to print.
+- `TEST(InstructionsTest, isEliminableCastPair)` needs
+  `CastInst::isEliminableCastPair` as one routine. `constant_folding.rs` ports
+  cases of it, not the routine.
+- `TEST(InstructionsTest, CastCAPI)` tests the C API, which is out of scope.
+- `TEST_F(DIDerivedTypeTest, get)` and `getWithLargeValues` test the debug-info
+  `DIDerivedType` node, whose `dwarfAddressSpace` is a DWARF field and no IR
+  address space. Neither test has a row, like most of `MetadataTest.cpp`.
 
 ## Two-or-more adjacent `bool` parameters: the sixteen left, and why
 

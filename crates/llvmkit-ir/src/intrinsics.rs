@@ -1044,6 +1044,14 @@ fn admit_overload_types<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     Ok(())
 }
 
+/// Whether `id`'s descriptor table ends in `IIT_VARARG`, which is what
+/// `matchIntrinsicVarArg(/*isVarArg=*/true, TableRef)` answers once the fixed
+/// types have been matched off the table.
+pub(crate) fn intrinsic_takes_var_args(id: IntrinsicId) -> IrResult<bool> {
+    let descriptors = iit_descriptors(id.record())?;
+    Ok(matches!(descriptors.last(), Some(IitDescriptor::VarArg)))
+}
+
 pub(crate) fn match_intrinsic_signature<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     id: IntrinsicId,
     module: ModuleRef<'ctx, B, C>,

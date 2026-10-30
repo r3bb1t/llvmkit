@@ -8,10 +8,48 @@
 //! reason string; rows are marked `llvmkit-specific subset` when that string
 //! intentionally differs from upstream `FailedWithMessage` text.
 
-use llvmkit_ir::{Align, DataLayout, DataLayoutError, ManglingMode, MaybeAlign, module_new};
+use llvmkit_ir::{
+    Align, DataLayout, DataLayoutError, ManglingMode, MaybeAlign, Module, address_space, module_new,
+};
 
 fn parse(s: &str) -> DataLayout {
     DataLayout::parse(s).unwrap_or_else(|e| panic!("parse {s:?}: {e:?}"))
+}
+
+/// Port of `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, GlobalsAddressSpace)`.
+/// `new GlobalVariable(*M, Int32, false, ExternalLinkage, nullptr)` is
+/// `global_builder("", int32).build()`, whose defaults are those arguments.
+#[test]
+fn upstream_globals_address_space() {
+    // When not explicitly defined the globals address space should be zero:
+    assert_eq!(parse("").default_globals_addr_space(), 0);
+    assert_eq!(parse("P1-A2").default_globals_addr_space(), 0);
+    assert_eq!(parse("G2").default_globals_addr_space(), 2);
+    // Check that creating a GlobalVariable without an explicit address space
+    // in a module with a default globals address space respects that default:
+    let m = Module::dynamic("MyModule");
+    // Default is globals in address space zero:
+    let int32 = m.i32_type();
+    let default_global1 = m.global_builder("", int32).build().expect("unnamed");
+    assert_eq!(m.view(default_global1).address_space(), 0);
+    let explicit_global1 = m
+        .global_builder("", int32)
+        .address_space(address_space::<123>())
+        .build()
+        .expect("unnamed");
+    assert_eq!(m.view(explicit_global1).address_space(), 123);
+
+    // When using a datalayout with the global address space set to 200, global
+    // variables should default to 200
+    m.set_data_layout(parse("G200"));
+    let default_global2 = m.global_builder("", int32).build().expect("unnamed");
+    assert_eq!(m.view(default_global2).address_space(), 200);
+    let explicit_global2 = m
+        .global_builder("", int32)
+        .address_space(address_space::<123>())
+        .build()
+        .expect("unnamed");
+    assert_eq!(m.view(explicit_global2).address_space(), 123);
 }
 
 fn parse_err(s: &str) -> String {

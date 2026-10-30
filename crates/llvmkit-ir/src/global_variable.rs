@@ -947,11 +947,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
         N: Into<String>,
         T: IrType<'ctx, B>,
     {
+        let module = module.into();
         Self {
-            module: module.into(),
+            module,
             name: name.into(),
             value_type: value_type.as_type().read_only(),
-            address_space: AddressSpace::DEFAULT,
+            // `GlobalVariable::GlobalVariable`: with no address space given,
+            // `M.getDataLayout().getDefaultGlobalsAddressSpace()`.
+            address_space: module.module().data_layout().default_globals_addr_space(),
             is_constant: false,
             externally_initialized: false,
             initializer: None,
@@ -976,7 +979,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
         self
     }
 
-    /// Address space. Mirrors the `AddressSpace` ctor argument.
+    /// Address space. Mirrors the `AddressSpace` ctor argument; without it the
+    /// global takes the data layout's default globals address space, as of
+    /// when this builder was made.
     #[must_use]
     pub fn address_space(mut self, addrspace: AddressSpace) -> Self {
         self.address_space = addrspace;

@@ -1,20 +1,220 @@
 //! Pointers carry their LLVM address space in their Rust type: `Space<N>` when
 //! the call fixes it, `SpaceDyn` when only run-time data knows it.
 //!
-//! Every test here pins a Rust type-level marker, which upstream cannot have
-//! (an LLVM `PointerType *` carries its address space only at run time), so
-//! each is llvmkit-specific (D3, D4). The run-time address-space behaviour of
-//! the same builders is pinned by ported tests: `builder_cast_ptr_int.rs`
-//! (`TEST(InstructionsTest, CastInst)`), `builder_gep.rs`
-//! (`TEST(InstructionsTest, GEPIndices)`) and the corpus's
+//! The tests named `upstream_*` are ports: `TEST(GlobalTest, CreateAddressSpace)`
+//! from `unittests/IR/ValueTest.cpp` and `TEST_F(IRBuilderTest,
+//! CreateGlobalString)` from `unittests/IR/IRBuilderTest.cpp`. Each other test
+//! pins a Rust type-level marker, which upstream cannot have (an LLVM
+//! `PointerType *` carries its address space only at run time), or a routine
+//! upstream does not test, so each says it is llvmkit-specific. The run-time
+//! address-space behaviour of the same builders is pinned by ported tests:
+//! `builder_cast_ptr_int.rs` (`TEST(InstructionsTest, CastInst)`),
+//! `builder_gep.rs` (`TEST(InstructionsTest, GEPIndices)`),
+//! `intrinsic_declarations.rs` (`TEST_F(IntrinsicsTest,
+//! OverloadedIntrinsicAddressSpace)`), `data_layout_round_trip.rs`
+//! (`TEST(DataLayoutTest, GlobalsAddressSpace)`) and the corpus's
 //! `test/Assembler/2007-12-11-AddressSpaces.ll`.
 
 use llvmkit_ir::{
-    AddressSpace, ConstantIntValue, ConstantPointerNull, InstructionKind, InstructionView, IntDyn,
-    IntValue, IrBuilder, IrError, IrStruct, Linkage, Module, NoFolder, PointerPhiInstId,
-    PointerType, PointerValue, PointerValueId, PointerVariable, Ptr, Space, SpaceDyn, SsaBuilder,
-    SsaState, TypedPointerValue, address_space, module_new,
+    AddressSpace, Align, ConstantIntValue, ConstantPointerNull, DataLayout, Dyn, InstructionKind,
+    InstructionView, IntDyn, IntValue, IntrinsicId, IrBuilder, IrError, IrStruct, Linkage,
+    MaybeAlign, Module, NoFolder, PointerPhiInstId, PointerType, PointerValue, PointerValueId,
+    PointerVariable, Ptr, Space, SpaceDyn, SsaBuilder, SsaState, TypedPointerValue, UnnamedAddr,
+    address_space, module_new,
 };
+
+/// Port of `unittests/IR/ValueTest.cpp::TEST(GlobalTest, CreateAddressSpace)`.
+/// `Value::MaximumAlignment` is written out; llvmkit has no constant for it.
+#[test]
+fn upstream_global_create_address_space() {
+    let m = Module::dynamic("TestModule");
+    let int8_ty = m.i8_type();
+    let int32_ty = m.i32_type();
+
+    let dummy0 = m
+        .global_builder("dummy", int32_ty)
+        .constant()
+        .linkage(Linkage::External)
+        .initializer(int32_ty.const_all_ones())
+        .address_space(address_space::<1>())
+        .build()
+        .expect("a fresh name");
+
+    let k_max_alignment = Align::new(1 << 32).expect("a power of two");
+    assert_eq!(k_max_alignment.value(), 4_294_967_296);
+    m.view(dummy0)
+        .set_align(&m, MaybeAlign::new(k_max_alignment));
+    assert_eq!(m.view(dummy0).align(), MaybeAlign::new(k_max_alignment));
+
+    // Make sure the address space isn't dropped when returning this.
+    let dummy1 = m
+        .get_or_insert_global("dummy", int32_ty)
+        .expect("`dummy` is a global");
+    assert_eq!(dummy0, dummy1);
+    assert_eq!(m.view(dummy1).ty().address_space(), 1);
+
+    // This one requires a bitcast, but the address space must also stay the
+    // same.
+    let dummy_cast0 = m
+        .global_builder("dummy_cast", int32_ty)
+        .constant()
+        .linkage(Linkage::External)
+        .initializer(int32_ty.const_all_ones())
+        .address_space(address_space::<1>())
+        .build()
+        .expect("a fresh name");
+
+    // Make sure the address space isn't dropped when returning this.
+    let dummy_cast1 = m
+        .get_or_insert_global("dummy_cast", int8_ty)
+        .expect("`dummy_cast` is a global");
+    assert_eq!(dummy_cast0, dummy_cast1);
+    assert_eq!(m.view(dummy_cast1).ty().address_space(), 1);
+}
+
+/// `Module::getOrInsertGlobal`'s other arm: no global holds the name, so one
+/// is declared, external and without an initializer, in the data layout's
+/// default globals address space. A foreign type is refused either way, and a
+/// function holding the name is refused where upstream would unique the new
+/// global's name. llvmkit-specific (rule anchor): upstream's test reaches only
+/// the found arm.
+#[test]
+fn a_missing_global_is_declared_in_the_default_globals_address_space() {
+    let m = Module::dynamic("spaces");
+    m.set_data_layout(DataLayout::parse("G5").expect("a valid layout"));
+    let int32_ty = m.i32_type();
+
+    let declared = m
+        .get_or_insert_global("declared", int32_ty)
+        .expect("a fresh name");
+    let view = m.view(declared);
+    assert_eq!(view.ty().address_space(), 5);
+    assert_eq!(view.value_type(), int32_ty.as_type());
+    assert!(view.initializer().is_none());
+    assert_eq!(view.linkage(), Linkage::External);
+    assert!(!view.is_constant());
+
+    let foreign = Module::dynamic("foreign");
+    let foreign_ty = foreign.i32_type();
+    assert!(matches!(
+        m.get_or_insert_global("declared", foreign_ty),
+        Err(IrError::ForeignType { .. })
+    ));
+
+    let signature = m
+        .function_type_no_parameters(m.void_type())
+        .expect("a valid signature");
+    m.add_function_dyn("function", signature, Linkage::External)
+        .expect("a fresh name");
+    assert!(matches!(
+        m.get_or_insert_global("function", int32_ty),
+        Err(IrError::DuplicateGlobalName { .. })
+    ));
+}
+
+/// Port of `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest,
+/// CreateGlobalString)`. `AddressSpace::DEFAULT` is the `0` upstream's default
+/// argument supplies for `String1a`.
+#[test]
+fn upstream_ir_builder_create_global_string() {
+    let m = Module::dynamic("MyModule");
+    let signature = m
+        .function_type_no_parameters(m.void_type())
+        .expect("a valid signature");
+    let f = m
+        .add_function_dyn("", signature, Linkage::External)
+        .expect("an unnamed function");
+    let bb = m.view(f).append_basic_block(&m, "");
+    let builder = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
+
+    let string1a = builder
+        .global_string("TestString", "String1a", AddressSpace::DEFAULT)
+        .expect("a fresh name");
+    let string1b = builder
+        .global_string("TestString", "String1b", address_space::<0>())
+        .expect("a fresh name");
+    let string2 = builder
+        .global_string("TestString", "String2", address_space::<1>())
+        .expect("a fresh name");
+    let string3 = builder
+        .global_string("TestString", "String3", address_space::<2>())
+        .expect("a fresh name");
+
+    assert_eq!(m.view(string1a).ty().address_space(), 0);
+    assert_eq!(m.view(string1b).ty().address_space(), 0);
+    assert_eq!(m.view(string2).ty().address_space(), 1);
+    assert_eq!(m.view(string3).ty().address_space(), 2);
+}
+
+/// `IRBuilderBase::CreateGlobalString`'s other effects: a private constant
+/// `[N x i8]` holding the bytes and a NUL, `unnamed_addr`, aligned as the data
+/// layout prefers `i8`. llvmkit-specific (rule anchor): upstream's test reads
+/// only the address space.
+#[test]
+fn a_global_string_is_a_private_constant_byte_array() {
+    let m = Module::dynamic("spaces");
+    let signature = m
+        .function_type_no_parameters(m.void_type())
+        .expect("a valid signature");
+    let f = m
+        .add_function_dyn("f", signature, Linkage::External)
+        .expect("a fresh name");
+    let bb = m.view(f).append_basic_block(&m, "");
+    let builder = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
+
+    let string = builder
+        .global_string("Hi", "s", AddressSpace::DEFAULT)
+        .expect("a fresh name");
+    let view = m.view(string);
+    assert!(view.is_constant());
+    assert_eq!(view.linkage(), Linkage::Private);
+    assert_eq!(view.unnamed_addr(), UnnamedAddr::Global);
+    assert_eq!(view.value_type().to_string(), "[3 x i8]");
+    assert!(
+        m.to_string()
+            .contains("@s = private unnamed_addr constant [3 x i8] c\"Hi\\00\", align 1"),
+        "{m}"
+    );
+}
+
+/// A function with no address space given takes the data layout's program
+/// address space, through every route that declares one, and an explicit one
+/// wins. Mirrors `Function::Create(Ty, Linkage, N, M)` and
+/// `Module::getOrInsertFunction`. llvmkit-specific regression (rule anchor):
+/// these took address space 0, so a `P<n>` module's functions disagreed with
+/// the parser's; `rg -n "P[0-9]" llvm/unittests/IR` finds no upstream test of
+/// the default.
+#[test]
+fn a_function_defaults_to_the_program_address_space() {
+    let m = Module::dynamic("spaces");
+    m.set_data_layout(DataLayout::parse("P7").expect("a valid layout"));
+    let signature = m
+        .function_type_no_parameters(m.void_type())
+        .expect("a valid signature");
+
+    let added = m
+        .add_function_dyn("added", signature, Linkage::External)
+        .expect("a fresh name");
+    assert_eq!(m.view(added).address_space(), 7);
+
+    let built = m
+        .function_builder::<Dyn, _>("built", signature)
+        .build()
+        .expect("a fresh name");
+    assert_eq!(m.view(built).address_space(), 7);
+
+    let explicit = m
+        .function_builder::<Dyn, _>("explicit", signature)
+        .address_space(AddressSpace::DEFAULT)
+        .build()
+        .expect("a fresh name");
+    assert_eq!(m.view(explicit).address_space(), 0);
+
+    let declared = m
+        .get_or_insert_intrinsic_declaration_by_id(IntrinsicId::TRAP, [])
+        .expect("`llvm.trap` is not overloaded");
+    assert_eq!(m.view(declared).address_space(), 7);
+}
 
 /// `ptr_type_in::<N>()` names its address space in its type; `ptr_type(n)`,
 /// whose space is a run-time number, is `SpaceDyn`. Both answer the same

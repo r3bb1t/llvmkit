@@ -6167,6 +6167,87 @@ where
         self.intrinsic_call_builder(&descriptor)
     }
 
+    /// A private, constant, NUL-terminated `[N x i8]` global holding `text`,
+    /// in `address_space`. Mirrors `IRBuilderBase::CreateGlobalString`, whose
+    /// `AddressSpace` defaults to 0 rather than to the data layout's: the
+    /// global is `unnamed_addr` and aligned as the layout prefers `i8`.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::DuplicateGlobalName`] if the name is taken.
+    pub fn global_string<Text, Name>(
+        &self,
+        text: Text,
+        name: Name,
+        address_space: crate::AddressSpace,
+    ) -> IrResult<crate::GlobalId<B>>
+    where
+        Text: AsRef<[u8]>,
+        Name: Into<String>,
+    {
+        let module = self.mutable_ref();
+        let i8_ty = module.i8_type();
+        let bytes: Vec<_> = text
+            .as_ref()
+            .iter()
+            .chain(core::iter::once(&0_u8))
+            .map(|byte| i8_ty.const_int(*byte).as_constant())
+            .collect();
+        let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let constant = crate::ArrayType::of(i8_ty, len)
+            .const_array(bytes)?
+            .as_constant();
+        let align = self.module.data_layout().pref_type_align(i8_ty.as_type());
+        crate::GlobalBuilder::new(module, name, constant.ty())
+            .constant()
+            .initializer(constant)
+            .linkage(crate::Linkage::Private)
+            .unnamed_addr(crate::UnnamedAddr::Global)
+            .address_space(address_space)
+            .align(crate::MaybeAlign::new(align))
+            .build()
+    }
+
+    /// A call to the intrinsic `id`, its overloads deduced from `return_type`
+    /// and the types of `args`. Mirrors
+    /// `IRBuilderBase::CreateIntrinsic(RetTy, ID, Args, FMFSource, Name)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Module::get_or_insert_intrinsic_declaration_by_signature`], then as
+    /// the call builder's `build`.
+    pub fn intrinsic_call_by_signature<T, I, V, Name>(
+        &self,
+        return_type: T,
+        id: IntrinsicId,
+        args: I,
+        name: Name,
+    ) -> IrResult<IntrinsicInstId<Dyn, B>>
+    where
+        T: IrType<'ctx, B>,
+        I: IntoIterator<Item = V>,
+        V: IntoErasedValue<'ctx, B>,
+        Name: AsRef<str>,
+    {
+        let module = self.mutable_ref();
+        let args = args
+            .into_iter()
+            .map(|arg| arg.into_erased_value(module))
+            .collect::<IrResult<Vec<_>>>()?;
+        let callee = module.get_or_insert_intrinsic_declaration_by_signature(
+            id,
+            return_type,
+            args.iter().map(|arg| arg.ty()),
+        )?;
+        let descriptor =
+            callee
+                .intrinsic_descriptor()
+                .ok_or_else(|| IrError::IntrinsicSignatureMismatch {
+                    name: callee.name().unwrap_or_default(),
+                })?;
+        self.intrinsic_call(&descriptor, &args, name)
+    }
+
     fn intrinsic_callee_by_id<Name>(
         &self,
         id: IntrinsicId,

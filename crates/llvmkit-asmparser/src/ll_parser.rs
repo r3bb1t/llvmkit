@@ -11661,7 +11661,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     || dso_locality != llvmkit_ir::DsoLocality::Default
                     || calling_conv != CallingConv::default()
                     || unnamed_addr != UnnamedAddr::None
-                    || address_space != 0
+                    || address_space != self.module.data_layout().program_addr_space()
                     || suffix.section.is_some()
                     || suffix.partition.is_some()
                     || suffix.comdat.is_some()

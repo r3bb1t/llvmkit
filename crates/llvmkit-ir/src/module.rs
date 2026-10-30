@@ -88,7 +88,7 @@ use super::int_width::{IntDyn, Width};
 use super::intrinsics::IntrinsicFunctionData;
 use super::intrinsics::{
     IntrinsicDescriptor, IntrinsicId, IntrinsicNameResolution, descriptor_for_name,
-    resolve_intrinsic_name,
+    intrinsic_takes_var_args, match_intrinsic_signature, resolve_intrinsic_name,
 };
 use super::llvm_context::{Context, NamedStructSlot};
 use super::marker::Dyn;
@@ -2695,7 +2695,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
 
         // `intrinsic` is the identity `Function`'s constructor computes from
         // the name; the one caller that passes one minted it for this name.
-        let fn_data = FunctionData::new(signature_id, linkage, calling_conv, intrinsic);
+        // `Function::Create(Ty, Linkage, N, M)`, and `getOrInsertFunction`'s
+        // own spelling of it: with no address space given, the data layout's
+        // program address space.
+        let address_space = self.core.data_layout().program_addr_space();
+        let fn_data = FunctionData::new(
+            signature_id,
+            linkage,
+            address_space,
+            calling_conv,
+            intrinsic,
+        );
         let fn_id = self.core.ctx.push_value(ValueData {
             ty: signature_id,
             name: core::cell::RefCell::new(None),
@@ -2888,6 +2898,36 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
         Ok(FunctionValue::<'ctx, Dyn, B>::from_parts_unchecked(
             holder, self,
         ))
+    }
+
+    /// Mirrors `Intrinsic::getOrInsertDeclaration(M, ID, RetTy, ArgTys)`: a
+    /// non-overloaded intrinsic ignores the signature, and an overloaded one
+    /// deduces its overload types from it, variadic if the table says so.
+    /// Upstream asserts the signature matches; here it is an error.
+    pub(crate) fn get_or_insert_intrinsic_declaration_by_signature<R, I, T>(
+        self,
+        id: IntrinsicId,
+        return_type: R,
+        argument_types: I,
+    ) -> IrResult<FunctionValue<'ctx, Dyn, B>>
+    where
+        R: IrType<'ctx, B>,
+        I: IntoIterator<Item = T>,
+        T: IrType<'ctx, B>,
+    {
+        // If the intrinsic is not overloaded, use the non-overloaded version.
+        if !id.is_overloaded() {
+            let descriptor = IntrinsicDescriptor::<B>::new(id, [])?;
+            return self.get_or_insert_intrinsic_declaration(&descriptor);
+        }
+
+        let is_var_arg = intrinsic_takes_var_args(id)?;
+        let fn_ty = self.raw_function_type(return_type, argument_types, is_var_arg)?;
+
+        // Automatically determine the overloaded types.
+        let overloads = match_intrinsic_signature(id, self, fn_ty)?;
+        let descriptor = IntrinsicDescriptor::new(id, overloads)?;
+        self.get_or_insert_intrinsic_declaration(&descriptor)
     }
 
     pub(crate) fn get_or_insert_intrinsic_declaration_by_name(
@@ -5465,6 +5505,34 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.get_or_insert_intrinsic_declaration(&descriptor)
     }
 
+    /// [`Self::get_or_insert_intrinsic_declaration`] for the overloads
+    /// `return_type` and `argument_types` imply. Mirrors
+    /// `Intrinsic::getOrInsertDeclaration(M, ID, RetTy, ArgTys)`: a
+    /// non-overloaded intrinsic ignores the signature, and a variadic one is
+    /// given its fixed argument types.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidTypeComponent`] or [`IrError::ForeignType`] if the
+    /// signature is no function type of this module;
+    /// [`IrError::IntrinsicSignatureMismatch`] if no overload fits it, where
+    /// upstream asserts; then [`Self::get_or_insert_intrinsic_declaration`]'s.
+    pub fn get_or_insert_intrinsic_declaration_by_signature<R, I, T>(
+        &'ctx self,
+        id: IntrinsicId,
+        return_type: R,
+        argument_types: I,
+    ) -> IrResult<FunctionId<Dyn, B>>
+    where
+        R: IrType<'ctx, B>,
+        I: IntoIterator<Item = T>,
+        T: IrType<'ctx, B>,
+    {
+        self.capability_ref()
+            .get_or_insert_intrinsic_declaration_by_signature(id, return_type, argument_types)
+            .map(|function| function.id())
+    }
+
     /// [`Self::get_or_insert_intrinsic_declaration`] for the intrinsic `name`
     /// spells, overload suffix included (`llvm.abs.i32`).
     ///
@@ -5523,6 +5591,30 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
             .constant()
             .initializer(constant)
             .build()
+    }
+
+    /// The global variable named `name`, or a new external declaration of
+    /// `value_type` in the data layout's default globals address space.
+    /// Mirrors `Module::getOrInsertGlobal(Name, Ty)`: a global that holds the
+    /// name is returned as it is, whatever its type and address space.
+    ///
+    /// # Errors
+    ///
+    /// A `value_type` of another module is [`IrError::ForeignType`]. A
+    /// function, alias or ifunc that holds the name is
+    /// [`IrError::DuplicateGlobalName`], where upstream's new global would take
+    /// a uniqued name.
+    pub fn get_or_insert_global<T>(&'ctx self, name: &str, value_type: T) -> IrResult<GlobalId<B>>
+    where
+        T: IrType<'ctx, B>,
+    {
+        // Boundary: the caller's type, admitted against this module whether or
+        // not a global holds the name, so a foreign one is never answered.
+        value_type.as_type().slot_in(self.id())?;
+        match self.global(name) {
+            Some(global) => Ok(global),
+            None => self.global_builder(name, value_type).build(),
+        }
     }
 
     /// Add a global with no initializer, declared at `value_type`.

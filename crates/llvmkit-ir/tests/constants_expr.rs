@@ -1,13 +1,147 @@
 //! Constant-expression, blockaddress, and token-none tests.
 
 use llvmkit_ir::{
-    ApInt, ArrayType, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, Dyn,
-    GepNoWrapFlags, IrBuilder, IrError, Linkage, Module, ModuleBrand, OverflowingConstantExprFlags,
-    VectorType, lanes, module_new,
+    ApInt, ArrayType, CastOpcode, Constant, ConstantExprFlags, ConstantExprInRange,
+    ConstantExprOpcode, ConstantFolder, Dyn, DynBrand, ElemDyn, GepNoWrapFlags, IntoConstantValue,
+    IrBuilder, IrBuilderFolder, IrError, LenDyn, Linkage, Module, ModuleBrand,
+    OverflowingConstantExprFlags, Type, Value, VectorType, lanes, module_new,
 };
 
 fn module_text<B: ModuleBrand, S>(m: &Module<B, S>) -> String {
     format!("{m}")
+}
+
+/// `Constant::getNullValue` of `ty`, a vector of `element`: llvmkit has no one
+/// call for it.
+fn null_vector<'m, E>(
+    ty: VectorType<'m, ElemDyn, LenDyn, DynBrand>,
+    element: E,
+) -> Constant<'m, DynBrand>
+where
+    E: IntoConstantValue<'m, DynBrand> + Copy,
+{
+    let count = usize::try_from(ty.min_len().get()).expect("the count fits");
+    ty.const_vector(core::iter::repeat_n(element, count))
+        .expect("the elements have the vector's element type")
+        .as_constant()
+}
+
+/// `ConstantExpr::getPointerCast`, which `ConstantFolder::CreatePointerCast`
+/// forwards to.
+fn pointer_cast<'m>(value: Constant<'m, DynBrand>, ty: Type<'m, DynBrand>) -> Value<'m, DynBrand> {
+    ConstantFolder
+        .create_pointer_cast(value, ty)
+        .expect("a valid pointer cast")
+        .expect("a constant folds")
+}
+
+/// `ConstantExpr::getIntToPtr` and `getAddrSpaceCast`, through
+/// `ConstantFolder::FoldCast`.
+fn cast<'m>(
+    opcode: CastOpcode,
+    value: Value<'m, DynBrand>,
+    ty: Type<'m, DynBrand>,
+) -> Value<'m, DynBrand> {
+    ConstantFolder
+        .fold_cast_dyn(opcode, value, ty)
+        .expect("a valid cast")
+        .expect("a constant folds")
+}
+
+/// Port of `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, PointerCast)`.
+#[test]
+fn upstream_pointer_cast() {
+    let m = Module::dynamic("C");
+    let ptr_ty = m.ptr_type_in::<0>();
+    let int64_ty = m.i64_type();
+    let ptr_vec_ty = m.vector_type(ptr_ty, lanes::<4>()).expect("a pointer");
+    let int64_vec_ty = m.vector_type(int64_ty, lanes::<4>()).expect("an integer");
+    let ptr_scalable_vec_ty = m
+        .scalable_vector_type(ptr_ty, lanes::<4>())
+        .expect("a pointer");
+    let int64_scalable_vec_ty = m
+        .scalable_vector_type(int64_ty, lanes::<4>())
+        .expect("an integer");
+
+    let null_ptr = ptr_ty.const_null().as_constant();
+    let null_int64 = int64_ty.const_zero();
+
+    // ptrtoint ptr to i64
+    assert_eq!(
+        null_int64.as_erased(),
+        pointer_cast(null_ptr, int64_ty.as_type())
+    );
+
+    // bitcast ptr to ptr
+    assert_eq!(
+        null_ptr.as_erased(),
+        pointer_cast(null_ptr, ptr_ty.as_type())
+    );
+
+    // ptrtoint <4 x ptr> to <4 x i64>
+    assert_eq!(
+        null_vector(int64_vec_ty, null_int64).as_erased(),
+        pointer_cast(null_vector(ptr_vec_ty, null_ptr), int64_vec_ty.as_type())
+    );
+
+    // ptrtoint <vscale x 4 x ptr> to <vscale x 4 x i64>
+    assert_eq!(
+        null_vector(int64_scalable_vec_ty, null_int64).as_erased(),
+        pointer_cast(
+            null_vector(ptr_scalable_vec_ty, null_ptr),
+            int64_scalable_vec_ty.as_type()
+        )
+    );
+
+    // bitcast <4 x ptr> to <4 x ptr>
+    assert_eq!(
+        null_vector(ptr_vec_ty, null_ptr).as_erased(),
+        pointer_cast(null_vector(ptr_vec_ty, null_ptr), ptr_vec_ty.as_type())
+    );
+
+    // bitcast <vscale x 4 x ptr> to <vscale x 4 x ptr>
+    assert_eq!(
+        null_vector(ptr_scalable_vec_ty, null_ptr).as_erased(),
+        pointer_cast(
+            null_vector(ptr_scalable_vec_ty, null_ptr),
+            ptr_scalable_vec_ty.as_type()
+        )
+    );
+
+    let ptr1_ty = m.ptr_type_in::<1>();
+    let k = int64_ty.const_int(1234_i64).as_erased();
+
+    // Make sure that addrspacecast of inttoptr is not folded away.
+    assert_ne!(
+        k,
+        cast(
+            CastOpcode::AddrSpaceCast,
+            cast(CastOpcode::IntToPtr, k, ptr_ty.as_type()),
+            ptr1_ty.as_type()
+        )
+    );
+    assert_ne!(
+        k,
+        cast(
+            CastOpcode::AddrSpaceCast,
+            cast(CastOpcode::IntToPtr, k, ptr1_ty.as_type()),
+            ptr_ty.as_type()
+        )
+    );
+
+    let null_ptr0 = ptr_ty.const_null().as_erased();
+    let null_ptr1 = ptr1_ty.const_null().as_erased();
+
+    // Make sure that addrspacecast of null is not folded away.
+    assert_ne!(
+        null_ptr0,
+        cast(CastOpcode::AddrSpaceCast, null_ptr0, ptr1_ty.as_type())
+    );
+
+    assert_ne!(
+        null_ptr1,
+        cast(CastOpcode::AddrSpaceCast, null_ptr1, ptr_ty.as_type())
+    );
 }
 
 fn assert_line(text: &str, expected: &str) {

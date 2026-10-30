@@ -116,6 +116,7 @@ impl FunctionData {
     pub(super) fn new(
         signature: TypeSlot,
         linkage: Linkage,
+        address_space: AddressSpace,
         calling_conv: CallingConv,
         intrinsic: Option<IntrinsicFunctionData>,
     ) -> Self {
@@ -127,7 +128,7 @@ impl FunctionData {
             dso_locality: RefCell::new(DsoLocality::Default),
             calling_conv: RefCell::new(calling_conv),
             unnamed_addr: RefCell::new(UnnamedAddr::None),
-            address_space: RefCell::new(AddressSpace::DEFAULT),
+            address_space: RefCell::new(address_space),
             section: RefCell::new(None),
             partition: RefCell::new(None),
             align: RefCell::new(MaybeAlign::NONE),
@@ -1726,7 +1727,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
             dso_locality: DsoLocality::Default,
             calling_conv: CallingConv::default(),
             unnamed_addr: UnnamedAddr::None,
-            address_space: AddressSpace::DEFAULT,
+            // `Function::Create(Ty, Linkage, N, M)`: with no address space
+            // given, `M.getDataLayout().getProgramAddressSpace()`.
+            address_space: module.module().data_layout().program_addr_space(),
             section: None,
             partition: None,
             align: MaybeAlign::NONE,
