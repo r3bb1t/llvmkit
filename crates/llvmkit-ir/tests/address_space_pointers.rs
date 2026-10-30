@@ -356,8 +356,9 @@ fn pointer_load_names_the_space_it_loads() -> Result<(), IrError> {
 }
 
 /// `Ptr` is address space 0 and `Ptr<N>` address space `N`, in a typed
-/// signature and in a return-type check, which now requires the space exactly
-/// (it accepted any before). llvmkit-specific (D4).
+/// signature and in the checks that read one back, a return type's and a
+/// parameter's, which require the space exactly (the return's accepted any
+/// before). llvmkit-specific (D4).
 #[test]
 fn ptr_means_address_space_zero() -> Result<(), IrError> {
     let m = module_new!("spaces")?;
@@ -374,6 +375,24 @@ fn ptr_means_address_space_zero() -> Result<(), IrError> {
     m.add_function_dyn("ret_one", fn_ty, Linkage::External)?;
     assert!(m.function::<Ptr>("ret_one").is_err());
     assert!(m.function::<Ptr<1>>("ret_one")?.is_some());
+
+    let fn_ty = m.function_type(m.void_type(), [m.ptr_type_in::<1>().as_type()])?;
+    m.add_function_dyn("take_one", fn_ty, Linkage::External)?;
+    let take_one = m.function::<()>("take_one")?.expect("declared above");
+    assert_eq!(
+        m.view(take_one)
+            .with_typed_signature::<fn(Ptr)>()
+            .map(|_| ()),
+        Err(IrError::AddressSpaceMismatch {
+            expected: 0,
+            got: 1,
+        })
+    );
+    assert!(
+        m.view(take_one)
+            .with_typed_signature::<fn(Ptr<1>)>()
+            .is_ok()
+    );
     Ok(())
 }
 
