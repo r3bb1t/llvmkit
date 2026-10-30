@@ -1,0 +1,18 @@
+error[E0271]: type mismatch resolving `<PointerValue<'_, SpaceDyn, __LlvmkitGeneratedBrand> as IntoPointerValue<'_, __LlvmkitGeneratedBrand>>::Space == Space<0>`
+  --> tests/compile_fail/try_build_with_dyn_pointer.rs:23:32
+   |
+23 |     let _ = node.try_build(&b, slot, "n")?;
+   |                  ---------     ^^^^ expected `Space<0>`, found `SpaceDyn`
+   |                  |
+   |                  required by a bound introduced by this call
+   |
+   = note: expected struct `llvmkit_ir::Space<0>`
+              found struct `SpaceDyn`
+   = note: required for `PointerValue<'_, SpaceDyn, __LlvmkitGeneratedBrand>` to implement `IntoLayoutValue<'_, llvmkit_ir::Ptr, __LlvmkitGeneratedBrand>`
+   = note: required for `PointerValue<'_, SpaceDyn, __LlvmkitGeneratedBrand>` to implement `IntoIrField<'_, llvmkit_ir::Ptr, __LlvmkitGeneratedBrand>`
+note: required by a bound in `NodeBuild::try_build`
+  --> tests/compile_fail/try_build_with_dyn_pointer.rs:11:10
+   |
+11 | #[derive(IrStruct)]
+   |          ^^^^^^^^ required by this bound in `NodeBuild::try_build`
+   = note: this error originates in the derive macro `IrStruct` (in Nightly builds, run with -Z macro-backtrace for more info)

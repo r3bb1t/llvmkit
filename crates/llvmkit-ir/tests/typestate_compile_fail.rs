@@ -82,6 +82,7 @@ fn typestate_compile_fail() {
     // A build without `?` takes view handles of the field's own type only:
     // no `SpaceDyn` pointer for a `Ptr` field, no storable id.
     t.compile_fail("tests/compile_fail/build_with_dyn_pointer.rs");
+    t.compile_fail("tests/compile_fail/try_build_with_dyn_pointer.rs");
     t.compile_fail("tests/compile_fail/build_with_id.rs");
     t.compile_fail("tests/compile_fail/typed_pointer_is_not_an_ir_type.rs");
     t.compile_fail("tests/compile_fail/cross_module_value_brand.rs");

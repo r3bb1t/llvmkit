@@ -4042,8 +4042,8 @@ where
     /// llvmkit's own ([`TrustedFolder`]), whose fold rebuilds `aggregate`'s type. Mirrors
     /// `IRBuilderBase::CreateInsertValue`, which consults its folder
     /// (`Folder.FoldInsertValue`) first. Any brand, any folder and any
-    /// argument write through [`insert_field`](Self::insert_field) instead,
-    /// which checks.
+    /// argument its field admits write through
+    /// [`insert_field`](Self::insert_field) instead, which checks.
     pub fn write_field<S, const I: u32, Arg, Name>(
         &self,
         aggregate: SchemaValue<'ctx, S, B, impl Capability>,

@@ -252,7 +252,7 @@ fn derive_supports_name_override_and_packed() -> Result<(), IrError> {
     Ok(())
 }
 
-/// llvmkit-specific (D2, D10), no upstream counterpart — a C++ `StructType`
+/// llvmkit-specific (D6, D10), no upstream counterpart — a C++ `StructType`
 /// is built from `Type *`s, never from a Rust declaration: a derived body is
 /// minted from its fields' layouts alone. An unsigned field is the signless
 /// integer of its width (LLVM integers carry no sign), a Rust array is an
@@ -280,7 +280,7 @@ fn a_derived_body_comes_from_its_field_layouts() -> Result<(), IrError> {
     Ok(())
 }
 
-/// llvmkit-specific (D2, D10), no upstream counterpart: a field read checks
+/// llvmkit-specific (D6, D10), no upstream counterpart: a field read checks
 /// the element's type against the field's layout before it wraps the value,
 /// so each layout must recognise its own type — an unsigned field reads back
 /// the signless `i32`, an array field its typed `[4 x float]`, a `Ptr` field
@@ -324,7 +324,7 @@ entry:
 }
 ";
 
-/// llvmkit-specific (D2, D10), no upstream counterpart —
+/// llvmkit-specific (D6, D10), no upstream counterpart —
 /// `IRBuilderBase::CreateInsertValue` takes any `Value *` and checks nothing:
 /// once `get_or_insert_struct_of` has answered — the one fallible step, where
 /// `%Point`'s body is confirmed or set — a build on a `UniqueBrand` module
@@ -375,7 +375,157 @@ fn a_pointer_field_takes_a_space_zero_pointer() -> Result<(), IrError> {
     Ok(())
 }
 
-/// llvmkit-specific (D2), no upstream counterpart: a nested field's build
+/// A schema named as a generated generic parameter's old spelling: `B`, `F`,
+/// `R`, `Name` and `Field0`. Each is the user's own type, and a field of that
+/// type must not be read as the derive's parameter.
+#[derive(IrStruct)]
+struct B {
+    b: i32,
+}
+#[derive(IrStruct)]
+struct F {
+    f: i32,
+}
+#[derive(IrStruct)]
+struct R {
+    r: i32,
+}
+#[derive(IrStruct)]
+struct Name {
+    name: i32,
+}
+#[derive(IrStruct)]
+struct Field0 {
+    field: i32,
+}
+
+/// The review's own examples: `A { b: B }` and `Person { name: Name }`.
+#[derive(IrStruct)]
+struct A {
+    b: B,
+}
+#[derive(IrStruct)]
+struct Person {
+    name: Name,
+    first: Field0,
+    folder: F,
+    ret: R,
+}
+
+/// llvmkit-specific, no upstream counterpart (LLVM has no derive): a field's
+/// type is the user's own whatever it is spelled, so a struct called `B`, `F`,
+/// `R`, `Name` or `Field0` works as a field. The derive's generic parameters
+/// shadowed each of them, and the user got an unrelated error about the derive.
+#[test]
+fn a_field_type_is_not_shadowed_by_the_derive() -> Result<(), IrError> {
+    let _ = A { b: B { b: 1 } }.b.b;
+    let Person {
+        name,
+        first,
+        folder,
+        ret,
+    } = Person {
+        name: Name { name: 1 },
+        first: Field0 { field: 2 },
+        folder: F { f: 3 },
+        ret: R { r: 4 },
+    };
+    let _ = name.name + first.field + folder.f + ret.r;
+
+    let m = module_new!("shadowed")?;
+    let f = m.add_typed_function::<(), (A, Person), _>("take", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let (a, person) = m.view(f).params();
+    let inner: BValue<'_, _> = a.b(&b);
+    let _ = inner.b(&b);
+    let name: NameValue<'_, _> = person.try_name(&b)?;
+    let _ = name.name(&b);
+    let rebuilt = m
+        .get_or_insert_struct_of::<A>()?
+        .try_build(&b, inner, "again")?;
+    let _ = rebuilt;
+    b.ret_void();
+    let text = format!("{m}");
+    assert!(text.contains("%A = type { %B }"), "{text}");
+    assert!(
+        text.contains("%Person = type { %Name, %Field0, %F, %R }"),
+        "{text}"
+    );
+    Ok(())
+}
+
+/// A field whose Rust spelling is a keyword, and a struct written raw.
+#[derive(IrStruct)]
+struct r#Raw {
+    r#type: i32,
+}
+
+/// llvmkit-specific, no upstream counterpart: `r#` is Rust's, not the IR's. A
+/// raw field names its instruction as `try_type` names its accessor, and a raw
+/// struct its IR type. Both kept the prefix: `%"r#type"` and `%"r#Raw"`.
+#[test]
+fn a_raw_identifier_names_nothing_in_the_ir() -> Result<(), IrError> {
+    let Raw { r#type } = Raw { r#type: 1 };
+    let _ = r#type;
+
+    let m = module_new!("raw_names")?;
+    let f = m.add_typed_function::<(), (Raw,), _>("take", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let (value,) = m.view(f).params();
+    let _ = value.r#type(&b);
+    let _ = value.try_type(&b)?;
+    let token = m.get_or_insert_struct_of::<Raw>()?;
+    let _ = token.build(&b, 1_i32, "built");
+    b.ret_void();
+    let text = format!("{m}");
+    assert!(text.contains("%Raw = type { i32 }"), "{text}");
+    assert!(text.contains("%type = extractvalue %Raw %0, 0"), "{text}");
+    assert!(
+        text.contains("%built.type = insertvalue %Raw poison, i32 1, 0"),
+        "{text}"
+    );
+    assert!(!text.contains("r#"), "{text}");
+    Ok(())
+}
+
+/// llvmkit-specific (D3, D10), no upstream counterpart: spec §2 says
+/// `PointerValue::try_from` is the one door out of `SpaceDyn`, so a `SpaceDyn`
+/// pointer goes through it, and the `Space<0>` pointer it answers with goes to
+/// `try_build`. `compile_fail/build_with_dyn_pointer.rs` and the `FieldArg`
+/// diagnostic send a user here; the pointer in another space is the negative
+/// half.
+#[test]
+fn a_narrowed_space_dyn_pointer_goes_through_try_build() -> Result<(), IrError> {
+    let m = module_new!("narrowed_pointer")?;
+    let f = m.add_typed_function::<Node, (), _>("make", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let slot = m.view(b.alloca(m.i32_type(), "slot")?);
+    let narrowed = PointerValue::<Space<0>, _>::try_from(slot)?;
+    let node = m.get_or_insert_struct_of::<Node>()?;
+    let n = node.try_build(&b, narrowed, "n")?;
+
+    let far = m.view(b.alloca_in::<1, _, _>(m.i32_type(), "far")?).as_dyn();
+    assert_eq!(
+        PointerValue::<Space<0>, _>::try_from(far).map(|_| ()),
+        Err(IrError::AddressSpaceMismatch {
+            expected: 0,
+            got: 1,
+        })
+    );
+
+    b.ret(n)?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("%n.next = insertvalue %Node poison, ptr %slot, 0"),
+        "got:\n{text}"
+    );
+    Ok(())
+}
+
+/// llvmkit-specific (D6), no upstream counterpart: a nested field's build
 /// argument is the nested schema's own value — two `Point`s built on their
 /// token become a `Rect`'s fields.
 #[test]
@@ -530,7 +680,7 @@ fn a_dynamic_module_reads_with_try() -> Result<(), IrError> {
     Ok(())
 }
 
-/// llvmkit-specific (D2), no upstream counterpart: a field kind the user
+/// llvmkit-specific (D6), no upstream counterpart: a field kind the user
 /// writes names a layout, and llvmkit builds the field's type from that
 /// layout — `Meters` is laid out as `f64`, so `%Run` is `{ double }` and the
 /// derived getter hands back the layout's `FloatValue<f64>`.

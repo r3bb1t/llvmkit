@@ -407,7 +407,9 @@ where
 /// layout's own type — its view handle, at any capability — or, for a scalar
 /// layout, a Rust literal of that scalar, which becomes a constant. A storable
 /// id is no argument: an id outlives its module, so only the checked
-/// `try_build` takes one.
+/// `try_build` takes one. A pointer in a run-time address space is no argument
+/// to either: [`PointerValue::try_from`] is the one door out of
+/// [`SpaceDyn`](crate::SpaceDyn), and the `Space<AS>` it answers with is both.
 ///
 /// Keyed by layout, so a field kind of your own takes its layout's arguments.
 /// Open, so the derive can implement it for the value type it generates; an
@@ -418,7 +420,8 @@ where
     label = "not a `FieldArg` for this field",
     note = "a build without `?` takes a view handle of the field's own type (for `Ptr`, an \
             address-space-0 `PointerValue`) or a Rust scalar literal; storable ids and \
-            other values go through `try_build`, which checks"
+            other values go through `try_build`, which checks, and a `SpaceDyn` pointer is \
+            narrowed first with `PointerValue::try_from`"
 )]
 pub trait FieldArg<'ctx, L: FieldLayout, B: UniqueBrand>: Sized {
     /// This argument as a value of the layout's type in `module`.

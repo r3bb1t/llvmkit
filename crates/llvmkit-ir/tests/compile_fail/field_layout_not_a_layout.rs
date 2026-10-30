@@ -1,4 +1,4 @@
-//! llvmkit-specific compile-fail (D2, D10): a field kind names its LLVM shape
+//! llvmkit-specific compile-fail (D6, D10): a field kind names its LLVM shape
 //! through `IrField::Layout`, and `FieldLayout` is sealed to the valid struct
 //! elements llvmkit builds itself. A kind whose layout is a marker of the
 //! user's own — here one standing for `label`, which no struct may contain —

@@ -7,7 +7,7 @@ error[E0277]: `IntValueId<i32, __LlvmkitGeneratedBrand>` is not a build argument
    |                   required by a bound introduced by this call
    |
    = help: the trait `FieldArg<'_, i32, __LlvmkitGeneratedBrand>` is not implemented for `IntValueId<i32, __LlvmkitGeneratedBrand>`
-   = note: a build without `?` takes a view handle of the field's own type (for `Ptr`, an address-space-0 `PointerValue`) or a Rust scalar literal; storable ids and other values go through `try_build`, which checks
+   = note: a build without `?` takes a view handle of the field's own type (for `Ptr`, an address-space-0 `PointerValue`) or a Rust scalar literal; storable ids and other values go through `try_build`, which checks, and a `SpaceDyn` pointer is narrowed first with `PointerValue::try_from`
    = help: the following other types implement trait `FieldArg<'ctx, L, B>`:
              `ArrayValue<'ctx, L, ArrLen<N>, B, C>` implements `FieldArg<'ctx, [L; N], B>`
              `FloatValue<'ctx, f32, B, C>` implements `FieldArg<'ctx, f32, B>`

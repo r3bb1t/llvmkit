@@ -2,7 +2,7 @@
 //! address space 0, and the infallible `build` checks nothing at run time — so
 //! its argument must be an address-space-0 pointer by type. A `SpaceDyn`
 //! pointer (address space known only at run time) is no `FieldArg` for it
-//! (`E0277`); `try_build` takes it and checks. No upstream counterpart:
+//! (`E0277`); `PointerValue::try_from` narrows it first. No upstream counterpart:
 //! `IRBuilderBase::CreateInsertValue` takes any `Value *`.
 
 use llvmkit_ir::{IrBuilder, IrError, IrStruct, Linkage, NoFolder, Ptr, module_new};

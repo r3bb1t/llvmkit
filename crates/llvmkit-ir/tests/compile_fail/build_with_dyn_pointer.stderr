@@ -6,7 +6,7 @@ error[E0277]: `PointerValue<'_, SpaceDyn, __LlvmkitGeneratedBrand>` is not a bui
    |                  |
    |                  required by a bound introduced by this call
    |
-   = note: a build without `?` takes a view handle of the field's own type (for `Ptr`, an address-space-0 `PointerValue`) or a Rust scalar literal; storable ids and other values go through `try_build`, which checks
+   = note: a build without `?` takes a view handle of the field's own type (for `Ptr`, an address-space-0 `PointerValue`) or a Rust scalar literal; storable ids and other values go through `try_build`, which checks, and a `SpaceDyn` pointer is narrowed first with `PointerValue::try_from`
 help: the trait `FieldArg<'_, llvmkit_ir::Ptr, __LlvmkitGeneratedBrand>` is not implemented for `PointerValue<'_, SpaceDyn, __LlvmkitGeneratedBrand, Mutable>`
       but it is implemented for `PointerValue<'_, llvmkit_ir::Space<0>, __LlvmkitGeneratedBrand, _>`
   --> src/struct_schema.rs

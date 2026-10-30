@@ -22,11 +22,11 @@ help: the following other types implement trait `TrustedFolder<'ctx, B>`
    |
    | impl<'ctx, B: ModuleBrand + 'ctx> TrustedFolder<'ctx, B> for ConstantFolder {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ConstantFolder`
-note: required by a bound in `PointValue::<'ctx, B, __LlvmkitCapability>::x`
+note: required by a bound in `PointValue::<'ctx, __LlvmkitBrand, __LlvmkitCapability>::x`
   --> tests/compile_fail/field_read_with_custom_folder.rs:12:10
    |
 12 | #[derive(IrStruct)]
-   |          ^^^^^^^^ required by this bound in `PointValue::<'ctx, B, __LlvmkitCapability>::x`
+   |          ^^^^^^^^ required by this bound in `PointValue::<'ctx, __LlvmkitBrand, __LlvmkitCapability>::x`
 13 | struct Point {
 14 |     x: i32,
    |     - required by a bound in this associated function
