@@ -223,6 +223,70 @@ fn mutually_recursive_schemas_are_refused() -> Result<(), IrError> {
     Ok(())
 }
 
+/// llvmkit-specific, no upstream counterpart: the first mint of a cycle leaves
+/// `%CycleB` with a body over the still-opaque `%CycleA`, and a second mint
+/// finds that body, cannot confirm it — a struct with no body matches nothing —
+/// and refuses it with `StructBodyMismatch` before it mints a field, so the
+/// walk stays bounded on the retry too.
+#[test]
+fn a_second_mint_of_a_refused_cycle_is_refused() -> Result<(), IrError> {
+    let m = module_new!("schema")?;
+    assert!(m.get_or_insert_struct_of::<CycleA>().is_err());
+    assert_eq!(
+        m.get_or_insert_struct_of::<CycleA>(),
+        Err(IrError::StructBodyMismatch {
+            name: String::from("CycleB"),
+        })
+    );
+    Ok(())
+}
+
+/// llvmkit-specific regression (D8): `mint_struct_of` minted the fields before
+/// it read `%Rect`'s body, so a refused `Rect` left `%Point` in a module that
+/// prints every identified struct. The check now comes first, and the module
+/// prints the same as before the refused call. `a_different_existing_body_is_refused`
+/// in the parser's tests is the parsed form of the same refusal.
+#[test]
+fn a_refused_mint_leaves_no_nested_struct() -> Result<(), IrError> {
+    let m = module_new!("schema")?;
+    let rect = m.get_or_insert_named_struct("Rect");
+    m.set_struct_body_dyn(rect, [m.i32_type()], false)?;
+    let before = format!("{m}");
+    assert_eq!(
+        m.get_or_insert_struct_of::<Rect>(),
+        Err(IrError::StructBodyMismatch {
+            name: String::from("Rect"),
+        })
+    );
+    assert!(m.named_struct("Point").is_none());
+    assert_eq!(format!("{m}"), before);
+    Ok(())
+}
+
+/// llvmkit-specific, no upstream counterpart: an existing body is confirmed
+/// against the whole schema, nested fields included, without filling anything.
+/// A `%Rect` over an opaque `%Point` is not `Rect`'s body until `%Point` has
+/// one, so it is refused and `%Point` stays opaque; minting `Point` first sets
+/// that body, and `Rect` then confirms.
+#[test]
+fn an_existing_body_over_an_opaque_field_is_refused_until_the_field_has_a_body()
+-> Result<(), IrError> {
+    let m = module_new!("schema")?;
+    let point = m.get_or_insert_named_struct("Point");
+    let rect = m.get_or_insert_named_struct("Rect");
+    m.set_struct_body_dyn(rect, [point.as_type(), point.as_type()], false)?;
+    assert_eq!(
+        m.get_or_insert_struct_of::<Rect>(),
+        Err(IrError::StructBodyMismatch {
+            name: String::from("Rect"),
+        })
+    );
+    assert!(point.is_opaque());
+    let _ = m.get_or_insert_struct_of::<Point>()?;
+    assert!(m.get_or_insert_struct_of::<Rect>().is_ok());
+    Ok(())
+}
+
 /// llvmkit-specific typed facade over LLVM function arguments; closest upstream
 /// coverage is `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)`.
 #[test]

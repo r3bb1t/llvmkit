@@ -296,7 +296,9 @@ where
 /// against `S`, and llvmkit's own typed operations (field reads, builds,
 /// typed loads, typed parameters) mint the values they produce. So holding a
 /// `SchemaValue<S>` proves the value has `S`'s type, and a schema's value
-/// type, which holds one, needs no check of its own.
+/// type, which holds one, needs no check of its own. The proof holds for the
+/// life of the value because a struct a schema minted or checked cannot be
+/// renamed: [`IrError::SchemaStructNameNotSettable`].
 #[derive(Branded)]
 pub struct SchemaValue<'ctx, S: StructSchema, B: ModuleBrand, C: Capability = Mutable> {
     raw: StructValue<'ctx, B, C>,
@@ -365,7 +367,8 @@ pub trait StructSchemaValue<'ctx, S: StructSchema, B: ModuleBrand, C: Capability
 /// `get_or_insert_struct_of::<S>()` answers once it has confirmed or set the
 /// body. Holding one proves `%S` exists with that body, so a build from it
 /// (the derive's `build` / `try_build`) does no lookup and cannot meet
-/// [`IrError::StructBodyMismatch`].
+/// [`IrError::StructBodyMismatch`]. A body never changes once set, and
+/// [`IrError::SchemaStructNameNotSettable`] keeps the name.
 #[derive(Branded)]
 pub struct StructOf<'ctx, S: StructSchema, B: ModuleBrand, C: Capability = Mutable> {
     ty: StructType<'ctx, BodySet, B, C>,
@@ -587,7 +590,17 @@ where
             .iter()
             .map(|slot| Type::new(*slot, ty.module))
             .collect();
-        <S::Fields as FieldList>::matches_types(&fields, token)
+        let matched = <S::Fields as FieldList>::matches_types(&fields, token);
+        // Every caller of a match relies on a yes: it mints a `SchemaValue`,
+        // or a typed function, or it is the minter confirming a body. So the
+        // answer has to stay true, and the one thing that could falsify it is
+        // a rename, which `Module::set_struct_name` refuses on this mark. Set
+        // here rather than at each caller so that no caller can forget, and
+        // a nested schema is marked by its own arm of this walk.
+        if matched {
+            data.schema_held.set(true);
+        }
+        matched
     }
 
     #[inline]

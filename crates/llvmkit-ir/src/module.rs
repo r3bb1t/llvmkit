@@ -106,7 +106,7 @@ use super::named_md_node::{
 use super::pass_context::{FunctionView, ModuleFunctionViews};
 use super::struct_body_state::StructBodyDyn;
 use super::struct_body_state::{BodySet, Opaque, StructBodyState};
-use super::struct_schema::{FieldList, Minting, StructOf, StructSchema};
+use super::struct_schema::{FieldLayout, FieldList, Minting, StructOf, StructSchema};
 use super::r#type::{
     IrType, MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeData, TypeSlot, TypeSlotAccess,
     TypedPointeeSlot,
@@ -1134,8 +1134,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
     }
 
     /// Mint schema `S`'s named struct type in this module, its body built
-    /// from the field layouts: fields first, then find or create `%S`, then
-    /// confirm a body already set or set it.
+    /// from the field layouts: an existing `%S` with a body is confirmed
+    /// against `S` and nothing is minted; otherwise the fields come first,
+    /// then find or create `%S` and set its body.
     ///
     /// Mirrors `StructType::setBodyOrError` (`lib/IR/Type.cpp`) for the body:
     /// a body containing `%S` by value is refused by its `checkBody` port
@@ -1145,9 +1146,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
     /// a schema already being minted on this call (`minting`) yields its
     /// still-opaque named type, so the cycle ends at the body setter, mutual
     /// ones included. A different body already set is
-    /// [`IrError::StructBodyMismatch`]. `S::NAME` must not be empty —
-    /// `StructType::create(Context, "")` makes an anonymous struct — which is
-    /// checked at compile time.
+    /// [`IrError::StructBodyMismatch`], and that check comes before any field
+    /// is minted so a refused mint leaves no nested struct behind. `S::NAME`
+    /// must not be empty — `StructType::create(Context, "")` makes an
+    /// anonymous struct — which is checked at compile time.
+    ///
+    /// Each struct this answers `Ok` for is held by its schema from here on,
+    /// so [`Module::set_struct_name`] refuses it: the module's `StructOf`
+    /// proves `%S`, a nested field's `%Point` included. The confirmed path's
+    /// mark is `matches_type`'s; the opaque `%S` of an in-progress schema gets
+    /// none, since nothing rests on a struct whose body is not set.
     pub(crate) fn mint_struct_of<S>(self, minting: &mut Minting) -> IrResult<TypeSlot>
     where
         S: StructSchema,
@@ -1161,6 +1169,25 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
         if minting.is_minting(S::NAME) {
             return Ok(self.core.ctx.get_or_create_named_struct(S::NAME).slot());
         }
+        if let Some(id) = self.core.ctx.named_struct(S::NAME) {
+            let has_body = self
+                .core
+                .ctx
+                .type_data(id)
+                .as_struct()
+                .unwrap_or_else(|| unreachable!("named struct id stores struct data"))
+                .body
+                .borrow()
+                .is_some();
+            if has_body {
+                if <S as FieldLayout>::matches_type(Type::new(id, self), CrateOnly(())) {
+                    return Ok(id);
+                }
+                return Err(IrError::StructBodyMismatch {
+                    name: S::NAME.to_owned(),
+                });
+            }
+        }
         minting.begin(S::NAME);
         let field_types = <S::Fields as FieldList>::mint_types(self, minting, CrateOnly(()));
         minting.end();
@@ -1171,23 +1198,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
             .map(|t| t.slot_trusting_same_module())
             .collect();
         let id = self.core.ctx.get_or_create_named_struct(S::NAME).slot();
-        let data = self
-            .core
-            .ctx
-            .type_data(id)
-            .as_struct()
-            .unwrap_or_else(|| unreachable!("named struct id stores struct data"));
-        {
-            let body = data.body.borrow();
-            if let Some(body) = body.as_ref() {
-                if body.packed == S::PACKED && body.elements.as_ref() == elements.as_ref() {
-                    return Ok(id);
-                }
-                return Err(IrError::StructBodyMismatch {
-                    name: S::NAME.to_owned(),
-                });
-            }
-        }
         self.core.ctx.set_named_struct_body(
             id,
             StructBody {
@@ -1195,6 +1205,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
                 packed: S::PACKED,
             },
         )?;
+        self.core
+            .ctx
+            .type_data(id)
+            .as_struct()
+            .unwrap_or_else(|| unreachable!("named struct id stores struct data"))
+            .schema_held
+            .set(true);
         Ok(id)
     }
 }
@@ -4965,7 +4982,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// of an opaque one, both of which change what the module prints, so a
     /// [`ModuleView`] or a verified module has no such method (D8). A body
     /// that differs is refused with [`IrError::StructBodyMismatch`] rather
-    /// than rewritten.
+    /// than rewritten, before any field's struct is created. A struct this
+    /// answers for keeps its name:
+    /// [`set_struct_name`](Self::set_struct_name) refuses it.
     ///
     /// Mirrors `StructType::setBodyOrError` for the body: a hand-written
     /// schema that contains itself by value, directly or through others, is
@@ -5030,10 +5049,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// free `.N` suffix, as `%Foo.0`, and a struct with no name prints by
     /// number. A name read earlier through [`StructType::name`] stays valid.
     ///
+    /// Stricter than `setName`, which renames anything: a struct a schema
+    /// minted or confirmed keeps its name, because a
+    /// [`StructOf`](crate::StructOf) or a
+    /// [`SchemaValue`](crate::SchemaValue) proves the struct is `%S`, and the
+    /// builds that take no `?` rest on that proof.
+    ///
     /// # Errors
     ///
     /// A struct from another module is [`IrError::ForeignType`]; a literal
-    /// struct is [`IrError::LiteralStructNameNotSettable`].
+    /// struct is [`IrError::LiteralStructNameNotSettable`]; a struct a schema
+    /// holds is [`IrError::SchemaStructNameNotSettable`].
     ///
     /// ```
     /// # use llvmkit_ir::Module;
@@ -5058,6 +5084,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         let id = st.slot_in(self.id())?;
         if st.is_literal() {
             return Err(IrError::LiteralStructNameNotSettable);
+        }
+        let held = self
+            .core()
+            .ctx
+            .type_data(id)
+            .as_struct()
+            .unwrap_or_else(|| unreachable!("StructType wraps struct data"))
+            .schema_held
+            .get();
+        if held {
+            return Err(IrError::SchemaStructNameNotSettable {
+                name: st.name().unwrap_or_default().to_owned(),
+            });
         }
         self.core().ctx.set_struct_name(id, name);
         Ok(())

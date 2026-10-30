@@ -574,3 +574,170 @@ fn a_hand_built_different_body_is_refused() -> Result<(), IrError> {
     );
     Ok(())
 }
+
+/// llvmkit-specific (D10), no upstream counterpart: `StructType::setName`
+/// renames anything, and LLVM has no schemas. A `StructOf` proves its struct is
+/// `%Point`, so `Module::set_struct_name` refuses it, and through
+/// `ConstantFolder` the rebuild of a `%Rect` constant from it neither reaches
+/// `fold_field_insert`'s `unreachable!` nor leaves a second `%Point`.
+#[test]
+fn renaming_a_schema_struct_is_refused_with_constant_folder() -> Result<(), IrError> {
+    let m = module_new!("rename_constant")?;
+    let f = m.add_typed_function::<(), (), _>("f", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, ConstantFolder).position_at_end(entry);
+    let point = m.get_or_insert_struct_of::<Point>()?;
+    assert_eq!(
+        m.set_struct_name(point.struct_type(), "Old"),
+        Err(IrError::SchemaStructNameNotSettable {
+            name: "Point".into(),
+        })
+    );
+    let rect = m.get_or_insert_struct_of::<Rect>()?;
+    let p = point.build(&b, 1_i32, 2_i32, "p");
+    let r = rect.build(&b, p, p, "r");
+    let _ = r;
+    b.ret_void();
+    let text = format!("{m}");
+    assert_eq!(text.matches("%Point = type").count(), 1, "got:\n{text}");
+    assert!(m.verify().is_ok());
+    Ok(())
+}
+
+/// llvmkit-specific (D10), no upstream counterpart: the `NoFolder` half of
+/// `renaming_a_schema_struct_is_refused_with_constant_folder`, where a rename
+/// the module allowed printed `insertvalue %Rect poison, %Old %p.y, 0` and only
+/// `verify` caught it.
+#[test]
+fn renaming_a_schema_struct_is_refused_with_no_folder() -> Result<(), IrError> {
+    let m = module_new!("rename_no_folder")?;
+    let f = m.add_typed_function::<(), (), _>("f", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let point = m.get_or_insert_struct_of::<Point>()?;
+    assert_eq!(
+        m.set_struct_name(point.struct_type(), "Old"),
+        Err(IrError::SchemaStructNameNotSettable {
+            name: "Point".into(),
+        })
+    );
+    let rect = m.get_or_insert_struct_of::<Rect>()?;
+    let p = point.build(&b, 1_i32, 2_i32, "p");
+    let r = rect.build(&b, p, p, "r");
+    let _ = r;
+    b.ret_void();
+    let text = format!("{m}");
+    assert!(
+        text.contains("%r.min = insertvalue %Rect poison, %Point %p.y, 0"),
+        "got:\n{text}"
+    );
+    assert!(m.verify().is_ok());
+    Ok(())
+}
+
+/// llvmkit-specific (D10), no upstream counterpart: a `%Point` minted only as a
+/// `Rect` field is held too, because the `Rect` token's build takes a value of
+/// exactly that struct.
+#[test]
+fn a_nested_schema_struct_keeps_its_name() -> Result<(), IrError> {
+    let m = module_new!("rename_nested")?;
+    let _ = m.get_or_insert_struct_of::<Rect>()?;
+    let point = m.named_struct("Point").expect("the nested mint created it");
+    assert_eq!(
+        m.set_struct_name(point, "Old"),
+        Err(IrError::SchemaStructNameNotSettable {
+            name: "Point".into(),
+        })
+    );
+    Ok(())
+}
+
+/// llvmkit-specific (D10), no upstream counterpart: an existing `%Rect` of the
+/// right body is confirmed, not minted, and the confirmation holds both it and
+/// the nested `%Point`.
+#[test]
+fn a_confirmed_struct_keeps_its_name_and_so_do_its_fields() -> Result<(), IrError> {
+    let m = module_new!("rename_confirmed")?;
+    let i32_ty = m.i32_type();
+    let point = m.get_or_insert_named_struct("Point");
+    m.set_struct_body_dyn(point, [i32_ty, i32_ty], false)?;
+    let rect = m.get_or_insert_named_struct("Rect");
+    m.set_struct_body_dyn(rect, [point.as_type(), point.as_type()], false)?;
+    let _ = m.get_or_insert_struct_of::<Rect>()?;
+    for (held, name) in [(point, "Point"), (rect, "Rect")] {
+        assert_eq!(
+            m.set_struct_name(held, "Old"),
+            Err(IrError::SchemaStructNameNotSettable { name: name.into() })
+        );
+    }
+    Ok(())
+}
+
+/// llvmkit-specific (D10), no upstream counterpart: a `SchemaValue` needs no
+/// mint. `PointValue::try_from` checks a hand-built `%Point` and proves the
+/// value is one, so the check holds the struct as a mint would; a rename the
+/// module allowed here gave `rect.build` an `%Old` for a `%Point` field.
+#[test]
+fn a_struct_a_schema_value_checked_keeps_its_name() -> Result<(), IrError> {
+    let m = module_new!("rename_checked")?;
+    let i32_ty = m.i32_type();
+    let hand = m.get_or_insert_named_struct("Point");
+    m.set_struct_body_dyn(hand, [i32_ty, i32_ty], false)?;
+    let fn_ty = m.function_type(m.void_type(), [hand.as_type()])?;
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let p = PointValue::try_from(m.view(f).param(0)?)?;
+    assert_eq!(
+        m.set_struct_name(hand, "Old"),
+        Err(IrError::SchemaStructNameNotSettable {
+            name: "Point".into(),
+        })
+    );
+    let rect = m.get_or_insert_struct_of::<Rect>()?;
+    let r = rect.build(&b, p, p, "r");
+    let _ = r;
+    b.ret_void()?;
+    assert!(m.verify().is_ok());
+    Ok(())
+}
+
+/// llvmkit-specific (D10), no upstream counterpart: a typed signature that
+/// names a schema proves the function's return and parameter are `%Point`, by
+/// the same check as `a_struct_a_schema_value_checked_keeps_its_name`, so it
+/// holds the struct too.
+#[test]
+fn a_struct_a_typed_signature_checked_keeps_its_name() -> Result<(), IrError> {
+    let m = module_new!("rename_signature")?;
+    let i32_ty = m.i32_type();
+    let hand = m.get_or_insert_named_struct("Point");
+    m.set_struct_body_dyn(hand, [i32_ty, i32_ty], false)?;
+    let fn_ty = m.function_type(hand.as_type(), [hand.as_type()])?;
+    let f = m.add_function_dyn("echo", fn_ty, Linkage::External)?;
+    let _ = m.view(f).with_typed_signature::<fn(Point) -> Point>()?;
+    assert_eq!(
+        m.set_struct_name(hand, "Old"),
+        Err(IrError::SchemaStructNameNotSettable {
+            name: "Point".into(),
+        })
+    );
+    Ok(())
+}
+
+/// llvmkit-specific positive control, no upstream counterpart: only a struct a
+/// schema holds is refused. `StructType::setName`'s behaviour stands for a
+/// struct no schema touched and for one whose body a schema refused.
+#[test]
+fn a_struct_no_schema_holds_can_be_renamed() -> Result<(), IrError> {
+    let m = module_new!("rename_free")?;
+    let free = m.get_or_insert_named_struct("Free");
+    m.set_struct_name(free, "Renamed")?;
+    assert_eq!(free.name(), Some("Renamed"));
+
+    let point = m.get_or_insert_named_struct("Point");
+    m.set_struct_body_dyn(point, [m.i64_type()], false)?;
+    assert!(m.get_or_insert_struct_of::<Point>().is_err());
+    m.set_struct_name(point, "Old")?;
+    assert_eq!(point.name(), Some("Old"));
+    Ok(())
+}

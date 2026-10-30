@@ -4036,8 +4036,10 @@ where
     /// [`UniqueBrand`](crate::UniqueBrand) brand's two live values are; field
     /// `I` is in range of `S`'s body ([`StructFieldAt`]); `value` is of field
     /// `I`'s layout type, because a [`FieldArg`] lowers only to a
-    /// [`LoweredField`](crate::LoweredField) of that layout; and the folder is one of llvmkit's own
-    /// ([`TrustedFolder`]), whose fold rebuilds `aggregate`'s type. Mirrors
+    /// [`LoweredField`](crate::LoweredField) of that layout, and a nested
+    /// schema's struct cannot have moved off its name
+    /// ([`IrError::SchemaStructNameNotSettable`]); and the folder is one of
+    /// llvmkit's own ([`TrustedFolder`]), whose fold rebuilds `aggregate`'s type. Mirrors
     /// `IRBuilderBase::CreateInsertValue`, which consults its folder
     /// (`Folder.FoldInsertValue`) first. Any brand, any folder and any
     /// argument write through [`insert_field`](Self::insert_field) instead,

@@ -860,6 +860,42 @@ so a refusal at construction would make `.ll` that LLVM reads unreadable here.
 **Guarded by:** `crates/llvmkit-ir/tests/type_components.rs::a_target_type_upstream_asserts_on_has_no_layout`,
 `crates/llvmkit-ir/tests/type_components.rs::a_zero_count_riscv_tuple_has_no_layout`.
 
+### D23 — A struct a schema holds cannot be renamed
+
+**Severity:** model-gap, by D19's reading of the table: the grades name *input*
+and this is an API call. No `.ll` text is involved, since `LLParser` never
+renames a struct it has named.
+**Where:** `crates/llvmkit-ir/src/module.rs` — `Module::set_struct_name`, on the
+`schema_held` mark `ModuleRef::mint_struct_of` and the schema arm of
+`FieldLayout::matches_type` (`crates/llvmkit-ir/src/struct_schema.rs`) set.
+
+**LLVM:** `StructType::setName` (`lib/IR/Type.cpp`) renames any identified
+struct. LLVM has no schemas, so nothing rests on the name.
+
+**llvmkit:** refuses with `IrError::SchemaStructNameNotSettable` once a schema
+has minted the struct or checked a value, a function signature or an existing
+body against it. A nested schema's struct is held through its own arm of the
+walk. So a struct that passed one field of a check whose next field failed stays
+held, though nothing rests on it: the mark is set where a match answers yes, and
+no caller can then forget it. A struct whose body a schema refused is not held.
+
+**Why:** a `StructOf` or a `SchemaValue` proves its value is `%S`, and the
+builds that take no `?` rest on that proof (Doctrine D10). A rename moved the
+struct out from under the name: `rect.build` then wrote an `%Old` into a `%Point`
+field, reaching `fold_field_insert`'s `unreachable!` through `ConstantFolder` and
+an invalid `insertvalue` through `NoFolder`. Checking at the panic would leave
+the proof false.
+
+**Fix:** none owed. Removing it needs a proof that does not rest on the name.
+
+**Guarded by:** `crates/llvmkit-ir/tests/derived_struct_schema.rs::renaming_a_schema_struct_is_refused_with_constant_folder`,
+`crates/llvmkit-ir/tests/derived_struct_schema.rs::renaming_a_schema_struct_is_refused_with_no_folder`,
+`crates/llvmkit-ir/tests/derived_struct_schema.rs::a_nested_schema_struct_keeps_its_name`,
+`crates/llvmkit-ir/tests/derived_struct_schema.rs::a_confirmed_struct_keeps_its_name_and_so_do_its_fields`,
+`crates/llvmkit-ir/tests/derived_struct_schema.rs::a_struct_a_schema_value_checked_keeps_its_name`,
+`crates/llvmkit-ir/tests/derived_struct_schema.rs::a_struct_a_typed_signature_checked_keeps_its_name`,
+`crates/llvmkit-ir/tests/derived_struct_schema.rs::a_struct_no_schema_holds_can_be_renamed`.
+
 ---
 
 ---

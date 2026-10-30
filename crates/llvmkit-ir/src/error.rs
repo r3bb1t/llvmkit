@@ -1433,6 +1433,16 @@ pub enum IrError {
     #[error("a literal struct type has no settable name")]
     LiteralStructNameNotSettable,
 
+    /// A name was set on a struct a schema minted or confirmed. llvmkit-only:
+    /// upstream has no schemas, and `StructType::setName` renames anything. A
+    /// `StructOf` or a `SchemaValue` proves its struct is `%S`, and the
+    /// infallible builds rest on that proof, so the name has to stay.
+    #[error("the struct type {name:?} is held by a schema and has no settable name")]
+    SchemaStructNameNotSettable {
+        /// Name of the struct the schema holds.
+        name: String,
+    },
+
     /// An identified struct's body reaches the struct being defined. Port of
     /// `StructType::checkBody` (`lib/IR/Type.cpp`), whose message this
     /// reproduces verbatim so `LLParser::parseStructDefinition` can hand it
@@ -2207,6 +2217,7 @@ impl IrError {
             Self::StructBodyAlreadySet { .. }
             | Self::LiteralStructBodyNotSettable
             | Self::LiteralStructNameNotSettable
+            | Self::SchemaStructNameNotSettable { .. }
             | Self::RecursiveStructBody { .. }
             | Self::StructBodyMismatch { .. } => Blame::UsageError,
 
