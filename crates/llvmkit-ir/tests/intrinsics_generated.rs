@@ -526,26 +526,24 @@ fn target_extension_overload_name_round_trips() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `llvm/lib/IR/Intrinsics.cpp::getMangledTypeStr`: function overload
-/// suffixes close with `f`, preserve `vararg`, and can contain named structs.
+/// Mirrors `llvm/lib/IR/Intrinsics.cpp::getMangledTypeStr`'s named-struct arm:
+/// `"s_"` + the name + `"s"`, on an intrinsic whose signature returns the
+/// overload.
 ///
-/// `%Point` has a body: a function parameter must be first class
-/// (`FunctionType::isValidArgumentType` through `Type::isFirstClassType`),
-/// which an opaque struct is not, and `FunctionType::FunctionType` asserts it.
-/// The mangled suffix spells the struct's name either way (the `s_` arm of
-/// `getMangledTypeStr`).
+/// `%Point` has a body: `llvm.dx.resource.handlefrombinding` returns its
+/// overload, and `FunctionType::isValidReturnType` admits a struct. A function
+/// type is no valid overload here, since a function cannot return one, so the
+/// `f_` arm's spelling is pinned by
+/// `llvmkit_ir::intrinsics::tests::every_mangled_type_demangles_to_itself`
+/// instead, on the type alone.
 #[test]
-fn function_and_named_struct_mangled_overload_suffix_round_trips() -> Result<(), IrError> {
-    let m = module_new!("intrinsic-function-struct-overload")?;
+fn named_struct_mangled_overload_suffix_round_trips() -> Result<(), IrError> {
+    let m = module_new!("intrinsic-struct-overload")?;
     let point_struct = m.get_or_insert_named_struct("Point");
     m.set_struct_body_dyn(point_struct, [m.i32_type().as_type()], false)?;
-    let point = point_struct.as_type();
-    let fn_overload = m
-        .variadic_function_type(m.i32_type().as_type(), [point, m.ptr_type(0).as_type()])?
-        .as_type();
-    let name = "llvm.dx.resource.handlefrombinding.f_i32s_Pointsp0varargf";
-    let id = IntrinsicId::lookup(name).expect("dx function overload intrinsic");
-    let descriptor = IntrinsicDescriptor::new(id, [fn_overload])?;
+    let name = "llvm.dx.resource.handlefrombinding.s_Points";
+    let id = IntrinsicId::lookup(name).expect("dx overloaded intrinsic");
+    let descriptor = IntrinsicDescriptor::new(id, [point_struct.as_type()])?;
     assert_eq!(descriptor.mangled_name()?, name);
     let matched = m.intrinsic_descriptor_from_signature(name, descriptor.function_type(&m)?)?;
     assert_eq!(matched, descriptor);

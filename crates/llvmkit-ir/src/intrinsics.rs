@@ -17,7 +17,7 @@ use crate::capability::{Capability, CapabilityOf, ModuleState, Mutable};
 use crate::derived_types::FunctionType;
 use crate::error::{IrError, IrResult, TargetExtParameterRule};
 use crate::module::{Module, ModuleBrand, ModuleId, ModuleRef};
-use crate::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
+use crate::r#type::{MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeSlot, TypeSlotAccess};
 use crate::type_components::lanes;
 use crate::value::{Value, ValueKindData};
 use std::borrow::Cow;
@@ -1602,7 +1602,7 @@ where
     if is_var_arg {
         params.pop();
     }
-    Ok(fn_type_with_var_arg(module, ret, params, is_var_arg))
+    fn_type_with_var_arg(module, ret, params, is_var_arg)
 }
 
 fn iit_descriptors(record: &IntrinsicRecord) -> IrResult<Vec<IitDescriptor>> {
@@ -1723,7 +1723,12 @@ where
         return Ok(parsed);
     }
 
-    if let Some((bits, consumed)) = parse_prefixed_u32(text, "i", false) {
+    // `getMangledTypeStr` spells `"i" + utostr(BitWidth)` from an integer that
+    // exists, and `IntegerType::get` asserts `MIN_INT_BITS` and `MAX_INT_BITS`,
+    // so a width past either falls through to the mismatch.
+    if let Some((bits, consumed)) = parse_prefixed_u32(text, "i", false)
+        && (MIN_INT_BITS..=MAX_INT_BITS).contains(&bits)
+    {
         return Ok((int_type(module, bits), consumed));
     }
     if let Some((addr_space, consumed)) = parse_prefixed_u32(text, "p", true) {
@@ -1874,7 +1879,13 @@ where
         let Some(params) = parse_mangled_type_sequence(module, params) else {
             continue;
         };
-        let fn_ty = fn_type_with_var_arg(module, ret, params, is_var_arg);
+        // As for the literal-struct arm: `getMangledTypeStr` spells `"f_"` +
+        // result + parameters + `"f"` from a function type that exists, so a
+        // candidate no function type can have builds nothing and the scan
+        // moves to the next `f`.
+        let Ok(fn_ty) = fn_type_with_var_arg(module, ret, params, is_var_arg) else {
+            continue;
+        };
         return Ok(Some((fn_ty.as_type(), end + 3)));
     }
     Ok(None)
@@ -2358,27 +2369,40 @@ where
     }
 }
 
+/// `FunctionType::get`, for the decoders and the demangler here. The two
+/// asserts in `FunctionType::FunctionType` — `isValidReturnType`, then
+/// `isValidArgumentType` for each parameter in order — are checked and refused
+/// as a mismatch, for the reasons [`fixed_vector_type`] gives.
 fn fn_type_with_var_arg<'ctx, B, C, I>(
     module: ModuleRef<'ctx, B, C>,
     ret: Type<'ctx, B, C>,
     params: I,
     is_var_arg: bool,
-) -> FunctionType<'ctx, B, C>
+) -> IrResult<FunctionType<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
     C: Capability,
     I: IntoIterator<Item = Type<'ctx, B, C>>,
 {
-    let param_ids: Vec<_> = params
+    if !ret.is_valid_function_return() {
+        return Err(intrinsic_mismatch());
+    }
+    let param_ids = params
         .into_iter()
-        .map(TypeSlotAccess::slot_trusting_same_module)
-        .collect();
+        .map(|param| {
+            if param.is_valid_function_argument() {
+                Ok(param.slot_trusting_same_module())
+            } else {
+                Err(intrinsic_mismatch())
+            }
+        })
+        .collect::<IrResult<Box<[_]>>>()?;
     let id = module.module().context().function_type(
         ret.slot_trusting_same_module(),
-        param_ids.into_boxed_slice(),
+        param_ids,
         is_var_arg,
     );
-    FunctionType::new(id, module)
+    Ok(FunctionType::new(id, module))
 }
 
 /// `ScalableVectorType::get`, for the decoders and matchers here: its
@@ -2464,8 +2488,11 @@ where
     C: Capability,
 {
     match ty.data() {
+        // `Type::getExtendedType` doubles the width through `IntegerType::get`,
+        // which asserts `MAX_INT_BITS`.
         TypeData::Integer { bits } => bits
             .checked_mul(2)
+            .filter(|width| *width <= MAX_INT_BITS)
             .map(|width| int_type(module, width))
             .ok_or_else(intrinsic_mismatch),
         TypeData::FixedVector { elem, n } => {
@@ -2901,8 +2928,8 @@ mod tests {
                 fixed_vector_type(module_ref, f32_ty, lanes::<4>())?,
                 2,
             )?,
-            fn_type_with_var_arg(module_ref, i32_ty, [i32_ty, ptr_ty], false).as_type(),
-            fn_type_with_var_arg(module_ref, void_type(module_ref), [i32_ty], true).as_type(),
+            fn_type_with_var_arg(module_ref, i32_ty, [i32_ty, ptr_ty], false)?.as_type(),
+            fn_type_with_var_arg(module_ref, void_type(module_ref), [i32_ty], true)?.as_type(),
             module.struct_type([i32_ty, ptr_ty])?.as_type(),
             module.opaque_struct("named")?.as_type(),
             target_ext_type(module_ref, "aarch64.svcount", [], []),
@@ -2927,6 +2954,19 @@ mod tests {
             );
         }
 
+        // The function arm's whole spelling: `"f_"`, the result, a named
+        // struct's `"s_" + name + "s"`, a pointer, `"vararg"`, and the closing
+        // `"f"`.
+        let point = module.get_or_insert_named_struct("Point");
+        module.set_struct_body_dyn(point, [i32_ty], false)?;
+        let with_struct =
+            fn_type_with_var_arg(module_ref, i32_ty, [point.as_type(), ptr_ty], true)?.as_type();
+        let mut name = String::new();
+        assert!(append_mangled_type(with_struct, &mut name).is_ok());
+        assert_eq!(name, "f_i32s_Pointsp0varargf");
+        let (back, consumed) = parse_mangled_type_prefix(module_ref, &name)?;
+        assert_eq!((back, consumed), (with_struct, name.len()));
+
         let packed = module.packed_struct_type([i32_ty])?.as_type();
         let mut name = String::new();
         assert!(append_mangled_type(packed, &mut name).is_ok());
@@ -2946,8 +2986,17 @@ mod tests {
 
         // Spellings no type mangles to: the demangler refuses them rather
         // than build the type they describe — a literal struct of an element
-        // no struct may hold, and a struct the module does not hold.
-        for name in ["sl_isVoids", "sl_Metadatas", "s_absents"] {
+        // no struct may hold, a function type no function may have, an integer
+        // outside `IntegerType`'s bounds, and a struct the module does not
+        // hold.
+        for name in [
+            "sl_isVoids",
+            "sl_Metadatas",
+            "f_i32isVoidf",
+            "f_Metadataf",
+            "i16777216",
+            "s_absents",
+        ] {
             assert!(
                 parse_mangled_type_prefix(module_ref, name).is_err(),
                 "`{name}` spells no type"

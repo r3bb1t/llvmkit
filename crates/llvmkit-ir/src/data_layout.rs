@@ -34,7 +34,7 @@ use crate::align::{Align, MaybeAlign};
 use crate::capability::Capability;
 use crate::error::DataLayoutError;
 use crate::module::{ModuleBrand, ModuleCore};
-use crate::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
+use crate::r#type::{MAX_INT_BITS, Type, TypeData, TypeSlot, TypeSlotAccess};
 use crate::type_components::lanes;
 
 // --------------------------------------------------------------------------
@@ -1534,9 +1534,11 @@ fn parse_addr_space_and_name(s: &str) -> Result<(u32, String), DataLayoutError> 
 /// Mirrors `getTargetTypeInfo(...).LayoutType` in `lib/IR/Type.cpp`.
 /// Returns the type id of the in-memory layout type for the given
 /// target-extension type. `None` for a type that is not a target extension
-/// type, and for a `riscv.vector.tuple` whose layout would be a zero-lane
-/// vector; an extension upstream's table does not name gets its `void`
-/// default, as upstream does. The full upstream table covers SPIR-V, AArch64
+/// type, and for one `getTargetTypeInfo` can only assert on — a parameter it
+/// reads that the type lacks, or a layout type `IntegerType::get` or
+/// `ScalableVectorType::get` would refuse (`docs/divergences.md` D22). An
+/// extension upstream's table does not name gets its `void` default, as
+/// upstream does. The full upstream table covers SPIR-V, AArch64
 /// (`aarch64.svcount`), RISC-V (`riscv.vector.tuple`), DirectX
 /// (`dx.*`), AMDGPU (`amdgcn.named.barrier`), and the test
 /// extension (`llvm.test.vectorelement`).
@@ -1552,16 +1554,22 @@ pub(crate) fn target_ext_layout_type(module: &ModuleCore, id: TypeSlot) -> Optio
     if name == "spirv.Image" || name == "spirv.SignedImage" {
         return Some(ctx.ptr_type(0));
     }
-    // SPIR-V typed reads with explicit size + alignment.
-    if name == "spirv.Type" && ext.int_params.len() >= 3 {
-        let size_bytes = u64::from(ext.int_params[1]);
-        let align_bits = u64::from(ext.int_params[2]);
-        if size_bytes > 0 && align_bits > 0 {
-            // ArrayType::get(IntN, size * 8 / align).
-            let int_bits: u32 = align_bits.try_into().unwrap_or(u32::MAX);
-            let elem = ctx.int_type(int_bits);
-            let n = (size_bytes.saturating_mul(8)) / align_bits;
-            return Some(ctx.array_type(elem, n));
+    // SPIR-V typed reads with explicit size + alignment. Upstream asserts the
+    // three integer parameters.
+    if name == "spirv.Type" {
+        let &[_, size, alignment] = ext.int_params.as_ref() else {
+            return None;
+        };
+        if size > 0 && alignment > 0 {
+            // `Type::getIntNTy` reaches `IntegerType::get`, which asserts
+            // `MAX_INT_BITS`.
+            if alignment > MAX_INT_BITS {
+                return None;
+            }
+            // ArrayType::get(IntN, Size * 8 / Alignment), on `unsigned`s: the
+            // product wraps before the division.
+            let elem = ctx.int_type(alignment);
+            return Some(ctx.array_type(elem, u64::from(size.wrapping_mul(8) / alignment)));
         }
         return Some(ctx.int_type(32));
     }
@@ -1569,9 +1577,10 @@ pub(crate) fn target_ext_layout_type(module: &ModuleCore, id: TypeSlot) -> Optio
     if name == "spirv.IntegralConstant" || name == "spirv.Literal" {
         return Some(ctx.void());
     }
-    // SPIR-V padding: byte-array of N bytes.
+    // SPIR-V padding: byte-array of N bytes. `getIntParameter(0)` asserts the
+    // parameter exists.
     if name == "spirv.Padding" {
-        let n = u64::from(*ext.int_params.first().unwrap_or(&0));
+        let n = u64::from(*ext.int_params.first()?);
         return Some(ctx.array_type(ctx.int_type(8), n));
     }
     // Other SPIR-V types: opaque pointer.
@@ -1583,25 +1592,26 @@ pub(crate) fn target_ext_layout_type(module: &ModuleCore, id: TypeSlot) -> Optio
         return Some(ctx.scalable_vector_type(ctx.int_type(1), lanes::<16>()));
     }
     // RISC-V vector tuple. Layout = <vscale x N x i8> where N is
-    // computed from the tuple's first scalable-vector type parameter.
-    if name == "riscv.vector.tuple"
-        && let Some(first) = ext.type_params.first()
-        && let TypeData::ScalableVector { min, .. } = ctx.type_data(*first)
-    {
+    // computed from the tuple's first scalable-vector type parameter, which
+    // upstream's `cast<ScalableVectorType>` asserts it is.
+    if name == "riscv.vector.tuple" {
+        let TypeData::ScalableVector { min, .. } = ctx.type_data(*ext.type_params.first()?) else {
+            return None;
+        };
         // Upstream uses `RISCV::RVVBytesPerBlock` (== 8) as the floor.
         const RVV_BYTES_PER_BLOCK: u32 = 8;
         let lanes = core::cmp::max(min.get(), RVV_BYTES_PER_BLOCK);
-        let count_factor = ext.int_params.first().copied().unwrap_or(0);
-        // Upstream's `getTargetTypeInfo` passes this product to
+        let count_factor = *ext.int_params.first()?;
+        // Upstream's `getTargetTypeInfo` passes this `unsigned` product to
         // `ScalableVectorType::get`, which asserts `MinNumElts > 0`; llvmkit
         // has no zero-lane vector, so a zero-count tuple has no layout type
         // and is unsized (`Type::isSizedDerivedType` asks the layout type).
-        let total = NonZeroU32::new(lanes.saturating_mul(count_factor))?;
+        let total = NonZeroU32::new(lanes.wrapping_mul(count_factor))?;
         return Some(ctx.scalable_vector_type(ctx.int_type(8), total));
     }
-    // DirectX padding.
+    // DirectX padding. `getIntParameter(0)` asserts the parameter exists.
     if name == "dx.Padding" {
-        let n = u64::from(*ext.int_params.first().unwrap_or(&0));
+        let n = u64::from(*ext.int_params.first()?);
         return Some(ctx.array_type(ctx.int_type(8), n));
     }
     // Other DirectX types: opaque pointer.

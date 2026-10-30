@@ -2,10 +2,10 @@
 //! them, and the erased routes that refuse to.
 
 use llvmkit_ir::{
-    ArrLenDyn, ArrayType, ConstantFolder, Dyn, ElemDyn, IntrinsicId, IrBuilder, IrBuilderFolder,
-    IrError, LenDyn, Linkage, Module, ShuffleMaskElem, TargetExtParameterRule, Type, TypeKindLabel,
-    TypePosition, TypedPointee, TypedPointerType, VectorType,
-    constant_fold_shuffle_vector_instruction, lanes,
+    ArrLenDyn, ArrayType, ConstantFolder, DataLayout, Dyn, ElemDyn, IntrinsicId, IrBuilder,
+    IrBuilderFolder, IrError, LenDyn, Linkage, MAX_INT_BITS, Module, ShuffleMaskElem,
+    TargetExtParameterRule, TargetExtProperty, Type, TypeKindLabel, TypePosition, TypedPointee,
+    TypedPointerType, VectorType, constant_fold_shuffle_vector_instruction, lanes,
 };
 
 /// `VectorType::of` keeps the element marker and builds in the element's own
@@ -105,6 +105,77 @@ fn a_zero_count_riscv_tuple_has_no_layout() {
         .expect("valid target type")
         .as_type();
     assert!(two.is_sized());
+}
+
+/// Each target type `getTargetTypeInfo` (`lib/IR/Type.cpp`) can only assert on
+/// has no layout and no properties: a `spirv.Type` without its three integer
+/// parameters, a `spirv.Padding` or `dx.Padding` without its size, a
+/// `riscv.vector.tuple` over a non-scalable part, and a `spirv.Type` whose
+/// alignment `IntegerType::get` refuses. `checkParams` admits them all and they
+/// parse, so they exist; what upstream cannot do is lay them out. The tuple's
+/// `HasZeroInit`, which the name alone would answer, is refused with its layout.
+/// llvmkit-specific regression (D10): these got a pointer, a `[0 x i8]`, a
+/// `void`, and an integer no parser reads; `docs/divergences.md` D22 records
+/// the difference. The well-formed spelling of each is the positive control.
+#[test]
+fn a_target_type_upstream_asserts_on_has_no_layout() {
+    let m = Module::dynamic("components");
+    let dl = DataLayout::default();
+    let no_types = Vec::<Type<'_, _>>::new();
+    let part = VectorType::scalable_of(m.i8_type(), lanes::<8>()).as_type();
+    for (name, types, ints) in [
+        ("spirv.Type", no_types.clone(), vec![0, 4]),
+        ("spirv.Type", no_types.clone(), vec![0, 4, 32, 1]),
+        ("spirv.Type", no_types.clone(), vec![0, 1, MAX_INT_BITS + 1]),
+        ("spirv.Padding", no_types.clone(), vec![]),
+        ("dx.Padding", no_types.clone(), vec![]),
+        ("riscv.vector.tuple", vec![m.i32_type().as_type()], vec![2]),
+    ] {
+        let ty = m
+            .target_ext_type(name, types, ints.clone())
+            .expect("`checkParams` admits it");
+        assert!(!ty.as_type().is_sized(), "{name} {ints:?}");
+        assert_eq!(dl.type_size_in_bits(ty.as_type()), 0, "{name} {ints:?}");
+        for property in [
+            TargetExtProperty::HasZeroInit,
+            TargetExtProperty::CanBeGlobal,
+            TargetExtProperty::CanBeLocal,
+        ] {
+            assert!(!ty.has_property(property), "{name} {ints:?} {property:?}");
+        }
+    }
+    for (name, types, ints) in [
+        ("spirv.Type", no_types.clone(), vec![0, 4, 32]),
+        ("spirv.Type", no_types.clone(), vec![0, 1, MAX_INT_BITS]),
+        ("spirv.Padding", no_types.clone(), vec![4]),
+        ("dx.Padding", no_types.clone(), vec![4]),
+        ("riscv.vector.tuple", vec![part], vec![2]),
+    ] {
+        let ty = m
+            .target_ext_type(name, types, ints.clone())
+            .expect("`checkParams` admits it");
+        assert!(ty.as_type().is_sized(), "{name} {ints:?}");
+    }
+}
+
+/// `getTargetTypeInfo`'s `spirv.Type` arm computes `Size * 8 / Alignment` on
+/// `unsigned`s (`TargetExtType::getIntParameter` returns one), so the product
+/// wraps at 32 bits before the division: a size of `1 << 29` is an empty array.
+/// llvmkit-specific regression: the port widened the product to `u64`, which
+/// answers `1 << 32` bits. No upstream test reaches the wrap. A size below it
+/// is the positive control.
+#[test]
+fn a_spirv_type_layout_multiplies_as_upstream_does() {
+    let m = Module::dynamic("components");
+    let dl = DataLayout::default();
+    let size_of = |size: u32| {
+        let ty = m
+            .target_ext_type("spirv.Type", Vec::<Type<'_, _>>::new(), [0, size, 8])
+            .expect("three integer parameters");
+        dl.type_size_in_bits(ty.as_type())
+    };
+    assert_eq!(size_of(1 << 29), 0);
+    assert_eq!(size_of(4), 32);
 }
 
 /// An intrinsic name whose overload suffix spells a zero-lane vector, or a
@@ -248,6 +319,102 @@ fn an_intrinsic_name_cannot_spell_an_invalid_target_type() {
     }
     m.get_or_insert_intrinsic_declaration_by_name("llvm.ssa.copy.tamdgcn.named.barrier_0t")
         .expect("`target(\"amdgcn.named.barrier\", 0)` is an overload of `llvm.ssa.copy`");
+}
+
+/// An intrinsic name whose overload suffix spells a function type
+/// `FunctionType::FunctionType` asserts against does not demangle.
+/// Upstream's `getMangledTypeStr` (`lib/IR/Intrinsics.cpp`) spells a function
+/// type `"f_"` + its result + its parameters + `"f"` from a type that exists,
+/// so no upstream name reads `f_i32isVoidf` or `f_Metadataf`. llvmkit-specific
+/// regression (D10): the demangler built `i32 (void)` straight into the arena.
+/// `llvm.ssa.copy.i32` is the positive control; the `f_` arm's valid spellings
+/// are `every_mangled_type_demangles_to_itself`'s.
+#[test]
+fn an_intrinsic_name_cannot_spell_an_invalid_function_type() {
+    let m = Module::dynamic("components");
+    for name in ["llvm.ssa.copy.f_i32isVoidf", "llvm.ssa.copy.f_Metadataf"] {
+        let refused = m.get_or_insert_intrinsic_declaration_by_name(name);
+        assert!(
+            matches!(refused, Err(IrError::IntrinsicSignatureMismatch { .. })),
+            "{name}: {refused:?}"
+        );
+    }
+    m.get_or_insert_intrinsic_declaration_by_name("llvm.ssa.copy.i32")
+        .expect("`i32` is an overload of `llvm.ssa.copy`");
+}
+
+/// An overload that makes the intrinsic's own signature invalid declares
+/// nothing: `llvm.ssa.copy` is `T (T)`, and `Intrinsic::getType`
+/// (`lib/IR/Intrinsics.cpp`) hands the decoded types to `FunctionType::get`,
+/// whose constructor asserts `isValidReturnType` and `isValidArgumentType`.
+/// llvmkit-specific regression (D10): `metadata (metadata)` was declared, and
+/// printed a `declare` no parser reads back. `i32` is the positive control.
+#[test]
+fn an_overload_cannot_make_an_intrinsic_signature_invalid() {
+    let m = Module::dynamic("components");
+    let ssa_copy = IntrinsicId::lookup("llvm.ssa.copy").expect("`llvm.ssa.copy` is an intrinsic");
+    let function = m
+        .function_type_no_parameters(m.i32_type())
+        .expect("a valid function type")
+        .as_type();
+    let opaque = m.opaque_struct("Opaque").expect("fresh name").as_type();
+    for overload in [
+        m.metadata_type().as_type(),
+        m.label_type().as_type(),
+        function,
+        opaque,
+    ] {
+        let refused = m.get_or_insert_intrinsic_declaration_by_id(ssa_copy, [overload]);
+        assert!(refused.is_err(), "{overload}: {refused:?}");
+    }
+    let refused = m.get_or_insert_intrinsic_declaration_by_name("llvm.ssa.copy.Metadata");
+    assert!(
+        matches!(refused, Err(IrError::IntrinsicSignatureMismatch { .. })),
+        "{refused:?}"
+    );
+    m.get_or_insert_intrinsic_declaration_by_id(ssa_copy, [m.i32_type().as_type()])
+        .expect("`i32 (i32)` is a valid signature");
+}
+
+/// An intrinsic name whose overload suffix spells an integer outside
+/// `MIN_INT_BITS..=MAX_INT_BITS` does not demangle: `getMangledTypeStr`
+/// (`lib/IR/Intrinsics.cpp`) spells only integers that exist, and
+/// `IntegerType::get` asserts both bounds. llvmkit-specific regression (D10):
+/// the demangler built `i16777216`, whose printed `declare` no lexer reads
+/// back. `MAX_INT_BITS` itself is the positive control.
+#[test]
+fn an_intrinsic_name_cannot_spell_an_integer_llvm_has_no_width_for() {
+    let m = Module::dynamic("components");
+    let refused = m.get_or_insert_intrinsic_declaration_by_name(format!(
+        "llvm.ssa.copy.i{}",
+        MAX_INT_BITS + 1
+    ));
+    assert!(
+        matches!(refused, Err(IrError::IntrinsicSignatureMismatch { .. })),
+        "{refused:?}"
+    );
+    m.get_or_insert_intrinsic_declaration_by_name(format!("llvm.ssa.copy.i{MAX_INT_BITS}"))
+        .expect("`MAX_INT_BITS` is a legal width");
+}
+
+/// A signature that doubles an overload's integer past `MAX_INT_BITS` does not
+/// fit: `Type::getExtendedType` (`include/llvm/IR/DerivedTypes.h`) reaches
+/// `IntegerType::get`, which asserts the bound. `llvm.aarch64.neon.sqxtn` takes
+/// `LLVMExtendedType<0>`. llvmkit-specific regression (D10): the decoder built
+/// an integer twice `MAX_INT_BITS` wide. An overload half that wide is the
+/// positive control.
+#[test]
+fn an_extended_integer_overload_stays_inside_the_width_limit() {
+    let m = Module::dynamic("components");
+    let refused = m.get_or_insert_intrinsic_declaration_by_name(format!(
+        "llvm.aarch64.neon.sqxtn.i{MAX_INT_BITS}"
+    ));
+    assert!(refused.is_err(), "{refused:?}");
+    m.get_or_insert_intrinsic_declaration_by_name(format!(
+        "llvm.aarch64.neon.sqxtn.i{}",
+        MAX_INT_BITS / 2
+    ))
+    .expect("doubling half of `MAX_INT_BITS` lands on it");
 }
 
 /// An intrinsic name whose overload suffix spells a zero-length array

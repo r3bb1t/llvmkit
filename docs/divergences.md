@@ -825,6 +825,40 @@ before interning is the only order that keeps none in the arena.
 and `crates/llvmkit-ir/tests/type_components.rs::an_intrinsic_name_cannot_spell_an_invalid_target_type`
 (the intrinsic demangler applies the same rule).
 
+### D22 — A target type `getTargetTypeInfo` can only assert on has no layout
+
+**Severity:** model-gap — such a type parses, in llvmkit and in LLVM, because
+`TargetExtType::checkParams` looks at no parameter beyond three names' counts.
+What differs is the answer to a query about it.
+**Where:** `crates/llvmkit-ir/src/data_layout.rs` — `target_ext_layout_type`,
+read by `Type::is_sized`, `DataLayout`'s size and alignment queries, and
+`TargetExtType::has_property`.
+
+**LLVM:** `getTargetTypeInfo` (`lib/IR/Type.cpp`) builds the layout type and the
+properties together, so `hasProperty`, `getLayoutType` and `isSized` all pass
+through it. It asserts on five inputs: a `spirv.Type` without exactly three
+integer parameters; a `spirv.Padding` or `dx.Padding` without its size
+(`TargetExtType::getIntParameter`'s index assert); a `riscv.vector.tuple` whose
+first type parameter is no scalable vector (`cast<ScalableVectorType>`) or whose
+count is zero (`ScalableVectorType::get`'s `MinNumElts > 0`); and a `spirv.Type`
+whose alignment `IntegerType::get` refuses as wider than `MAX_INT_BITS`. An
+assertions build aborts on the first query. What a release build answers
+depends on the arm, and some arms read past the parameter array.
+
+**llvmkit:** `target_ext_layout_type` answers `None` for all five, so the type
+is unsized, `DataLayout` sizes it as 0 bits with an alignment of 1, and
+`has_property` answers `false` for every property.
+
+**Why:** a query that reads a malformed type must not abort or read out of
+bounds (Doctrine D10), and each of these layout types is one llvmkit cannot
+build. `checkParams` cannot refuse them instead: `llvm-as` accepts their text,
+so a refusal at construction would make `.ll` that LLVM reads unreadable here.
+
+**Fix:** none — this is hardening of an assert, as D17 and D18 are.
+
+**Guarded by:** `crates/llvmkit-ir/tests/type_components.rs::a_target_type_upstream_asserts_on_has_no_layout`,
+`crates/llvmkit-ir/tests/type_components.rs::a_zero_count_riscv_tuple_has_no_layout`.
+
 ---
 
 ---

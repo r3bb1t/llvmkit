@@ -1495,7 +1495,13 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> TargetExtType<'ctx, B, C> {
             .expect("TargetExtType invariant: wraps TargetExt");
         t.int_params.iter().copied()
     }
+    /// Mirrors `TargetExtType::hasProperty`. Upstream reads the properties off
+    /// `getTargetTypeInfo`, which also builds the layout type, so a type it
+    /// can only assert on has none here (`docs/divergences.md` D22).
     pub fn has_property(self, property: TargetExtProperty) -> bool {
+        if crate::data_layout::target_ext_layout_type(self.module.module(), self.id).is_none() {
+            return false;
+        }
         let name = self.name();
         match name {
             "spirv.Image" | "spirv.SignedImage" | "spirv.Type" => {
