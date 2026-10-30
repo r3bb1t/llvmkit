@@ -32,53 +32,156 @@ use crate::int_width::{IntoIntValue, Width};
 use crate::marker::{Dyn, Ptr, ReturnMarker};
 use crate::module::{ModuleBrand, ModuleRef, UniqueBrand};
 use crate::struct_body_state::BodySet;
-use crate::r#type::{Type, TypeData};
+use crate::r#type::{Type, TypeData, TypeSlotAccess};
 use crate::value::{
     ArrayValue, FloatValue, IntValue, IntoErasedValue, IntoPointerValue, PointerValue, StructValue,
     Value,
 };
 use crate::{Branded, CrateOnly};
 
-/// Home of [`Minting`]. Private, so the type is nameable nowhere outside
-/// llvmkit — the hidden [`FieldLayout::mint_type`] names it, and only llvmkit
+/// Home of [`MintPlan`]. Private, so the type is nameable nowhere outside
+/// llvmkit — the hidden [`FieldLayout::plan_mint`] names it, and only llvmkit
 /// can build one.
-mod minting {
-    /// The schemas one minting call is inside, by LLVM name. A nested schema
-    /// found here is being minted further up the same call — it contains
-    /// itself by value — so the minter hands back its still-opaque named type
-    /// instead of recursing (`ModuleRef::mint_struct_of`).
+mod mint_plan {
+    use crate::error::RenderedType;
+
+    /// A schema the walk is inside.
+    #[derive(Debug)]
+    pub(super) struct Frame {
+        pub(super) name: &'static str,
+        /// A field of this schema, at any depth, named this schema again.
+        pub(super) reentered: bool,
+        /// A field, at any depth, named a schema still in progress, so the body
+        /// the mint would set here holds a struct that has no body yet.
+        pub(super) open: bool,
+    }
+
+    /// The body a mint would have set by this point of the walk.
+    #[derive(Debug)]
+    pub(super) struct PlannedBody {
+        pub(super) name: &'static str,
+        pub(super) packed: bool,
+        pub(super) elements: Vec<RenderedType>,
+        /// [`Frame::open`] when this body's frame closed.
+        pub(super) open: bool,
+    }
+
+    /// One walk of a schema tree: what a mint would do, with nothing done. A
+    /// mint reads its own earlier work, so the walk has to as well: `frames` are
+    /// the schemas it is inside, and `planned` the bodies it would have set.
+    ///
+    /// Only the walk uses this. It finds every refusal first, so the mint that
+    /// follows has no schema to re-enter and no body to refuse
+    /// (`ModuleRef::mint_struct_of`).
     #[derive(Debug, Default)]
-    pub struct Minting {
-        pub(super) in_progress: Vec<&'static str>,
+    pub struct MintPlan {
+        pub(super) frames: Vec<Frame>,
+        pub(super) planned: Vec<PlannedBody>,
     }
 }
 
-pub(crate) use minting::Minting;
+pub(crate) use mint_plan::MintPlan;
+use mint_plan::{Frame, PlannedBody};
 
-impl Minting {
-    /// A minting call with no schema in progress.
+impl MintPlan {
+    /// A walk with nothing in progress and nothing planned.
     #[inline]
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    /// Whether the schema named `name` is being minted further up this call.
-    #[inline]
-    pub(crate) fn is_minting(&self, name: &'static str) -> bool {
-        self.in_progress.contains(&name)
+    /// Record a field naming the schema `name`, if the walk is inside it: a
+    /// by-value cycle. The frame is left to refuse when it closes, because a mint
+    /// sets bodies deepest first and that is where it would refuse.
+    fn reenter(&mut self, name: &'static str) -> bool {
+        let Some(frame) = self.frames.iter_mut().find(|frame| frame.name == name) else {
+            return false;
+        };
+        frame.reentered = true;
+        if let Some(innermost) = self.frames.last_mut() {
+            innermost.open = true;
+        }
+        true
     }
 
     /// Enter the schema named `name`.
-    #[inline]
-    pub(crate) fn begin(&mut self, name: &'static str) {
-        self.in_progress.push(name);
+    fn enter(&mut self, name: &'static str) {
+        self.frames.push(Frame {
+            name,
+            reentered: false,
+            open: false,
+        });
     }
 
-    /// Leave the schema entered last.
-    #[inline]
-    pub(crate) fn end(&mut self) {
-        self.in_progress.pop();
+    /// Leave the schema entered last. Whatever it left open is open for the
+    /// schema that holds it too.
+    fn leave(&mut self) -> Option<Frame> {
+        let frame = self.frames.pop()?;
+        if let Some(outer) = self.frames.last_mut() {
+            outer.open |= frame.open;
+        }
+        Some(frame)
     }
+
+    /// The body planned for `name`.
+    fn planned(&self, name: &str) -> Option<&PlannedBody> {
+        self.planned.iter().find(|body| body.name == name)
+    }
+}
+
+/// Whether `%S` has a body by this point of the walk: one in the module or one
+/// the walk has planned, which is where a mint would have put it.
+fn has_body<'ctx, S, B>(module: ModuleRef<'ctx, B, ReadOnly>, plan: &MintPlan) -> bool
+where
+    S: StructSchema,
+    B: ModuleBrand + 'ctx,
+{
+    plan.planned(S::NAME).is_some()
+        || module.context().named_struct(S::NAME).is_some_and(|slot| {
+            match module.context().type_data(slot) {
+                TypeData::Struct(data) => data.body.borrow().is_some(),
+                _ => false,
+            }
+        })
+}
+
+/// Whether `%S`, as this point of the walk would find it, is schema `S`: what
+/// `matches_type` would answer of the module a mint would have made so far. A
+/// body comes from the plan first, since a planned struct may be opaque in the
+/// module. One that holds a struct with no body yet matches nothing, as
+/// `matches_type` says of a struct with no body.
+fn confirms<'ctx, S, B>(
+    module: ModuleRef<'ctx, B, ReadOnly>,
+    plan: &MintPlan,
+    token: CrateOnly,
+) -> bool
+where
+    S: StructSchema,
+    B: ModuleBrand + 'ctx,
+{
+    let expected = <S::Fields as FieldList>::rendered_fields(module, token);
+    let shallow = if let Some(body) = plan.planned(S::NAME) {
+        !body.open && body.packed == S::PACKED && body.elements == expected
+    } else {
+        let Some(slot) = module.context().named_struct(S::NAME) else {
+            return false;
+        };
+        let TypeData::Struct(data) = module.context().type_data(slot) else {
+            return false;
+        };
+        let body = data.body.borrow();
+        let Some(body) = body.as_ref() else {
+            return false;
+        };
+        body.packed == S::PACKED
+            && body.elements.len() == expected.len()
+            && body
+                .elements
+                .iter()
+                .zip(&expected)
+                .all(|(element, field)| Type::new(*element, module).rendered() == *field)
+    };
+    shallow && <S::Fields as FieldList>::confirm_fields(module, plan, token)
 }
 
 mod layout_sealed {
@@ -109,15 +212,50 @@ pub trait FieldLayout: layout_sealed::Sealed + Sized + 'static {
     type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability>: Copy;
 
     /// Build this layout's type in `module`, whose reference is [`Mutable`]
-    /// because a schema's struct is created and its body set here (D8). A
-    /// schema's struct type may be refused — [`IrError::StructBodyMismatch`],
-    /// [`IrError::RecursiveStructBody`] — and a scalar's never is.
+    /// because a schema's struct is created and its body set here (D8). Only
+    /// [`ModuleRef::mint_layout`] calls this, after
+    /// [`plan_mint`](Self::plan_mint) has answered yes, so a mint is not refused.
     #[doc(hidden)]
     fn mint_type<'ctx, B: ModuleBrand + 'ctx>(
         module: ModuleRef<'ctx, B>,
-        minting: &mut Minting,
         token: CrateOnly,
     ) -> IrResult<Type<'ctx, B>>;
+
+    /// What [`mint_type`](Self::mint_type) would answer here, with nothing
+    /// created: the module is [`ReadOnly`], so nothing can be. A schema's struct
+    /// may be refused — [`IrError::StructBodyMismatch`],
+    /// [`IrError::RecursiveStructBody`] — and a scalar's never is, so a scalar
+    /// has nothing to plan.
+    #[doc(hidden)]
+    fn plan_mint<'ctx, B: ModuleBrand + 'ctx>(
+        _module: ModuleRef<'ctx, B, ReadOnly>,
+        _plan: &mut MintPlan,
+        _token: CrateOnly,
+    ) -> IrResult<()> {
+        Ok(())
+    }
+
+    /// Whether this layout's nested schemas are, at this point of a walk, the
+    /// schemas it names. A scalar's spelling said everything already.
+    #[doc(hidden)]
+    fn confirm_nested<'ctx, B: ModuleBrand + 'ctx>(
+        _module: ModuleRef<'ctx, B, ReadOnly>,
+        _plan: &MintPlan,
+        _token: CrateOnly,
+    ) -> bool {
+        true
+    }
+
+    /// Keep `ty`, a type a whole check has just answered yes to, as this layout
+    /// says it is: a schema's struct is held by its name from here on, and a
+    /// scalar has no name to hold. Separate from
+    /// [`matches_type`](Self::matches_type), which only reads.
+    #[doc(hidden)]
+    fn hold_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        _ty: Type<'ctx, B, C>,
+        _token: CrateOnly,
+    ) {
+    }
 
     /// This layout's type as a diagnostic names it, at any capability: a
     /// schema is spelled from its name, so naming the type a check wanted
@@ -297,8 +435,8 @@ where
 /// typed loads, typed parameters) mint the values they produce. So holding a
 /// `SchemaValue<S>` proves the value has `S`'s type, and a schema's value
 /// type, which holds one, needs no check of its own. The proof holds for the
-/// life of the value because a struct a schema minted or checked cannot be
-/// renamed: [`IrError::SchemaStructNameNotSettable`].
+/// life of the value because a struct a schema minted, or a whole check
+/// confirmed, cannot be renamed: [`IrError::SchemaStructNameNotSettable`].
 #[derive(Branded)]
 pub struct SchemaValue<'ctx, S: StructSchema, B: ModuleBrand, C: Capability = Mutable> {
     raw: StructValue<'ctx, B, C>,
@@ -334,6 +472,10 @@ where
     {
         let raw = value.try_into_struct_value()?;
         check_struct_identity::<S, B, C>(raw)?;
+        // At any capability: a read-only value is a `FieldArg` for a mutable
+        // build, so this proof does not stay read-only (`docs/divergences.md`
+        // D23).
+        <S as FieldLayout>::hold_type(raw.ty().as_type(), CrateOnly(()));
         Ok(Self::new_unchecked(raw))
     }
 
@@ -556,11 +698,69 @@ where
     #[inline]
     fn mint_type<'ctx, B: ModuleBrand + 'ctx>(
         module: ModuleRef<'ctx, B>,
-        minting: &mut Minting,
         _token: CrateOnly,
     ) -> IrResult<Type<'ctx, B>> {
-        let slot = module.mint_struct_of::<S>(minting)?;
+        let slot = module.mint_struct_of::<S>()?;
         Ok(Type::new(slot, module))
+    }
+
+    /// The mint's arms in the mint's order. A schema already in progress is a
+    /// by-value cycle; `%S` with a body is confirmed or refused; otherwise the
+    /// fields are walked, and a body containing `%S` is refused as the mint's
+    /// `StructType::setBodyOrError` would, once the fields are done. The name
+    /// each refusal carries is the one the mint's would.
+    fn plan_mint<'ctx, B: ModuleBrand + 'ctx>(
+        module: ModuleRef<'ctx, B, ReadOnly>,
+        plan: &mut MintPlan,
+        token: CrateOnly,
+    ) -> IrResult<()> {
+        if plan.reenter(S::NAME) {
+            return Ok(());
+        }
+        if has_body::<S, B>(module, plan) {
+            return if confirms::<S, B>(module, plan, token) {
+                Ok(())
+            } else {
+                Err(IrError::StructBodyMismatch {
+                    name: S::NAME.to_owned(),
+                })
+            };
+        }
+        plan.enter(S::NAME);
+        let fields = <S::Fields as FieldList>::plan_mints(module, plan, token);
+        let frame = plan.leave();
+        fields?;
+        if frame.as_ref().is_some_and(|frame| frame.reentered) {
+            return Err(IrError::RecursiveStructBody {
+                name: S::NAME.to_owned(),
+            });
+        }
+        plan.planned.push(PlannedBody {
+            name: S::NAME,
+            packed: S::PACKED,
+            elements: <S::Fields as FieldList>::rendered_fields(module, token),
+            open: frame.is_some_and(|frame| frame.open),
+        });
+        Ok(())
+    }
+
+    #[inline]
+    fn confirm_nested<'ctx, B: ModuleBrand + 'ctx>(
+        module: ModuleRef<'ctx, B, ReadOnly>,
+        plan: &MintPlan,
+        token: CrateOnly,
+    ) -> bool {
+        confirms::<S, B>(module, plan, token)
+    }
+
+    #[inline]
+    fn hold_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        ty: Type<'ctx, B, C>,
+        _token: CrateOnly,
+    ) {
+        ty.module
+            .context()
+            .hold_schema_struct(ty.slot_trusting_same_module());
     }
 
     #[inline]
@@ -593,17 +793,9 @@ where
             .iter()
             .map(|slot| Type::new(*slot, ty.module))
             .collect();
-        let matched = <S::Fields as FieldList>::matches_types(&fields, token);
-        // Every caller of a match relies on a yes: it mints a `SchemaValue`,
-        // or a typed function, or it is the minter confirming a body. So the
-        // answer has to stay true, and the one thing that could falsify it is
-        // a rename, which `Module::set_struct_name` refuses on this mark. Set
-        // here rather than at each caller so that no caller can forget, and
-        // a nested schema is marked by its own arm of this walk.
-        if matched {
-            data.schema_held.set(true);
-        }
-        matched
+        // Only reads. A caller whose proof outlives this answer holds the struct
+        // itself, once its whole check has said yes: `FieldLayout::hold_type`.
+        <S::Fields as FieldList>::matches_types(&fields, token)
     }
 
     #[inline]
@@ -682,7 +874,6 @@ macro_rules! impl_int_layout {
             #[inline]
             fn mint_type<'ctx, B: ModuleBrand + 'ctx>(
                 module: ModuleRef<'ctx, B>,
-                _minting: &mut Minting,
                 _token: CrateOnly,
             ) -> IrResult<Type<'ctx, B>> {
                 Ok(module.$method().as_type())
@@ -791,7 +982,6 @@ impl<const N: u32> FieldLayout for Width<N> {
     #[inline]
     fn mint_type<'ctx, B: ModuleBrand + 'ctx>(
         module: ModuleRef<'ctx, B>,
-        _minting: &mut Minting,
         _token: CrateOnly,
     ) -> IrResult<Type<'ctx, B>> {
         Ok(module.int_type_n::<N>().as_type())
@@ -879,7 +1069,6 @@ macro_rules! impl_float_layout {
             #[inline]
             fn mint_type<'ctx, B: ModuleBrand + 'ctx>(
                 module: ModuleRef<'ctx, B>,
-                _minting: &mut Minting,
                 _token: CrateOnly,
             ) -> IrResult<Type<'ctx, B>> {
                 Ok(module.$method().as_type())
@@ -963,7 +1152,6 @@ impl<const AS: u32> FieldLayout for Ptr<AS> {
     #[inline]
     fn mint_type<'ctx, B: ModuleBrand + 'ctx>(
         module: ModuleRef<'ctx, B>,
-        _minting: &mut Minting,
         _token: CrateOnly,
     ) -> IrResult<Type<'ctx, B>> {
         Ok(module.ptr_type_in::<AS>().as_type())
@@ -1056,10 +1244,9 @@ impl<L: ArrayElementLayout, const N: usize> FieldLayout for [L; N] {
     #[inline]
     fn mint_type<'ctx, B: ModuleBrand + 'ctx>(
         module: ModuleRef<'ctx, B>,
-        minting: &mut Minting,
         token: CrateOnly,
     ) -> IrResult<Type<'ctx, B>> {
-        let element = L::mint_type(module, minting, token)?;
+        let element = L::mint_type(module, token)?;
         Ok(module.array_type(element, static_len_u64(N))?.as_type())
     }
 
@@ -1233,7 +1420,6 @@ pub trait FieldList: field_list_sealed::Sealed {
     #[doc(hidden)]
     fn mint_types<'ctx, B: ModuleBrand + 'ctx>(
         module: ModuleRef<'ctx, B>,
-        minting: &mut Minting,
         token: CrateOnly,
     ) -> IrResult<Vec<Type<'ctx, B>>>;
 
@@ -1244,6 +1430,29 @@ pub trait FieldList: field_list_sealed::Sealed {
         types: &[Type<'ctx, B, C>],
         token: CrateOnly,
     ) -> bool;
+
+    /// Each field's [`FieldLayout::plan_mint`], in order.
+    #[doc(hidden)]
+    fn plan_mints<'ctx, B: ModuleBrand + 'ctx>(
+        module: ModuleRef<'ctx, B, ReadOnly>,
+        plan: &mut MintPlan,
+        token: CrateOnly,
+    ) -> IrResult<()>;
+
+    /// Each field's [`FieldLayout::confirm_nested`].
+    #[doc(hidden)]
+    fn confirm_fields<'ctx, B: ModuleBrand + 'ctx>(
+        module: ModuleRef<'ctx, B, ReadOnly>,
+        plan: &MintPlan,
+        token: CrateOnly,
+    ) -> bool;
+
+    /// Each field's type as a diagnostic spells it, creating nothing.
+    #[doc(hidden)]
+    fn rendered_fields<'ctx, B: ModuleBrand + 'ctx>(
+        module: ModuleRef<'ctx, B, ReadOnly>,
+        token: CrateOnly,
+    ) -> Vec<RenderedType>;
 }
 
 impl field_list_sealed::Sealed for () {}
@@ -1252,7 +1461,6 @@ impl FieldList for () {
     #[inline]
     fn mint_types<'ctx, B: ModuleBrand + 'ctx>(
         _module: ModuleRef<'ctx, B>,
-        _minting: &mut Minting,
         _token: CrateOnly,
     ) -> IrResult<Vec<Type<'ctx, B>>> {
         Ok(Vec::new())
@@ -1265,6 +1473,32 @@ impl FieldList for () {
     ) -> bool {
         types.is_empty()
     }
+
+    #[inline]
+    fn plan_mints<'ctx, B: ModuleBrand + 'ctx>(
+        _module: ModuleRef<'ctx, B, ReadOnly>,
+        _plan: &mut MintPlan,
+        _token: CrateOnly,
+    ) -> IrResult<()> {
+        Ok(())
+    }
+
+    #[inline]
+    fn confirm_fields<'ctx, B: ModuleBrand + 'ctx>(
+        _module: ModuleRef<'ctx, B, ReadOnly>,
+        _plan: &MintPlan,
+        _token: CrateOnly,
+    ) -> bool {
+        true
+    }
+
+    #[inline]
+    fn rendered_fields<'ctx, B: ModuleBrand + 'ctx>(
+        _module: ModuleRef<'ctx, B, ReadOnly>,
+        _token: CrateOnly,
+    ) -> Vec<RenderedType> {
+        Vec::new()
+    }
 }
 
 macro_rules! impl_field_list {
@@ -1275,10 +1509,36 @@ macro_rules! impl_field_list {
             #[inline]
             fn mint_types<'ctx, B: ModuleBrand + 'ctx>(
                 module: ModuleRef<'ctx, B>,
-                minting: &mut Minting,
                 token: CrateOnly,
             ) -> IrResult<Vec<Type<'ctx, B>>> {
-                Ok(vec![$(<$f::Layout as FieldLayout>::mint_type(module, minting, token)?),+])
+                Ok(vec![$(<$f::Layout as FieldLayout>::mint_type(module, token)?),+])
+            }
+
+            #[inline]
+            fn plan_mints<'ctx, B: ModuleBrand + 'ctx>(
+                module: ModuleRef<'ctx, B, ReadOnly>,
+                plan: &mut MintPlan,
+                token: CrateOnly,
+            ) -> IrResult<()> {
+                $(<$f::Layout as FieldLayout>::plan_mint(module, plan, token)?;)+
+                Ok(())
+            }
+
+            #[inline]
+            fn confirm_fields<'ctx, B: ModuleBrand + 'ctx>(
+                module: ModuleRef<'ctx, B, ReadOnly>,
+                plan: &MintPlan,
+                token: CrateOnly,
+            ) -> bool {
+                true $(&& <$f::Layout as FieldLayout>::confirm_nested(module, plan, token))+
+            }
+
+            #[inline]
+            fn rendered_fields<'ctx, B: ModuleBrand + 'ctx>(
+                module: ModuleRef<'ctx, B, ReadOnly>,
+                token: CrateOnly,
+            ) -> Vec<RenderedType> {
+                vec![$(<$f::Layout as FieldLayout>::rendered(module, token)),+]
             }
 
             #[inline]
@@ -1398,12 +1658,36 @@ where
     }
 
     #[inline]
+    fn plan_mints<'ctx, B>(
+        module: ModuleRef<'ctx, B, ReadOnly>,
+        plan: &mut MintPlan,
+        token: CrateOnly,
+    ) -> IrResult<()>
+    where
+        B: ModuleBrand + 'ctx,
+    {
+        <S::Fields as FunctionParamList>::plan_mints(module, plan, token)
+    }
+
+    #[inline]
     fn validate<'ctx, R, B>(function: FunctionValue<'ctx, R, B, ReadOnly>) -> IrResult<()>
     where
         R: ReturnMarker,
         B: ModuleBrand + 'ctx,
     {
         <S::Fields as FunctionParamList>::validate(function)
+    }
+
+    #[inline]
+    fn hold<'ctx, R, B>(
+        function: FunctionValue<'ctx, R, B, ReadOnly>,
+        token: CrateOnly,
+    ) -> IrResult<()>
+    where
+        R: ReturnMarker,
+        B: ModuleBrand + 'ctx,
+    {
+        <S::Fields as FunctionParamList>::hold(function, token)
     }
 
     #[inline]
@@ -1457,11 +1741,31 @@ where
     }
 
     #[inline]
+    fn plan_mint<'ctx, B>(
+        module: ModuleRef<'ctx, B, ReadOnly>,
+        plan: &mut MintPlan,
+        token: CrateOnly,
+    ) -> IrResult<()>
+    where
+        B: ModuleBrand + 'ctx,
+    {
+        <S as FieldLayout>::plan_mint(module, plan, token)
+    }
+
+    #[inline]
     fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
         <S as FieldLayout>::matches_type(ty, CrateOnly(()))
+    }
+
+    #[inline]
+    fn hold_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>, token: CrateOnly)
+    where
+        B: ModuleBrand + 'ctx,
+    {
+        <S as FieldLayout>::hold_type(ty, token);
     }
 
     #[inline]
@@ -1497,11 +1801,31 @@ where
     }
 
     #[inline]
+    fn plan_mint<'ctx, B>(
+        module: ModuleRef<'ctx, B, ReadOnly>,
+        plan: &mut MintPlan,
+        token: CrateOnly,
+    ) -> IrResult<()>
+    where
+        B: ModuleBrand + 'ctx,
+    {
+        <S as FieldLayout>::plan_mint(module, plan, token)
+    }
+
+    #[inline]
     fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
     where
         B: ModuleBrand + 'ctx,
     {
         <S as FieldLayout>::matches_type(ty, CrateOnly(()))
+    }
+
+    #[inline]
+    fn hold_argument<'ctx, B>(arg: Argument<'ctx, B, ReadOnly>, token: CrateOnly)
+    where
+        B: ModuleBrand + 'ctx,
+    {
+        <S as FieldLayout>::hold_type(arg.ty(), token);
     }
 
     fn validate_argument<'ctx, B>(arg: Argument<'ctx, B, ReadOnly>) -> IrResult<()>

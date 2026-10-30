@@ -866,18 +866,18 @@ so a refusal at construction would make `.ll` that LLVM reads unreadable here.
 and this is an API call. No `.ll` text is involved, since `LLParser` never
 renames a struct it has named.
 **Where:** `crates/llvmkit-ir/src/module.rs` — `Module::set_struct_name`, on the
-`schema_held` mark `ModuleRef::mint_struct_of` and the schema arm of
-`FieldLayout::matches_type` (`crates/llvmkit-ir/src/struct_schema.rs`) set.
+`schema_held` mark `Context::hold_schema_struct` sets. Its doors are
+`ModuleRef::mint_struct_of`, `SchemaValue::try_new`, `IrBuilder::extract_field` and
+both `try_from_function`s in `crates/llvmkit-ir/src/function_signature.rs`.
 
 **LLVM:** `StructType::setName` (`lib/IR/Type.cpp`) renames any identified
 struct. LLVM has no schemas, so nothing rests on the name.
 
 **llvmkit:** refuses with `IrError::SchemaStructNameNotSettable` once a schema
-has minted the struct or checked a value, a function signature or an existing
-body against it. A nested schema's struct is held through its own arm of the
-walk. So a struct that passed one field of a check whose next field failed stays
-held, though nothing rests on it: the mark is set where a match answers yes, and
-no caller can then forget it. A struct whose body a schema refused is not held.
+has minted the struct, or a whole check has confirmed a value, a typed signature
+or a field read against it, along with every struct it holds by value. A check
+that fails holds nothing, at any depth: `FieldLayout::matches_type` only reads,
+and each door marks after its own last check has passed.
 
 **Why:** a `StructOf` or a `SchemaValue` proves its value is `%S`, and the
 builds that take no `?` rest on that proof (Doctrine D10). A rename moved the
@@ -885,6 +885,18 @@ struct out from under the name: `rect.build` then wrote an `%Old` into a `%Point
 field, reaching `fold_field_insert`'s `unreachable!` through `ConstantFolder` and
 an invalid `insertvalue` through `NoFolder`. Checking at the panic would leave
 the proof false.
+
+**A read-only check marks too, and that overrides Doctrine D8 here.** D8 says a
+read-only route does not mutate, and this mark does change what a later
+`set_struct_name` answers. It stands because a proof made at `ReadOnly` reaches a
+mutable build by two routes, so an unmarked struct could be renamed under it:
+- A schema's value is a `FieldArg` at any capability, and `IrBuilder::read_field`
+  and `write_field` take a `SchemaValue` at any capability, so a `ReadOnly`
+  `PointValue` from `Module::as_view` goes straight into `rect.build`.
+- `with_typed_signature` answers with a `TypedFunctionId`, which carries no
+  capability, so a check on a verified module reaches a mutable view through
+  `Module::unverify`.
+The mark is no IR: it prints nowhere, and a verified module stays verified.
 
 **Fix:** none owed. Removing it needs a proof that does not rest on the name.
 
@@ -894,7 +906,12 @@ the proof false.
 `crates/llvmkit-ir/tests/derived_struct_schema.rs::a_confirmed_struct_keeps_its_name_and_so_do_its_fields`,
 `crates/llvmkit-ir/tests/derived_struct_schema.rs::a_struct_a_schema_value_checked_keeps_its_name`,
 `crates/llvmkit-ir/tests/derived_struct_schema.rs::a_struct_a_typed_signature_checked_keeps_its_name`,
-`crates/llvmkit-ir/tests/derived_struct_schema.rs::a_struct_no_schema_holds_can_be_renamed`.
+`crates/llvmkit-ir/tests/derived_struct_schema.rs::a_struct_no_schema_holds_can_be_renamed`,
+`crates/llvmkit-ir/tests/derived_struct_schema.rs::a_read_only_proof_reaches_a_build_so_its_check_holds`,
+`crates/llvmkit-ir/tests/struct_schema.rs::a_refused_check_holds_no_struct`,
+`crates/llvmkit-ir/tests/struct_schema.rs::a_refused_signature_holds_no_struct`,
+`crates/llvmkit-ir/tests/struct_schema.rs::a_passing_signature_holds_every_struct_it_names`,
+`crates/llvmkit-ir/tests/struct_schema.rs::a_checked_field_read_holds_the_field_alone`.
 
 ### D24 — Some readers of a scalable size take its known minimum where upstream branches or refuses
 

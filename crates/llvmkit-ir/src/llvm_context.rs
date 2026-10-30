@@ -517,6 +517,26 @@ impl Context {
         id
     }
 
+    /// Hold the struct `id`, and every struct it holds by value, by name: a
+    /// schema minted it or a whole check confirmed it, so a `StructOf` or a
+    /// `SchemaValue` may rest on that name from here on, and
+    /// `Module::set_struct_name` refuses it. A struct already held has its own
+    /// fields held, and a by-value body is finite (`set_named_struct_body`), so
+    /// the walk ends.
+    pub(crate) fn hold_schema_struct(&self, id: TypeSlot) {
+        let Some(data) = self.type_data(id).as_struct() else {
+            return;
+        };
+        if data.schema_held.replace(true) {
+            return;
+        }
+        if let Some(body) = data.body.borrow().as_ref() {
+            for element in &body.elements {
+                self.hold_schema_struct(*element);
+            }
+        }
+    }
+
     /// The name at `index` in the list of every name a struct has held.
     pub(crate) fn struct_name(&self, index: usize) -> Option<&str> {
         self.struct_names.get(index).map(String::as_str)

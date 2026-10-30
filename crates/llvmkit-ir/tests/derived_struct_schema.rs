@@ -854,6 +854,58 @@ fn a_struct_a_schema_value_checked_keeps_its_name() -> Result<(), IrError> {
     Ok(())
 }
 
+/// llvmkit-specific (D8, D10), no upstream counterpart: a read-only check holds
+/// its struct, because its proof does not stay read-only. A `ReadOnly`
+/// `PointValue` is a `FieldArg` at any capability, so `rect.build` on a mutable
+/// builder takes it; and a typed function id carries no capability, so a check on
+/// a verified module reaches a mutable view through `unverify`. Each route would
+/// write an `%Old` into a `%Point` field if the rename went through.
+#[test]
+fn a_read_only_proof_reaches_a_build_so_its_check_holds() -> Result<(), IrError> {
+    let m = module_new!("rename_read_only")?;
+    let i32_ty = m.i32_type();
+    let hand = m.get_or_insert_named_struct("Point");
+    m.set_struct_body_dyn(hand, [i32_ty, i32_ty], false)?;
+    let fn_ty = m.function_type(m.void_type(), [hand.as_type()])?;
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+
+    let p = PointValue::try_from(m.as_view().view(f).param(0)?)?;
+    assert_eq!(
+        m.set_struct_name(hand, "Old"),
+        Err(IrError::SchemaStructNameNotSettable {
+            name: "Point".into(),
+        })
+    );
+    let rect = m.get_or_insert_struct_of::<Rect>()?;
+    let r = rect.build(&b, p, p, "r");
+    let _ = r;
+    b.ret_void()?;
+    assert!(m.verify_borrowed().is_ok());
+
+    let second = module_new!("rename_verified")?;
+    let i32_ty = second.i32_type();
+    let hand = second.get_or_insert_named_struct("Point");
+    second.set_struct_body_dyn(hand, [i32_ty, i32_ty], false)?;
+    let fn_ty = second.function_type(second.void_type(), [hand.as_type()])?;
+    second.add_function_dyn("g", fn_ty, Linkage::External)?;
+    let g = second.function::<()>("g")?.expect("declared above");
+    let verified = second.verify()?;
+    let typed = verified.view(g).with_typed_signature::<fn(Point)>()?;
+    let second = verified.unverify();
+    let hand = second.named_struct("Point").expect("defined above");
+    assert_eq!(
+        second.set_struct_name(hand, "Old"),
+        Err(IrError::SchemaStructNameNotSettable {
+            name: "Point".into(),
+        })
+    );
+    let (point,) = second.view(typed).params();
+    let _: PointValue<'_, _> = point;
+    Ok(())
+}
+
 /// llvmkit-specific (D10), no upstream counterpart: a typed signature that
 /// names a schema proves the function's return and parameter are `%Point`, by
 /// the same check as `a_struct_a_schema_value_checked_keeps_its_name`, so it

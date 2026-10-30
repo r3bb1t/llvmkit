@@ -67,7 +67,7 @@ use super::function::{FunctionValue, IntoCallee};
 use super::function_signature::token::ValidatedFunctionParams;
 use super::function_signature::{
     CallArgs, FunctionParamList, FunctionReturn, FunctionSignature, IntoTypedCallee,
-    IntoVarArgsCallee, TypedFunctionValue,
+    IntoVarArgsCallee, TypedFunctionValue, plan_signature_mint,
 };
 use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::inline_asm::InlineAsm;
@@ -111,8 +111,8 @@ use super::module::{
 };
 use super::struct_body_state::StructBodyDyn;
 use super::struct_schema::{
-    FieldArg, FieldLayout, FieldOf, IntoIrField, IrField, Minting, SchemaValue, StructFieldAt,
-    StructOf, StructSchema, StructSchemaValue,
+    FieldArg, FieldLayout, FieldOf, IntoIrField, IrField, SchemaValue, StructFieldAt, StructOf,
+    StructSchema, StructSchemaValue,
 };
 use super::sync_scope::SyncScope;
 use super::term_open_state::{Closed, Open};
@@ -866,11 +866,7 @@ where
     where
         T: IrField,
     {
-        <T::Layout as FieldLayout>::mint_type(
-            self.mutable_ref(),
-            &mut Minting::new(),
-            CrateOnly(()),
-        )
+        self.mutable_ref().mint_layout::<T::Layout>()
     }
 
     /// Schema `S`'s struct type, minted in this builder's module.
@@ -880,8 +876,8 @@ where
         Sch: StructSchema,
     {
         let module = self.mutable_ref();
-        let slot = module.mint_struct_of::<Sch>(&mut Minting::new())?;
-        Ok(StructType::new(slot, module))
+        let ty = module.mint_layout::<Sch>()?;
+        Ok(StructType::new(ty.slot_trusting_same_module(), module))
     }
 
     /// Position the builder at the end of the block named by a storable
@@ -1401,6 +1397,7 @@ where
         // Build the parameter IR types first, so a failure here appends no
         // block (the erased sibling admits its `&[Type]` up front for the
         // same reason).
+        plan_signature_mint::<(), Params, B>(self.mutable_ref())?;
         let param_types = Params::ir_types(self.mutable_ref())?;
         let bb = function.append_basic_block_unchecked(name);
         // Internal: the block was minted in this module just above.
@@ -3910,6 +3907,8 @@ where
                 got: leaf.rendered(),
             });
         }
+        // The value this answers with proves the leaf is the layout's type.
+        <Field::Layout as FieldLayout>::hold_type(leaf, CrateOnly(()));
         let raw = self.view(self.extract_value(aggregate, [index], name)?);
         // The read has the leaf's type — `extract_value` refuses a fold of
         // any other — and the leaf is the layout's type.
@@ -6427,6 +6426,7 @@ where
     {
         let callee = callee.into_pointer_value(self.mutable_ref())?;
         let module = self.mutable_ref();
+        plan_signature_mint::<Sig::Ret, Sig::Params, B>(module)?;
         let ret = <Sig::Ret as FunctionReturn>::ir_type(module)?;
         let params = <Sig::Params as FunctionParamList>::ir_types(module)?;
         let fn_ty = self.schema_view().function_type(ret, params)?;

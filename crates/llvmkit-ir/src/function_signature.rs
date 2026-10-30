@@ -27,9 +27,25 @@ use crate::int_width::{IntoIntValue, Width};
 use crate::ir_builder::{IrBuilder, Unpositioned, constant_folder::ConstantFolder};
 use crate::marker::{Ptr, ReturnMarker};
 use crate::module::{Module, ModuleBrand, ModuleRef, Unverified};
+use crate::struct_schema::MintPlan;
 use crate::r#type::{Type, TypeKind};
 use crate::value::{FloatValue, IntValue, IntoPointerValue, PointerValue, Value, ValueSlotAccess};
 use crate::value_id::{TypedFunctionId, TypedVarArgsFunctionId};
+
+/// What minting signature `Ret (Params...)` would answer, creating nothing: one
+/// plan over the return and every parameter, in the order
+/// [`FunctionReturn::ir_type`] and [`FunctionParamList::ir_types`] mint them, so
+/// a later refusal leaves no earlier struct behind.
+pub(crate) fn plan_signature_mint<'ctx, Ret, Params, B>(module: ModuleRef<'ctx, B>) -> IrResult<()>
+where
+    Ret: FunctionReturn,
+    Params: FunctionParamList,
+    B: ModuleBrand + 'ctx,
+{
+    let mut plan = MintPlan::new();
+    Ret::plan_mint(module.read_only(), &mut plan, CrateOnly(()))?;
+    Params::plan_mints(module.read_only(), &mut plan, CrateOnly(()))
+}
 
 #[doc(hidden)]
 pub mod token {
@@ -82,10 +98,33 @@ pub trait FunctionReturn: Sized + 'static {
     where
         B: ModuleBrand + 'ctx;
 
+    /// What [`ir_type`](Self::ir_type) would answer, creating nothing. Only a
+    /// struct schema's type can be refused.
+    #[doc(hidden)]
+    fn plan_mint<'ctx, B>(
+        _module: ModuleRef<'ctx, B, ReadOnly>,
+        _plan: &mut MintPlan,
+        _token: CrateOnly,
+    ) -> IrResult<()>
+    where
+        B: ModuleBrand + 'ctx,
+    {
+        Ok(())
+    }
+
     /// Check whether an existing raw return type matches this schema.
     fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
     where
         B: ModuleBrand + 'ctx;
+
+    /// Keep `ty` as this schema says it is, now that the whole signature has
+    /// passed. Only a struct schema has a name to hold.
+    #[doc(hidden)]
+    fn hold_ir_type<'ctx, B, C: Capability>(_ty: Type<'ctx, B, C>, _token: CrateOnly)
+    where
+        B: ModuleBrand + 'ctx,
+    {
+    }
 
     /// Diagnostic kind label expected by this schema.
     fn expected_kind_label() -> TypeKindLabel;
@@ -119,10 +158,33 @@ pub trait FunctionParam: Sized + 'static {
     where
         B: ModuleBrand + 'ctx;
 
+    /// What [`ir_type`](Self::ir_type) would answer, creating nothing; see
+    /// [`FunctionReturn::plan_mint`].
+    #[doc(hidden)]
+    fn plan_mint<'ctx, B>(
+        _module: ModuleRef<'ctx, B, ReadOnly>,
+        _plan: &mut MintPlan,
+        _token: CrateOnly,
+    ) -> IrResult<()>
+    where
+        B: ModuleBrand + 'ctx,
+    {
+        Ok(())
+    }
+
     /// Check whether an existing raw parameter type matches this schema.
     fn matches_ir_type<'ctx, B, C: Capability>(ty: Type<'ctx, B, C>) -> bool
     where
         B: ModuleBrand + 'ctx;
+
+    /// Keep `arg`'s type as this schema says it is; see
+    /// [`FunctionReturn::hold_ir_type`].
+    #[doc(hidden)]
+    fn hold_argument<'ctx, B>(_arg: Argument<'ctx, B, ReadOnly>, _token: CrateOnly)
+    where
+        B: ModuleBrand + 'ctx,
+    {
+    }
 
     /// Validate that a raw argument can be represented by [`Self::Value`].
     /// Validation only reads, so the argument is [`ReadOnly`]: a function of
@@ -174,6 +236,19 @@ pub trait FunctionParamList: Sized + 'static {
     where
         B: ModuleBrand + 'ctx;
 
+    /// What [`ir_types`](Self::ir_types) would answer, creating nothing.
+    #[doc(hidden)]
+    fn plan_mints<'ctx, B>(
+        _module: ModuleRef<'ctx, B, ReadOnly>,
+        _plan: &mut MintPlan,
+        _token: CrateOnly,
+    ) -> IrResult<()>
+    where
+        B: ModuleBrand + 'ctx,
+    {
+        Ok(())
+    }
+
     /// Validate every raw argument in declaration order. Validation only
     /// reads, so the function is [`ReadOnly`]: a facade of any capability is
     /// validated through it.
@@ -181,6 +256,20 @@ pub trait FunctionParamList: Sized + 'static {
     where
         R: ReturnMarker,
         B: ModuleBrand + 'ctx;
+
+    /// Keep every argument's type as its schema says it is, now that
+    /// [`validate`](Self::validate) has passed them all.
+    #[doc(hidden)]
+    fn hold<'ctx, R, B>(
+        _function: FunctionValue<'ctx, R, B, ReadOnly>,
+        _token: CrateOnly,
+    ) -> IrResult<()>
+    where
+        R: ReturnMarker,
+        B: ModuleBrand + 'ctx,
+    {
+        Ok(())
+    }
 
     /// Return typed parameter values in declaration order.
     /// The validation capability is only created by this crate after the raw
@@ -338,6 +427,11 @@ where
             });
         }
         Params::validate(function.read_only())?;
+        // The whole signature has passed, and the id this answers with carries
+        // no capability, so a read-only check reaches a mutable view
+        // (`docs/divergences.md` D23).
+        Ret::hold_ir_type(return_type, CrateOnly(()));
+        Params::hold(function.read_only(), CrateOnly(()))?;
         Ok(Self {
             function,
             _ret: PhantomData,
@@ -540,6 +634,9 @@ where
             });
         }
         Params::validate(function.read_only())?;
+        // As in `TypedFunctionValue::try_from_function`.
+        Ret::hold_ir_type(return_type, CrateOnly(()));
+        Params::hold(function.read_only(), CrateOnly(()))?;
         Ok(Self {
             function,
             _ret: PhantomData,
@@ -1238,6 +1335,19 @@ macro_rules! impl_param_list_tuple {
             }
 
             #[inline]
+            fn plan_mints<'ctx, B>(
+                module: ModuleRef<'ctx, B, ReadOnly>,
+                plan: &mut MintPlan,
+                token: CrateOnly,
+            ) -> IrResult<()>
+            where
+                B: ModuleBrand + 'ctx,
+            {
+                $($param::plan_mint(module, plan, token)?;)+
+                Ok(())
+            }
+
+            #[inline]
             fn validate<'ctx, R, B>(function: FunctionValue<'ctx, R, B, ReadOnly>) -> IrResult<()>
             where
                 R: ReturnMarker,
@@ -1246,6 +1356,19 @@ macro_rules! impl_param_list_tuple {
                 $(
                     $param::validate_argument(function.param($slot)?)?;
                 )+
+                Ok(())
+            }
+
+            #[inline]
+            fn hold<'ctx, R, B>(
+                function: FunctionValue<'ctx, R, B, ReadOnly>,
+                token: CrateOnly,
+            ) -> IrResult<()>
+            where
+                R: ReturnMarker,
+                B: ModuleBrand + 'ctx,
+            {
+                $($param::hold_argument(function.param($slot)?, token);)+
                 Ok(())
             }
 

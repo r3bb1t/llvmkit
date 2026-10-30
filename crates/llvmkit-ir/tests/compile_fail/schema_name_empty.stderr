@@ -23,7 +23,7 @@ note: erroneous constant encountered
   | |_________^
 
 note: the above error was encountered while instantiating `fn ModuleRef::<'_, __LlvmkitGeneratedBrand>::mint_struct_of::<EmptyName>`
- --> src/module.rs
+ --> src/struct_schema.rs
   |
-  |         let id = self.mint_struct_of::<S>(&mut Minting::new())?;
-  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |         let slot = module.mint_struct_of::<S>()?;
+  |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

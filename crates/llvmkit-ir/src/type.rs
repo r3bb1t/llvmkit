@@ -314,10 +314,11 @@ pub(crate) struct ElementCount {
 pub(crate) struct StructTypeData {
     pub(crate) identity: StructIdentity,
     pub(crate) body: RefCell<Option<StructBody>>,
-    /// Whether a schema minted this struct or confirmed it: from then on a
-    /// `StructOf` or a `SchemaValue` may rest on its name, so
-    /// `Module::set_struct_name` refuses it. llvmkit-only: upstream has no
-    /// schemas, and `StructType::setName` renames anything.
+    /// Whether a schema minted this struct, or a whole check confirmed it, and
+    /// from then on a `StructOf` or a `SchemaValue` may rest on its name, so
+    /// `Module::set_struct_name` refuses it. `Context::hold_schema_struct` sets
+    /// it. llvmkit-only: upstream has no schemas, and `StructType::setName`
+    /// renames anything.
     pub(crate) schema_held: Cell<bool>,
 }
 

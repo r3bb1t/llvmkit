@@ -1433,8 +1433,8 @@ pub enum IrError {
     #[error("a literal struct type has no settable name")]
     LiteralStructNameNotSettable,
 
-    /// A name was set on a struct a schema minted or confirmed. llvmkit-only:
-    /// upstream has no schemas, and `StructType::setName` renames anything. A
+    /// A name was set on a struct a schema minted, or a whole check confirmed.
+    /// llvmkit-only: upstream has no schemas, and `StructType::setName` renames anything. A
     /// `StructOf` or a `SchemaValue` proves its struct is `%S`, and the
     /// infallible builds rest on that proof, so the name has to stay.
     #[error("the struct type {name:?} is held by a schema and has no settable name")]
