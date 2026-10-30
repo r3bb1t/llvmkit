@@ -16,7 +16,7 @@ use llvmkit_ir::{Dyn, GepNoWrapFlags, IrBuilder, IrError, Linkage, VectorType, l
 fn gep_array_offset() -> Result<(), IrError> {
     let m = module_new!("g")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(ptr_ty.as_type(), [ptr_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -41,7 +41,7 @@ fn gep_array_offset() -> Result<(), IrError> {
 fn gep_inbounds() -> Result<(), IrError> {
     let m = module_new!("g")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(ptr_ty.as_type(), [ptr_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("gi", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -76,7 +76,7 @@ fn struct_gep() -> Result<(), IrError> {
     let i64_ty = m.i64_type();
     let s_ty = m.get_or_insert_named_struct("S");
     m.set_struct_body_dyn(s_ty, [i32_ty.as_type(), i64_ty.as_type()], false)?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(ptr_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("sg", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -99,7 +99,7 @@ fn struct_gep() -> Result<(), IrError> {
 fn gep_zero_index() -> Result<(), IrError> {
     let m = module_new!("g")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(ptr_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("gz", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -131,7 +131,7 @@ fn gep_erased_ports_gep_return_type() -> Result<(), IrError> {
     let m = module_new!("gv")?;
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let vec_ptr_ty = VectorType::of(ptr_ty, lanes::<2>());
     let vec_i32_ty = VectorType::of(i32_ty, lanes::<2>());
     let void_ty = m.void_type();
@@ -192,7 +192,7 @@ fn gep_erased_ports_gep_return_type() -> Result<(), IrError> {
 fn gep_erased_rejects_invalid_indices() -> Result<(), IrError> {
     let m = module_new!("gv")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let vec_ptr_ty = VectorType::of(ptr_ty, lanes::<2>());
     let vec_i32_ty = VectorType::of(i32_ty, lanes::<2>());
     let void_ty = m.void_type();

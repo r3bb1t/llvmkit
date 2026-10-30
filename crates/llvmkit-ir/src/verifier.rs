@@ -481,7 +481,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             let pointer_width = self
                 .module
                 .data_layout()
-                .pointer_size_in_bits(g.address_space());
+                .pointer_size_in_bits(g.address_space().get());
             let pointer_int_ty = self.module.context().int_type(pointer_width);
             self.verify_range_like_metadata_global(
                 g,
@@ -3031,7 +3031,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                             "PtrToAddr result must be integral".to_owned(),
                         ));
                     };
-                    let index_bits = self.module.data_layout().index_size_in_bits(addr_space);
+                    let index_bits = self
+                        .module
+                        .data_layout()
+                        .index_size_in_bits(addr_space.get());
                     if dst_bits != index_bits || src_shape != dst_shape {
                         return Err(self.fail(
                             f,
@@ -7336,7 +7339,10 @@ fn walk_aggregate_path(
     Ok(cur)
 }
 
-fn pointer_source_shape(m: &ModuleCore, ty: TypeSlot) -> Option<(u32, Option<(u32, bool)>)> {
+fn pointer_source_shape(
+    m: &ModuleCore,
+    ty: TypeSlot,
+) -> Option<(crate::AddressSpace, Option<(u32, bool)>)> {
     match m.context().type_data(ty) {
         TypeData::Pointer { addr_space } => Some((*addr_space, None)),
         TypeData::FixedVector { elem, n } => match m.context().type_data(*elem) {
@@ -7627,7 +7633,7 @@ mod tests {
     fn ret_type_mismatch_ptr_in_i32_function() {
         let m = crate::module_new!("t").expect("fresh module");
         let i32_ty = m.i32_type().as_type();
-        let ptr_ty = m.ptr_type(0).as_type();
+        let ptr_ty = m.ptr_type_in::<0>().as_type();
         let (_, bb_id) = skeleton(&m, i32_ty, &[], "f");
         let null_id = fab_null_ptr_id(&m, ptr_ty.slot_trusting_same_module());
         fabricate_instruction(
@@ -7990,7 +7996,7 @@ mod tests {
         m.set_data_layout(DataLayout::parse("p1:64:64:64:32").unwrap());
         let void_ty = m.void_type().as_type();
         let i64_ty = m.i64_type().as_type();
-        let ptr1_ty = m.ptr_type(1).as_type();
+        let ptr1_ty = m.ptr_type_in::<1>().as_type();
         let (_f_id, bb_id) = skeleton(&m, void_ty, &[], "f");
         let ptr = fab_null_ptr_id(&m, ptr1_ty.slot_trusting_same_module());
         fabricate_instruction(

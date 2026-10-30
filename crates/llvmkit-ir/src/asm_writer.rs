@@ -1064,7 +1064,7 @@ fn infer_gep_source_ty(module: &ModuleCore, expr: &ConstantExprData) -> TypeSlot
 /// keeps the `PrintAddrspaceName` gap above a single-site fix.
 pub(crate) fn print_address_space(
     f: &mut fmt::Formatter<'_>,
-    addr_space: u32,
+    addr_space: crate::AddressSpace,
     prefix: &str,
     suffix: &str,
     force_print: bool,
@@ -1095,14 +1095,14 @@ pub(crate) fn print_address_space(
 fn callee_pointer_address_space<B: ModuleBrand>(
     module: ModuleView<'_, B>,
     callee: ValueSlot,
-) -> Option<u32> {
+) -> Option<crate::AddressSpace> {
     let data = module.context().value_data(callee);
     match &data.kind {
         ValueKindData::Function(function) => Some(*function.address_space.borrow()),
         ValueKindData::GlobalAlias(alias) => Some(alias.address_space),
         ValueKindData::GlobalIfunc(ifunc) => Some(ifunc.address_space),
         ValueKindData::GlobalVariable(global) => Some(global.address_space),
-        ValueKindData::InlineAsm(_) => Some(0),
+        ValueKindData::InlineAsm(_) => Some(crate::AddressSpace::DEFAULT),
         _ => match module.context().type_data(data.ty) {
             TypeData::Pointer { addr_space } => Some(*addr_space),
             _ => None,
@@ -1138,7 +1138,10 @@ fn constant_ptr_operand_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
 ) -> Type<'ctx, B, C> {
     match &value.data().kind {
-        ValueKindData::Function(_) => value.module.ptr_type(0).as_type(),
+        ValueKindData::Function(_) => value
+            .module
+            .ptr_type(crate::AddressSpace::DEFAULT)
+            .as_type(),
         ValueKindData::GlobalAlias(_) | ValueKindData::GlobalIfunc(_) => value.ty(),
         _ => value.ty(),
     }

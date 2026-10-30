@@ -4,6 +4,7 @@ use crate::Branded;
 use core::cell::{Cell, RefCell};
 
 use super::DebugLoc;
+use super::addr_space::AddressSpace;
 use super::capability::{CanMutate, Capability, CapabilityOf, Mutable, ReadOnly};
 use super::constant::{Constant, IsConstant};
 use super::derived_types::PointerType;
@@ -23,7 +24,7 @@ use super::value_id::GlobalAliasId;
 #[derive(Debug)]
 pub(super) struct GlobalAliasData {
     pub(super) value_type: TypeSlot,
-    pub(super) address_space: u32,
+    pub(super) address_space: AddressSpace,
     pub(super) aliasee: Cell<ValueSlot>,
     pub(super) linkage: Cell<Linkage>,
     pub(super) dso_locality: Cell<DsoLocality>,
@@ -111,7 +112,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GlobalAlias<'ctx, B, C> {
     }
 
     #[inline]
-    pub fn address_space(self) -> u32 {
+    pub fn address_space(self) -> AddressSpace {
         self.data().address_space
     }
 
@@ -426,7 +427,7 @@ pub struct GlobalAliasBuilder<'ctx, B: ModuleBrand> {
     /// Kept as the caller's handle for the same reason, at `ReadOnly`: an
     /// aliasee of any capability is accepted, and `build` admits it.
     aliasee: Constant<'ctx, B, ReadOnly>,
-    address_space: u32,
+    address_space: AddressSpace,
     linkage: Linkage,
     dso_locality: DsoLocality,
     visibility: Visibility,
@@ -446,7 +447,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
     {
         let module = module.into();
         let aliasee = aliasee.as_constant().read_only();
-        let address_space = pointer_address_space(aliasee.ty()).unwrap_or(0);
+        let address_space = pointer_address_space(aliasee.ty()).unwrap_or(AddressSpace::DEFAULT);
         Self {
             module,
             name: name.into(),
@@ -551,7 +552,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
 
     /// Lower the builder to its storage payload, holding the slots `build`
     /// admitted rather than anything read off the handles again.
-    fn into_data(self, value_type: TypeSlot, aliasee: ValueSlot) -> (String, GlobalAliasData, u32) {
+    fn into_data(
+        self,
+        value_type: TypeSlot,
+        aliasee: ValueSlot,
+    ) -> (String, GlobalAliasData, AddressSpace) {
         let GlobalAliasBuilder {
             module: _,
             name,
@@ -584,7 +589,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
 }
 
 #[inline]
-fn pointer_address_space<B: ModuleBrand, C: Capability>(ty: Type<'_, B, C>) -> Option<u32> {
+fn pointer_address_space<B: ModuleBrand, C: Capability>(
+    ty: Type<'_, B, C>,
+) -> Option<AddressSpace> {
     match ty.kind() {
         TypeKind::Pointer { addr_space } => Some(addr_space),
         _ => None,

@@ -729,7 +729,10 @@ impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PointerValue
             "PointerValueId points at a non-pointer arena type at its slot",
         );
         debug_assert!(
-            A::static_space().is_none_or(|space| module.type_data(ty).as_pointer() == Some(space)),
+            A::static_space().is_none_or(|space| module
+                .type_data(ty)
+                .as_pointer()
+                .is_some_and(|got| got == space)),
             "PointerValueId's address-space marker disagrees with its arena type",
         );
         Some(PointerValue::from_value_unchecked(Value::from_parts(

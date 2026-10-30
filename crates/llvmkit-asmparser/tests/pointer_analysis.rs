@@ -720,7 +720,7 @@ define void @compact() {
     function("compact")
         .set_personality_fn(
             &module,
-            function("__gxx_personality_v0").as_aggregate_ptr(0),
+            function("__gxx_personality_v0").as_aggregate_ptr(llvmkit_ir::AddressSpace::DEFAULT),
         )
         .expect("a constant personality");
 

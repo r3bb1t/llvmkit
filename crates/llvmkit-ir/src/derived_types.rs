@@ -37,7 +37,7 @@ use super::r#type::{Type, TypeData, TypeKind, TypeSlot, TypeSlotAccess};
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
-use super::addr_space::{AddrSpace, Space, SpaceDyn};
+use super::addr_space::{AddrSpace, AddressSpace, Space, SpaceDyn};
 use super::array_len::{ArrLenDyn, ArrayLen};
 use super::element::{ElemDyn, VecElem};
 use super::float_kind::{Bfloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
@@ -268,7 +268,10 @@ impl<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability> TryFrom<Type<'ctx, B, C>
         if let Some(expected) = A::static_space()
             && expected != got
         {
-            return Err(IrError::AddressSpaceMismatch { expected, got });
+            return Err(IrError::AddressSpaceMismatch {
+                expected,
+                got: got.get(),
+            });
         }
         Ok(Self::new(t.slot_trusting_same_module(), t.module))
     }
@@ -1225,7 +1228,7 @@ impl<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability> PointerType<'ctx, A, B, 
     /// Address space; `0` is the default flat space. Answers the run-time
     /// address space for both markers.
     #[inline]
-    pub fn address_space(self) -> u32 {
+    pub fn address_space(self) -> AddressSpace {
         self.module
             .type_data(self.id)
             .as_pointer()

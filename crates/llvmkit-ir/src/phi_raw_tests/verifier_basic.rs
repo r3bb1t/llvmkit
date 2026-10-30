@@ -112,7 +112,7 @@ fn verify_phi_predecessors_through_invoke_passes() -> Result<(), IrError> {
     // `F->hasPersonalityFn()`, which says nothing about what the personality
     // is.
     m.view(f)
-        .set_personality_fn(&m, m.ptr_type(0).const_null())?;
+        .set_personality_fn(&m, m.ptr_type_in::<0>().const_null())?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let join = m.view(f).append_basic_block(&m, "join");
     let unwind = m.view(f).append_basic_block(&m, "unwind");
@@ -166,7 +166,7 @@ fn verify_phi_predecessors_through_invoke_rejects_wrong_block() -> Result<(), Ir
     // `F->hasPersonalityFn()`, which says nothing about what the personality
     // is.
     m.view(f)
-        .set_personality_fn(&m, m.ptr_type(0).const_null())?;
+        .set_personality_fn(&m, m.ptr_type_in::<0>().const_null())?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let join = m.view(f).append_basic_block(&m, "join");
     let unwind = m.view(f).append_basic_block(&m, "unwind");

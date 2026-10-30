@@ -7,7 +7,7 @@ use llvmkit_ir::{Dyn, IrBuilder, Linkage, Module, PointerValue};
 
 fn main() {
     let m = Module::dynamic("retained-indirectbr");
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty, [ptr_ty.as_type()]).expect("valid function type");
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();

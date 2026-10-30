@@ -30,6 +30,7 @@ use core::hash::{Hash, Hasher};
 use core::num::NonZeroU32;
 
 use crate::TypeKindLabel;
+use crate::addr_space::AddressSpace;
 use crate::capability::{Capability, CapabilityOf, Mutable};
 use crate::error::RenderedType;
 use crate::error::{IrError, IrResult};
@@ -139,7 +140,7 @@ pub(crate) enum TypeData {
     /// `Pointer`; `getelementptr` / `load` / `store` carry them
     /// explicitly.
     Pointer {
-        addr_space: u32,
+        addr_space: AddressSpace,
     },
 
     // ---- Derived ----
@@ -222,7 +223,7 @@ impl TypeData {
         }
     }
     #[inline]
-    pub(crate) fn as_pointer(&self) -> Option<u32> {
+    pub(crate) fn as_pointer(&self) -> Option<AddressSpace> {
         if let Self::Pointer { addr_space } = *self {
             Some(addr_space)
         } else {
@@ -535,7 +536,10 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Type<'ctx, B, C> {
         Err(match (expected_data.as_integer(), got_data.as_integer()) {
             (Some(lhs), Some(rhs)) => IrError::OperandWidthMismatch { lhs, rhs },
             _ => match (expected_data.as_pointer(), got_data.as_pointer()) {
-                (Some(expected), Some(got)) => IrError::AddressSpaceMismatch { expected, got },
+                (Some(expected), Some(got)) => IrError::AddressSpaceMismatch {
+                    expected: expected.get(),
+                    got: got.get(),
+                },
                 // Every failure here is an *identity* mismatch — the guard
                 // above compares slots within one module — so the kinds can
                 // agree while the types differ. Reporting labels alone rendered
@@ -807,7 +811,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Type<'ctx, B, C> {
     /// Address space of a pointer type, or `None` if this is not one.
     /// Mirrors `PointerType::getAddressSpace` with the null check folded in
     /// (design law 3: the `dyn_cast` plus null test becomes an `Option`).
-    pub fn pointer_address_space(self) -> Option<u32> {
+    pub fn pointer_address_space(self) -> Option<AddressSpace> {
         match self.data() {
             TypeData::Pointer { addr_space } => Some(*addr_space),
             _ => None,
@@ -900,7 +904,7 @@ pub enum TypeKind {
     Metadata,
     Token,
     Integer { bits: u32 },
-    Pointer { addr_space: u32 },
+    Pointer { addr_space: AddressSpace },
     Function,
     Array,
     FixedVector,

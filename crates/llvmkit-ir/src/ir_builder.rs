@@ -5110,7 +5110,7 @@ where
 
     /// The DataLayout alloca address space (`IRBuilder::CreateAlloca` uses
     /// `getAllocaAddrSpace`).
-    fn alloca_addr_space(&self) -> u32 {
+    fn alloca_addr_space(&self) -> crate::AddressSpace {
         self.module.data_layout().alloca_addr_space()
     }
 
@@ -5626,7 +5626,7 @@ where
     /// use llvmkit_ir::{Align, AtomicOrdering, Dyn, IrBuilder, IrError, Linkage, module_new};
     ///
     /// let m = module_new!("loads")?;
-    /// let ptr_ty = m.ptr_type(0);
+    /// let ptr_ty = m.ptr_type_in::<0>();
     /// let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()])?;
     /// let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     /// let entry = m.view(f).append_basic_block(&m, "entry");
@@ -5763,7 +5763,7 @@ where
     ///
     /// let m = module_new!("stores")?;
     /// let i32_ty = m.i32_type();
-    /// let ptr_ty = m.ptr_type(0);
+    /// let ptr_ty = m.ptr_type_in::<0>();
     /// let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()])?;
     /// let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     /// let entry = m.view(f).append_basic_block(&m, "entry");
@@ -8205,7 +8205,7 @@ where
     where
         Name: AsRef<str>,
     {
-        let ty = self.module.ptr_type::<B>(0);
+        let ty = self.module.ptr_type::<B>(crate::AddressSpace::DEFAULT);
         let payload = super::instr_types::PhiData::new();
         let inst = self.append_phi_instruction(
             ty.slot_trusting_same_module(),
@@ -10413,7 +10413,10 @@ where
 
     fn ptr_to_addr_result_type(&self, src_ty: Type<'ctx, B>) -> IrResult<Type<'ctx, B>> {
         let (addr_space, vector_shape) = self.ptr_to_addr_source_shape(src_ty)?;
-        let address_bits = self.module.data_layout().index_size_in_bits(addr_space);
+        let address_bits = self
+            .module
+            .data_layout()
+            .index_size_in_bits(addr_space.get());
         let int_ty = self.int_type_for_bits(address_bits)?.as_type();
         let Some((lanes, scalable)) = vector_shape else {
             return Ok(int_ty);
@@ -10433,7 +10436,7 @@ where
     fn ptr_to_addr_source_shape(
         &self,
         src_ty: Type<'ctx, B>,
-    ) -> IrResult<(u32, Option<(NonZeroU32, bool)>)> {
+    ) -> IrResult<(crate::AddressSpace, Option<(NonZeroU32, bool)>)> {
         match src_ty.data() {
             TypeData::Pointer { addr_space } => Ok((*addr_space, None)),
             TypeData::FixedVector { elem, n } => match self.module.context().type_data(*elem) {
@@ -11634,7 +11637,7 @@ where
     /// [`LoadBuilder::ptr`].
     num_elements: IrResult<Option<ValueSlot>>,
     align: MaybeAlign,
-    addr_space: u32,
+    addr_space: crate::AddressSpace,
     flags: AllocaFlags,
     name: String,
 }
@@ -11692,7 +11695,7 @@ where
     /// Override the result pointer's address space. Defaults to
     /// `DataLayout::getAllocaAddrSpace`, which is what
     /// `IRBuilder::CreateAlloca` uses.
-    pub fn addr_space(mut self, addr_space: u32) -> Self {
+    pub fn addr_space(mut self, addr_space: crate::AddressSpace) -> Self {
         self.addr_space = addr_space;
         self
     }

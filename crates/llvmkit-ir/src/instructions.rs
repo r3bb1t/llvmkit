@@ -589,7 +589,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> AllocaInst<'ctx, B, C> {
         self.payload().align.align()
     }
     /// Address space of the result pointer.
-    pub fn addr_space(self) -> u32 {
+    pub fn addr_space(self) -> crate::AddressSpace {
         self.payload().addr_space
     }
     /// `true` when this allocation carries the `inalloca` marker. Mirrors

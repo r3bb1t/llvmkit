@@ -19,7 +19,7 @@ fn swifterror_pointer_alloca_verifies_and_prints() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let e = b
-        .alloca_builder(m.ptr_type(0))
+        .alloca_builder(m.ptr_type_in::<0>())
         .swifterror()
         .name("e")
         .build()?;
@@ -104,7 +104,7 @@ fn swifterror_array_alloca_rejected() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let count: IntValue<IntDyn, _> = i32_ty.const_int_checked(4_i64)?.as_erased().try_into()?;
-    b.alloca_builder(m.ptr_type(0))
+    b.alloca_builder(m.ptr_type_in::<0>())
         .array(count)
         .swifterror()
         .name("e")
@@ -133,7 +133,7 @@ fn swifterror_size_one_alloca_verifies_and_drops_canonical_size() -> Result<(), 
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let one: IntValue<IntDyn, _> = i32_ty.const_int_checked(1_i64)?.as_erased().try_into()?;
-    b.alloca_builder(m.ptr_type(0))
+    b.alloca_builder(m.ptr_type_in::<0>())
         .array(one)
         .swifterror()
         .name("e")

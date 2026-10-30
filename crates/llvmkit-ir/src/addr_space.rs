@@ -20,8 +20,103 @@
 //!
 //! The trait is **sealed** — the set of markers is closed, not an extension
 //! point.
+//!
+//! [`AddressSpace`] is the run-time number itself, and it holds only what LLVM
+//! can: 24 bits. Every route that names an address space takes one, so a wider
+//! number is refused once, where it becomes an [`AddressSpace`], and nothing
+//! past that point can fail.
 
 use core::fmt;
+
+/// An address space LLVM can hold: a number below `1 << 24`.
+///
+/// `Type` keeps a pointer's address space in its 24-bit `SubclassData`, and
+/// `Type::setSubclassData` (`include/llvm/IR/Type.h`) asserts that it fits;
+/// `LLParser::parseOptionalAddrSpace` and `DataLayout`'s `parseAddrSpace` refuse
+/// anything wider. So a wider pointer type is one no parser reads back, and this
+/// type cannot name one. [`address_space`] checks a known number at compile time
+/// and [`new`](Self::new) a run-time one, as `lanes` and `NonZeroU32::new` do for
+/// a vector's length.
+///
+/// ```
+/// # use llvmkit_ir::{AddressSpace, Module, address_space};
+/// let m = Module::dynamic("doc");
+/// assert_eq!(m.ptr_type(address_space::<3>()).to_string(), "ptr addrspace(3)");
+/// assert_eq!(AddressSpace::new(1 << 24), None);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct AddressSpace(u32);
+
+impl AddressSpace {
+    /// Address space 0, which is what `ptr` means in textual IR.
+    pub const DEFAULT: Self = Self(0);
+
+    /// The largest address space: `(1 << 24) - 1`.
+    pub const MAX: Self = Self((1 << 24) - 1);
+
+    /// `value` as an address space, or `None` when it needs more than 24 bits.
+    pub const fn new(value: u32) -> Option<Self> {
+        if value <= Self::MAX.0 {
+            Some(Self(value))
+        } else {
+            None
+        }
+    }
+
+    /// The address space as a number.
+    #[inline]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+impl fmt::Display for AddressSpace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Eight bits always fit.
+impl From<u8> for AddressSpace {
+    #[inline]
+    fn from(value: u8) -> Self {
+        Self(u32::from(value))
+    }
+}
+
+impl From<AddressSpace> for u32 {
+    #[inline]
+    fn from(space: AddressSpace) -> Self {
+        space.0
+    }
+}
+
+impl PartialEq<u32> for AddressSpace {
+    #[inline]
+    fn eq(&self, other: &u32) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<AddressSpace> for u32 {
+    #[inline]
+    fn eq(&self, other: &AddressSpace) -> bool {
+        *self == other.0
+    }
+}
+
+/// The address space `N` as an [`AddressSpace`], checked at compile time:
+/// `address_space::<16777216>()` does not compile.
+pub const fn address_space<const N: u32>() -> AddressSpace {
+    const {
+        match AddressSpace::new(N) {
+            Some(space) => space,
+            None => panic!(
+                "an address space is a 24-bit number: `Type::setSubclassData` asserts it fits"
+            ),
+        }
+    }
+}
 
 /// Sealed marker trait implemented by every address-space tag.
 ///

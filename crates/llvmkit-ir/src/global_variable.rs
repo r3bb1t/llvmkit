@@ -14,6 +14,7 @@
 //! [`Module::global_builder`](Module::global_builder).
 
 use super::DebugLoc;
+use super::addr_space::AddressSpace;
 use super::align::MaybeAlign;
 use super::capability::{CanMutate, Capability, CapabilityOf, Mutable, ReadOnly};
 use super::comdat::ComdatRef;
@@ -119,7 +120,7 @@ pub(super) struct GlobalVariableData {
     /// outer [`crate::value::ValueData::ty`] is the *pointer* type
     /// (`ptr addrspace(N)`).
     pub(super) value_type: TypeSlot,
-    pub(super) address_space: u32,
+    pub(super) address_space: AddressSpace,
     pub(super) is_constant: bool,
     pub(super) externally_initialized: Cell<bool>,
     pub(super) initializer: Cell<Option<ValueSlot>>,
@@ -241,7 +242,11 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GlobalVariable<'ctx, B, C> {
     /// outside this byte-offset helper. `off == 0` is equivalent to
     /// [`Self::as_constant`] but always prints the gep form; prefer
     /// `as_constant` for the zero case.
-    pub fn as_global_constant_ptr_offset(self, off: i64, addr_space: u32) -> Constant<'ctx, B, C> {
+    pub fn as_global_constant_ptr_offset(
+        self,
+        off: i64,
+        addr_space: AddressSpace,
+    ) -> Constant<'ctx, B, C> {
         let module = self.module.module();
         let ptr_ty = module
             .ptr_type::<B>(addr_space)
@@ -347,7 +352,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GlobalVariable<'ctx, B, C> {
     /// Address space of the global. Mirrors
     /// `GlobalValue::getAddressSpace`.
     #[inline]
-    pub fn address_space(self) -> u32 {
+    pub fn address_space(self) -> AddressSpace {
         self.data().address_space
     }
 
@@ -914,7 +919,7 @@ pub struct GlobalBuilder<'ctx, B: ModuleBrand> {
     /// door, and only then does its slot enter this module. Re-minting it at
     /// this module before admission would skip the foreign-module check.
     value_type: Type<'ctx, B, ReadOnly>,
-    address_space: u32,
+    address_space: AddressSpace,
     is_constant: bool,
     externally_initialized: bool,
     /// Kept as the caller's handle for the same reason, at `ReadOnly`: an
@@ -946,7 +951,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
             module: module.into(),
             name: name.into(),
             value_type: value_type.as_type().read_only(),
-            address_space: 0,
+            address_space: AddressSpace::DEFAULT,
             is_constant: false,
             externally_initialized: false,
             initializer: None,
@@ -973,7 +978,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
 
     /// Address space. Mirrors the `AddressSpace` ctor argument.
     #[must_use]
-    pub fn address_space(mut self, addrspace: u32) -> Self {
+    pub fn address_space(mut self, addrspace: AddressSpace) -> Self {
         self.address_space = addrspace;
         self
     }
@@ -1116,7 +1121,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
         value_type: TypeSlot,
         initializer: Option<ValueSlot>,
         comdat: Option<String>,
-    ) -> (String, GlobalVariableData, u32) {
+    ) -> (String, GlobalVariableData, AddressSpace) {
         let GlobalBuilder {
             module: _,
             name,

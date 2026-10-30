@@ -264,7 +264,7 @@ fn constant_folder_vector_gep_nonzero_index_builds_vector_expr() -> Result<(), I
     let m = module_new!("folder-vector-gep")?;
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let ptr_vec_ty = VectorType::of(m.ptr_type(0), lanes::<2>());
+    let ptr_vec_ty = VectorType::of(m.ptr_type_in::<0>(), lanes::<2>());
     let index_ty = VectorType::of(i64_ty, lanes::<2>());
     let g = m.add_global("g", i32_ty.const_zero())?;
     let index = index_ty.const_vector::<ConstantIntValue<'_, i64, _>, _>([
@@ -304,7 +304,7 @@ fn constant_folder_gep_declines_scalable_target_ext_source_type() -> Result<(), 
         Vec::<Type<'_, _>>::new(),
         Vec::<u32>::new(),
     )?;
-    let ptr = m.ptr_type(0).const_null().as_constant();
+    let ptr = m.ptr_type_in::<0>().const_null().as_constant();
 
     assert_eq!(
         ConstantFolder.fold_gep_dyn(
@@ -372,7 +372,7 @@ fn constant_folder_scalable_shuffle_builds_scalable_mask_expr() -> Result<(), Ir
 fn constant_folder_pointer_cast_helpers_allow_one_lane_pointer_bitcasts() -> Result<(), IrError> {
     let m = module_new!("folder-ptr-one-lane-bitcast")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let vec_ptr_ty = VectorType::of(ptr_ty, lanes::<1>());
     let g = m.add_global("g", i32_ty.const_zero())?;
     let scalar = m.view(g).as_global_constant_ptr();
@@ -428,7 +428,7 @@ fn constant_folder_pointer_cast_helpers_allow_one_lane_pointer_bitcasts() -> Res
 fn constant_folder_folds_is_null_of_constant_null_without_instruction() -> Result<(), IrError> {
     let m = module_new!("folder-is-null")?;
     let bool_ty = m.bool_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type_no_parameters(bool_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -453,7 +453,7 @@ fn constant_folder_folds_is_null_of_constant_null_without_instruction() -> Resul
 fn constant_folder_folds_is_not_null_of_constant_null_without_instruction() -> Result<(), IrError> {
     let m = module_new!("folder-is-not-null")?;
     let bool_ty = m.bool_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type_no_parameters(bool_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -480,7 +480,7 @@ fn constant_folder_folds_pointer_cmp_global_vs_null_without_instruction() -> Res
     let m = module_new!("folder-ptr-cmp-global")?;
     let bool_ty = m.bool_type();
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type(llvmkit_ir::AddressSpace::DEFAULT);
     let g = m.add_global("g", i32_ty.const_zero())?;
     let gp = PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(
         m.view(g).as_global_constant_ptr().as_erased(),
@@ -664,7 +664,7 @@ fn no_folder_emits_ptrtoaddr_instruction_with_address_type() -> Result<(), IrErr
     let m = module_new!("nofolder-ptrtoaddr")?;
     m.set_data_layout(DataLayout::parse("p1:64:64:64:32")?);
     let i32_ty = m.i32_type();
-    let ptr1_ty = m.ptr_type(1);
+    let ptr1_ty = m.ptr_type_in::<1>();
     let fn_ty = m.function_type(i32_ty, [ptr1_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -698,7 +698,7 @@ fn no_folder_emits_ptrtoaddr_instruction_with_address_type() -> Result<(), IrErr
 fn no_folder_emits_pointer_cmp_instruction_for_constant_nulls() -> Result<(), IrError> {
     let m = module_new!("nofolder-ptr-cmp")?;
     let bool_ty = m.bool_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type_no_parameters(bool_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");

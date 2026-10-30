@@ -155,7 +155,7 @@ fn a_verified_modules_globals_functions_and_comdats_are_read_only() {
     let resolver = m
         .add_function_dyn(
             "resolver",
-            m.function_type_no_parameters(m.ptr_type(0))
+            m.function_type_no_parameters(m.ptr_type_in::<0>())
                 .expect("valid function type"),
             Linkage::Internal,
         )
@@ -163,7 +163,7 @@ fn a_verified_modules_globals_functions_and_comdats_are_read_only() {
     let resolver_entry = m.view(resolver).append_basic_block(&m, "entry");
     IrBuilder::with_folder(&m, NoFolder)
         .position_at_end(resolver_entry)
-        .ret(m.ptr_type(0).const_null())
+        .ret(m.ptr_type_in::<0>().const_null())
         .expect("ret");
     let ifunc = m
         .ifunc_builder(
@@ -523,7 +523,7 @@ fn a_verified_modules_blocks_and_instructions_are_read_only() -> Result<(), IrEr
     let i1_ty = m.bool_type();
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let vec_ty = VectorType::of(i32_ty, lanes::<2>());
     let callee = m.add_typed_function::<i32, (), _>("callee", Linkage::External)?;
     let f = m.add_function_dyn(

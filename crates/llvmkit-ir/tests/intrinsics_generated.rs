@@ -82,7 +82,7 @@ fn semantic_intrinsic_ids_are_published_as_constants() {
 #[test]
 fn canonical_memory_intrinsic_suffixes_build_signatures() -> Result<(), IrError> {
     let m = module_new!("intrinsic-memory")?;
-    let ptr_ty = m.ptr_type(0).as_type();
+    let ptr_ty = m.ptr_type_in::<0>().as_type();
     let i64_ty = m.i64_type().as_type();
     let memcpy = IntrinsicId::lookup("llvm.memcpy.p0.p0.i64").expect("memcpy intrinsic");
     assert_eq!(
@@ -281,7 +281,7 @@ fn descriptor_call_builder_returns_intrinsic_view() -> Result<(), IrError> {
 #[test]
 fn mem_intrinsic_wrapper_narrows_generated_memory_call() -> Result<(), IrError> {
     let m = module_new!("intrinsic-mem-wrapper")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let i1_ty = m.bool_type();
     let i64_ty = m.i64_type();
     let descriptor = IntrinsicDescriptor::new(
@@ -323,7 +323,7 @@ fn mem_intrinsic_wrapper_narrows_generated_memory_call() -> Result<(), IrError> 
 #[test]
 fn mem_intrinsic_wrapper_narrows_generated_inline_memory_calls() -> Result<(), IrError> {
     let m = module_new!("intrinsic-inline-mem-wrapper")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let i1_ty = m.bool_type();
     let i8_ty = m.i8_type();
     let i64_ty = m.i64_type();
@@ -382,7 +382,7 @@ fn mem_intrinsic_wrapper_narrows_generated_inline_memory_calls() -> Result<(), I
 #[test]
 fn lifetime_intrinsic_wrapper_narrows_generated_lifetime_call() -> Result<(), IrError> {
     let m = module_new!("intrinsic-lifetime-wrapper")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let descriptor = IntrinsicDescriptor::new(IntrinsicId::LIFETIME_START, [ptr_ty.as_type()])?;
     let caller_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
@@ -556,7 +556,7 @@ fn named_struct_mangled_overload_suffix_round_trips() -> Result<(), IrError> {
 fn vector_pointer_overloads_reject_shape_and_lane_mismatches() -> Result<(), IrError> {
     let m = module_new!("intrinsic-vector-pointer-overloads")?;
     let value_vec = VectorType::of(m.i32_type(), lanes::<4>()).as_type();
-    let ptr_vec = VectorType::of(m.ptr_type(0), lanes::<4>()).as_type();
+    let ptr_vec = VectorType::of(m.ptr_type_in::<0>(), lanes::<4>()).as_type();
     let id = IntrinsicId::lookup("llvm.masked.gather.v4i32.v4p0").expect("masked gather intrinsic");
     let descriptor = IntrinsicDescriptor::new(id, [value_vec, ptr_vec])?;
     let name = descriptor.mangled_name()?;
@@ -569,13 +569,13 @@ fn vector_pointer_overloads_reject_shape_and_lane_mismatches() -> Result<(), IrE
     let matched = m.intrinsic_descriptor_from_signature(&name, fn_ty)?;
     assert_eq!(matched, descriptor);
 
-    assert!(IntrinsicDescriptor::new(id, [value_vec, m.ptr_type(0).as_type()]).is_err());
+    assert!(IntrinsicDescriptor::new(id, [value_vec, m.ptr_type_in::<0>().as_type()]).is_err());
     assert!(
         IntrinsicDescriptor::new(
             id,
             [
                 value_vec,
-                VectorType::of(m.ptr_type(0), lanes::<2>()).as_type(),
+                VectorType::of(m.ptr_type_in::<0>(), lanes::<2>()).as_type(),
             ],
         )
         .is_err()
@@ -628,7 +628,7 @@ fn same_vec_width_nested_vector_element_signature_matches() -> Result<(), IrErro
 #[test]
 fn asm_writer_prints_generated_intrinsic_immediate_argument_comments() -> Result<(), IrError> {
     let m = module_new!("intrinsic-pretty-immarg")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let i32_ty = m.i32_type();
     let id = IntrinsicId::lookup("llvm.nvvm.tensormap.replace.fill.mode")
         .expect("nvvm tensormap replace fill mode intrinsic");

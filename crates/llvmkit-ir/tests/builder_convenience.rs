@@ -47,7 +47,7 @@ fn build_vector_splat_expands_to_insertelement_plus_shuffle() -> Result<(), IrEr
 #[test]
 fn build_ptr_add_emits_gep_i8() -> Result<(), IrError> {
     let m = module_new!("a")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(ptr_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -72,7 +72,7 @@ fn build_ptr_add_emits_gep_i8() -> Result<(), IrError> {
 #[test]
 fn build_inbounds_ptr_add_emits_gep_inbounds_i8() -> Result<(), IrError> {
     let m = module_new!("a")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(ptr_ty, [ptr_ty.as_type(), i64_ty.as_type()])?;
     let f = m.add_function_dyn("gep_inbounds", fn_ty, Linkage::External)?;

@@ -133,7 +133,7 @@ fn switch_cfg_edges_include_default_then_cases() -> Result<(), IrError> {
 #[test]
 fn indirectbr_cfg_edges_are_listed_destinations() -> Result<(), IrError> {
     let m = module_new!("cfg_indirectbr")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;

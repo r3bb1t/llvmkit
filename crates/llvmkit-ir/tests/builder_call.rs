@@ -81,7 +81,7 @@ fn call_void_returning_function() -> Result<(), IrError> {
 fn call_builder_mixed_arg_types() -> Result<(), IrError> {
     let m = module_new!("c")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let callee_ty = m.function_type(void_ty.as_type(), [i32_ty.as_type(), ptr_ty.as_type()])?;
     let callee = m.add_function_dyn("with_ptr", callee_ty, Linkage::External)?;
@@ -197,7 +197,7 @@ fn intrinsic_call_rejects_wrong_argument_type() -> Result<(), IrError> {
 #[test]
 fn call_to_pointer_returning_function() -> Result<(), IrError> {
     let m = module_new!("c")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let callee = m
         .add_typed_function::<Ptr, (), _>("alloc_ptr", Linkage::External)?
         .as_function();
@@ -297,7 +297,7 @@ fn typed_call_builder_chains_tail() -> Result<(), IrError> {
 #[test]
 fn typed_build_indirect_call_derives_function_type_from_schema() -> Result<(), IrError> {
     let m = module_new!("c")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let host_ty = m.function_type(ptr_ty.as_type(), [ptr_ty.as_type()])?;
     let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");
@@ -434,7 +434,7 @@ fn indirect_call_rejects_too_many_arguments() -> Result<(), IrError> {
     let m = module_new!("c")?;
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let host_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");
@@ -546,7 +546,7 @@ fn call_erased_carries_the_call_site_configuration_for_every_callee_shape() -> R
     let m = module_new!("c")?;
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let callee_ty = m.function_type(void_ty.as_type(), [i32_ty.as_type()])?;
 
     // declare void @g(i32)
@@ -763,7 +763,7 @@ fn alter_call_bundles() -> Result<(), IrError> {
     let m = module_new!("C")?;
     let int32_ty = m.i32_type();
     let fn_ty = m.function_type(int32_ty.as_type(), [int32_ty.as_type()])?;
-    let callee = m.ptr_type(0).const_null();
+    let callee = m.ptr_type_in::<0>().const_null();
     let args = [int32_ty.const_int(42_i32)];
     let old_bundle = OperandBundleDef::new(
         OperandBundleTag::Custom("before".to_owned()),
@@ -835,7 +835,7 @@ fn alter_invoke_bundles() -> Result<(), IrError> {
     let m = module_new!("C")?;
     let int32_ty = m.i32_type();
     let fn_ty = m.function_type(int32_ty.as_type(), [int32_ty.as_type()])?;
-    let callee = m.ptr_type(0).const_null();
+    let callee = m.ptr_type_in::<0>().const_null();
     let args = [int32_ty.const_int(42_i32)];
     let normal_dest = BasicBlock::create_orphan(&m, "");
     let unwind_dest = BasicBlock::create_orphan(&m, "");

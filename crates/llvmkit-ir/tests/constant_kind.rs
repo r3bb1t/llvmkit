@@ -270,7 +270,7 @@ fn a_list_that_is_not_all_simple_is_a_constant_aggregate() -> IrResult<()> {
 
     let g = m.add_global("g", m.i32_type().const_int(0_i32))?;
     let pointers = [
-        m.ptr_type(0).const_null().as_constant(),
+        m.ptr_type_in::<0>().const_null().as_constant(),
         m.view(g).as_constant(),
     ];
     assert!(matches!(
@@ -343,7 +343,7 @@ fn each_scalar_form_names_its_class() {
     };
     assert!(float.ap_float().is_exactly_value_f64(3.5));
     assert!(matches!(
-        m.ptr_type(0).const_null().as_constant().kind(),
+        m.ptr_type_in::<0>().const_null().as_constant().kind(),
         ConstantKind::Data(ConstantDataKind::PointerNull)
     ));
     assert!(matches!(
@@ -389,7 +389,7 @@ fn a_global_widened_to_a_constant_is_a_global_value() -> IrResult<()> {
 #[test]
 fn a_forward_reference_placeholder_is_its_own_kind() -> IrResult<()> {
     let m = Module::dynamic("constants");
-    let placeholder = m.forward_ref_value_placeholder(m.ptr_type(0).as_type())?;
+    let placeholder = m.forward_ref_value_placeholder(m.ptr_type_in::<0>().as_type())?;
     assert!(matches!(
         placeholder.as_constant().kind(),
         ConstantKind::ForwardReference
@@ -498,7 +498,9 @@ fn a_compact_form_is_classified_as_upstream_folds_it() -> IrResult<()> {
         Linkage::External,
     )?;
     assert!(matches!(
-        m.view(f).as_aggregate_ptr(0).kind(),
+        m.view(f)
+            .as_aggregate_ptr(llvmkit_ir::AddressSpace::DEFAULT)
+            .kind(),
         ConstantKind::GlobalValue
     ));
     let g = m.add_global("g", m.i32_type().const_int(0_i32))?;

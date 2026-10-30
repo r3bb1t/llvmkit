@@ -51,6 +51,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 
+use super::addr_space::{AddressSpace, address_space};
 use super::align::MaybeAlign;
 use super::ap_int::ApInt;
 use super::array_len::{ArrLen, ArrLenDyn};
@@ -861,13 +862,17 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
 
     /// Opaque pointer in address space `addr_space` (`0` = default). The space
     /// is a run-time number, so the type is marked [`SpaceDyn`](crate::SpaceDyn).
-    pub(crate) fn ptr_type(self, addr_space: u32) -> PointerType<'ctx, crate::SpaceDyn, B, C> {
+    pub(crate) fn ptr_type(
+        self,
+        addr_space: AddressSpace,
+    ) -> PointerType<'ctx, crate::SpaceDyn, B, C> {
         PointerType::new(self.core.ctx.ptr_type(addr_space), self)
     }
 
-    /// Opaque pointer in address space `N`, marked [`Space<N>`](crate::Space).
+    /// Opaque pointer in address space `N`, marked [`Space<N>`](crate::Space);
+    /// `N` past 24 bits is [`address_space`]'s compile error.
     pub(crate) fn ptr_type_in<const N: u32>(self) -> PointerType<'ctx, crate::Space<N>, B, C> {
-        PointerType::new(self.core.ctx.ptr_type(N), self)
+        PointerType::new(self.core.ctx.ptr_type(address_space::<N>()), self)
     }
 
     /// Typed pointer to `pointee` in `addr_space`. Mirrors
@@ -877,7 +882,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
     pub(crate) fn typed_pointer_type<T>(
         self,
         pointee: T,
-        addr_space: u32,
+        addr_space: AddressSpace,
     ) -> IrResult<TypedPointerType<'ctx, B, C>>
     where
         T: IrType<'ctx, B>,
@@ -1284,7 +1289,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariableView<'ctx, B> {
     }
 
     #[inline]
-    pub fn address_space(self) -> u32 {
+    pub fn address_space(self) -> AddressSpace {
         self.global.address_space()
     }
 
@@ -1397,7 +1402,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasView<'ctx, B> {
     }
 
     #[inline]
-    pub fn address_space(self) -> u32 {
+    pub fn address_space(self) -> AddressSpace {
         self.alias.address_space()
     }
 
@@ -1475,7 +1480,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfuncView<'ctx, B> {
     }
 
     #[inline]
-    pub fn address_space(self) -> u32 {
+    pub fn address_space(self) -> AddressSpace {
         self.ifunc.address_space()
     }
 
@@ -1795,7 +1800,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     /// is a run-time number, so the type is marked [`SpaceDyn`](crate::SpaceDyn);
     /// [`ptr_type_in`](Self::ptr_type_in) names a static one.
     #[inline]
-    pub fn ptr_type(self, addr_space: u32) -> PointerType<'ctx, crate::SpaceDyn, B, ReadOnly> {
+    pub fn ptr_type(
+        self,
+        addr_space: AddressSpace,
+    ) -> PointerType<'ctx, crate::SpaceDyn, B, ReadOnly> {
         self.read_only_ref().ptr_type(addr_space)
     }
 
@@ -1834,7 +1842,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     pub fn typed_pointer_type<T>(
         self,
         pointee: T,
-        addr_space: u32,
+        addr_space: AddressSpace,
     ) -> IrResult<TypedPointerType<'ctx, B, ReadOnly>>
     where
         T: IrType<'ctx, B>,
@@ -2064,9 +2072,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     /// # use llvmkit_ir::Module;
     /// let m = Module::dynamic("doc");
     /// let view = m.as_view();
-    /// let ty = view.variadic_function_type(view.i32_type(), [view.ptr_type(0)])?;
+    /// let ty = view.variadic_function_type(view.i32_type(), [view.ptr_type_in::<0>()])?;
     /// assert_eq!(ty.to_string(), "i32 (ptr, ...)");
-    /// assert!(view.variadic_function_type(view.label_type(), [view.ptr_type(0)]).is_err());
+    /// assert!(view.variadic_function_type(view.label_type(), [view.ptr_type_in::<0>()]).is_err());
     /// # Ok::<(), llvmkit_ir::IrError>(())
     /// ```
     #[inline]
@@ -2618,7 +2626,7 @@ impl<'ctx> ModuleCore {
     /// Opaque pointer in address space `addr_space` (`0` = default).
     pub fn ptr_type<B: ModuleBrand + 'ctx>(
         &'ctx self,
-        addr_space: u32,
+        addr_space: AddressSpace,
     ) -> PointerType<'ctx, crate::SpaceDyn, B, ReadOnly> {
         PointerType::new(self.ctx.ptr_type(addr_space), self)
     }
@@ -3001,7 +3009,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
         self,
         name: String,
         data: GlobalVariableData,
-        address_space: u32,
+        address_space: AddressSpace,
     ) -> IrResult<GlobalVariable<'ctx, B>> {
         if !name.is_empty() && self.core.named_value(&name).is_some() {
             return Err(IrError::DuplicateGlobalName { name });
@@ -3041,7 +3049,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
         self,
         name: String,
         data: GlobalAliasData,
-        address_space: u32,
+        address_space: AddressSpace,
     ) -> IrResult<GlobalAlias<'ctx, B>> {
         if !name.is_empty() && self.core.named_value(&name).is_some() {
             return Err(IrError::DuplicateGlobalName { name });
@@ -3079,7 +3087,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
         self,
         name: String,
         data: GlobalIfuncData,
-        address_space: u32,
+        address_space: AddressSpace,
     ) -> IrResult<GlobalIfunc<'ctx, B>> {
         if !name.is_empty() && self.core.named_value(&name).is_some() {
             return Err(IrError::DuplicateGlobalName { name });
@@ -4667,7 +4675,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// Opaque pointer in address space `addr_space` (`0` = default). The space
     /// is a run-time number, so the type is marked [`SpaceDyn`](crate::SpaceDyn);
     /// [`ptr_type_in`](Self::ptr_type_in) names a static one.
-    pub fn ptr_type(&'ctx self, addr_space: u32) -> PointerType<'ctx, crate::SpaceDyn, B> {
+    pub fn ptr_type(&'ctx self, addr_space: AddressSpace) -> PointerType<'ctx, crate::SpaceDyn, B> {
         self.capability_ref().ptr_type(addr_space)
     }
 
@@ -4701,7 +4709,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     pub fn typed_pointer_type<T>(
         &'ctx self,
         pointee: T,
-        addr_space: u32,
+        addr_space: AddressSpace,
     ) -> IrResult<TypedPointerType<'ctx, B>>
     where
         T: IrType<'ctx, B>,
@@ -5064,7 +5072,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// ```
     /// # use llvmkit_ir::Module;
     /// let m = Module::dynamic("doc");
-    /// let ty = m.variadic_function_type(m.i32_type(), [m.ptr_type(0)])?;
+    /// let ty = m.variadic_function_type(m.i32_type(), [m.ptr_type_in::<0>()])?;
     /// assert_eq!(ty.to_string(), "i32 (ptr, ...)");
     /// assert!(m.variadic_function_type(m.i32_type(), [m.label_type()]).is_err());
     /// # Ok::<(), llvmkit_ir::IrError>(())
@@ -5629,7 +5637,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Asm: Into<String>,
         Constraints: Into<String>,
     {
-        let ptr_ty = self.ptr_type(0).as_type().slot_trusting_same_module();
+        let ptr_ty = self
+            .ptr_type(AddressSpace::DEFAULT)
+            .as_type()
+            .slot_trusting_same_module();
         let data = InlineAsmData {
             asm_string: asm.into(),
             constraint_string: constraints.into(),

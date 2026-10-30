@@ -16,7 +16,7 @@ use llvmkit_ir::{
 fn load_pointer_operand_is_typed() -> Result<(), IrError> {
     let m = module_new!("typed_load_ptr")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -137,7 +137,7 @@ fn binop_and_cmp_groupings() -> Result<(), IrError> {
 fn indirect_call_callee_is_indirect() -> Result<(), IrError> {
     let m = module_new!("indirect_call")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     // define i32 @caller(ptr %fp) { %r = call i32 %fp(); ret ... }
     let caller_ty = m.function_type(i32_ty, [ptr_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;

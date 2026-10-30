@@ -231,7 +231,7 @@ fn indirectbr_destination_into_param_block_errors() -> Result<(), IrError> {
     let m = module_new!("indirectbr_guard")?;
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -612,7 +612,7 @@ fn invoke_with_args_seeds_both_edges() -> Result<(), IrError> {
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     m.view(f)
-        .set_personality_fn(&m, m.ptr_type(0).const_null())?;
+        .set_personality_fn(&m, m.ptr_type_in::<0>().const_null())?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
     let bwp = IrBuilder::new_for::<Dyn>(&m);

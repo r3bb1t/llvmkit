@@ -239,7 +239,7 @@ fn switch_erased_dyn_wrong_width_case_is_runtime_type_mismatch() -> Result<(), I
 #[test]
 fn indirectbr_single_destination() -> Result<(), IrError> {
     let m = module_new!("a")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
@@ -270,7 +270,7 @@ fn indirectbr_single_destination() -> Result<(), IrError> {
 #[test]
 fn indirectbr_multiple_destinations() -> Result<(), IrError> {
     let m = module_new!("a")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
@@ -304,7 +304,7 @@ fn indirectbr_multiple_destinations() -> Result<(), IrError> {
 #[test]
 fn indirectbr_typed_pointer_address_builds_and_verifies() -> Result<(), IrError> {
     let m = module_new!("a")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
@@ -337,7 +337,7 @@ fn indirectbr_typed_pointer_address_builds_and_verifies() -> Result<(), IrError>
 #[test]
 fn indirectbr_erased_value_pointer_address_builds_and_verifies() -> Result<(), IrError> {
     let m = module_new!("a")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;

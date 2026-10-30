@@ -10,6 +10,7 @@
 use core::num::NonZeroU32;
 
 use crate::Branded;
+use crate::addr_space::{AddressSpace, address_space};
 use crate::attributes::{
     AttrIndex, AttrKind, Attribute, AttributeStorage, CaptureInfo, MemoryEffects,
 };
@@ -1536,7 +1537,7 @@ where
     Type::new(module.module().context().int_type(bits), module)
 }
 
-fn ptr_type<'ctx, B, C>(module: ModuleRef<'ctx, B, C>, addr_space: u32) -> Type<'ctx, B, C>
+fn ptr_type<'ctx, B, C>(module: ModuleRef<'ctx, B, C>, addr_space: AddressSpace) -> Type<'ctx, B, C>
 where
     B: ModuleBrand + 'ctx,
     C: Capability,
@@ -1731,7 +1732,11 @@ where
     {
         return Ok((int_type(module, bits), consumed));
     }
-    if let Some((addr_space, consumed)) = parse_prefixed_u32(text, "p", true) {
+    // Likewise `"p" + utostr(AddressSpace)`, from a pointer that exists: a
+    // number past 24 bits falls through to the mismatch.
+    if let Some((addr_space, consumed)) = parse_prefixed_u32(text, "p", true)
+        && let Some(addr_space) = AddressSpace::new(addr_space)
+    {
         return Ok((ptr_type(module, addr_space), consumed));
     }
     // `getMangledTypeStr` spells a vector `"v" + utostr(EC.getKnownMinValue())`
@@ -2067,7 +2072,7 @@ enum IitDescriptor {
         width: NonZeroU32,
         scalable: bool,
     },
-    Pointer(u32),
+    Pointer(AddressSpace),
     Struct {
         elements: usize,
     },
@@ -2143,7 +2148,7 @@ fn decode_iit_type(
         11 => decode_iit_vector(entries, pos, info, out, lanes::<8>(), scalable)?,
         12 => decode_iit_vector(entries, pos, info, out, lanes::<16>(), scalable)?,
         13 => decode_iit_vector(entries, pos, info, out, lanes::<32>(), scalable)?,
-        14 => out.push(IitDescriptor::Pointer(0)),
+        14 => out.push(IitDescriptor::Pointer(AddressSpace::DEFAULT)),
         15 => {
             let (index, kind) = decode_argument_info(next_iit_usize_or_zero(entries, pos))?;
             out.push(IitDescriptor::Argument { index, kind });
@@ -2166,7 +2171,7 @@ fn decode_iit_type(
         23 => out.push(IitDescriptor::TruncArgument(decode_argument_index(
             next_iit_usize_or_zero(entries, pos),
         )?)),
-        24 => out.push(IitDescriptor::Pointer(u32::from(next_iit_byte(
+        24 => out.push(IitDescriptor::Pointer(AddressSpace::from(next_iit_byte(
             entries, pos,
         )?))),
         25 => decode_iit_vector(entries, pos, info, out, lanes::<1>(), scalable)?,
@@ -2206,8 +2211,8 @@ fn decode_iit_type(
         42 => out.push(IitDescriptor::Amx),
         43 => out.push(IitDescriptor::PpcQuad),
         44 => decode_iit_vector(entries, pos, info, out, lanes::<3>(), scalable)?,
-        45 => out.push(IitDescriptor::Pointer(10)),
-        46 => out.push(IitDescriptor::Pointer(20)),
+        45 => out.push(IitDescriptor::Pointer(address_space::<10>())),
+        46 => out.push(IitDescriptor::Pointer(address_space::<20>())),
         47 => out.push(IitDescriptor::Integer(2)),
         48 => out.push(IitDescriptor::Integer(4)),
         49 => out.push(IitDescriptor::Aarch64Svcount),
@@ -2778,7 +2783,10 @@ mod tests {
                 "ppcf128" => Type::new(module.module().context().ppc_fp128(), module),
                 other => panic!("unsupported generated sample float `{other}`"),
             },
-            IntrinsicSampleType::Pointer(addr_space) => ptr_type(module, *addr_space),
+            IntrinsicSampleType::Pointer(addr_space) => ptr_type(
+                module,
+                AddressSpace::new(*addr_space).expect("a generated sample's space fits 24 bits"),
+            ),
             IntrinsicSampleType::FixedVector {
                 lanes: count,
                 element,
@@ -2899,7 +2907,7 @@ mod tests {
         let context = module_ref.module().context();
         let i32_ty = module.i32_type().as_type();
         let f32_ty = module.f32_type().as_type();
-        let ptr_ty = ptr_type(module_ref, 0);
+        let ptr_ty = ptr_type(module_ref, AddressSpace::DEFAULT);
         let spelled = [
             void_type(module_ref),
             metadata_type(module_ref),
@@ -2916,7 +2924,7 @@ mod tests {
             i32_ty,
             int_type(module_ref, 128),
             ptr_ty,
-            ptr_type(module_ref, 3),
+            ptr_type(module_ref, address_space::<3>()),
             array_type(module_ref, i32_ty, 0)?,
             array_type(module_ref, i32_ty, 2)?,
             array_type(module_ref, array_type(module_ref, f32_ty, 3)?, 2)?,
@@ -2995,6 +3003,7 @@ mod tests {
             "f_i32isVoidf",
             "f_Metadataf",
             "i16777216",
+            "p16777216",
             "s_absents",
         ] {
             assert!(

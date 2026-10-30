@@ -20,14 +20,14 @@
 //! llvmkit gives each module its own type arena.
 
 use llvmkit_ir::{
-    Align, Analyses, ArrayType, AtomicOrdering, AtomicRmwBinOp, AtomicRmwConfig, BasicBlock,
-    CallInst, CallSiteConfig, CastOpcode, CastOperation, DominatorTreeAnalysis, Dyn, DynBrand,
-    FastMathFlags, FloatDyn, FloatValue, FnCx, FnReport, FunctionId, FunctionPass, GepNoWrapFlags,
-    InlineAsmOptions, InstructionView, IntDyn, IntValue, InvokeInst, IrBuilder, IrError, IrResult,
-    IrStruct, Linkage, Module, OperandBundleDef, OperandBundleTag, OperandBundleUse, PatchBody,
-    PointerValue, Positioned, ReshapeCfg, SsaBuilder, SsaState, SyncScope, TailCallKind,
-    TruncFlags, Type, UiToFpFlags, Unterminated, Value, ValueId, ZextFlags, comdat::SelectionKind,
-    iter::BlockCursor, lanes, run_function_pass,
+    AddressSpace, Align, Analyses, ArrayType, AtomicOrdering, AtomicRmwBinOp, AtomicRmwConfig,
+    BasicBlock, CallInst, CallSiteConfig, CastOpcode, CastOperation, DominatorTreeAnalysis, Dyn,
+    DynBrand, FastMathFlags, FloatDyn, FloatValue, FnCx, FnReport, FunctionId, FunctionPass,
+    GepNoWrapFlags, InlineAsmOptions, InstructionView, IntDyn, IntValue, InvokeInst, IrBuilder,
+    IrError, IrResult, IrStruct, Linkage, Module, OperandBundleDef, OperandBundleTag,
+    OperandBundleUse, PatchBody, PointerValue, Positioned, ReshapeCfg, SsaBuilder, SsaState,
+    SyncScope, TailCallKind, TruncFlags, Type, UiToFpFlags, Unterminated, Value, ValueId,
+    ZextFlags, comdat::SelectionKind, iter::BlockCursor, lanes, run_function_pass,
 };
 
 /// A two-field schema, so a struct-typed value exists to hand across modules.
@@ -85,7 +85,7 @@ fn builder_with_parameters<'m>(
                 module.i64_type().as_type(),
                 module.f32_type().as_type(),
                 module.f64_type().as_type(),
-                module.ptr_type(0).as_type(),
+                module.ptr_type_in::<0>().as_type(),
             ],
         )
         .expect("valid function type");
@@ -286,7 +286,7 @@ fn a_float_operand_rejects_a_value_from_another_module() {
 fn a_pointer_operand_rejects_a_value_from_another_module() {
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
-    let foreign_null = foreign.ptr_type(0).const_null();
+    let foreign_null = foreign.ptr_type_in::<0>().const_null();
     let foreign_pointer: PointerValue<'_, llvmkit_ir::SpaceDyn, DynBrand> = foreign_null
         .as_erased()
         .try_into()
@@ -333,7 +333,7 @@ fn a_select_arm_rejects_a_value_from_another_module() {
         .try_into()
         .expect("an f32 value");
     let pointer_arm: PointerValue<'_, llvmkit_ir::SpaceDyn, DynBrand> = foreign
-        .ptr_type(0)
+        .ptr_type_in::<0>()
         .const_null()
         .as_erased()
         .try_into()
@@ -869,25 +869,25 @@ fn the_typed_pointer_constructor_rejects_a_pointee_from_another_module() {
     let problems = not_refused(vec![
         (
             "typed_pointer_type",
-            without_value(home.typed_pointer_type(foreign_i32, 0)),
+            without_value(home.typed_pointer_type(foreign_i32, AddressSpace::DEFAULT)),
         ),
         (
             "view.typed_pointer_type",
-            without_value(view.typed_pointer_type(foreign_i32, 0)),
+            without_value(view.typed_pointer_type(foreign_i32, AddressSpace::DEFAULT)),
         ),
         (
             "typed_pointer_type(void)",
-            without_value(home.typed_pointer_type(foreign_void, 0)),
+            without_value(home.typed_pointer_type(foreign_void, AddressSpace::DEFAULT)),
         ),
         (
             "view.typed_pointer_type(void)",
-            without_value(view.typed_pointer_type(foreign_void, 0)),
+            without_value(view.typed_pointer_type(foreign_void, AddressSpace::DEFAULT)),
         ),
     ]);
     assert!(problems.is_empty(), "{problems:#?}");
 
     // Positive control: the receiving module's own pointee.
-    home.typed_pointer_type(home.i32_type(), 0)
+    home.typed_pointer_type(home.i32_type(), AddressSpace::DEFAULT)
         .expect("a same-module typed pointer");
 }
 
@@ -1249,11 +1249,11 @@ fn global_wrapping_constants_reject_a_global_from_another_module() {
 fn ptr_auth_rejects_a_pointer_from_another_module() {
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
-    let own_null = home.ptr_type(0).const_null();
+    let own_null = home.ptr_type_in::<0>().const_null();
 
     let before = format!("{home}");
     let result = home.ptr_auth(
-        foreign.ptr_type(0).const_null(),
+        foreign.ptr_type_in::<0>().const_null(),
         home.i32_type().const_int(0i32),
         home.i64_type().const_int(0i64),
         own_null,
@@ -1537,17 +1537,17 @@ fn a_pointer_cast_rejects_a_destination_type_from_another_module() {
         ),
         (
             "int_to_ptr",
-            b.int_to_ptr::<i64, _, _, _>(wide_typed, foreign.ptr_type(0), "c")
+            b.int_to_ptr::<i64, _, _, _>(wide_typed, foreign.ptr_type_in::<0>(), "c")
                 .map(|_| ()),
         ),
         (
             "addrspace_cast",
-            b.addrspace_cast(pointer_typed, foreign.ptr_type(1), "c")
+            b.addrspace_cast(pointer_typed, foreign.ptr_type_in::<1>(), "c")
                 .map(|_| ()),
         ),
         (
             "pointer_cast",
-            b.pointer_cast(pointer_typed, foreign.ptr_type(0), "c")
+            b.pointer_cast(pointer_typed, foreign.ptr_type_in::<0>(), "c")
                 .map(|_| ()),
         ),
         (
@@ -1557,7 +1557,7 @@ fn a_pointer_cast_rejects_a_destination_type_from_another_module() {
         ),
         (
             "bitcast_dyn",
-            b.bitcast_dyn(pointer, foreign.ptr_type(0).as_type(), "c")
+            b.bitcast_dyn(pointer, foreign.ptr_type_in::<0>().as_type(), "c")
                 .map(|_| ()),
         ),
     ];
@@ -1689,7 +1689,7 @@ fn a_phi_pad_or_va_arg_rejects_a_type_from_another_module() {
         ),
         (
             "pointer_phi_in_addrspace",
-            b.pointer_phi_in_addrspace(foreign.ptr_type(0), "p")
+            b.pointer_phi_in_addrspace(foreign.ptr_type_in::<0>(), "p")
                 .map(|_| ()),
         ),
         (
@@ -1805,7 +1805,7 @@ fn a_call_site_rejects_a_callee_or_function_type_from_another_module() {
             IrError::ForeignType,
             b.indirect_call_dyn::<Dyn, _, _, _, _>(
                 foreign_fn_ty,
-                home.ptr_type(0).const_null(),
+                home.ptr_type_in::<0>().const_null(),
                 no_args(),
                 "r",
             )
@@ -1855,7 +1855,7 @@ fn invoke_and_callbr_reject_a_callee_or_function_type_from_another_module() {
         .add_typed_function::<i32, (), _>("typed_g", Linkage::External)
         .expect("typed_g");
     let foreign_asm = foreign.inline_asm(foreign_fn_ty, "nop", "=r", InlineAsmOptions::new());
-    let home_null = home.ptr_type(0).const_null();
+    let home_null = home.ptr_type_in::<0>().const_null();
     let no_values: Vec<Value<'_, DynBrand>> = Vec::new();
     let no_args = Vec::<Value<'_, DynBrand>>::new;
     let no_indirects = Vec::<BasicBlock<'_, Dyn, Unterminated, DynBrand>>::new;
@@ -2042,7 +2042,7 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
         .add_typed_function::<i32, (), _>("typed_h", Linkage::External)
         .expect("typed_h");
     let home_asm = home.inline_asm(home_fn_ty, "nop", "=r", InlineAsmOptions::new());
-    let home_null = home.ptr_type(0).const_null();
+    let home_null = home.ptr_type_in::<0>().const_null();
     let mixed = || {
         OperandBundleDef::new(
             OperandBundleTag::Deopt,
@@ -3331,7 +3331,7 @@ fn an_operand_or_clause_setter_rejects_a_handle_from_another_module() {
     let home = Module::dynamic("home");
     let foreign = Module::dynamic("foreign");
     let foreign_value = foreign.i32_type().const_int(5i32);
-    let foreign_null = foreign.ptr_type(0).const_null();
+    let foreign_null = foreign.ptr_type_in::<0>().const_null();
     let (b, [narrow, _, _, _, pointer]) = builder_with_parameters(&home, "f");
     let narrow: IntValue<'_, i32, DynBrand> = narrow.try_into().expect("an i32");
     let pointer: PointerValue<'_, llvmkit_ir::SpaceDyn, DynBrand> =
@@ -3346,10 +3346,10 @@ fn an_operand_or_clause_setter_rejects_a_handle_from_another_module() {
         )
         .expect("atomicrmw");
     let catch_pad = b
-        .landingpad(home.ptr_type(0).as_type(), false, "catch")
+        .landingpad(home.ptr_type_in::<0>().as_type(), false, "catch")
         .expect("landingpad");
     let filter_pad = b
-        .landingpad(home.ptr_type(0).as_type(), false, "filter")
+        .landingpad(home.ptr_type_in::<0>().as_type(), false, "filter")
         .expect("landingpad");
     let (switcher, default, case_target) = builder_with_targets(&home, "s");
     let (_, switch) = switcher
@@ -3443,7 +3443,7 @@ fn a_constant_fold_rejects_an_operand_or_type_from_another_module() {
     let foreign = Module::dynamic("foreign");
     let one = home.i32_type().const_int(1i32).as_constant();
     let two = foreign.i32_type().const_int(2i32).as_constant();
-    let null = home.ptr_type(0).const_null().as_constant();
+    let null = home.ptr_type_in::<0>().const_null().as_constant();
     let home_i32 = home.i32_type().as_type();
     let foreign_i32 = foreign.i32_type().as_type();
     let foreign_i64 = foreign.i64_type().as_type();
@@ -3702,7 +3702,7 @@ fn the_constant_folder_rejects_an_operand_or_type_from_another_module() {
     let f_int: IntValue<'_, i32, DynBrand> = f_i32.try_into().expect("an i32");
     let h_float: FloatValue<'_, f32, DynBrand> = h_f32.try_into().expect("a float");
     let f_float: FloatValue<'_, f32, DynBrand> = f_f32.try_into().expect("a float");
-    let null = home.ptr_type(0).const_null().as_constant();
+    let null = home.ptr_type_in::<0>().const_null().as_constant();
     let home_i32 = home.i32_type().as_type();
     let foreign_i32 = foreign.i32_type().as_type();
     let foreign_i64 = foreign.i64_type().as_type();
@@ -4005,7 +4005,7 @@ fn a_function_builder_rejects_a_signature_or_constant_from_another_module() {
         .function_type_no_parameters(foreign.i32_type())
         .expect("valid function type");
     let foreign_constant = foreign.i32_type().const_int(5i32);
-    let foreign_null = foreign.ptr_type(0).const_null();
+    let foreign_null = foreign.ptr_type_in::<0>().const_null();
     let before = (format!("{home}"), format!("{foreign}"));
 
     let outcomes = vec![
@@ -4359,8 +4359,8 @@ fn a_type_entry_rejects_a_type_from_another_module() {
         .expect("valid function type");
     let foreign_abs =
         llvmkit_ir::IntrinsicDescriptor::new(abs, [foreign_i32]).expect("foreign descriptor");
-    let home_ptr = home.ptr_type(0).as_type();
-    let foreign_ptr = foreign.ptr_type(0).as_type();
+    let home_ptr = home.ptr_type_in::<0>().as_type();
+    let foreign_ptr = foreign.ptr_type_in::<0>().as_type();
     let home_i64 = home.i64_type().as_type();
 
     // Positive controls: each intrinsic entry answers LLVM's signature when

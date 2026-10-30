@@ -154,7 +154,7 @@ fn inline_asm_multiline_escapes_newline() -> Result<(), IrError> {
 fn indirect_call_rejects_wrong_return_marker() -> Result<(), IrError> {
     let m = module_new!("indirect_marker")?;
     let void_ty = m.void_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let host_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");

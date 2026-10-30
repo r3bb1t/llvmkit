@@ -147,7 +147,7 @@ fn blockaddress_constant_uses_function_address_space() -> Result<(), IrError> {
     let f = m
         .function_builder::<(), _>("f", fn_ty)
         .linkage(Linkage::External)
-        .address_space(2)
+        .address_space(llvmkit_ir::address_space::<2>())
         .build()?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let addr = m.block_address(m.view(f), &entry)?;
@@ -241,7 +241,7 @@ fn constant_expr_opcode_surface_matches_llvm22_parse_val_id() {
 fn bitcast_scalar_pointer_and_one_lane_pointer_vector_round_trip() -> Result<(), IrError> {
     let m = module_new!("constexpr_ptr_vec_bitcast")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let vec_ptr_ty = VectorType::of(ptr_ty, lanes::<1>());
     let g = m.add_global("g", i32_ty.const_zero())?;
     let scalar = m.view(g).as_global_constant_ptr();
@@ -305,7 +305,7 @@ fn invalid_bitcast_constant_expr_is_rejected() -> Result<(), IrError> {
     );
 
     m.constant_expr(
-        m.ptr_type(0).as_type(),
+        m.ptr_type_in::<0>().as_type(),
         ConstantExprOpcode::BitCast,
         [ptr],
         [],
@@ -330,7 +330,7 @@ fn invalid_gep_constant_expr_indices_are_rejected() -> Result<(), IrError> {
 
     let err = m
         .constant_expr_with_options(
-            m.ptr_type(0).as_type(),
+            m.ptr_type_in::<0>().as_type(),
             ConstantExprOpcode::GetElementPtr,
             [
                 m.view(g).as_global_constant_ptr().as_erased(),
@@ -599,12 +599,12 @@ fn invalid_gep_constant_expr_scalable_aggregate_source_is_rejected() -> Result<(
     let i8_ty = m.i8_type();
     let scalable = VectorType::scalable_of(i8_ty, lanes::<1>());
     let source_ty = ArrayType::of(scalable, 2);
-    let ptr = m.ptr_type(0).const_null();
+    let ptr = m.ptr_type_in::<0>().const_null();
     let one = m.i64_type().const_int(1i64);
 
     let err = m
         .constant_expr_with_options(
-            m.ptr_type(0).as_type(),
+            m.ptr_type_in::<0>().as_type(),
             ConstantExprOpcode::GetElementPtr,
             [ptr.as_erased(), one.as_erased()],
             [],
@@ -659,13 +659,13 @@ fn vector_gep_scalar_sequential_indices_are_splatted_before_interning() -> Resul
     let i8_ty = m.i8_type();
     let i64_ty = m.i64_type();
     let source_ty = ArrayType::of(i8_ty, 4);
-    let ptr = m.ptr_type(0).const_null();
+    let ptr = m.ptr_type_in::<0>().const_null();
     let zero = i64_ty.const_zero();
     let one = i64_ty.const_int(1i64);
     let vec_i64_ty = VectorType::of(i64_ty, lanes::<2>());
     let vector_index =
         vec_i64_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i64, _>, _>([zero, one])?;
-    let result_ty = VectorType::of(m.ptr_type(0), lanes::<2>());
+    let result_ty = VectorType::of(m.ptr_type_in::<0>(), lanes::<2>());
 
     let gep = m.constant_expr_with_options(
         result_ty.as_type(),
@@ -695,7 +695,7 @@ fn vector_gep_struct_index_width_mismatch_is_rejected() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
     let source_ty = m.struct_type([i8_ty.as_type()])?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let result_ty = VectorType::of(ptr_ty, lanes::<4>());
     let base = result_ty.const_vector([ptr_ty.const_null(); 4])?;
     let zero64 = i64_ty.const_zero();
@@ -751,7 +751,7 @@ fn constant_expr_gep_inrange_words_are_truncated_before_interning() -> Result<()
     );
 
     let canonical = m.constant_expr_with_options(
-        m.ptr_type(0).as_type(),
+        m.ptr_type_in::<0>().as_type(),
         ConstantExprOpcode::GetElementPtr,
         [ptr.as_erased(), offset.as_erased()],
         [],
@@ -764,7 +764,7 @@ fn constant_expr_gep_inrange_words_are_truncated_before_interning() -> Result<()
             )),
     )?;
     let high_word = m.constant_expr_with_options(
-        m.ptr_type(0).as_type(),
+        m.ptr_type_in::<0>().as_type(),
         ConstantExprOpcode::GetElementPtr,
         [ptr.as_erased(), offset.as_erased()],
         [],
@@ -796,7 +796,7 @@ fn constant_expr_gep_inrange_width_must_match_base_index_width() -> Result<(), I
 
     let err = m
         .constant_expr_with_options(
-            m.ptr_type(0).as_type(),
+            m.ptr_type_in::<0>().as_type(),
             ConstantExprOpcode::GetElementPtr,
             [
                 m.view(g).as_global_constant_ptr().as_erased(),
@@ -830,7 +830,7 @@ fn invalid_gep_constant_expr_address_space_mismatch_is_rejected() -> Result<(), 
     let i8_ty = m.i8_type();
     let target = m
         .global_builder("g", i8_ty.as_type())
-        .address_space(1)
+        .address_space(llvmkit_ir::address_space::<1>())
         .initializer(i8_ty.const_zero())
         .build()?;
     let i64_ty = m.i64_type();
@@ -839,7 +839,7 @@ fn invalid_gep_constant_expr_address_space_mismatch_is_rejected() -> Result<(), 
     let one = i64_ty.const_int(1i64);
     let vector_index =
         vec_i64_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i64, _>, _>([zero, one])?;
-    let wrong_result_ty = VectorType::of(m.ptr_type(0), lanes::<2>());
+    let wrong_result_ty = VectorType::of(m.ptr_type_in::<0>(), lanes::<2>());
 
     let err = m
         .constant_expr_with_options(
@@ -875,7 +875,7 @@ fn ptrauth_constructor_requires_five_operand_shape() -> Result<(), IrError> {
     let ptr = m.view(g).as_global_constant_ptr();
     let key = m.i32_type().const_zero();
     let disc = m.i64_type().const_int(1i64);
-    let addr_disc = m.ptr_type(0).const_null();
+    let addr_disc = m.ptr_type_in::<0>().const_null();
     let signed = m.ptr_auth(ptr, key, disc, addr_disc, ptr)?;
     m.add_global("signed", signed)?;
 
@@ -894,7 +894,7 @@ fn ptrauth_constructor_requires_five_operand_shape() -> Result<(), IrError> {
     );
 
     let constant_expr_pointer = m.constant_expr_with_options(
-        m.ptr_type(0).as_type(),
+        m.ptr_type_in::<0>().as_type(),
         ConstantExprOpcode::GetElementPtr,
         [addr_disc.as_erased(), disc.as_erased()],
         [],

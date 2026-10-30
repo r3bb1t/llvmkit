@@ -76,10 +76,11 @@ pub trait VectorElement<'ctx, B: ModuleBrand + 'ctx>: IrType<'ctx, B> + sealed::
 /// A type handle that is always a valid array element — every kind
 /// `ArrayType::isValidElementType` admits that has a typed handle: integers,
 /// floats, pointers, arrays, structs (any body state), vectors and target
-/// types — except a legacy typed pointer: `ArrayType::isValidElementType`
-/// admits one, but [`TypedPointerType`](crate::TypedPointerType) does not
-/// implement this trait, so an array of one goes through the checked
-/// [`Module::array_type`](crate::Module::array_type).
+/// types. `ArrayType::isValidElementType` also admits a legacy typed pointer,
+/// but [`TypedPointerType`](crate::TypedPointerType) is no IR type here, so no
+/// array can hold one, on this route or on
+/// [`Module::array_type`](crate::Module::array_type)
+/// (`docs/divergences.md` D20).
 ///
 /// Sealed. `void`, `label`, `metadata`, function types and `token` have
 /// handles and never implement it; `x86_amx` has no typed handle.

@@ -88,7 +88,7 @@ fn ptrtoint_of_inttoptr_uses_pointer_size() -> Result<(), IrError> {
     let m = module_new!("analysis-ptr-index")?;
     let dl = DataLayout::parse("e-p:64:64:64:32")?;
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let wide = i64_ty.const_ap_int(&ApInt::from_words(64, &[0x1_0000_0001]))?;
     let ptr = constant_fold_cast_operand(
         CastOpcode::IntToPtr,
@@ -118,7 +118,7 @@ fn ptrtoint_of_inttoptr_i128_collapses_to_original_value() -> Result<(), IrError
     let m = module_new!("analysis-ptr-i128-pointer-size")?;
     let dl = DataLayout::parse("e-p:128:128:128:64")?;
     let i128_ty = m.i128_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     // Bit 64 (above the 64-bit index boundary, within the 128-bit
     // pointer boundary) must survive the round trip.
     let x = i128_ty.const_ap_int(&ApInt::from_words(128, &[1, 1]))?;
@@ -652,7 +652,7 @@ fn recursive_gep_load_through_bitcast_from_global_folds() -> Result<(), IrError>
     let zero = i64_ty.const_zero();
     let one = i64_ty.const_int(1_i64);
     let gep = m.constant_expr_with_options(
-        m.ptr_type(0).as_type(),
+        m.ptr_type_in::<0>().as_type(),
         ConstantExprOpcode::GetElementPtr,
         [
             m.view(g).as_global_constant_ptr().as_erased(),
@@ -685,11 +685,11 @@ fn non_integral_pointer_load_through_bitcast_declines() -> Result<(), IrError> {
     let dl = DataLayout::parse("e-p:64:64:64-p1:64:64:64-ni:1")?;
     let i8_ty = m.i8_type();
     let i64_ty = m.i64_type();
-    let ptr1_ty = m.ptr_type(1);
+    let ptr1_ty = m.ptr_type_in::<1>();
     let g = m
         .global_builder("ni_global", i8_ty.as_type())
         .constant()
-        .address_space(1)
+        .address_space(llvmkit_ir::address_space::<1>())
         .initializer(i8_ty.const_int(0_i8))
         .build()?;
 
@@ -899,7 +899,7 @@ fn inttoptr_vs_null_folds_via_integer_compare() -> Result<(), IrError> {
     let m = module_new!("analysis-inttoptr-vs-null")?;
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let five = i64_ty.const_int(5_i64).as_constant();
     let lhs = m.constant_expr(
         ptr_ty.as_type(),
@@ -966,7 +966,7 @@ fn inttoptr_pair_ult_folds_via_integer_compare() -> Result<(), IrError> {
     let m = module_new!("analysis-inttoptr-pair-ult")?;
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let four = i64_ty.const_int(4_i64).as_constant();
     let eight = i64_ty.const_int(8_i64).as_constant();
     let lhs = m.constant_expr(
@@ -1051,7 +1051,7 @@ fn same_base_inbounds_gep_ult_folds_via_offset_compare() -> Result<(), IrError> 
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let i8_ty = m.i8_type();
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
     let base = m.view(g).as_global_constant_ptr();
     let four = i64_ty.const_int(4_i64).as_constant();
@@ -1098,7 +1098,7 @@ fn non_inbounds_same_base_gep_eq_still_folds() -> Result<(), IrError> {
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let i8_ty = m.i8_type();
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
     let base = m.view(g).as_global_constant_ptr();
     let four = i64_ty.const_int(4_i64).as_constant();
@@ -1144,7 +1144,7 @@ fn non_inbounds_same_base_gep_ult_declines_to_fold() -> Result<(), IrError> {
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let i8_ty = m.i8_type();
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
     let base = m.view(g).as_global_constant_ptr();
     let four = i64_ty.const_int(4_i64).as_constant();
@@ -1233,7 +1233,7 @@ fn nested_gep_over_gep_offset_mid_folds_via_offset_compare() -> Result<(), IrErr
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let i8_ty = m.i8_type();
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
     let mid_lhs = m.view(g).ptr_offset(4);
     let mid_rhs = m.view(g).ptr_offset(4);
@@ -1316,7 +1316,7 @@ fn gep_i32_index_canonicalizes_to_i8_offset() -> Result<(), IrError> {
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
     let four = i64_ty.const_int(4_i64).as_constant();
     let gep = m.constant_expr_with_options(
@@ -1353,7 +1353,7 @@ fn nested_gep_merges_into_single_i8_offset() -> Result<(), IrError> {
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
     let one = i64_ty.const_int(1_i64).as_constant();
     let inbounds = ConstantExprOptions::new()
@@ -1403,7 +1403,7 @@ fn nested_gep_cancelling_offsets_fold_to_base_pointer() -> Result<(), IrError> {
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
     let g_ptr = m.view(g).as_global_constant_ptr();
     let one = i64_ty.const_int(1_i64).as_constant();
@@ -1472,7 +1472,7 @@ fn nested_gep_non_constant_index_intersects_inner_no_wrap_flags() -> Result<(), 
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
     let h = m.add_global_constant("h", i32_ty.const_int(0_i32))?;
     let h_int = m.constant_expr(

@@ -238,7 +238,7 @@ fn metadata_constant_tuple_prints_typed_constants() {
 fn range_metadata_on_load_verifies_and_prints() -> Result<(), IrError> {
     let m = module_new!("range_ok")?;
     let i8_ty = m.i8_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i8_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -266,7 +266,7 @@ fn range_metadata_on_load_verifies_and_prints() -> Result<(), IrError> {
 fn range_metadata_rejects_odd_operand_count() -> Result<(), IrError> {
     let m = module_new!("range_odd")?;
     let i8_ty = m.i8_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i8_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -299,7 +299,7 @@ fn range_metadata_rejects_odd_operand_count() -> Result<(), IrError> {
 fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
     let m = module_new!("range_call_invoke_ok")?;
     let i8_ty = m.i8_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let callee = m
         .add_typed_function::<i8, (Ptr,), _>("callee", Linkage::External)?
         .as_function();
@@ -326,7 +326,7 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
     // `personality`. Neither is what this test is about; without them the
     // module is not IR `llvm-as` accepts.
     m.view(invoke_host)
-        .set_personality_fn(&m, m.ptr_type(0).const_null())?;
+        .set_personality_fn(&m, m.ptr_type_in::<0>().const_null())?;
     let entry = m.view(invoke_host).append_basic_block(&m, "entry");
     let normal = m.view(invoke_host).append_basic_block(&m, "normal");
     let unwind = m.view(invoke_host).append_basic_block(&m, "unwind");

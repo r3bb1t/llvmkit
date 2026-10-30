@@ -287,7 +287,7 @@ fn build_int_not_emits_xor_minus_one() -> Result<(), IrError> {
 #[test]
 fn build_pointer_cast_same_addrspace_emits_bitcast() -> Result<(), IrError> {
     let m = module_new!("a")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(ptr_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -312,7 +312,7 @@ fn build_pointer_cast_same_addrspace_emits_bitcast() -> Result<(), IrError> {
 fn build_is_null_emits_icmp_eq_null() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i1_ty = m.bool_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i1_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -335,7 +335,7 @@ fn build_is_null_emits_icmp_eq_null() -> Result<(), IrError> {
 fn build_is_not_null_emits_icmp_ne_null() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i1_ty = m.bool_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i1_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");

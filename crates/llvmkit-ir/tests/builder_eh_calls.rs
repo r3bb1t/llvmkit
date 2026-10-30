@@ -205,7 +205,7 @@ fn callbr_two_indirect_dests_print_form() -> Result<(), IrError> {
 fn an_indirect_invoke_refuses_a_return_marker_its_type_does_not_have() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let void_ty = m.void_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let caller_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
@@ -267,7 +267,7 @@ fn the_indirect_and_inline_asm_call_sites_honour_a_call_site_type_override() -> 
     let m = module_new!("a")?;
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fallback = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let override_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()])?;
     let asm = m.inline_asm(fallback, "nop", "", InlineAsmOptions::new());

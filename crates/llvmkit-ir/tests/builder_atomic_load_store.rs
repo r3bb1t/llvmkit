@@ -21,7 +21,7 @@ use llvmkit_ir::{
 fn load_atomic_monotonic_align4() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -51,7 +51,7 @@ fn load_atomic_monotonic_align4() -> Result<(), IrError> {
 fn load_atomic_volatile_acquire_align8() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -82,7 +82,7 @@ fn load_atomic_volatile_acquire_align8() -> Result<(), IrError> {
 fn load_atomic_volatile_singlethread_seq_cst_align16() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -118,7 +118,7 @@ fn load_atomic_volatile_singlethread_seq_cst_align16() -> Result<(), IrError> {
 fn store_atomic_monotonic_align4() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -149,7 +149,7 @@ fn store_atomic_monotonic_align4() -> Result<(), IrError> {
 fn store_atomic_volatile_monotonic_align4() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -181,7 +181,7 @@ fn store_atomic_volatile_monotonic_align4() -> Result<(), IrError> {
 fn store_atomic_volatile_singlethread_monotonic() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -215,7 +215,7 @@ fn store_atomic_volatile_singlethread_monotonic() -> Result<(), IrError> {
 fn verifier_rejects_atomic_load_release_ordering() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -245,7 +245,7 @@ fn verifier_rejects_atomic_load_release_ordering() -> Result<(), IrError> {
 fn verifier_rejects_atomic_store_acquire_ordering() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -278,7 +278,7 @@ fn verifier_rejects_atomic_load_non_power_of_two_size() -> Result<(), IrError> {
     let m = module_new!("a")?;
     // i17 is intentionally non-power-of-two: the marker `Width<17>` projects
     // through `StaticIntWidth::ir_type`, no separate type binding is needed.
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -313,7 +313,7 @@ fn verifier_rejects_atomic_load_struct_operand() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
     let struct_ty = m.struct_type([i32_ty.as_type()])?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");

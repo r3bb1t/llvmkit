@@ -1021,7 +1021,7 @@ fn fold_ptr_int_cast_vs_null<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         && let Some(operand) = constant_from_id(module, *operand_id)
         && let Some(addr_space) = pointer_address_space(lhs.ty())
     {
-        let int_ptr_ty = int_type(module, dl.pointer_size_in_bits(addr_space))?;
+        let int_ptr_ty = int_type(module, dl.pointer_size_in_bits(addr_space.get()))?;
         if let Some(casted) = fold_integer_cast_constant(operand, int_ptr_ty.as_type(), false, dl)?
         {
             let null = int_ptr_ty.const_zero().as_constant();
@@ -1098,7 +1098,7 @@ fn fold_matching_cast_pair<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         && let Some(rhs_operand) = constant_from_id(module, *rhs_operand_id)
         && let Some(addr_space) = pointer_address_space(lhs.ty())
     {
-        let int_ptr_ty = int_type(module, dl.pointer_size_in_bits(addr_space))?;
+        let int_ptr_ty = int_type(module, dl.pointer_size_in_bits(addr_space.get()))?;
         // Convert both integer values to the right size to ensure we get
         // the proper extension or truncation.
         if let Some(c0) = fold_integer_cast_constant(lhs_operand, int_ptr_ty.as_type(), false, dl)?
@@ -2700,7 +2700,7 @@ fn constant_to_store_bytes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             let Some(addr_space) = pointer_address_space(constant.ty()) else {
                 return Ok(None);
             };
-            let bits = dl.pointer_size_in_bits(addr_space);
+            let bits = dl.pointer_size_in_bits(addr_space.get());
             let byte_len = usize_from_u64(dl.type_store_size(erase_type(constant.ty())))?;
             Ok(Some(apint_to_store_bytes(&ApInt::zero(bits), byte_len, dl)))
         }
@@ -2820,8 +2820,8 @@ fn fold_ptr_to_int_pair<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     // address/index size (`getAddressSizeInBits`). The two only diverge on
     // fat-pointer/CHERI-like targets where pointer size != index size.
     let mid_bits = match opcode {
-        CastOpcode::PtrToInt => dl.pointer_size_in_bits(addr_space),
-        CastOpcode::PtrToAddr => dl.index_size_in_bits(addr_space),
+        CastOpcode::PtrToInt => dl.pointer_size_in_bits(addr_space.get()),
+        CastOpcode::PtrToAddr => dl.index_size_in_bits(addr_space.get()),
         _ => return Ok(None),
     };
     let mid_ty = int_type(module, mid_bits)?;
@@ -2860,7 +2860,7 @@ fn fold_int_to_ptr_pair<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     let Ok(mid_ty) = IntType::<IntDyn, B, C>::try_from(operand.ty()) else {
         return Ok(None);
     };
-    if mid_ty.bit_width() < dl.pointer_size_in_bits(src_as) || src_as != dst_as {
+    if mid_ty.bit_width() < dl.pointer_size_in_bits(src_as.get()) || src_as != dst_as {
         return Ok(None);
     }
     fold_bitcast_with_layout(source, dest_ty, dl)
@@ -2948,7 +2948,9 @@ fn int_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     Ok(IntType::new(module.context().int_type(bits), module))
 }
 
-fn pointer_address_space<B: ModuleBrand, C: Capability>(ty: Type<'_, B, C>) -> Option<u32> {
+fn pointer_address_space<B: ModuleBrand, C: Capability>(
+    ty: Type<'_, B, C>,
+) -> Option<crate::AddressSpace> {
     match ty.data() {
         TypeData::Pointer { addr_space } => Some(*addr_space),
         _ => None,
@@ -2959,7 +2961,7 @@ fn index_bits_for_pointer<B: ModuleBrand, C: Capability>(
     ty: Type<'_, B, C>,
     dl: &DataLayout,
 ) -> Option<u32> {
-    pointer_address_space(ty).map(|addr_space| dl.index_size_in_bits(addr_space))
+    pointer_address_space(ty).map(|addr_space| dl.index_size_in_bits(addr_space.get()))
 }
 
 fn index_bits_for_constant_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
@@ -2999,7 +3001,7 @@ fn is_non_integral_pointer_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     dl: &DataLayout,
 ) -> bool {
     match ty.data() {
-        TypeData::Pointer { addr_space } => dl.is_non_integral_address_space(*addr_space),
+        TypeData::Pointer { addr_space } => dl.is_non_integral_address_space(addr_space.get()),
         TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
             is_non_integral_pointer_type(Type::new(*elem, ty.module), dl)
         }

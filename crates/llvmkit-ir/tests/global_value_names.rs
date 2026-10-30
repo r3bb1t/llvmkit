@@ -141,7 +141,7 @@ fn clearing_a_global_name_frees_the_name_and_prints_a_slot() {
 fn every_global_kind_renames_and_prints_under_its_new_name() {
     let m = Module::dynamic("m");
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let g = m.add_global("g", i32_ty.const_int(0_i32)).expect("@g");
     let resolver = m
         .add_function_dyn(
@@ -502,7 +502,7 @@ fn a_name_with_a_nul_byte_is_refused_and_changes_nothing() {
 fn a_void_value_refuses_a_name() -> Result<(), IrError> {
     let m = Module::dynamic("m");
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let f = m.add_function_dyn(
         "f",
         m.function_type(m.void_type(), [i32_ty.as_type(), ptr_ty.as_type()])?,
@@ -596,7 +596,7 @@ fn inline_asm_and_metadata_values_refuse_a_name() -> Result<(), IrError> {
 fn declaring_an_intrinsic_over_a_same_typed_definition_leaves_its_arguments_alone()
 -> Result<(), IrError> {
     let m = Module::dynamic("m");
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let f = m.add_function_dyn(
         "f",
         m.function_type(m.void_type(), [ptr_ty.as_type(), m.i32_type().as_type()])?,

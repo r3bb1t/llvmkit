@@ -49,7 +49,7 @@ fn landingpad_cleanup_only() -> Result<(), IrError> {
 fn landingpad_cleanup_plus_catch() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("instructions.landingpad", fn_ty, Linkage::External)?;

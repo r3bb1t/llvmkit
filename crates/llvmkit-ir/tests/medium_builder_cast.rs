@@ -32,8 +32,8 @@ fn cast_is_valid_answers_upstreams_cast_inst_assertions() {
     let i16_ty = m.i16_type();
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
-    let ptr_as1_ty = m.ptr_type(1);
+    let ptr_ty = m.ptr_type_in::<0>();
+    let ptr_as1_ty = m.ptr_type_in::<1>();
 
     let v2_int32 = VectorType::of(i32_ty, lanes::<2>()).as_type();
     let v2_int64 = VectorType::of(i64_ty, lanes::<2>()).as_type();

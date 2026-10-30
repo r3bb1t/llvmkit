@@ -1750,7 +1750,7 @@ fn index_type_size_in_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     data_layout: &DataLayout,
 ) -> u32 {
     match ty.kind() {
-        TypeKind::Pointer { addr_space } => data_layout.index_size_in_bits(addr_space),
+        TypeKind::Pointer { addr_space } => data_layout.index_size_in_bits(addr_space.get()),
         TypeKind::FixedVector | TypeKind::ScalableVector => match element_type(ty) {
             Some(element) => index_type_size_in_bits(element, data_layout),
             None => data_layout.index_size_in_bits(0),

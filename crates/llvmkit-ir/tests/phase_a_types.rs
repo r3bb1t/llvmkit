@@ -205,8 +205,10 @@ fn type_kind_discriminator_is_correct() {
         TypeKind::Integer { bits: 32 }
     );
     assert_eq!(
-        m.ptr_type(0).as_type().kind(),
-        TypeKind::Pointer { addr_space: 0 }
+        m.ptr_type_in::<0>().as_type().kind(),
+        TypeKind::Pointer {
+            addr_space: llvmkit_ir::AddressSpace::DEFAULT
+        }
     );
     assert_eq!(m.f32_type().as_type().kind(), TypeKind::Float);
     assert_eq!(m.f64_type().as_type().kind(), TypeKind::Double);
@@ -271,7 +273,7 @@ fn first_class_predicate_rejects_function_void_opaque() {
 
     assert!(m.i32_type().as_type().is_first_class());
     assert!(m.f64_type().as_type().is_first_class());
-    assert!(m.ptr_type(0).as_type().is_first_class());
+    assert!(m.ptr_type_in::<0>().as_type().is_first_class());
 }
 
 /// llvmkit-specific: typestate `try_from` narrowing on typed handles.
@@ -402,7 +404,7 @@ fn ir_type_trait_unifies_handles() {
     // and to the erased Type.
     let _ = _accepts_any(m.i32_type());
     let _ = _accepts_any(m.f64_type());
-    let _ = _accepts_any(m.ptr_type(0));
+    let _ = _accepts_any(m.ptr_type_in::<0>());
     let _ = _accepts_any(m.void_type());
     let _ = _accepts_any(m.i32_type().as_type());
     // (smoke test that it compiles; runtime values not checked)

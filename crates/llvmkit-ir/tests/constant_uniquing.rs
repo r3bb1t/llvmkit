@@ -25,7 +25,7 @@ fn structurally_equal_constants_are_one_node() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
 
     // Scalars, already uniqued before this cycle — regression guard.
     assert_eq!(i32_ty.const_int(7_i32), i32_ty.const_int(7_i32));
@@ -72,8 +72,10 @@ fn structurally_equal_constants_are_one_node() -> Result<(), IrError> {
         "the base global is part of the key"
     );
     assert_ne!(
-        m.view(g).as_global_constant_ptr_offset(4, 0),
-        m.view(g).as_global_constant_ptr_offset(4, 1),
+        m.view(g)
+            .as_global_constant_ptr_offset(4, llvmkit_ir::AddressSpace::DEFAULT),
+        m.view(g)
+            .as_global_constant_ptr_offset(4, llvmkit_ir::address_space::<1>()),
         "the pointer type — and so the address space — is part of the key"
     );
 
@@ -113,7 +115,7 @@ fn structurally_equal_constants_are_one_node() -> Result<(), IrError> {
 #[test]
 fn forward_ref_placeholders_stay_distinct() -> Result<(), IrError> {
     let m = module_new!("uniquing-placeholder")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let first = m.forward_ref_value_placeholder(ptr_ty.as_type())?;
     let second = m.forward_ref_value_placeholder(ptr_ty.as_type())?;
     assert_ne!(

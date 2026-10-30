@@ -101,7 +101,7 @@ fn build_invoke_caller<'ctx, B: ModuleBrand + 'ctx>(
         .as_function();
 
     m.view(caller)
-        .set_personality_fn(m, m.ptr_type(0).const_null())?;
+        .set_personality_fn(m, m.ptr_type_in::<0>().const_null())?;
     let entry = m.view(caller).append_basic_block(m, "entry");
     let normal = m.view(caller).append_basic_block(m, "normal");
     let unwind = m.view(caller).append_basic_block(m, "unwind");

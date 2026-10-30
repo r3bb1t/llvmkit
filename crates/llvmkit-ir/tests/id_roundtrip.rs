@@ -26,7 +26,7 @@ use llvmkit_ir::{
 fn handles_round_trip_through_to_id_and_view() -> Result<(), IrError> {
     let m = module_new!("id-round-trip")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
 
@@ -226,7 +226,7 @@ fn view_panics_on_a_foreign_tag() {
 fn builder_view_agrees_with_module_view() -> Result<(), IrError> {
     let m = module_new!("builder-view")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
 
@@ -268,7 +268,7 @@ fn typed_ids_lift_at_operand_positions() -> Result<(), IrError> {
     let m = module_new!("id-operand")?;
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(
         i32_ty,
         [i32_ty.as_type(), f32_ty.as_type(), ptr_ty.as_type()],
@@ -333,7 +333,7 @@ fn typed_ids_are_call_args() -> Result<(), IrError> {
     let m = module_new!("id-call-arg")?;
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m
         .function_type(
             i32_ty,
@@ -413,7 +413,7 @@ fn every_id_is_an_erased_operand() {
     let m = module_new!("id-erased-operand").expect("fresh module");
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m
         .function_type(
             i32_ty,
@@ -457,7 +457,7 @@ fn every_id_is_an_erased_operand() {
 #[test]
 fn ids_drive_erased_operand_slots_without_a_view() -> Result<(), IrError> {
     let m = module_new!("id-erased-store")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("inc", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");

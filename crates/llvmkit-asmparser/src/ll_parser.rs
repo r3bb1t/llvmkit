@@ -33,7 +33,6 @@ use core::marker::PhantomData;
 use core::num::{NonZeroU32, NonZeroU64};
 use std::borrow::Cow;
 
-use llvmkit_ir::DataLayout;
 use llvmkit_ir::attributes::{
     AttrIndex, AttrKind, Attribute, AttributeStorage, MemoryEffects, MemoryLocation, ModRefInfo,
 };
@@ -45,6 +44,7 @@ use llvmkit_ir::metadata::{
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 
+use llvmkit_ir::{AddressSpace, ArrayType, DataLayout, FunctionValue, IsValue};
 use llvmkit_ir::{
     Align, AnyTypeEnum, ApFloat, ApFloatSemantics, ApFloatSign, ApInt, AtomicOrdering,
     AtomicRmwBinOp, CallingConv, CastOperation, Constant, ConstantExprFlags, ConstantExprInRange,
@@ -56,7 +56,6 @@ use llvmkit_ir::{
     Visibility, ZextFlags, derived_types::PointerType, resolve_intrinsic_name,
     shufflevector_mask_from_constant,
 };
-use llvmkit_ir::{ArrayType, FunctionValue, IsValue};
 use llvmkit_macros::Branded;
 use llvmkit_support::{Span, Spanned};
 
@@ -1080,7 +1079,7 @@ fn global_ref_value_type_is_function<'ctx, B: ModuleBrand + 'ctx>(r: GlobalRef<'
 
 fn pointer_address_space_or_vector_element<'ctx, B: ModuleBrand + 'ctx>(
     ty: Type<'ctx, B>,
-) -> Option<u32> {
+) -> Option<AddressSpace> {
     match AnyTypeEnum::from(ty) {
         AnyTypeEnum::Pointer(ptr_ty) => Some(ptr_ty.address_space()),
         AnyTypeEnum::Vector(vector_ty) => match vector_ty.element().into_type_enum() {
@@ -2542,7 +2541,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// which is why `target datalayout` has to have been seen already —
     /// upstream guarantees that by parsing target definitions in their own
     /// pass before any entity.
-    fn parse_addr_space_paren(&mut self) -> ParseResult<u32> {
+    fn parse_addr_space_paren(&mut self) -> ParseResult<AddressSpace> {
         self.expect_punct(PunctKind::LParen, "'(' in address space")?;
         let addr_space = match self.peek() {
             Token::StringConstant(bytes) => {
@@ -2578,12 +2577,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let n = self.parse_uint32()?;
                 // `isUInt<24>` — upstream checks the parsed value, not the
                 // token, so the diagnostic points at the number.
-                if n >= (1 << 24) {
+                let Some(addr_space) = AddressSpace::new(n) else {
                     return Err(
                         self.message_at(loc, "invalid address space, must be a 24-bit integer")
                     );
-                }
-                n
+                };
+                addr_space
             }
             _ => return Err(self.expected("integer or string constant")),
         };
@@ -2593,7 +2592,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     /// `addrspace(...)` where omitting it means the *program* address space.
     /// Mirrors `LLParser::parseOptionalProgramAddrSpace`.
-    fn parse_optional_program_addr_space(&mut self) -> ParseResult<u32> {
+    fn parse_optional_program_addr_space(&mut self) -> ParseResult<AddressSpace> {
         if self.eat_keyword(Keyword::Addrspace)? {
             self.parse_addr_space_paren()
         } else {
@@ -7155,7 +7154,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                             self.bump()?;
                             self.parse_addr_space_paren()?
                         } else {
-                            0
+                            AddressSpace::DEFAULT
                         };
                         let ptr_ty: PointerType<'ctx, llvmkit_ir::SpaceDyn, B> =
                             self.module.ptr_type(addr_space);
@@ -7244,7 +7243,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Token::Star => {
                     self.check_pointer_element(result, PointerSuffix::Star)?;
                     self.bump()?;
-                    result = self.module.ptr_type(0).as_type();
+                    result = self.module.ptr_type_in::<0>().as_type();
                 }
                 Token::Kw(Keyword::Addrspace) => {
                     self.check_pointer_element(result, PointerSuffix::AddrSpace)?;
@@ -7581,7 +7580,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             PrimitiveTy::X86Fp80 => Ok(m.x86_fp80_type().as_type()),
             PrimitiveTy::Fp128 => Ok(m.fp128_type().as_type()),
             PrimitiveTy::PpcFp128 => Ok(m.ppc_fp128_type().as_type()),
-            PrimitiveTy::Ptr => Ok(m.ptr_type(0).as_type()),
+            PrimitiveTy::Ptr => Ok(m.ptr_type_in::<0>().as_type()),
             PrimitiveTy::Integer(n) => m
                 .custom_width_int_type(n.get())
                 .map(|t| t.as_type())
@@ -7736,7 +7735,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let address_space = if self.eat_keyword(Keyword::Addrspace)? {
             self.parse_addr_space_paren()?
         } else {
-            0
+            AddressSpace::DEFAULT
         };
         let externally_initialized = self.eat_keyword(Keyword::ExternallyInitialized)?;
 
@@ -9481,7 +9480,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // Upstream's placeholder is `new GlobalVariable(*M, Int8Ty, ...)` with
         // no address space, so the reference types as a plain `ptr`; the
         // demanded type is compared against it by `convertValIDToValue`.
-        let ptr_ty = self.module.ptr_type(0).as_type();
+        let ptr_ty = self.module.ptr_type_in::<0>().as_type();
         let existing = match &reference {
             NameOrId::Name(name) => self.forward_ref_dso_local_equivalent_names.get(name),
             NameOrId::Id(id) => self.forward_ref_dso_local_equivalent_ids.get(id),
@@ -9528,7 +9527,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // `@name` operand would, so an undefined one is reported by that
         // sweep, in its position and with its wording. The `NoCFIValue` itself
         // cannot be built over the placeholder here — see `pending_no_cfi`.
-        let ptr_ty = self.module.ptr_type(0).as_type();
+        let ptr_ty = self.module.ptr_type_in::<0>().as_type();
         match &reference {
             NameOrId::Name(name) => self.global_forward_ref(Some(name), None, ptr_ty, loc)?,
             NameOrId::Id(id) => self.global_forward_ref(None, Some(*id), ptr_ty, loc)?,
@@ -9565,12 +9564,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let addr_discriminator = if self.eat_punct(PunctKind::Comma)? {
             self.parse_ptrauth_operand()?
         } else {
-            self.module.ptr_type(0).const_null().as_constant()
+            self.module.ptr_type_in::<0>().const_null().as_constant()
         };
         let deactivation_symbol = if self.eat_punct(PunctKind::Comma)? {
             self.parse_ptrauth_operand()?
         } else {
-            self.module.ptr_type(0).const_null().as_constant()
+            self.module.ptr_type_in::<0>().const_null().as_constant()
         };
         self.expect_punct(PunctKind::RParen, "')' in constant ptrauth expression")?;
         self.module
@@ -9787,12 +9786,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn gep_constant_expr_flags(
         &self,
         parsed: ParsedGepConstantExprFlags,
-        address_space: u32,
+        address_space: AddressSpace,
     ) -> ParseResult<ConstantExprFlags> {
         let Some((start, end)) = parsed.in_range else {
             return Ok(ConstantExprFlags::gep(parsed.no_wrap));
         };
-        let bit_width = self.module.data_layout().index_size_in_bits(address_space);
+        let bit_width = self
+            .module
+            .data_layout()
+            .index_size_in_bits(address_space.get());
         let in_range = ConstantExprInRange::new(
             start.extend_or_truncate(bit_width),
             end.extend_or_truncate(bit_width),
@@ -10202,7 +10204,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         &mut self,
         name: &str,
         name_id: &NameOrId,
-        address_space: u32,
+        address_space: AddressSpace,
         name_loc: Span,
     ) -> ParseResult<Option<ForwardRef<'ctx, B>>> {
         // `PointerType *PFT = PointerType::get(Context, AddrSpace);`
@@ -13272,7 +13274,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// llvmkit spells by putting the comma back so the caller's own metadata
     /// loop reads it — upstream instead keeps the comma eaten and reports it
     /// through `AteExtraComma`.
-    fn parse_optional_comma_addrspace(&mut self) -> ParseResult<Option<u32>> {
+    fn parse_optional_comma_addrspace(&mut self) -> ParseResult<Option<AddressSpace>> {
         if !matches!(self.peek(), Token::Comma) {
             return Ok(None);
         }
@@ -14565,7 +14567,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_direct_callee_ref(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        callee_addr_space: u32,
+        callee_addr_space: AddressSpace,
     ) -> ParseResult<ParsedDirectCallee<'ctx, B>> {
         let loc = self.loc();
         match self.peek() {
@@ -14608,7 +14610,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         &mut self,
         parsed: ParsedDirectCallee<'ctx, B>,
         parsed_fn_ty: llvmkit_ir::FunctionType<'ctx, B>,
-        callee_addr_space: u32,
+        callee_addr_space: AddressSpace,
     ) -> ParseResult<ParsedCallee<'ctx, B>> {
         match parsed {
             ParsedDirectCallee::Name { name, loc } => {
@@ -15537,7 +15539,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // address space 0 whatever the datalayout says. Written out here so the
         // asymmetry with `parseCall` / `parseInvoke` is visible at the call
         // site rather than hidden in a callee helper's default.
-        let callbr_addr_space = 0;
+        let callbr_addr_space = AddressSpace::DEFAULT;
         let parsed_callee = self.parse_direct_callee_ref(state, callbr_addr_space)?;
         // `parseParameterList(ArgList, PFS)` — `IsMustTailCall` and
         // `InVarArgsFunc` left at their `false` defaults, so a forwarding

@@ -415,7 +415,7 @@ fn build_fp_phi_emits_phi_with_double_kind() -> Result<(), IrError> {
 #[test]
 fn build_pointer_phi_emits_phi_with_ptr() -> Result<(), IrError> {
     let m = module_new!("a")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(ptr_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");

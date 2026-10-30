@@ -15,7 +15,7 @@ use llvmkit_ir::{Dyn, IrBuilder, IrError, Linkage, module_new};
 #[test]
 fn ptrtoint_emits_canonical_form() -> Result<(), IrError> {
     let m = module_new!("c")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(i64_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("p2i", fn_ty, Linkage::External)?;
@@ -35,7 +35,7 @@ fn ptrtoint_emits_canonical_form() -> Result<(), IrError> {
 #[test]
 fn inttoptr_emits_canonical_form() -> Result<(), IrError> {
     let m = module_new!("c")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(ptr_ty.as_type(), [i64_ty.as_type()])?;
     let f = m.add_function_dyn("i2p", fn_ty, Linkage::External)?;
@@ -57,8 +57,8 @@ fn inttoptr_emits_canonical_form() -> Result<(), IrError> {
 #[test]
 fn addrspacecast_emits_canonical_form() -> Result<(), IrError> {
     let m = module_new!("c")?;
-    let ptr0 = m.ptr_type(0);
-    let ptr1 = m.ptr_type(1);
+    let ptr0 = m.ptr_type_in::<0>();
+    let ptr1 = m.ptr_type_in::<1>();
     let fn_ty = m.function_type(ptr1.as_type(), [ptr0.as_type()])?;
     let f = m.add_function_dyn("ac", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");

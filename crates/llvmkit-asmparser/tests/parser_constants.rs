@@ -688,7 +688,7 @@ fn a_standalone_constant_value_accepts_only_upstreams_kinds() {
 
     // `t_GlobalName` is not in the accepted set, so the kind switch rejects it
     // before anything tries to resolve the name.
-    let err = parser::parse_constant_value(b"@g", &module, module.ptr_type(0).as_type())
+    let err = parser::parse_constant_value(b"@g", &module, module.ptr_type_in::<0>().as_type())
         .expect_err("a global name is not a constant value here");
     assert_eq!(err.to_string(), "expected a constant value");
 

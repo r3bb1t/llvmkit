@@ -254,7 +254,7 @@ fn element<'m>(m: &'m Module<DynBrand>, text: &str) -> Result<Type<'m, DynBrand>
         "x86_fp80" => m.x86_fp80_type().as_type(),
         "fp128" => m.fp128_type().as_type(),
         "ppc_fp128" => m.ppc_fp128_type().as_type(),
-        "ptr" => m.ptr_type(0).as_type(),
+        "ptr" => m.ptr_type_in::<0>().as_type(),
         "void" => m.void_type().as_type(),
         "label" => m.label_type().as_type(),
         "metadata" => m.metadata_type().as_type(),

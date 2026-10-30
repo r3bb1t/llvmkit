@@ -8,7 +8,7 @@ use llvmkit_ir::{IrBuilder, InstructionKind, Linkage, Module};
 fn main() {
     let m = Module::dynamic("landingpad-kind");
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty, Vec::<llvmkit_ir::Type<_>>::new()).expect("valid function type");
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();

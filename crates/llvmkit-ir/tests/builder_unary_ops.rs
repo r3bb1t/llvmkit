@@ -135,7 +135,7 @@ fn freeze_i8_round_trip() -> Result<(), IrError> {
 fn freeze_int_and_pointer_print_forms() -> Result<(), IrError> {
     let m = module_new!("u")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [i32_ty.as_type(), ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
@@ -185,7 +185,7 @@ fn verifier_accepts_freeze_int() -> Result<(), IrError> {
 fn va_arg_int_round_trip() -> Result<(), IrError> {
     let m = module_new!("u")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("get_i32", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -208,7 +208,7 @@ fn va_arg_int_round_trip() -> Result<(), IrError> {
 fn va_arg_print_keyword_and_destination_type() -> Result<(), IrError> {
     let m = module_new!("u")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("h", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -231,7 +231,7 @@ fn va_arg_print_keyword_and_destination_type() -> Result<(), IrError> {
 fn verifier_accepts_va_arg_pointer_source() -> Result<(), IrError> {
     let m = module_new!("u")?;
     let i8_ty = m.i8_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("foo", fn_ty, Linkage::External)?;

@@ -16,7 +16,7 @@
 use core::fmt;
 
 use crate::Branded;
-use crate::addr_space::AddrSpace;
+use crate::addr_space::{AddrSpace, AddressSpace};
 use crate::array_len::ArrayLen;
 use crate::capability::{Capability, CapabilityOf, Mutable};
 use crate::derived_types::{
@@ -76,7 +76,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> TypedPointerType<'ctx, B, C> {
     }
 
     /// Address space. Mirrors `TypedPointerType::getAddressSpace`.
-    pub fn address_space(self) -> u32 {
+    pub fn address_space(self) -> AddressSpace {
         let (_, addr_space) = self.module.context().typed_pointer_data(self.id);
         addr_space
     }
@@ -90,14 +90,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> TypedPointerType<'ctx, B> {
     /// checks it.
     ///
     /// ```
-    /// # use llvmkit_ir::{Module, TypedPointerType};
+    /// # use llvmkit_ir::{AddressSpace, Module, TypedPointerType, address_space};
     /// let m = Module::dynamic("doc");
-    /// let inner = TypedPointerType::of(m.f32_type(), 0);
-    /// assert_eq!(TypedPointerType::of(inner, 1).to_string(), "typedptr(typedptr(float, 0), 1)");
+    /// let inner = TypedPointerType::of(m.f32_type(), AddressSpace::DEFAULT);
+    /// assert_eq!(
+    ///     TypedPointerType::of(inner, address_space::<1>()).to_string(),
+    ///     "typedptr(typedptr(float, 0), 1)"
+    /// );
     /// ```
     pub fn of<P: TypedPointerElement<'ctx, B>>(
         pointee: P,
-        addr_space: u32,
+        addr_space: AddressSpace,
     ) -> TypedPointerType<'ctx, B, P::Capability> {
         let (slot, module) = match pointee.as_pointee() {
             // Internal: interned in the pointee's own module, so the slot is

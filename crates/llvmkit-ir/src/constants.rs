@@ -1451,7 +1451,10 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
         self,
         function: FunctionValue<'ctx, Dyn, B, FunctionCapability>,
     ) -> Constant<'ctx, B, C> {
-        let ty = self.ptr_type(0).as_type().slot_trusting_same_module();
+        let ty = self
+            .ptr_type(crate::AddressSpace::DEFAULT)
+            .as_type()
+            .slot_trusting_same_module();
         // boundary (F1): refused by Task 26
         // Infallible, so a function from another module is interned by its slot.
         let function = function.slot_trusting_same_module();
@@ -1489,7 +1492,10 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
                 message: "dso_local_equivalent expects a function, alias to function, or ifunc",
             });
         }
-        let ty = self.ptr_type(0).as_type().slot_trusting_same_module();
+        let ty = self
+            .ptr_type(crate::AddressSpace::DEFAULT)
+            .as_type()
+            .slot_trusting_same_module();
         let id = self
             .context()
             .intern_constant_dso_local_equivalent(ty, value_slot);
@@ -1501,7 +1507,10 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
         self,
         function: FunctionValue<'ctx, Dyn, B, FunctionCapability>,
     ) -> Constant<'ctx, B, C> {
-        let ty = self.ptr_type(0).as_type().slot_trusting_same_module();
+        let ty = self
+            .ptr_type(crate::AddressSpace::DEFAULT)
+            .as_type()
+            .slot_trusting_same_module();
         // boundary (F1): refused by Task 26
         // Infallible, so a function from another module is interned by its slot.
         let function = function.slot_trusting_same_module();
@@ -1534,7 +1543,10 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
                 });
             }
         }
-        let ty = self.ptr_type(0).as_type().slot_trusting_same_module();
+        let ty = self
+            .ptr_type(crate::AddressSpace::DEFAULT)
+            .as_type()
+            .slot_trusting_same_module();
         let id = self.context().intern_constant_no_cfi(ty, value_slot);
         Ok(constant_handle::<B, _, _>(id, self, ty))
     }
@@ -2604,7 +2616,7 @@ pub(super) fn verify_constant_expr_data(
             module,
             scalar_type_slot(module, src_ty.slot_trusting_same_module()),
         )
-        .map(|as_id| module.data_layout().index_size_in_bits(as_id));
+        .map(|as_id| module.data_layout().index_size_in_bits(as_id.get()));
         if addr_bits != scalar_int_bits(module, result_ty.slot_trusting_same_module()) {
             return Err(IrError::InvalidOperation {
                 message: "PtrToAddr result must be address width",
@@ -2671,7 +2683,9 @@ fn validate_gep_constant_expr(
     if let ConstantExprFlags::Gep(flags) = &data.flags
         && let Some(in_range) = flags.in_range()
     {
-        let index_bit_width = module.data_layout().index_size_in_bits(base_addr_space);
+        let index_bit_width = module
+            .data_layout()
+            .index_size_in_bits(base_addr_space.get());
         if in_range.bit_width() != index_bit_width {
             return Err(IrError::InvalidOperation {
                 message: "invalid getelementptr inrange bit width",
@@ -2711,7 +2725,7 @@ fn scalar_int_bits(module: &ModuleCore, id: TypeSlot) -> Option<u32> {
     }
 }
 
-fn pointer_address_space(module: &ModuleCore, id: TypeSlot) -> Option<u32> {
+fn pointer_address_space(module: &ModuleCore, id: TypeSlot) -> Option<crate::AddressSpace> {
     match module.context().type_data(id) {
         TypeData::Pointer { addr_space } => Some(*addr_space),
         _ => None,

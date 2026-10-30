@@ -33,6 +33,7 @@ use core::marker::PhantomData;
 
 use super::AttrIndex;
 use super::DebugLoc;
+use super::addr_space::AddressSpace;
 use super::align::MaybeAlign;
 use super::ap_float::ApFloatSemantics;
 use super::argument::Argument;
@@ -86,7 +87,7 @@ pub(super) struct FunctionData {
     pub(super) dso_locality: RefCell<DsoLocality>,
     pub(super) calling_conv: RefCell<CallingConv>,
     pub(super) unnamed_addr: RefCell<UnnamedAddr>,
-    pub(super) address_space: RefCell<u32>,
+    pub(super) address_space: RefCell<AddressSpace>,
     pub(super) section: RefCell<Option<String>>,
     pub(super) partition: RefCell<Option<String>>,
     pub(super) align: RefCell<MaybeAlign>,
@@ -126,7 +127,7 @@ impl FunctionData {
             dso_locality: RefCell::new(DsoLocality::Default),
             calling_conv: RefCell::new(calling_conv),
             unnamed_addr: RefCell::new(UnnamedAddr::None),
-            address_space: RefCell::new(0),
+            address_space: RefCell::new(AddressSpace::DEFAULT),
             section: RefCell::new(None),
             partition: RefCell::new(None),
             align: RefCell::new(MaybeAlign::NONE),
@@ -501,13 +502,16 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
     }
 
     #[inline]
-    pub fn address_space(self) -> u32 {
+    pub fn address_space(self) -> AddressSpace {
         *self.data().address_space.borrow()
     }
 
     #[inline]
-    pub fn set_address_space(self, _module: &'ctx Module<B, Unverified>, address_space: u32)
-    where
+    pub fn set_address_space(
+        self,
+        _module: &'ctx Module<B, Unverified>,
+        address_space: AddressSpace,
+    ) where
         C: CanMutate,
     {
         *self.data().address_space.borrow_mut() = address_space;
@@ -1280,7 +1284,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
     /// (invalid — "functions are not values"), whereas this prints as a proper
     /// `ptr getelementptr (...)` element. The byte offset is always 0 (the
     /// function entry).
-    pub fn as_aggregate_ptr(self, addr_space: u32) -> Constant<'ctx, B, C> {
+    pub fn as_aggregate_ptr(self, addr_space: AddressSpace) -> Constant<'ctx, B, C> {
         let module = self.module.module();
         let ptr_ty = module
             .ptr_type::<B>(addr_space)
@@ -1679,7 +1683,7 @@ pub struct FunctionBuilder<'ctx, R: ReturnMarker, B: ModuleBrand> {
     dso_locality: DsoLocality,
     calling_conv: CallingConv,
     unnamed_addr: UnnamedAddr,
-    address_space: u32,
+    address_space: AddressSpace,
     section: Option<String>,
     partition: Option<String>,
     align: MaybeAlign,
@@ -1722,7 +1726,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
             dso_locality: DsoLocality::Default,
             calling_conv: CallingConv::default(),
             unnamed_addr: UnnamedAddr::None,
-            address_space: 0,
+            address_space: AddressSpace::DEFAULT,
             section: None,
             partition: None,
             align: MaybeAlign::NONE,
@@ -1778,7 +1782,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
     }
 
     #[must_use]
-    pub fn address_space(mut self, address_space: u32) -> Self {
+    pub fn address_space(mut self, address_space: AddressSpace) -> Self {
         self.address_space = address_space;
         self
     }

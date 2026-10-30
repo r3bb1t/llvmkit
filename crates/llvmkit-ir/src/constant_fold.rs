@@ -1171,7 +1171,7 @@ fn evaluate_icmp_relation<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         if is_pointer_null(rhs)
             && !global_has_external_weak_linkage(lhs.as_erased().module(), lhs_global)
             && !global_is_alias(lhs.as_erased().module(), lhs_global)
-            && pointer_address_space(lhs.ty()) == Some(0)
+            && pointer_address_space(lhs.ty()) == Some(crate::AddressSpace::DEFAULT)
         {
             return Some(IntPredicate::Ugt);
         }
@@ -2138,7 +2138,9 @@ fn gep_operand_element_count<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     Ok(shape)
 }
 
-fn pointer_address_space<B: ModuleBrand, C: Capability>(ty: Type<'_, B, C>) -> Option<u32> {
+fn pointer_address_space<B: ModuleBrand, C: Capability>(
+    ty: Type<'_, B, C>,
+) -> Option<crate::AddressSpace> {
     match ty.data() {
         TypeData::Pointer { addr_space } => Some(*addr_space),
         TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {

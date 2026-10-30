@@ -20,7 +20,7 @@ use llvmkit_ir::{
 fn append_block_typed_yields_typed_params_from_head_phis() -> Result<(), IrError> {
     let m = module_new!("block_params_typed")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let f = m
         .add_typed_function::<(), (), _>("f", Linkage::External)?
         .as_function();

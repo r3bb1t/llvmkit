@@ -30,6 +30,7 @@ use core::iter::FusedIterator;
 use core::num::NonZeroU32;
 use core::str::FromStr;
 
+use crate::addr_space::AddressSpace;
 use crate::align::{Align, MaybeAlign};
 use crate::capability::Capability;
 use crate::error::DataLayoutError;
@@ -85,7 +86,7 @@ impl PrimitiveSpec {
 /// `DataLayout::PointerSpec`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PointerSpec {
-    address_space: u32,
+    address_space: AddressSpace,
     bit_width: u32,
     abi_align: Align,
     pref_align: Align,
@@ -110,7 +111,7 @@ pub struct PointerSpec {
 
 impl PointerSpec {
     fn new(
-        address_space: u32,
+        address_space: AddressSpace,
         bit_width: u32,
         abi_align: Align,
         pref_align: Align,
@@ -141,7 +142,7 @@ impl PointerSpec {
     }
 
     #[inline]
-    pub const fn address_space(&self) -> u32 {
+    pub const fn address_space(&self) -> AddressSpace {
         self.address_space
     }
 
@@ -200,7 +201,7 @@ impl PointerSpec {
         self
     }
 
-    fn into_non_integral_address_space(mut self, address_space: u32) -> Self {
+    fn into_non_integral_address_space(mut self, address_space: AddressSpace) -> Self {
         self.address_space = address_space;
         self.has_unstable_repr = true;
         self.non_integral = true;
@@ -283,9 +284,9 @@ impl ManglingMode {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DataLayout {
     big_endian: bool,
-    alloca_addr_space: u32,
-    program_addr_space: u32,
-    default_globals_addr_space: u32,
+    alloca_addr_space: AddressSpace,
+    program_addr_space: AddressSpace,
+    default_globals_addr_space: AddressSpace,
     stack_natural_align: Option<Align>,
     function_ptr_align: Option<Align>,
     function_ptr_align_type: FunctionPtrAlignType,
@@ -317,9 +318,9 @@ impl Default for DataLayout {
     fn default() -> Self {
         let mut layout = Self {
             big_endian: false,
-            alloca_addr_space: 0,
-            program_addr_space: 0,
-            default_globals_addr_space: 0,
+            alloca_addr_space: AddressSpace::DEFAULT,
+            program_addr_space: AddressSpace::DEFAULT,
+            default_globals_addr_space: AddressSpace::DEFAULT,
             stack_natural_align: None,
             function_ptr_align: None,
             function_ptr_align_type: FunctionPtrAlignType::Independent,
@@ -349,7 +350,13 @@ impl Default for DataLayout {
         // Default pointer spec for AS 0: 64-bit pointers, 8-byte
         // ABI/pref alignment, 64-bit index width. Mirrors the trailing
         // `setPointerSpec(0, ...)` call in `DataLayout::DataLayout()`.
-        layout.set_pointer_spec(PointerSpec::new(0, 64, const_align(8), const_align(8), 64));
+        layout.set_pointer_spec(PointerSpec::new(
+            AddressSpace::DEFAULT,
+            64,
+            const_align(8),
+            const_align(8),
+            64,
+        ));
         layout
     }
 }
@@ -425,19 +432,19 @@ impl DataLayout {
 
     /// Mirrors `DataLayout::getAllocaAddrSpace`.
     #[inline]
-    pub fn alloca_addr_space(&self) -> u32 {
+    pub fn alloca_addr_space(&self) -> AddressSpace {
         self.alloca_addr_space
     }
 
     /// Mirrors `DataLayout::getProgramAddressSpace`.
     #[inline]
-    pub fn program_addr_space(&self) -> u32 {
+    pub fn program_addr_space(&self) -> AddressSpace {
         self.program_addr_space
     }
 
     /// Mirrors `DataLayout::getDefaultGlobalsAddressSpace`.
     #[inline]
-    pub fn default_globals_addr_space(&self) -> u32 {
+    pub fn default_globals_addr_space(&self) -> AddressSpace {
         self.default_globals_addr_space
     }
 
@@ -481,7 +488,7 @@ impl DataLayout {
         self.pointer_specs
             .iter()
             .filter(|s| s.address_space() != 0)
-            .map(PointerSpec::address_space)
+            .map(|s| s.address_space().get())
     }
 
     /// Mirrors `DataLayout::getStructPrefAlignment` (the protected
@@ -511,7 +518,7 @@ impl DataLayout {
         self.pointer_specs
             .iter()
             .filter(|s| s.is_non_integral())
-            .map(PointerSpec::address_space)
+            .map(|s| s.address_space().get())
     }
 
     /// Mirrors `DataLayout::isNonIntegralAddressSpace`.
@@ -535,7 +542,7 @@ impl DataLayout {
     }
 
     /// Mirrors `DataLayout::getNamedAddressSpace`.
-    pub fn named_address_space(&self, name: &str) -> Option<u32> {
+    pub fn named_address_space(&self, name: &str) -> Option<AddressSpace> {
         self.pointer_specs
             .iter()
             .find(|s| s.address_space_name() == name)
@@ -692,7 +699,9 @@ impl DataLayout {
     fn type_size_in_bits_inner(&self, module: &ModuleCore, id: TypeSlot) -> u64 {
         match module.context().type_data(id) {
             TypeData::Label => u64::from(self.pointer_size_in_bits(0)),
-            TypeData::Pointer { addr_space } => u64::from(self.pointer_size_in_bits(*addr_space)),
+            TypeData::Pointer { addr_space } => {
+                u64::from(self.pointer_size_in_bits(addr_space.get()))
+            }
             TypeData::Array { elem, n } => {
                 n.saturating_mul(self.type_alloc_size_inner(module, *elem).saturating_mul(8))
             }
@@ -750,8 +759,8 @@ impl DataLayout {
                 align_to(bytes, a)
             }
             TypeData::Pointer { addr_space } => {
-                let size = u64::from(self.pointer_size(*addr_space));
-                align_to(size, self.pointer_abi_align(*addr_space))
+                let size = u64::from(self.pointer_size(addr_space.get()));
+                align_to(size, self.pointer_abi_align(addr_space.get()))
             }
             TypeData::TargetExt(_) => match target_ext_layout_type(module, id) {
                 Some(layout) => self.type_alloc_size_inner(module, layout),
@@ -820,9 +829,9 @@ impl DataLayout {
             }
             TypeData::Pointer { addr_space } => {
                 if abi_or_pref {
-                    self.pointer_abi_align(*addr_space)
+                    self.pointer_abi_align(addr_space.get())
                 } else {
-                    self.pointer_pref_align(*addr_space)
+                    self.pointer_pref_align(addr_space.get())
                 }
             }
             TypeData::Label => {
@@ -1105,7 +1114,7 @@ impl DataLayout {
         if layout.is_empty() {
             return Ok(());
         }
-        let mut non_integral_address_spaces: Vec<u32> = Vec::new();
+        let mut non_integral_address_spaces: Vec<AddressSpace> = Vec::new();
         let mut addr_space_names: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         for spec in layout.split('-') {
@@ -1122,7 +1131,7 @@ impl DataLayout {
             // Mirrors the post-pass: clone the existing spec for the
             // given AS (or AS 0 if there is none), then mark it
             // non-integral.
-            let base = self.pointer_spec(as_id).clone();
+            let base = self.pointer_spec(as_id.get()).clone();
             self.set_pointer_spec(base.into_non_integral_address_space(as_id));
         }
         Ok(())
@@ -1132,7 +1141,7 @@ impl DataLayout {
     fn parse_specification(
         &mut self,
         spec: &str,
-        non_integral_address_spaces: &mut Vec<u32>,
+        non_integral_address_spaces: &mut Vec<AddressSpace>,
         addr_space_names: &mut std::collections::HashSet<String>,
     ) -> Result<(), DataLayoutError> {
         // Two-character `ni` specifier first. Mirrors upstream's
@@ -1356,7 +1365,7 @@ impl DataLayout {
             }
         }
         let (addr_space, addr_space_name) = if addr_str.is_empty() {
-            (0u32, String::new())
+            (AddressSpace::DEFAULT, String::new())
         } else {
             parse_addr_space_and_name(addr_str)?
         };
@@ -1465,45 +1474,38 @@ fn parse_alignment(s: &str, name: &str, allow_zero: bool) -> Result<Align, DataL
         .unwrap_or_else(|_| unreachable!("v / 8 is a non-zero power of two within Align's range")))
 }
 
+/// The digits `s` as an address space. `parseAddrSpace`'s number and its
+/// `isUInt<24>` check, which [`AddressSpace::new`] is.
+fn parse_addr_space_digits(s: &str) -> Result<AddressSpace, DataLayoutError> {
+    s.parse()
+        .ok()
+        .and_then(AddressSpace::new)
+        .ok_or_else(|| invalid("address space must be a 24-bit integer".into()))
+}
+
 /// Mirrors `parseAddrSpace`.
-fn parse_addr_space(s: &str) -> Result<u32, DataLayoutError> {
+fn parse_addr_space(s: &str) -> Result<AddressSpace, DataLayoutError> {
     if s.is_empty() {
         return Err(invalid("address space component cannot be empty".into()));
     }
-    let v: u64 = s
-        .parse()
-        .map_err(|_| invalid("address space must be a 24-bit integer".into()))?;
-    if v > (1u64 << 24) - 1 {
-        return Err(invalid("address space must be a 24-bit integer".into()));
-    }
-    Ok(v.try_into()
-        .unwrap_or_else(|_| unreachable!("AS fits in 24 bits, hence u32")))
+    parse_addr_space_digits(s)
 }
 
 /// Mirrors `parseAddrSpaceAndName`. Accepts `<digits>` or
 /// `<digits>(<name>)` or `(<name>)`.
-fn parse_addr_space_and_name(s: &str) -> Result<(u32, String), DataLayoutError> {
+fn parse_addr_space_and_name(s: &str) -> Result<(AddressSpace, String), DataLayoutError> {
     if s.is_empty() {
         return Err(invalid("address space component cannot be empty".into()));
     }
     let mut bytes = s;
-    let mut addr_space: u32 = 0;
+    let mut addr_space = AddressSpace::DEFAULT;
     if bytes.as_bytes()[0].is_ascii_digit() {
         // Take leading digits.
         let mut end = 0;
         while end < bytes.len() && bytes.as_bytes()[end].is_ascii_digit() {
             end += 1;
         }
-        let digits = &bytes[..end];
-        let v: u64 = digits
-            .parse()
-            .map_err(|_| invalid("address space must be a 24-bit integer".into()))?;
-        if v > (1u64 << 24) - 1 {
-            return Err(invalid("address space must be a 24-bit integer".into()));
-        }
-        addr_space = v
-            .try_into()
-            .unwrap_or_else(|_| unreachable!("AS fits in u32"));
+        addr_space = parse_addr_space_digits(&bytes[..end])?;
         bytes = &bytes[end..];
     }
     if bytes.is_empty() {
@@ -1552,7 +1554,7 @@ pub(crate) fn target_ext_layout_type(module: &ModuleCore, id: TypeSlot) -> Optio
 
     // SPIR-V images / signed images: opaque pointer in AS 0.
     if name == "spirv.Image" || name == "spirv.SignedImage" {
-        return Some(ctx.ptr_type(0));
+        return Some(ctx.ptr_type(AddressSpace::DEFAULT));
     }
     // SPIR-V typed reads with explicit size + alignment. Upstream asserts the
     // three integer parameters.
@@ -1585,7 +1587,7 @@ pub(crate) fn target_ext_layout_type(module: &ModuleCore, id: TypeSlot) -> Optio
     }
     // Other SPIR-V types: opaque pointer.
     if name.starts_with("spirv.") {
-        return Some(ctx.ptr_type(0));
+        return Some(ctx.ptr_type(AddressSpace::DEFAULT));
     }
     // AArch64 svcount: <vscale x 16 x i1>.
     if name == "aarch64.svcount" {
@@ -1616,7 +1618,7 @@ pub(crate) fn target_ext_layout_type(module: &ModuleCore, id: TypeSlot) -> Optio
     }
     // Other DirectX types: opaque pointer.
     if name.starts_with("dx.") {
-        return Some(ctx.ptr_type(0));
+        return Some(ctx.ptr_type(AddressSpace::DEFAULT));
     }
     // AMDGPU named.barrier: <4 x i32>.
     if name == "amdgcn.named.barrier" {

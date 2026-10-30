@@ -10,10 +10,10 @@
 //! `test/Assembler/2007-12-11-AddressSpaces.ll`.
 
 use llvmkit_ir::{
-    ConstantIntValue, ConstantPointerNull, InstructionKind, InstructionView, IntDyn, IntValue,
-    IrBuilder, IrError, IrStruct, Linkage, Module, NoFolder, PointerPhiInstId, PointerType,
-    PointerValue, PointerValueId, PointerVariable, Ptr, Space, SpaceDyn, SsaBuilder, SsaState,
-    TypedPointerValue, module_new,
+    AddressSpace, ConstantIntValue, ConstantPointerNull, InstructionKind, InstructionView, IntDyn,
+    IntValue, IrBuilder, IrError, IrStruct, Linkage, Module, NoFolder, PointerPhiInstId,
+    PointerType, PointerValue, PointerValueId, PointerVariable, Ptr, Space, SpaceDyn, SsaBuilder,
+    SsaState, TypedPointerValue, address_space, module_new,
 };
 
 /// `ptr_type_in::<N>()` names its address space in its type; `ptr_type(n)`,
@@ -25,8 +25,31 @@ fn a_typed_pointer_type_carries_its_address_space() {
     let p: PointerType<'_, Space<3>, _> = m.ptr_type_in::<3>();
     assert_eq!(p.address_space(), 3);
     assert_eq!(p.to_string(), "ptr addrspace(3)");
-    let q: PointerType<'_, SpaceDyn, _> = m.ptr_type(3);
+    let q: PointerType<'_, SpaceDyn, _> = m.ptr_type(address_space::<3>());
     assert_eq!(q.address_space(), 3);
+}
+
+/// An address space is 24 bits, and [`AddressSpace`] holds no more:
+/// `Type::setSubclassData` (`include/llvm/IR/Type.h`) asserts that a pointer's
+/// fits, and `LLParser::parseOptionalAddrSpace` refuses anything wider. So
+/// every route that names an address space takes one. llvmkit-specific
+/// regression (D10): `ptr_type(1 << 24)` built `ptr addrspace(16777216)`,
+/// which no parser reads back. The largest space is the positive control.
+#[test]
+fn an_address_space_holds_24_bits() {
+    assert_eq!(AddressSpace::new(0xFF_FFFF), Some(AddressSpace::MAX));
+    assert_eq!(AddressSpace::new(1 << 24), None);
+    assert_eq!(AddressSpace::new(u32::MAX), None);
+    assert_eq!(AddressSpace::default(), AddressSpace::DEFAULT);
+    assert_eq!(address_space::<7>().get(), 7);
+    assert_eq!(address_space::<7>().to_string(), "7");
+    assert_eq!(u32::from(address_space::<7>()), 7);
+
+    let m = Module::dynamic("spaces");
+    assert_eq!(
+        m.ptr_type(AddressSpace::MAX).to_string(),
+        "ptr addrspace(16777215)"
+    );
 }
 
 /// Narrowing a `SpaceDyn` pointer to `Space<N>` checks the run-time address
@@ -36,7 +59,7 @@ fn a_typed_pointer_type_carries_its_address_space() {
 #[test]
 fn narrowing_a_dyn_pointer_checks_its_address_space() -> Result<(), IrError> {
     let m = Module::dynamic("spaces");
-    let fn_ty = m.function_type(m.void_type(), [m.ptr_type(1).as_type()])?;
+    let fn_ty = m.function_type(m.void_type(), [m.ptr_type_in::<1>().as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let arg: PointerValue<'_, SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let one: Result<PointerValue<'_, Space<1>, _>, IrError> = PointerValue::try_from(arg);
@@ -117,7 +140,7 @@ fn pointer_load_names_the_space_it_loads() -> Result<(), IrError> {
     let f = m.add_typed_function_of::<fn(), _>("f", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let slot = b.alloca_in::<0, _, _>(m.ptr_type(0), "slot")?;
+    let slot = b.alloca_in::<0, _, _>(m.ptr_type_in::<0>(), "slot")?;
     let p: PointerValueId<Space<0>, _> = b.pointer_load(slot, "p")?;
     let q: PointerValueId<Space<1>, _> = b.pointer_load_in::<1, _, _>(slot, "q")?;
     let r: PointerValueId<Space<0>, _> = b.load_from(slot).pointer("r")?;
@@ -147,7 +170,7 @@ fn ptr_means_address_space_zero() -> Result<(), IrError> {
         "{text}"
     );
 
-    let fn_ty = m.function_type_no_parameters(m.ptr_type(1).as_type())?;
+    let fn_ty = m.function_type_no_parameters(m.ptr_type_in::<1>().as_type())?;
     m.add_function_dyn("ret_one", fn_ty, Linkage::External)?;
     assert!(m.function::<Ptr>("ret_one").is_err());
     assert!(m.function::<Ptr<1>>("ret_one")?.is_some());
@@ -166,7 +189,8 @@ fn casts_take_the_destination_types_address_space() -> Result<(), IrError> {
     let (x,) = m.view(f).params();
     let p: PointerValueId<Space<2>, _> =
         b.int_to_ptr::<i64, _, _, _>(x, m.ptr_type_in::<2>(), "p")?;
-    let q: PointerValueId<SpaceDyn, _> = b.pointer_cast(p, m.ptr_type(3), "q")?;
+    let q: PointerValueId<SpaceDyn, _> =
+        b.pointer_cast(p, m.ptr_type(address_space::<3>()), "q")?;
     let _ = q;
     let text = format!("{m}");
     for line in [
@@ -211,7 +235,8 @@ fn a_ptr_call_result_is_in_the_callees_address_space() -> Result<(), IrError> {
 fn a_null_constant_is_in_its_types_address_space() {
     let m = Module::dynamic("spaces");
     let typed: ConstantPointerNull<'_, Space<4>, _> = m.ptr_type_in::<4>().const_null();
-    let dynamic: ConstantPointerNull<'_, SpaceDyn, _> = m.ptr_type(4).const_null();
+    let dynamic: ConstantPointerNull<'_, SpaceDyn, _> =
+        m.ptr_type(address_space::<4>()).const_null();
     assert_eq!(typed.as_erased(), dynamic.as_erased());
     assert_eq!(typed.as_erased().to_string(), "ptr addrspace(4) null");
 }

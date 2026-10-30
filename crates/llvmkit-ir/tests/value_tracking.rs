@@ -235,7 +235,7 @@ fn mul_nsw_self_product_is_non_negative() -> Result<(), IrError> {
 #[test]
 fn pointer_null_and_alloca_alignment_compute_low_zero_bits() -> Result<(), IrError> {
     let m = module_new!("vt-ptr")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(ptr_ty.as_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -267,7 +267,7 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
     let m = module_new!("vt-range-md")?;
     let i1_ty = m.bool_type();
     let i8_ty = m.i8_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i1_ty, [ptr_ty.as_type()])?;
 
     let f0 = m.add_function_dyn("test0", fn_ty, Linkage::External)?;
@@ -616,7 +616,7 @@ fn intrinsic_known_bits_ignore_mismatched_declarations() -> Result<(), IrError> 
 fn query_carries_context_demanded_elements_and_instr_info_policy() -> Result<(), IrError> {
     let m = module_new!("vt-query-shape")?;
     let i8_ty = m.i8_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i8_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -754,7 +754,7 @@ fn shift_with_possible_invalid_amount_is_unknown_after_freeze() -> Result<(), Ir
 fn addrspacecast_drops_source_pointer_known_bits() -> Result<(), IrError> {
     let m = module_new!("vt-addrspacecast")?;
     let i32_ty = m.i32_type();
-    let ptr1_ty = m.ptr_type(1);
+    let ptr1_ty = m.ptr_type_in::<1>();
     let fn_ty = m.function_type_no_parameters(ptr1_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -868,7 +868,7 @@ fn vector_gep_known_bits_use_element_pointer_address_space_index_width() -> Resu
     m.set_data_layout(DataLayout::parse("p1:64:64:64:32")?);
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
-    let ptr1_ty = m.ptr_type(1);
+    let ptr1_ty = m.ptr_type_in::<1>();
     let ptr_vec_ty = VectorType::of(ptr1_ty, lanes::<2>());
     let i32_vec_ty = VectorType::of(i32_ty, lanes::<2>());
     let base = ptr_vec_ty.const_vector([ptr1_ty.const_null(); 2])?;

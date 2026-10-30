@@ -347,7 +347,7 @@ fn verify_casts_full() -> Result<(), IrError> {
     let i64_ty = m.i64_type();
     let f32_ty = m.f32_type();
     let f64_ty = m.f64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(
         i64_ty,
         [
@@ -374,10 +374,10 @@ fn verify_casts_full() -> Result<(), IrError> {
     let _is: FloatValueId<f32, _> = b.si_to_fp(x, f32_ty, "is")?;
     let _iu: FloatValueId<f32, _> = b.ui_to_fp(x, f32_ty, "iu")?;
     let pi: IntValueId<i64, _> = b.ptr_to_int(p, i64_ty, "pi")?;
-    let _ip: PointerValueId<llvmkit_ir::SpaceDyn, _> = b.int_to_ptr(pi, ptr_ty, "ip")?;
+    let _ip: PointerValueId<llvmkit_ir::Space<0>, _> = b.int_to_ptr(pi, ptr_ty, "ip")?;
     // `addrspacecast` (identity here -- both ptrs in addr space 0 --
     // is a no-op, but exercises the builder + verifier path).
-    let _ac: PointerValueId<llvmkit_ir::SpaceDyn, _> = b.addrspace_cast(p, ptr_ty, "ac")?;
+    let _ac: PointerValueId<llvmkit_ir::Space<0>, _> = b.addrspace_cast(p, ptr_ty, "ac")?;
     let sum = b.int_add(e, z, "sum")?;
     let total = b.int_add(sum, fi, "total")?;
     b.ret(total)?;
@@ -393,7 +393,7 @@ fn verify_casts_full() -> Result<(), IrError> {
 fn verify_memory_gep_select_control() -> Result<(), IrError> {
     let m = module_new!("mem")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("k", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -704,7 +704,7 @@ fn verify_invoke_result_used_on_unwind_edge_fails() -> Result<(), IrError> {
     // what this test is about; without them the module is not IR upstream
     // accepts, and the dominance failure it does pin would never be reached.
     m.view(f)
-        .set_personality_fn(&m, m.ptr_type(0).const_null())?;
+        .set_personality_fn(&m, m.ptr_type_in::<0>().const_null())?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let normal = m.view(f).append_basic_block(&m, "normal");
     let unwind = m.view(f).append_basic_block(&m, "unwind");
@@ -763,7 +763,7 @@ fn verify_invoke_result_used_on_unwind_edge_fails() -> Result<(), IrError> {
 fn verify_gep_into_scalable_struct_fails() -> Result<(), IrError> {
     let m = module_new!("gs")?;
     let double_ty = m.f64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let vscale_double = VectorType::scalable_of(double_ty, lanes::<1>());
     let struct_ty = m.struct_type([vscale_double.as_type(), vscale_double.as_type()])?;
@@ -867,7 +867,7 @@ fn verify_vector_gep_with_disagreeing_index_widths_fails() -> Result<(), IrError
     let m = module_new!("gv")?;
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let array_ty = ArrayType::of(i8_ty, 4);
     let vec2_i32 = VectorType::of(i32_ty, lanes::<2>());
@@ -989,7 +989,7 @@ fn const_x86_amx_intrinsic_argument_is_rejected() -> Result<(), IrError> {
     let args = [
         i16_ty.const_int(1_i16).as_erased(),
         i16_ty.const_int(1_i16).as_erased(),
-        m.ptr_type(0).const_null().as_erased(),
+        m.ptr_type_in::<0>().const_null().as_erased(),
         i64_ty.const_int(64_i64).as_erased(),
         m.x86_amx_type().undef().as_erased(),
     ];

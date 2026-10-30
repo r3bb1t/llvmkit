@@ -68,7 +68,7 @@ fn fence_singlethread_seq_cst() -> Result<(), IrError> {
 fn cmpxchg_no_align_monotonic_monotonic() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
@@ -104,7 +104,7 @@ fn cmpxchg_no_align_monotonic_monotonic() -> Result<(), IrError> {
 fn cmpxchg_weak_volatile_singlethread() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
@@ -148,7 +148,7 @@ fn cmpxchg_weak_volatile_singlethread() -> Result<(), IrError> {
 fn atomicrmw_xchg_monotonic() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
@@ -179,7 +179,7 @@ fn atomicrmw_xchg_monotonic() -> Result<(), IrError> {
 fn atomicrmw_volatile_min_monotonic() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
@@ -210,7 +210,7 @@ fn atomicrmw_volatile_min_monotonic() -> Result<(), IrError> {
 fn atomicrmw_umax_singlethread() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
@@ -244,7 +244,7 @@ fn atomicrmw_umax_singlethread() -> Result<(), IrError> {
 fn atomicrmw_fmaximum_monotonic() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let f32_ty = m.f32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
@@ -279,7 +279,7 @@ fn atomicrmw_fmaximum_monotonic() -> Result<(), IrError> {
 fn atomicrmw_fminimum_monotonic() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let f32_ty = m.f32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;

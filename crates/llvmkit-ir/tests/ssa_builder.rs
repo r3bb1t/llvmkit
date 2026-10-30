@@ -172,7 +172,7 @@ fn declare_var_family_covers_every_category_and_variant() -> Result<(), IrError>
 
     let strict_ptr = b.declare_pointer_var("p");
     let poison_ptr = b.declare_pointer_var_poison("pp");
-    let addrspace_ty = m.ptr_type(1);
+    let addrspace_ty = m.ptr_type_in::<1>();
     let addrspace_ptr = b.declare_pointer_var_in_addrspace(addrspace_ty, "pas");
     let addrspace_ptr_poison = b.declare_pointer_var_in_addrspace_poison(addrspace_ty, "paspoison");
 
@@ -775,14 +775,14 @@ fn dyn_float_var_wrong_kind_def_rejected() -> Result<(), IrError> {
 fn pointer_var_wrong_addrspace_def_rejected() -> Result<(), IrError> {
     let m = module_new!("ssa-ptr-wrong-addrspace")?;
     let void_ty = m.void_type();
-    let ptr_as1_ty = m.ptr_type(1);
+    let ptr_as1_ty = m.ptr_type_in::<1>();
     let fn_ty = m.function_type(void_ty, [ptr_as1_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
     let entry = b.create_block("entry");
 
-    let addrspace0_ty = m.ptr_type(0);
+    let addrspace0_ty = m.ptr_type(llvmkit_ir::AddressSpace::DEFAULT);
     let px = b.declare_pointer_var_in_addrspace(addrspace0_ty, "px");
 
     b.switch_to_block(entry)?;

@@ -314,7 +314,7 @@ fn typed_indirect_call_full_module_print_equals_dyn_indirect_call_full_module_pr
 -> Result<(), IrError> {
     fn build_typed<'ctx, B: ModuleBrand + 'ctx>(m: &Module<B, Unverified>) -> Result<(), IrError> {
         let i32_ty = m.i32_type();
-        let ptr_ty = m.ptr_type(0);
+        let ptr_ty = m.ptr_type_in::<0>();
         let host_ty = m.function_type(i32_ty, [ptr_ty.as_type()])?;
         let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
         let entry = m.view(host).append_basic_block(m, "entry");
@@ -329,7 +329,7 @@ fn typed_indirect_call_full_module_print_equals_dyn_indirect_call_full_module_pr
     }
     fn build_dyn<'ctx, B: ModuleBrand + 'ctx>(m: &Module<B, Unverified>) -> Result<(), IrError> {
         let i32_ty = m.i32_type();
-        let ptr_ty = m.ptr_type(0);
+        let ptr_ty = m.ptr_type_in::<0>();
         let host_ty = m.function_type(i32_ty, [ptr_ty.as_type()])?;
         let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
         let entry = m.view(host).append_basic_block(m, "entry");
@@ -458,7 +458,7 @@ fn build_indirect_call_dyn_int_marker_against_void_fn_type_reports_asymmetric_mi
 -> Result<(), IrError> {
     let m = module_new!("c")?;
     let void_ty = m.void_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let host_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");

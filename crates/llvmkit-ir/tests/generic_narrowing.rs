@@ -144,7 +144,7 @@ fn wrong_width_is_operand_width_mismatch_for_const_generic_marker() {
 #[test]
 fn wrong_kind_is_type_mismatch() {
     let m = module_new!("c").expect("fresh module");
-    let ptr_v = m.ptr_type(0).const_null().as_erased();
+    let ptr_v = m.ptr_type_in::<0>().const_null().as_erased();
     let err = narrow_generic::<i32, _>(ptr_v).unwrap_err();
     assert_eq!(
         err,
@@ -269,7 +269,7 @@ fn wrong_float_kind_is_type_mismatch() {
 #[test]
 fn float_dyn_still_rejects_non_float() {
     let m = module_new!("c").expect("fresh module");
-    let ptr_v = m.ptr_type(0).const_null().as_erased();
+    let ptr_v = m.ptr_type_in::<0>().const_null().as_erased();
     let err = narrow_generic_float::<FloatDyn, _>(ptr_v).unwrap_err();
     assert_eq!(
         err,

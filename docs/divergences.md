@@ -774,7 +774,8 @@ run).
 needs typed derived types, as an analysis-side type family rather than IR
 types.
 
-**Guarded by:** `crates/llvmkit-ir/tests/type_components.rs::a_typed_pointer_prints_as_the_asm_writer_does`,
+**Guarded by:** `crates/llvmkit-ir/tests/type_components.rs::upstream_typed_pointer_prints`,
+`crates/llvmkit-ir/tests/type_components.rs::a_typed_pointer_nests_and_keeps_its_address_space`,
 `crates/llvmkit-ir/tests/type_components.rs::an_erased_typed_pointer_refuses_an_invalid_pointee`,
 `crates/llvmkit-ir/tests/cross_module_handles.rs::the_typed_pointer_constructor_rejects_a_pointee_from_another_module`,
 and `crates/llvmkit-ir/tests/compile_fail/typed_pointer_is_not_an_ir_type.rs`

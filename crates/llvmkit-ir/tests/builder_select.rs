@@ -65,7 +65,7 @@ fn select_fp_arms() -> Result<(), IrError> {
 #[test]
 fn select_pointer_arms() -> Result<(), IrError> {
     let m = module_new!("s")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let bool_ty = m.bool_type();
     let fn_ty = m.function_type(
         ptr_ty.as_type(),

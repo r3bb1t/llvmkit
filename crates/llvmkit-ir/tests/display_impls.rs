@@ -141,7 +141,7 @@ fn typed_handles_agree_with_erased_value() -> Result<(), IrError> {
     let m = module_new!("agreement")?;
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
 
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -193,7 +193,7 @@ fn typed_handles_agree_with_erased_value() -> Result<(), IrError> {
 fn constant_handles_print_expected_operand_text() -> Result<(), IrError> {
     let m = module_new!("constant_display")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
 
     assert_eq!(format!("{}", i32_ty.const_int(42_i32)), "i32 42");
     assert_eq!(format!("{}", i32_ty.const_int(-7_i32)), "i32 -7");

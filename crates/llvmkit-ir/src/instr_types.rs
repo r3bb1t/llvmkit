@@ -1867,7 +1867,7 @@ pub(crate) struct AllocaInstData {
     pub(crate) allocated_ty: crate::r#type::TypeSlot,
     pub(crate) num_elements: Cell<Option<ValueSlot>>,
     pub(crate) align: MaybeAlign,
-    pub(crate) addr_space: u32,
+    pub(crate) addr_space: crate::AddressSpace,
     pub(crate) flags: AllocaFlags,
 }
 
@@ -1876,7 +1876,7 @@ impl AllocaInstData {
         allocated_ty: crate::r#type::TypeSlot,
         num_elements: Option<ValueSlot>,
         align: MaybeAlign,
-        addr_space: u32,
+        addr_space: crate::AddressSpace,
         flags: AllocaFlags,
     ) -> Self {
         Self {

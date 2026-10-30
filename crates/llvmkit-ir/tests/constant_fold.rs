@@ -1151,7 +1151,7 @@ fn constant_expr_ptrtoaddr_uses_distinct_opcode() -> Result<(), IrError> {
     m.add_global("global_cast_as0", cast_as0)?;
     let i_as1 = m
         .global_builder("i_as1", i32_ty.as_type())
-        .address_space(1)
+        .address_space(llvmkit_ir::address_space::<1>())
         .initializer(i32_ty.const_zero())
         .build()?;
     let cast_as1 = m.constant_expr(
@@ -1742,7 +1742,7 @@ fn compare_global_pointer_relations_fold() -> Result<(), IrError> {
     let m = module_new!("fold-compare-global")?;
     let bool_ty = m.bool_type();
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let g = m.add_global("g", i32_ty.const_zero())?;
     let h = m.add_global("h", i32_ty.const_zero())?;
     let g_ptr = m.view(g).as_global_constant_ptr();
@@ -1836,7 +1836,7 @@ fn compare_global_pointer_vs_null_respects_address_space() -> Result<(), IrError
 
     // Address space 0: the fold still applies (same shape as the AS-0
     // coverage in `compare_global_pointer_relations_fold` above).
-    let ptr_ty0 = m.ptr_type(0);
+    let ptr_ty0 = m.ptr_type_in::<0>();
     let g0 = m.add_global("g0", i32_ty.const_zero())?;
     let null0 = ptr_ty0.const_null().as_constant();
     let ugt0 = constant_fold_compare_instruction(
@@ -1849,10 +1849,10 @@ fn compare_global_pointer_vs_null_respects_address_space() -> Result<(), IrError
 
     // Address space 1: null may be a valid address there, so upstream
     // declines the fold entirely.
-    let ptr_ty1 = m.ptr_type(1);
+    let ptr_ty1 = m.ptr_type_in::<1>();
     let g1 = m
         .global_builder("g1", i32_ty.as_type())
-        .address_space(1)
+        .address_space(llvmkit_ir::address_space::<1>())
         .initializer(i32_ty.const_zero())
         .build()?;
     let null1 = ptr_ty1.const_null().as_constant();
@@ -1916,7 +1916,7 @@ fn compare_ifunc_linkage_relations_match_globalvalue_rules() -> Result<(), IrErr
         .ifunc_builder("external_weak", i32_ty.as_type(), m.view(resolver))
         .linkage(Linkage::ExternalWeak)
         .build()?;
-    let null = m.ptr_type(0).const_null().as_constant();
+    let null = m.ptr_type_in::<0>().const_null().as_constant();
     assert!(
         constant_fold_compare_instruction(
             CmpPredicate::Int(IntPredicate::Ne),
@@ -2583,7 +2583,7 @@ fn constant_fold_gep_poison_undef_and_noop_indices() -> Result<(), IrError> {
     let m = module_new!("fold-gep-noop")?;
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let g = m.add_global("g", i32_ty.const_zero())?;
     let base = m.view(g).as_global_constant_ptr();
     let zero = i64_ty.const_zero().as_constant();

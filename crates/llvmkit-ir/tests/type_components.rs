@@ -2,10 +2,10 @@
 //! them, and the erased routes that refuse to.
 
 use llvmkit_ir::{
-    ArrLenDyn, ArrayType, ConstantFolder, DataLayout, Dyn, ElemDyn, IntrinsicId, IrBuilder,
-    IrBuilderFolder, IrError, LenDyn, Linkage, MAX_INT_BITS, Module, ShuffleMaskElem,
+    AddressSpace, ArrLenDyn, ArrayType, ConstantFolder, DataLayout, Dyn, ElemDyn, IntrinsicId,
+    IrBuilder, IrBuilderFolder, IrError, LenDyn, Linkage, MAX_INT_BITS, Module, ShuffleMaskElem,
     TargetExtParameterRule, TargetExtProperty, Type, TypeKindLabel, TypePosition, TypedPointee,
-    TypedPointerType, VectorType, constant_fold_shuffle_vector_instruction, lanes,
+    TypedPointerType, VectorType, address_space, constant_fold_shuffle_vector_instruction, lanes,
 };
 
 /// `VectorType::of` keeps the element marker and builds in the element's own
@@ -242,7 +242,7 @@ fn an_erased_array_refuses_an_invalid_element() {
             "{refused:?}"
         );
     }
-    m.array_type(m.ptr_type(0), 2)
+    m.array_type(m.ptr_type_in::<0>(), 2)
         .expect("a pointer is an array element");
 
     assert_eq!(
@@ -267,7 +267,7 @@ fn an_erased_array_refuses_an_invalid_element() {
             "{refused:?}"
         );
     }
-    view.array_type(view.ptr_type(0), 2)
+    view.array_type(view.ptr_type_in::<0>(), 2)
         .expect("a pointer is an array element");
 }
 
@@ -395,6 +395,24 @@ fn an_intrinsic_name_cannot_spell_an_integer_llvm_has_no_width_for() {
     );
     m.get_or_insert_intrinsic_declaration_by_name(format!("llvm.ssa.copy.i{MAX_INT_BITS}"))
         .expect("`MAX_INT_BITS` is a legal width");
+}
+
+/// An intrinsic name whose overload suffix spells an address space past 24 bits
+/// does not demangle: `getMangledTypeStr` (`lib/IR/Intrinsics.cpp`) spells
+/// `"p" + utostr(AddressSpace)` from a pointer that exists, and
+/// `Type::setSubclassData` asserts the space fits. llvmkit-specific regression
+/// (D10): the demangler built `ptr addrspace(16777216)`. The largest space is
+/// the positive control.
+#[test]
+fn an_intrinsic_name_cannot_spell_an_address_space_past_24_bits() {
+    let m = Module::dynamic("components");
+    let refused = m.get_or_insert_intrinsic_declaration_by_name("llvm.ssa.copy.p16777216");
+    assert!(
+        matches!(refused, Err(IrError::IntrinsicSignatureMismatch { .. })),
+        "{refused:?}"
+    );
+    m.get_or_insert_intrinsic_declaration_by_name("llvm.ssa.copy.p16777215")
+        .expect("the largest address space is an overload of `llvm.ssa.copy`");
 }
 
 /// A signature that doubles an overload's integer past `MAX_INT_BITS` does not
@@ -601,16 +619,23 @@ fn a_target_type_checks_its_parameters_when_built() {
         .expect("one integer parameter");
 }
 
-/// A typed pointer prints as AsmWriter prints one — `typedptr(<pointee>,
-/// <addrspace>)`, `TypePrinting::print`'s `TypedPointerTyID` arm — and nests,
-/// as `TypedPointerType::isValidElementType` allows. llvmkit-specific (the
-/// printer arm has no upstream test).
+/// Port of `unittests/IR/TypesTest.cpp::TEST(TypedPointerType, PrintTest)`.
 #[test]
-fn a_typed_pointer_prints_as_the_asm_writer_does() {
+fn upstream_typed_pointer_prints() {
     let m = Module::dynamic("components");
-    let inner = TypedPointerType::of(m.i32_type(), 0);
+    let i8_ptr = TypedPointerType::of(m.i8_type(), AddressSpace::DEFAULT);
+    assert_eq!(i8_ptr.to_string(), "typedptr(i8, 0)");
+}
+
+/// A typed pointer nests, as `TypedPointerType::isValidElementType` allows,
+/// and keeps its pointee and its address space. llvmkit-specific: upstream's
+/// `TEST(TypedPointerType, PrintTest)` prints one level in address space 0.
+#[test]
+fn a_typed_pointer_nests_and_keeps_its_address_space() {
+    let m = Module::dynamic("components");
+    let inner = TypedPointerType::of(m.i32_type(), AddressSpace::DEFAULT);
     assert_eq!(inner.to_string(), "typedptr(i32, 0)");
-    let outer = TypedPointerType::of(inner, 3);
+    let outer = TypedPointerType::of(inner, address_space::<3>());
     assert_eq!(outer.to_string(), "typedptr(typedptr(i32, 0), 3)");
     assert!(matches!(outer.pointee(), TypedPointee::Typed(p) if p == inner));
     assert_eq!(outer.address_space(), 3);
@@ -624,16 +649,19 @@ fn a_typed_pointer_prints_as_the_asm_writer_does() {
 fn an_erased_typed_pointer_refuses_an_invalid_pointee() {
     let m = Module::dynamic("components");
     assert!(matches!(
-        m.typed_pointer_type(m.void_type(), 0),
+        m.typed_pointer_type(m.void_type(), AddressSpace::DEFAULT),
         Err(IrError::InvalidTypeComponent {
             position: TypePosition::PointerElement,
             kind: TypeKindLabel::Void,
         })
     ));
     let ok = m
-        .typed_pointer_type(m.i32_type(), 0)
+        .typed_pointer_type(m.i32_type(), AddressSpace::DEFAULT)
         .expect("an integer pointee is valid");
-    assert_eq!(ok, TypedPointerType::of(m.i32_type(), 0));
+    assert_eq!(
+        ok,
+        TypedPointerType::of(m.i32_type(), AddressSpace::DEFAULT)
+    );
 
     let view = m.as_view();
     for (pointee, kind) in [
@@ -643,7 +671,7 @@ fn an_erased_typed_pointer_refuses_an_invalid_pointee() {
         (view.token_type().as_type(), TypeKindLabel::Token),
         (view.x86_amx_type(), TypeKindLabel::X86Amx),
     ] {
-        let refused = view.typed_pointer_type(pointee, 0);
+        let refused = view.typed_pointer_type(pointee, AddressSpace::DEFAULT);
         assert!(
             matches!(
                 refused,
@@ -655,7 +683,7 @@ fn an_erased_typed_pointer_refuses_an_invalid_pointee() {
             "{refused:?}"
         );
     }
-    view.typed_pointer_type(view.ptr_type(1), 2)
+    view.typed_pointer_type(view.ptr_type_in::<1>(), address_space::<2>())
         .expect("a pointer pointee is valid");
 }
 

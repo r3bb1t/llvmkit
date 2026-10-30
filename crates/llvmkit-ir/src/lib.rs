@@ -428,7 +428,7 @@ pub use known_fp_class::{
 };
 pub use value_tracking::analyze_known_bits_from_and_xor_or;
 
-pub use addr_space::{AddrSpace, Space, SpaceDyn};
+pub use addr_space::{AddrSpace, AddressSpace, Space, SpaceDyn, address_space};
 pub use array_len::{ArrLen, ArrLenDyn, ArrayLen, StaticArrayLen};
 pub use assumptions::{
     Assumption, AssumptionCache, AssumptionSource, DomConditionCache,

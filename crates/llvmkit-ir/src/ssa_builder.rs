@@ -827,7 +827,7 @@ where
         &mut self,
         name: Name,
     ) -> PointerVariable<crate::Space<0>, B> {
-        let ty = self.module.ptr_type(0).slot_trusting_same_module();
+        let ty = self.module.ptr_type_in::<0>().slot_trusting_same_module();
         self.declare_var_raw(ty, name, VarCategory::Pointer, false)
             .into()
     }
@@ -837,7 +837,7 @@ where
         &mut self,
         name: Name,
     ) -> PointerVariable<crate::Space<0>, B> {
-        let ty = self.module.ptr_type(0).slot_trusting_same_module();
+        let ty = self.module.ptr_type_in::<0>().slot_trusting_same_module();
         self.declare_var_raw(ty, name, VarCategory::Pointer, true)
             .into()
     }
@@ -2529,7 +2529,7 @@ mod tests {
         assert_eq!(
             err,
             IrError::TypeIdentityMismatch {
-                expected: m.ptr_type(0).as_type().rendered(),
+                expected: m.ptr_type_in::<0>().as_type().rendered(),
                 got: m.i32_type().as_type().rendered(),
             }
         );

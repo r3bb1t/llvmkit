@@ -190,7 +190,7 @@ fn a_global_initializer_is_a_use() -> Result<(), IrError> {
 #[test]
 fn rauw_reaches_a_global_initializer() -> Result<(), IrError> {
     let m = module_new!("global-field-rauw")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let placeholder = m.forward_ref_value_placeholder(ptr_ty.as_type())?;
     let holder = m.add_global("holder", placeholder.as_constant())?;
 
@@ -220,7 +220,7 @@ fn rauw_reaches_a_global_initializer() -> Result<(), IrError> {
 fn rauw_reaches_an_alias_target() -> Result<(), IrError> {
     let m = module_new!("alias-field-rauw")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let placeholder = m.forward_ref_value_placeholder(ptr_ty.as_type())?;
     let alias = m
         .alias_builder("a", i32_ty.as_type(), placeholder.as_constant())

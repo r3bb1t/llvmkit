@@ -24,6 +24,7 @@ use core::num::NonZeroU32;
 use std::collections::HashMap;
 
 use super::value::{GlobalFieldKind, ValueUse};
+use crate::addr_space::AddressSpace;
 use crate::constant::{ConstantData, ConstantExprData};
 use crate::instr_types::{CallAttributeData, CallAttributesSlot};
 use crate::r#type::{StructBody, TypeData, TypeSlot, TypedPointeeSlot, TypedPointerSlot};
@@ -71,7 +72,7 @@ pub(crate) struct Context {
     // ---- Parameterised — one map per kind. Keys are small structural
     // fingerprints (mirrors LLVMContextImpl).
     int_types: RefCell<HashMap<u32, TypeSlot>>,
-    ptr_types: RefCell<HashMap<u32, TypeSlot>>,
+    ptr_types: RefCell<HashMap<AddressSpace, TypeSlot>>,
     array_types: RefCell<HashMap<(TypeSlot, u64), TypeSlot>>,
     fixed_vector_types: RefCell<HashMap<(TypeSlot, NonZeroU32), TypeSlot>>,
     scalable_vector_types: RefCell<HashMap<(TypeSlot, NonZeroU32), TypeSlot>>,
@@ -86,8 +87,8 @@ pub(crate) struct Context {
     /// own, not in the type arena: a typed pointer is no IR type, so no
     /// `TypeSlot` names one. Indexed by `TypedPointerSlot`; uniqued through
     /// `typed_pointer_ids`, as `TypedPointerType::get` uniques per context.
-    typed_pointers: RefCell<Vec<(TypedPointeeSlot, u32)>>,
-    typed_pointer_ids: RefCell<HashMap<(TypedPointeeSlot, u32), TypedPointerSlot>>,
+    typed_pointers: RefCell<Vec<(TypedPointeeSlot, AddressSpace)>>,
+    typed_pointer_ids: RefCell<HashMap<(TypedPointeeSlot, AddressSpace), TypedPointerSlot>>,
     target_ext_types: RefCell<HashMap<TargetExtKey, TypeSlot>>,
 
     // ---- Value arena. Like the type arena, `boxcar::Vec` gives
@@ -308,7 +309,7 @@ impl Context {
         id
     }
 
-    pub(crate) fn ptr_type(&self, addr_space: u32) -> TypeSlot {
+    pub(crate) fn ptr_type(&self, addr_space: AddressSpace) -> TypeSlot {
         if let Some(&id) = self.ptr_types.borrow().get(&addr_space) {
             return id;
         }
@@ -420,7 +421,7 @@ impl Context {
     pub(crate) fn typed_pointer_type(
         &self,
         pointee: TypedPointeeSlot,
-        addr_space: u32,
+        addr_space: AddressSpace,
     ) -> TypedPointerSlot {
         let key = (pointee, addr_space);
         if let Some(&id) = self.typed_pointer_ids.borrow().get(&key) {
@@ -434,7 +435,10 @@ impl Context {
     }
 
     /// The `(pointee, address space)` record behind `slot`.
-    pub(crate) fn typed_pointer_data(&self, slot: TypedPointerSlot) -> (TypedPointeeSlot, u32) {
+    pub(crate) fn typed_pointer_data(
+        &self,
+        slot: TypedPointerSlot,
+    ) -> (TypedPointeeSlot, AddressSpace) {
         self.typed_pointers
             .borrow()
             .get(slot.table_index())

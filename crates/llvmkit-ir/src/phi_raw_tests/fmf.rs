@@ -141,7 +141,7 @@ fn fp_phi_add_incoming_rejects_differing_duplicate() -> Result<(), IrError> {
 #[test]
 fn pointer_phi_add_incoming_rejects_differing_duplicate() -> Result<(), IrError> {
     let m = crate::module_new!("a")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(ptr_ty, [ptr_ty.as_type(), ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");

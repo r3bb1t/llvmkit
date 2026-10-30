@@ -17,7 +17,7 @@ use llvmkit_ir::{Dyn, IrBuilder, IrError, Linkage, module_new};
 fn gep_result_preserves_base_pointer_address_space() -> Result<(), IrError> {
     let m = module_new!("gep_addrspace")?;
     let i32_ty = m.i32_type();
-    let ptr_as33 = m.ptr_type(33);
+    let ptr_as33 = m.ptr_type_in::<33>();
     let fn_ty = m.function_type(m.void_type().as_type(), [ptr_as33.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");

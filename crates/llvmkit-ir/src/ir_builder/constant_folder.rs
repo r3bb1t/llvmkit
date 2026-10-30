@@ -843,7 +843,7 @@ fn pointer_bitcast_or_addrspace_cast_opcode<B: ModuleBrand>(
     }
 }
 
-fn ptr_or_ptr_vector_address_space<B: ModuleBrand>(ty: Type<'_, B>) -> Option<u32> {
+fn ptr_or_ptr_vector_address_space<B: ModuleBrand>(ty: Type<'_, B>) -> Option<crate::AddressSpace> {
     match ty.data() {
         TypeData::Pointer { addr_space } => Some(*addr_space),
         TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {

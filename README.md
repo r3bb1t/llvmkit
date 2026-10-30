@@ -335,11 +335,14 @@ A pointer's LLVM address space is part of its Rust type. `m.ptr_type_in::<3>()`
 is a `PointerType<'_, Space<3>, _>`, and the pointers built from it — through a
 GEP, `select`, a phi or an SSA variable — stay `Space<3>`, so a `select` or a
 pointer comparison mixing address spaces 0 and 1 does not compile. Where only
-run-time data knows the space — `m.ptr_type(n)`, the parser, the default
+run-time data knows the space — `m.ptr_type(space)`, the parser, the default
 `alloca` — the marker is `SpaceDyn`; `TryFrom` narrows it to `Space<N>`,
 refusing another space with `IrError::AddressSpaceMismatch`, and `as_dyn()`
 erases a static one. In a typed signature `Ptr` is address space 0 and `Ptr<N>`
-is address space `N`.
+is address space `N`. A run-time number becomes an `AddressSpace` through
+`AddressSpace::new`, which refuses anything past LLVM's 24 bits, so no pointer
+type holds a space no parser reads back; `ptr_type_in::<N>()` and `Ptr<N>`
+refuse such an `N` at compile time.
 
 ### Typed pointers
 

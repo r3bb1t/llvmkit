@@ -233,7 +233,7 @@ fn remove_incoming_through_phi_kind_covers_every_flavour() -> Result<(), IrError
     let m = crate::module_new!("phi_remove_kinds")?;
     let i32_ty = m.i32_type();
     let f64_ty = m.f64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let vec_ty = VectorType::of(i32_ty, lanes::<2>());
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;

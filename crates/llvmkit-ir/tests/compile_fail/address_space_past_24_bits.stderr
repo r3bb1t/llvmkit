@@ -1,0 +1,29 @@
+error[E0080]: evaluation panicked: an address space is a 24-bit number: `Type::setSubclassData` asserts it fits
+ --> $RUST/core/src/panic.rs
+  |
+  = note: evaluation of `llvmkit_ir::address_space::<16777216>::{constant#0}` failed here
+  |
+ ::: src/addr_space.rs
+  |
+  |               None => panic!(
+  |  _____________________-
+  | |                 "an address space is a 24-bit number: `Type::setSubclassData` asserts it fits"
+  | |             ),
+  | |_____________- in this macro invocation
+
+note: erroneous constant encountered
+ --> src/addr_space.rs
+  |
+  | /     const {
+  | |         match AddressSpace::new(N) {
+  | |             Some(space) => space,
+  | |             None => panic!(
+... |
+  | |     }
+  | |_____^
+
+note: the above error was encountered while instantiating `fn address_space::<16777216>`
+ --> src/module.rs
+  |
+  |         PointerType::new(self.core.ctx.ptr_type(address_space::<N>()), self)
+  |                                                 ^^^^^^^^^^^^^^^^^^^^

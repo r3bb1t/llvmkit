@@ -211,7 +211,7 @@ fn instsimplify_pass_keeps_load_from_interposable_constant_global() -> Result<()
 fn dce_removes_unordered_atomic_load_keeps_ordered_and_volatile() -> Result<(), IrError> {
     let m = module_new!("dce-loads")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -258,7 +258,7 @@ fn dce_removes_unordered_atomic_load_keeps_ordered_and_volatile() -> Result<(), 
 fn dce_keeps_store_fence_and_call() -> Result<(), IrError> {
     let m = module_new!("dce-effects")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type().as_type();
     let sink_ty = m.function_type_no_parameters(void_ty)?;
     let sink = m.add_function_dyn("sink", sink_ty, Linkage::External)?;

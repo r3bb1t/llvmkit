@@ -489,8 +489,14 @@ fn address_space_name() {
     assert_eq!(dl.address_space_name(1), "foo");
     assert_eq!(dl.address_space_name(10), "bar");
     assert_eq!(dl.address_space_name(3), "");
-    assert_eq!(dl.named_address_space("foo"), Some(1));
-    assert_eq!(dl.named_address_space("bar"), Some(10));
+    assert_eq!(
+        dl.named_address_space("foo"),
+        llvmkit_ir::AddressSpace::new(1)
+    );
+    assert_eq!(
+        dl.named_address_space("bar"),
+        llvmkit_ir::AddressSpace::new(10)
+    );
     assert_eq!(dl.named_address_space("missing"), None);
 }
 
