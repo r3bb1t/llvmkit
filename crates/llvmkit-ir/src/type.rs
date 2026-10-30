@@ -24,7 +24,7 @@
 //! Bit-width constants [`MIN_INT_BITS`] / [`MAX_INT_BITS`] mirror
 //! `IntegerType::MIN_INT_BITS` / `MAX_INT_BITS` (`DerivedTypes.h`).
 
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::num::NonZeroU32;
@@ -324,10 +324,47 @@ pub(crate) struct StructTypeData {
 /// The name is not the discriminator. llvmkit used to spell literal-ness as
 /// `name.is_none()`, which cannot represent an *anonymous identified* struct
 /// — exactly what `%0 = type {i32}` is.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug)]
 pub(crate) enum StructIdentity {
     Literal,
-    Identified { name: Option<String> },
+    Identified { name: StructName },
+}
+
+/// An identified struct's name, which `StructType::setName` can replace or
+/// remove.
+///
+/// `StructType::name` hands out a `&'ctx str`, so a name stays alive after it
+/// is replaced: every name the struct has held stays in `held`, and `current`
+/// says which one it holds now. Upstream's own test reads the old name across
+/// the rename (`TEST(TypesTest, StructType)`, PR13522), which C++ needed
+/// `setName`'s delayed free to survive.
+#[derive(Debug)]
+pub(crate) struct StructName {
+    held: boxcar::Vec<String>,
+    current: Cell<Option<usize>>,
+}
+
+impl StructName {
+    /// A name for a struct that starts with `name`, or with none.
+    pub(crate) fn new(name: Option<String>) -> Self {
+        let held = boxcar::Vec::new();
+        let current = Cell::new(name.map(|name| held.push(name)));
+        Self { held, current }
+    }
+
+    #[inline]
+    fn get(&self) -> Option<&str> {
+        let index = self.current.get()?;
+        self.held.get(index).map(String::as_str)
+    }
+
+    pub(crate) fn set(&self, name: String) {
+        self.current.set(Some(self.held.push(name)));
+    }
+
+    pub(crate) fn remove(&self) {
+        self.current.set(None);
+    }
 }
 
 impl StructIdentity {
@@ -336,8 +373,14 @@ impl StructIdentity {
     pub(crate) fn name(&self) -> Option<&str> {
         match self {
             Self::Literal => None,
-            Self::Identified { name } => name.as_deref(),
+            Self::Identified { name } => name.get(),
         }
+    }
+
+    /// `true` for an identified struct with no name, the kind `%0` is.
+    #[inline]
+    pub(crate) fn is_anonymous_identified(&self) -> bool {
+        matches!(self, Self::Identified { .. }) && self.name().is_none()
     }
 
     #[inline]
@@ -984,22 +1027,19 @@ impl<'ctx, B: ModuleBrand, C: Capability> fmt::Display for Type<'ctx, B, C> {
                 // its position among the module's anonymous identified structs
                 // (`TypePrinting::NumberedTypes`). Only a literal struct spells
                 // its body inline.
-                match &s.identity {
-                    StructIdentity::Identified { name: Some(name) } => {
-                        return crate::asm_writer::fmt_llvm_name(f, "%", name);
-                    }
-                    StructIdentity::Identified { name: None } => {
-                        return match self
-                            .module
-                            .module()
-                            .context()
-                            .anonymous_identified_struct_number(self.id)
-                        {
-                            Some(number) => write!(f, "%{number}"),
-                            None => f.write_str("%<unnumbered>"),
-                        };
-                    }
-                    StructIdentity::Literal => {}
+                if let Some(name) = s.identity.name() {
+                    return crate::asm_writer::fmt_llvm_name(f, "%", name);
+                }
+                if s.identity.is_anonymous_identified() {
+                    return match self
+                        .module
+                        .module()
+                        .context()
+                        .anonymous_identified_struct_number(self.id)
+                    {
+                        Some(number) => write!(f, "%{number}"),
+                        None => f.write_str("%<unnumbered>"),
+                    };
                 }
                 let body = s.body.borrow();
                 let body = body.as_ref().expect("literal struct must have body");

@@ -32,6 +32,10 @@ use core::num::NonZeroU32;
 
 use super::capability::{Capability, CapabilityOf, Mutable};
 use super::error::{IrError, IrResult, TypeKindLabel};
+use super::intrinsics::{
+    double_elements_vector_type, extend_integer_type, one_nth_vector_type, subdivide_vector_type,
+    trunc_argument_type, vector_of_bitcasts_to_int,
+};
 use super::module::{ModuleBrand, ModuleRef};
 use super::r#type::{Type, TypeData, TypeKind, TypeSlot, TypeSlotAccess};
 use core::hash::{Hash, Hasher};
@@ -1323,6 +1327,79 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, C: Capability>
     pub fn static_len(self) -> Option<NonZeroU32> {
         L::static_len()
     }
+    /// A vector of `element` with this vector's element count. Mirrors
+    /// `VectorType::get(ElementType, Other)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`ModuleView::vector_type`](crate::ModuleView::vector_type): an
+    /// invalid element ([`IrError::InvalidTypeComponent`]) or an element of
+    /// another module ([`IrError::ForeignType`]).
+    pub fn with_element<T>(self, element: T) -> IrResult<VectorType<'ctx, ElemDyn, LenDyn, B, C>>
+    where
+        T: IrType<'ctx, B>,
+    {
+        if self.is_scalable() {
+            self.module.scalable_vector_type(element, self.min_len())
+        } else {
+            self.module.vector_type(element, self.min_len())
+        }
+    }
+    /// The vector of integers with this vector's element count and element
+    /// width. Mirrors `VectorType::getInteger`; `None` where it asserts, on an
+    /// element with no primitive size.
+    pub fn integer(self) -> Option<VectorType<'ctx, ElemDyn, LenDyn, B, C>> {
+        self.derived(vector_of_bitcasts_to_int(self.module, self.as_type()))
+    }
+    /// This vector with integer elements twice as wide. Mirrors
+    /// `VectorType::getExtendedElementVectorType`; `None` where it asserts, on
+    /// an element that is no integer, or one past `IntegerType::MAX_INT_BITS`
+    /// once doubled.
+    pub fn extended_element(self) -> Option<VectorType<'ctx, ElemDyn, LenDyn, B, C>> {
+        self.derived(extend_integer_type(self.module, self.as_type()))
+    }
+    /// This vector with elements half as wide. Mirrors
+    /// `VectorType::getTruncatedElementVectorType`; `None` where it asserts, on
+    /// a float with no narrower type, an odd width, or an element with no
+    /// primitive size.
+    pub fn truncated_element(self) -> Option<VectorType<'ctx, ElemDyn, LenDyn, B, C>> {
+        self.derived(trunc_argument_type(self.module, self.as_type()))
+    }
+    /// This vector with half as many elements. Mirrors
+    /// `VectorType::getHalfElementsVectorType`; `None` where it asserts, on an
+    /// odd element count.
+    pub fn half_elements(self) -> Option<VectorType<'ctx, ElemDyn, LenDyn, B, C>> {
+        self.derived(one_nth_vector_type(self.module, self.as_type(), 2))
+    }
+    /// This vector with twice as many elements. Mirrors
+    /// `VectorType::getDoubleElementsVectorType`; `None` where it asserts, on a
+    /// count past `UINT_MAX`.
+    pub fn double_elements(self) -> Option<VectorType<'ctx, ElemDyn, LenDyn, B, C>> {
+        self.derived(double_elements_vector_type(self.module, self.as_type()))
+    }
+    /// This vector subdivided `subdivisions` times, each doubling the element
+    /// count and halving the element width: `<4 x i64>` twice is `<16 x i16>`.
+    /// Mirrors `VectorType::getSubdividedVectorType`; `None` where
+    /// [`double_elements`](Self::double_elements) or
+    /// [`truncated_element`](Self::truncated_element) answers it.
+    pub fn subdivided(self, subdivisions: u32) -> Option<VectorType<'ctx, ElemDyn, LenDyn, B, C>> {
+        self.derived(subdivide_vector_type(
+            self.module,
+            self.as_type(),
+            subdivisions,
+        ))
+    }
+    /// The vector `routine` derived from this one, or `None` where it refused:
+    /// the refusal is upstream's assert, and the routines are the ones the
+    /// intrinsic signature matcher already ports.
+    fn derived(
+        self,
+        routine: IrResult<Type<'ctx, B, C>>,
+    ) -> Option<VectorType<'ctx, ElemDyn, LenDyn, B, C>> {
+        routine
+            .ok()
+            .map(|ty| VectorType::new(ty.slot_trusting_same_module(), self.module))
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -1451,6 +1528,43 @@ impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx, C: Capability>
             .as_ref()
             .and_then(|b| b.elements.get(index).copied())
             .map(|id| Type::new(id, self.module))
+    }
+    /// The field types in order, none while opaque. Mirrors
+    /// `StructType::elements`, as a snapshot: an opaque struct's body can be
+    /// set while this iterator is held, so it cannot borrow the body.
+    pub fn fields(
+        self,
+    ) -> impl ExactSizeIterator<Item = Type<'ctx, B, C>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
+        let s = self
+            .module
+            .type_data(self.id)
+            .as_struct()
+            .expect("StructType invariant: wraps Struct");
+        let elements = s
+            .body
+            .borrow()
+            .as_ref()
+            .map_or_else(Vec::new, |body| body.elements.to_vec());
+        let module = self.module;
+        elements.into_iter().map(move |id| Type::new(id, module))
+    }
+    /// `true` if `other` has this struct's layout: the same struct, or the
+    /// same packed flag and the same field types. Mirrors
+    /// `StructType::isLayoutIdentical`.
+    pub fn is_layout_identical<Other: StructBodyState>(
+        self,
+        other: StructType<'ctx, Other, B, C>,
+    ) -> bool {
+        if self.as_type() == other.as_type() {
+            return true;
+        }
+
+        if self.is_packed() != other.is_packed() {
+            return false;
+        }
+
+        self.fields().eq(other.fields())
     }
 }
 

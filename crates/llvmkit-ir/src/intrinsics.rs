@@ -2484,7 +2484,7 @@ where
     )
 }
 
-fn extend_integer_type<'ctx, B, C>(
+pub(crate) fn extend_integer_type<'ctx, B, C>(
     module: ModuleRef<'ctx, B, C>,
     ty: Type<'ctx, B, C>,
 ) -> IrResult<Type<'ctx, B, C>>
@@ -2512,7 +2512,7 @@ where
     }
 }
 
-fn trunc_argument_type<'ctx, B, C>(
+pub(crate) fn trunc_argument_type<'ctx, B, C>(
     module: ModuleRef<'ctx, B, C>,
     ty: Type<'ctx, B, C>,
 ) -> IrResult<Type<'ctx, B, C>>
@@ -2610,7 +2610,7 @@ where
     Ok(int_type(module, bits))
 }
 
-fn vector_of_bitcasts_to_int<'ctx, B, C>(
+pub(crate) fn vector_of_bitcasts_to_int<'ctx, B, C>(
     module: ModuleRef<'ctx, B, C>,
     ty: Type<'ctx, B, C>,
 ) -> IrResult<Type<'ctx, B, C>>
@@ -2639,7 +2639,7 @@ where
     }
 }
 
-fn one_nth_vector_type<'ctx, B, C>(
+pub(crate) fn one_nth_vector_type<'ctx, B, C>(
     module: ModuleRef<'ctx, B, C>,
     ty: Type<'ctx, B, C>,
     divisor: u32,
@@ -2698,33 +2698,46 @@ where
     }
 }
 
-fn subdivide_vector_type<'ctx, B, C>(
+pub(crate) fn double_elements_vector_type<'ctx, B, C>(
     module: ModuleRef<'ctx, B, C>,
     ty: Type<'ctx, B, C>,
+) -> IrResult<Type<'ctx, B, C>>
+where
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+{
+    // `VectorType::getDoubleElementsVectorType` asserts the doubled count fits
+    // in `unsigned`; doubling a non-zero count stays non-zero.
+    let doubled = |count: NonZeroU32| {
+        count
+            .checked_mul(lanes::<2>())
+            .ok_or_else(intrinsic_mismatch)
+    };
+    match ty.data() {
+        TypeData::FixedVector { elem, n } => {
+            fixed_vector_type(module, Type::new(*elem, module), doubled(*n)?)
+        }
+        TypeData::ScalableVector { elem, min } => {
+            scalable_vector_type(module, Type::new(*elem, module), doubled(*min)?)
+        }
+        _ => Err(intrinsic_mismatch()),
+    }
+}
+
+pub(crate) fn subdivide_vector_type<'ctx, B, C>(
+    module: ModuleRef<'ctx, B, C>,
+    mut ty: Type<'ctx, B, C>,
     subdivisions: u32,
 ) -> IrResult<Type<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
     C: Capability,
 {
-    let (mut elem, mut lane_count, scalable) = match ty.data() {
-        TypeData::FixedVector { elem, n } => (Type::new(*elem, module), *n, false),
-        TypeData::ScalableVector { elem, min } => (Type::new(*elem, module), *min, true),
-        _ => return Err(intrinsic_mismatch()),
-    };
     for _ in 0..subdivisions {
-        // `VectorType::getDoubleElementsVectorType` asserts the doubled count
-        // fits in `unsigned`; doubling a non-zero count stays non-zero.
-        lane_count = lane_count
-            .checked_mul(lanes::<2>())
-            .ok_or_else(intrinsic_mismatch)?;
-        elem = truncated_vector_element_type(module, elem)?;
+        ty = double_elements_vector_type(module, ty)?;
+        ty = trunc_argument_type(module, ty)?;
     }
-    if scalable {
-        scalable_vector_type(module, elem, lane_count)
-    } else {
-        fixed_vector_type(module, elem, lane_count)
-    }
+    Ok(ty)
 }
 
 fn intrinsic_mismatch() -> IrError {

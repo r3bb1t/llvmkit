@@ -83,6 +83,9 @@ pub(crate) struct Context {
     /// `named_struct_types` (which is unordered). Lets the printer emit the
     /// `%Name = type {...}` identity block in declaration order.
     named_struct_order: RefCell<Vec<TypeSlot>>,
+    /// The next suffix a renamed struct's colliding name takes. Mirrors
+    /// `LLVMContextImpl::NamedStructTypesUniqueID`.
+    named_struct_types_unique_id: Cell<u32>,
     /// Typed pointers — `(pointee, address space)` records in a table of their
     /// own, not in the type arena: a typed pointer is no IR type, so no
     /// `TypeSlot` names one. Indexed by `TypedPointerSlot`; uniqued through
@@ -206,6 +209,7 @@ impl Context {
             literal_struct_types: RefCell::new(HashMap::new()),
             named_struct_types: RefCell::new(HashMap::new()),
             named_struct_order: RefCell::new(Vec::new()),
+            named_struct_types_unique_id: Cell::new(0),
             typed_pointers: RefCell::new(Vec::new()),
             typed_pointer_ids: RefCell::new(HashMap::new()),
             target_ext_types: RefCell::new(HashMap::new()),
@@ -479,7 +483,7 @@ impl Context {
         }
         let id = self.push(TypeData::Struct(crate::r#type::StructTypeData {
             identity: crate::r#type::StructIdentity::Identified {
-                name: Some(name.to_owned()),
+                name: crate::r#type::StructName::new(Some(name.to_owned())),
             },
             body: RefCell::new(None),
         }));
@@ -497,11 +501,52 @@ impl Context {
     /// still two types, which is the whole point of the identified regime.
     pub(crate) fn create_anonymous_identified_struct(&self) -> TypeSlot {
         let id = self.push(TypeData::Struct(crate::r#type::StructTypeData {
-            identity: crate::r#type::StructIdentity::Identified { name: None },
+            identity: crate::r#type::StructIdentity::Identified {
+                name: crate::r#type::StructName::new(None),
+            },
             body: RefCell::new(None),
         }));
         self.named_struct_order.borrow_mut().push(id);
         id
+    }
+
+    /// Rename the identified struct `id`, or remove its name with an empty
+    /// `name`. Mirrors `StructType::setName` (`lib/IR/Type.cpp`), arm for arm:
+    /// the same name changes nothing, the old name leaves the table first, and
+    /// a name in use takes the first free `.N` suffix from
+    /// `NamedStructTypesUniqueID`, a counter that only rises.
+    pub(crate) fn set_struct_name(&self, id: TypeSlot, name: &str) {
+        let data = self
+            .type_data(id)
+            .as_struct()
+            .expect("set_struct_name invariant: id refers to a Struct");
+        let crate::r#type::StructIdentity::Identified { name: held } = &data.identity else {
+            unreachable!("set_struct_name invariant: Module::set_struct_name refuses a literal");
+        };
+        let old = data.identity.name();
+        if old.unwrap_or_default() == name {
+            return;
+        }
+
+        let mut table = self.named_struct_types.borrow_mut();
+        if let Some(old) = old {
+            table.remove(old);
+        }
+
+        if name.is_empty() {
+            held.remove();
+            return;
+        }
+
+        let mut unique = name.to_owned();
+        while table.contains_key(&unique) {
+            let suffix = self.named_struct_types_unique_id.get();
+            self.named_struct_types_unique_id
+                .set(suffix.wrapping_add(1));
+            unique = format!("{name}.{suffix}");
+        }
+        table.insert(unique.clone(), id);
+        held.set(unique);
     }
 
     /// This anonymous identified struct's position among the module's
@@ -514,10 +559,7 @@ impl Context {
             let TypeData::Struct(data) = self.type_data(candidate) else {
                 continue;
             };
-            if !matches!(
-                data.identity,
-                crate::r#type::StructIdentity::Identified { name: None }
-            ) {
+            if !data.identity.is_anonymous_identified() {
                 continue;
             }
             if candidate == id {

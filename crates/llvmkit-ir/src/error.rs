@@ -1426,6 +1426,13 @@ pub enum IrError {
     #[error("a literal struct type has no settable body")]
     LiteralStructBodyNotSettable,
 
+    /// A name was set on a literal struct. Upstream's header says not to:
+    /// `StructType::setName` is documented "Do not call this on an literal
+    /// type", and a literal struct is uniqued by its shape, so it has no
+    /// identity for a name to attach to.
+    #[error("a literal struct type has no settable name")]
+    LiteralStructNameNotSettable,
+
     /// An identified struct's body reaches the struct being defined. Port of
     /// `StructType::checkBody` (`lib/IR/Type.cpp`), whose message this
     /// reproduces verbatim so `LLParser::parseStructDefinition` can hand it
@@ -2199,6 +2206,7 @@ impl IrError {
             // Struct bodies the caller set, reset, or described inconsistently.
             Self::StructBodyAlreadySet { .. }
             | Self::LiteralStructBodyNotSettable
+            | Self::LiteralStructNameNotSettable
             | Self::RecursiveStructBody { .. }
             | Self::StructBodyMismatch { .. } => Blame::UsageError,
 

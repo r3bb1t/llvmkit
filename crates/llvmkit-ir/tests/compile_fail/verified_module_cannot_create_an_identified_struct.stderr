@@ -1,0 +1,31 @@
+error[E0599]: no method named `get_or_insert_named_struct` found for struct `ModuleView<'ctx, B>` in the current scope
+  --> tests/compile_fail/verified_module_cannot_create_an_identified_struct.rs:13:32
+   |
+13 |     let _ = verified.as_view().get_or_insert_named_struct("S");
+   |             --------           ^^^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `ModuleView<'_, DynBrand>`
+   |             |
+   |             method `get_or_insert_named_struct` is available on `&Module<DynBrand, Verified>`
+
+error[E0599]: no method named `anonymous_identified_struct` found for struct `ModuleView<'ctx, B>` in the current scope
+  --> tests/compile_fail/verified_module_cannot_create_an_identified_struct.rs:14:32
+   |
+14 |     let _ = verified.as_view().anonymous_identified_struct();
+   |             --------           ^^^^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `ModuleView<'_, DynBrand>`
+   |             |
+   |             method `anonymous_identified_struct` is available on `&Module<DynBrand, Verified>`
+
+error[E0599]: no method named `get_or_insert_named_struct` found for struct `Module<DynBrand, Verified>` in the current scope
+  --> tests/compile_fail/verified_module_cannot_create_an_identified_struct.rs:15:22
+   |
+15 |     let _ = verified.get_or_insert_named_struct("S");
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `Module<DynBrand, Verified>`
+   |
+   = note: the method was found for `Module<B>`
+
+error[E0599]: no method named `anonymous_identified_struct` found for struct `Module<DynBrand, Verified>` in the current scope
+  --> tests/compile_fail/verified_module_cannot_create_an_identified_struct.rs:16:22
+   |
+16 |     let _ = verified.anonymous_identified_struct();
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `Module<DynBrand, Verified>`
+   |
+   = note: the method was found for `Module<B>`

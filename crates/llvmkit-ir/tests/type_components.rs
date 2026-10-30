@@ -619,6 +619,167 @@ fn a_target_type_checks_its_parameters_when_built() {
         .expect("one integer parameter");
 }
 
+/// Port of `unittests/IR/TypesTest.cpp::TEST(TypesTest, StructType)`. PR13522:
+/// the new name is a piece of the old one, so reading it across the rename has
+/// to stay sound. `getName` is `StructType::name`, whose `None` is both of
+/// upstream's answers for a struct with no name: an empty `getName` and a
+/// false `hasName`.
+#[test]
+fn upstream_struct_type() {
+    let m = Module::dynamic("TypesTest");
+
+    // PR13522
+    let st = m.get_or_insert_named_struct("FooBar");
+    assert_eq!(st.name(), Some("FooBar"));
+    let name = st.name().expect("named above");
+    m.set_struct_name(st, &name[..3])
+        .expect("an identified one");
+    assert_eq!(st.name(), Some("Foo"));
+    m.set_struct_name(st, "").expect("an identified one");
+    assert!(st.name().unwrap_or_default().is_empty());
+    assert!(st.name().is_none());
+}
+
+/// Port of `unittests/IR/TypesTest.cpp::TEST(TypesTest, LayoutIdenticalEmptyStructs)`.
+#[test]
+fn upstream_layout_identical_empty_structs() {
+    let m = Module::dynamic("TypesTest");
+
+    let foo = m.get_or_insert_named_struct("Foo");
+    let bar = m.get_or_insert_named_struct("Bar");
+    assert!(foo.is_layout_identical(bar));
+}
+
+/// Port of `unittests/IR/TypesTest.cpp::TEST(TypesTest, TargetExtType)`.
+/// `TargetExtType::get` is `Module::target_ext_type`; `StructType::create` with
+/// elements is `get_or_insert_named_struct` then `set_struct_body_dyn`; and
+/// `print` is the type's `Display`.
+#[test]
+fn upstream_target_ext_type() {
+    let m = Module::dynamic("TypesTest");
+    let no_types = Vec::<Type<'_, _>>::new;
+
+    let a = m
+        .target_ext_type("typea", no_types(), [])
+        .expect("no rule names `typea`")
+        .as_type();
+    let aparam = m
+        .target_ext_type("typea", no_types(), [0, 1])
+        .expect("no rule names `typea`")
+        .as_type();
+    let aparam2 = m
+        .target_ext_type("typea", no_types(), [0, 1])
+        .expect("no rule names `typea`")
+        .as_type();
+
+    // Opaque types with same parameters are identical...
+    assert_eq!(aparam, aparam2);
+    // ... but just having the same name is not enough.
+    assert_ne!(a, aparam);
+
+    // ensure struct types in targest extension types
+    // only show the struct name, not the struct body
+    let int32_type = m.i32_type().as_type();
+    let float_type = m.f32_type().as_type();
+    let elements = [int32_type, float_type];
+
+    let st = m.get_or_insert_named_struct("MyStruct");
+    m.set_struct_body_dyn(st, elements, false)
+        .expect("a valid body");
+    let target_extension_type = m
+        .target_ext_type("structTET", [st], [0, 1])
+        .expect("no rule names `structTET`")
+        .as_type();
+
+    assert_eq!(
+        target_extension_type.to_string(),
+        "target(\"structTET\", %MyStruct, 0, 1)"
+    );
+
+    // ensure that literal structs in the target extension type print the struct
+    // body
+    let st = m.struct_type(st.fields()).expect("a valid body");
+
+    let target_extension_type = m
+        .target_ext_type("structTET", [st], [0, 1])
+        .expect("no rule names `structTET`")
+        .as_type();
+
+    assert_eq!(
+        target_extension_type.to_string(),
+        "target(\"structTET\", { i32, float }, 0, 1)"
+    );
+}
+
+/// Each arm of `StructType::setName` (`lib/IR/Type.cpp`) past the two its
+/// upstream test reaches: the same name changes nothing; a name in use takes a
+/// `.N` suffix from one counter that only ever rises; the old name is free
+/// again; and a struct whose name is removed prints by number. A literal struct
+/// has no name to set: upstream's header says not to call it on one, and
+/// llvmkit refuses. llvmkit-specific (rule anchor): the upstream test renames
+/// one struct, with no collision.
+#[test]
+fn renaming_a_struct_follows_set_name() {
+    let m = Module::dynamic("TypesTest");
+    let foo = m.get_or_insert_named_struct("Foo");
+    let bar = m.get_or_insert_named_struct("Bar");
+    let baz = m.get_or_insert_named_struct("Baz");
+
+    m.set_struct_name(foo, "Foo").expect("an identified one");
+    assert_eq!(foo.name(), Some("Foo"));
+
+    m.set_struct_name(bar, "Foo").expect("an identified one");
+    assert_eq!(bar.name(), Some("Foo.0"));
+    m.set_struct_name(baz, "Foo").expect("an identified one");
+    assert_eq!(baz.name(), Some("Foo.1"));
+    assert_eq!(
+        m.named_struct("Foo.0").map(|s| s.as_type()),
+        Some(bar.as_type())
+    );
+
+    assert!(m.named_struct("Bar").is_none());
+    let new_bar = m.get_or_insert_named_struct("Bar");
+    assert_ne!(new_bar.as_type(), bar.as_type());
+
+    m.set_struct_name(foo, "").expect("an identified one");
+    assert!(m.named_struct("Foo").is_none());
+    assert_eq!(foo.as_type().to_string(), "%0");
+    assert!(m.to_string().contains("%0 = type opaque\n"), "{m}");
+    assert!(m.to_string().contains("%Foo.0 = type opaque\n"), "{m}");
+
+    let literal = m.struct_type([m.i32_type()]).expect("a valid body");
+    assert_eq!(
+        m.set_struct_name(literal, "Named"),
+        Err(IrError::LiteralStructNameNotSettable)
+    );
+    assert!(m.named_struct("Named").is_none());
+}
+
+/// Each arm of `StructType::isLayoutIdentical` (`lib/IR/Type.cpp`): the same
+/// struct, a packed flag that differs, elements that differ, and two different
+/// structs of one layout. llvmkit-specific (rule anchor): the upstream test
+/// reaches only the last, with two empty ones.
+#[test]
+fn layout_identity_follows_is_layout_identical() {
+    let m = Module::dynamic("TypesTest");
+    let i32_ty = m.i32_type().as_type();
+    let f32_ty = m.f32_type().as_type();
+
+    let literal = m.struct_type([i32_ty, f32_ty]).expect("a valid body");
+    let packed = m
+        .packed_struct_type([i32_ty, f32_ty])
+        .expect("a valid body");
+    let other = m.struct_type([f32_ty, i32_ty]).expect("a valid body");
+    let named = m.get_or_insert_named_struct("Named");
+    m.set_struct_body_dyn(named, [i32_ty, f32_ty], false)
+        .expect("a valid body");
+
+    assert!(literal.is_layout_identical(literal));
+    assert!(!literal.is_layout_identical(packed));
+    assert!(!literal.is_layout_identical(other));
+    assert!(literal.is_layout_identical(named));
+}
+
 /// Port of `unittests/IR/TypesTest.cpp::TEST(TypedPointerType, PrintTest)`.
 #[test]
 fn upstream_typed_pointer_prints() {

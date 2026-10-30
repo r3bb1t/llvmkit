@@ -3,12 +3,11 @@
 //!
 //! ## Upstream provenance
 //!
-//! Tests in this file mirror coverage spread across
-//! `unittests/IR/TypesTest.cpp` (`StructType`, `LayoutIdenticalEmptyStructs`)
-//! and `unittests/IR/VectorTypesTest.cpp` (`FixedLength`, `Scalable`).
-//! Per-test citations below. Tests that exercise llvmkit's typestate
-//! narrowing / `IrError` surface have no dedicated upstream `TEST` and
-//! are tagged `llvmkit-specific:` with the closest functional reference.
+//! Every test here is llvmkit's own, tagged `llvmkit-specific:` with the
+//! closest upstream reference. The upstream tests they resemble are ported
+//! whole elsewhere: `tests/vector_types.rs` holds all of
+//! `unittests/IR/VectorTypesTest.cpp`, and `tests/type_components.rs` holds all
+//! of `unittests/IR/TypesTest.cpp`.
 
 use llvmkit_ir::{
     AggregateType, AnyTypeEnum, ArrayType, BasicTypeEnum, DynBrand, IntDyn, IntType, IrError,
@@ -72,9 +71,9 @@ fn integer_width_validation() {
     assert!(m.custom_width_int_type(MAX_INT_BITS).is_ok());
 }
 
-/// Port of `unittests/IR/VectorTypesTest.cpp::TEST(VectorTypesTest, FixedLength)`
-/// and `TEST(VectorTypesTest, Scalable)` for vector identity, plus the array
-/// uniquing pattern from `unittests/IR/TypesTest.cpp`.
+/// llvmkit-specific: interning identity for one array and one vector of each
+/// kind, a sliver of what `TEST(VectorTypesTest, FixedLength)` and
+/// `TEST(VectorTypesTest, Scalable)` check; `tests/vector_types.rs` ports both.
 #[test]
 fn array_and_vector_intern() {
     let m = module_new!("t").expect("fresh module");
@@ -124,8 +123,9 @@ fn function_type_round_trip() {
     assert!(ft_va.is_var_arg());
 }
 
-/// Port of `unittests/IR/TypesTest.cpp::TEST(TypesTest, LayoutIdenticalEmptyStructs)`
-/// applied to literal (anonymous) struct interning + packed-bit distinction.
+/// llvmkit-specific: literal struct interning and the packed bit, which
+/// `StructType::get` uniques on. `TEST(TypesTest, LayoutIdenticalEmptyStructs)`
+/// asks something else; `tests/type_components.rs` ports it.
 #[test]
 fn literal_struct_intern() {
     let m = module_new!("t").expect("fresh module");
@@ -149,10 +149,10 @@ fn literal_struct_intern() {
     assert!(s_packed.is_packed());
 }
 
-/// Port of `unittests/IR/TypesTest.cpp::TEST(TypesTest, StructType)` —
-/// `StructType::create` forward declaration, lookup identity, and
-/// `setBody` lifecycle (llvmkit reports a second `setBody` as
-/// `IrError::StructBodyAlreadySet`).
+/// llvmkit-specific: forward declaration, lookup identity and the `setBody`
+/// lifecycle (llvmkit reports a second `setBody` as
+/// `IrError::StructBodyAlreadySet`). `TEST(TypesTest, StructType)` is about
+/// `setName`; `tests/type_components.rs` ports it.
 #[test]
 fn named_struct_forward_decl_then_set_body() {
     let m = module_new!("t").expect("fresh module");

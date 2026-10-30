@@ -189,10 +189,10 @@ fn a_bare_void_is_refused_by_the_standalone_type_parser() {
 }
 
 /// The module every grid test parses first: it declares the grid's one named
-/// type. Mirrors `unittests/AsmParser/AsmParserTest.cpp`'s
-/// `TEST(AsmParserTest, TypeWithSlotMappingParsing)`, which parses a module
-/// with `parseAssemblyString(Source, Error, Ctx, &Mapping)` and then resolves
-/// `%st` in a standalone type through `parseType(…, &Mapping)`.
+/// type. llvmkit-specific; it borrows the shape of
+/// `TEST(AsmParserTest, TypeWithSlotMappingParsing)`, a module parsed first and
+/// a standalone type resolved through its mapping, which
+/// `tests/parser_type_slot_mapping.rs` ports whole.
 const GRID_SOURCE: &[u8] = b"%opaque = type opaque\n";
 
 /// Parses [`GRID_SOURCE`] into `m` and returns the `SlotMapping` every grid

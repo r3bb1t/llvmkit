@@ -105,7 +105,7 @@ use super::named_md_node::{
 };
 use super::pass_context::{FunctionView, ModuleFunctionViews};
 use super::struct_body_state::StructBodyDyn;
-use super::struct_body_state::{BodySet, Opaque};
+use super::struct_body_state::{BodySet, Opaque, StructBodyState};
 use super::struct_schema::{FieldList, Minting, StructOf, StructSchema};
 use super::r#type::{
     IrType, MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeData, TypeSlot, TypeSlotAccess,
@@ -1088,22 +1088,6 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
         ))
     }
 
-    /// Get or create the identified struct type `%name`, body unset.
-    pub(super) fn get_or_insert_named_struct(
-        self,
-        name: &str,
-    ) -> StructType<'ctx, StructBodyDyn, B, C> {
-        let id = self.core.ctx.get_or_create_named_struct(name).slot();
-        StructType::new(id, self)
-    }
-
-    /// A fresh identified struct with no name. Mirrors
-    /// `StructType::create(Context)` called without a name.
-    pub(super) fn anonymous_identified_struct(self) -> StructType<'ctx, StructBodyDyn, B, C> {
-        let id = self.core.ctx.create_anonymous_identified_struct();
-        StructType::new(id, self)
-    }
-
     /// An existing identified struct type by name, or `None`.
     pub(super) fn named_struct(self, name: &str) -> Option<StructType<'ctx, StructBodyDyn, B, C>> {
         self.core
@@ -1113,11 +1097,28 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
     }
 }
 
-// Minting creates `%S` or sets an opaque one's body, and each changes what the
-// module prints, so it takes the `Mutable` reference only an unverified module
-// or a builder holds (D8). Type interning above stays open to any capability:
-// a structural type that nothing uses prints nowhere.
+// Creating an identified struct or setting an opaque one's body changes what
+// the module prints, because it prints every identified struct, so each takes
+// the `Mutable` reference only an unverified module or a builder holds (D8).
+// Type interning above stays open to any capability: a structural type that
+// nothing uses prints nowhere.
 impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
+    /// Get or create the identified struct type `%name`, body unset.
+    pub(super) fn get_or_insert_named_struct(
+        self,
+        name: &str,
+    ) -> StructType<'ctx, StructBodyDyn, B> {
+        let id = self.core.ctx.get_or_create_named_struct(name).slot();
+        StructType::new(id, self)
+    }
+
+    /// A fresh identified struct with no name. Mirrors
+    /// `StructType::create(Context)` called without a name.
+    pub(super) fn anonymous_identified_struct(self) -> StructType<'ctx, StructBodyDyn, B> {
+        let id = self.core.ctx.create_anonymous_identified_struct();
+        StructType::new(id, self)
+    }
+
     /// Idempotently intern schema `S`'s named struct type; see
     /// [`Module::get_or_insert_struct_of`].
     pub(super) fn get_or_insert_struct_of<S>(self) -> IrResult<StructOf<'ctx, S, B>>
@@ -2157,29 +2158,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
             core::iter::empty::<Type<'ctx, B>>(),
             true,
         )
-    }
-
-    /// Get or create the identified struct type `%name`, leaving its body
-    /// unset. Pure type interning, so it belongs to the same
-    /// preservation-neutral family as the primitive constructors above.
-    #[inline]
-    pub fn get_or_insert_named_struct(
-        self,
-        name: &str,
-    ) -> StructType<'ctx, StructBodyDyn, B, ReadOnly> {
-        self.read_only_ref().get_or_insert_named_struct(name)
-    }
-
-    /// A fresh identified struct with no name — `%0 = type { i32 }`.
-    /// Mirrors `StructType::create(Context)` called without a name.
-    ///
-    /// Never uniqued: two calls give two distinct types even at the same
-    /// body, which is what makes `%0` and `%1` different types when both are
-    /// written `type { i32 }`. Body-setting goes through the same
-    /// `set_struct_body` path as a named one.
-    #[inline]
-    pub fn anonymous_identified_struct(self) -> StructType<'ctx, StructBodyDyn, B, ReadOnly> {
-        self.read_only_ref().anonymous_identified_struct()
     }
 
     /// Look up an existing identified struct type by name, or `None`.
@@ -4887,15 +4865,26 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.capability_ref().literal_struct_type(elements, true)
     }
 
-    /// Get or create the identified struct type `%name`, body unset.
-    /// Delegates to [`ModuleView::get_or_insert_named_struct`].
     /// A fresh identified struct with no name — `%0 = type { i32 }`.
     /// Mirrors `StructType::create(Context)` called without a name.
+    ///
+    /// Never uniqued: two calls give two distinct types even at the same
+    /// body, which is what makes `%0` and `%1` different types when both are
+    /// written `type { i32 }`. Body-setting goes through the same
+    /// `set_struct_body` path as a named one.
+    ///
+    /// Only an unverified module creates one: the module prints every
+    /// identified struct, so creating one changes its text (D8).
     #[inline]
     pub fn anonymous_identified_struct(&'ctx self) -> StructType<'ctx, StructBodyDyn, B> {
         self.capability_ref().anonymous_identified_struct()
     }
 
+    /// Get or create the identified struct type `%name`, leaving its body
+    /// unset.
+    ///
+    /// Only an unverified module creates one: the module prints every
+    /// identified struct, so creating one changes its text (D8).
     pub fn get_or_insert_named_struct(
         &'ctx self,
         name: &str,
@@ -4992,6 +4981,44 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
             return Err(IrError::LiteralStructBodyNotSettable);
         }
         self.core().ctx.set_named_struct_body(st_id, body)
+    }
+
+    /// Rename an identified struct, or remove its name with an empty `name`.
+    /// Mirrors `StructType::setName`: a name already in use takes the first
+    /// free `.N` suffix, as `%Foo.0`, and a struct with no name prints by
+    /// number. A name read earlier through [`StructType::name`] stays valid.
+    ///
+    /// # Errors
+    ///
+    /// A struct from another module is [`IrError::ForeignType`]; a literal
+    /// struct is [`IrError::LiteralStructNameNotSettable`].
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// let foo = m.get_or_insert_named_struct("Foo");
+    /// let bar = m.get_or_insert_named_struct("Bar");
+    /// m.set_struct_name(bar, "Foo")?;
+    /// assert_eq!(foo.name(), Some("Foo"));
+    /// assert_eq!(bar.name(), Some("Foo.0"));
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
+    pub fn set_struct_name<Body>(
+        &'ctx self,
+        st: StructType<'ctx, Body, B, impl Capability>,
+        name: &str,
+    ) -> IrResult<()>
+    where
+        Body: StructBodyState,
+    {
+        // Boundary: the caller's struct, admitted against this module before
+        // it is read or renamed.
+        let id = st.slot_in(self.id())?;
+        if st.is_literal() {
+            return Err(IrError::LiteralStructNameNotSettable);
+        }
+        self.core().ctx.set_struct_name(id, name);
+        Ok(())
     }
 
     /// Set an opaque identified struct's body, upgrading the handle to

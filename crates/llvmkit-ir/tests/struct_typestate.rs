@@ -9,11 +9,9 @@
 
 use llvmkit_ir::{IrError, VectorType, lanes, module_new};
 
-/// Port of `unittests/IR/TypesTest.cpp::TEST(TypesTest, StructType)`
-/// (the name-management sub-tests). Upstream's `setName` API is not
-/// shipped; the assertion translates to "the named struct retains the
-/// name it was created with". The structural shape (create + observe
-/// name) matches the upstream invariant.
+/// llvmkit-specific: the typestate door, `opaque_struct`, keeps the name it was
+/// given. `TEST(TypesTest, StructType)` is about `setName`;
+/// `tests/type_components.rs` ports it.
 #[test]
 fn named_struct_retains_name() -> Result<(), IrError> {
     let m = module_new!("t")?;
