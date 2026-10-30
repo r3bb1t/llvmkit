@@ -134,6 +134,14 @@ struct TypeEntry<'ctx, B: ModuleBrand> {
     forward_ref_loc: Option<Span>,
 }
 
+/// Which of upstream's two tables a `type` directive's entry is in.
+enum TypeEntryKey {
+    /// `NamedTypes[Name]`.
+    Named(String),
+    /// `NumberedTypes[TypeID]`.
+    Numbered(u32),
+}
+
 struct MetadataSlotEntry<B: ModuleBrand> {
     id: MetadataId<B>,
     defined: bool,
@@ -293,9 +301,6 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
     named_types: HashMap<String, TypeEntry<'ctx, B>>,
     /// Numbered struct-type table (`%0 = type {...}`).
     numbered_types: HashMap<u32, TypeEntry<'ctx, B>>,
-    /// Slot id of the next anonymous numbered type, mirroring upstream's
-    /// `LLParser::NumberedTypes`'s `getNext()` discipline.
-    next_unnamed_type_id: u32,
 
     /// Numbered global / function table. Exposed via [`Parser::take_slot_mapping`].
     numbered_globals: NumberedValues<GlobalRef<'ctx, B>>,
@@ -1180,7 +1185,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             module,
             named_types: HashMap::new(),
             numbered_types: HashMap::new(),
-            next_unnamed_type_id: 0,
             numbered_globals: NumberedValues::new(),
             numbered_attr_groups: NumberedValues::new(),
             deferred_block_addresses: Vec::new(),
@@ -1269,11 +1273,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 )
             })
             .collect();
-        parser.next_unnamed_type_id = slots
-            .numbered_types
-            .keys()
-            .next_back()
-            .map_or(0, |id| id.saturating_add(1));
         parser.metadata_slots = slots
             .metadata_nodes
             .iter()
@@ -6963,7 +6962,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // between them, and it is `parseNamedType` that says `after name`.
         self.expect_punct(PunctKind::Equal, "'=' after name")?;
         self.expect_keyword(Keyword::Type, "'type' after name")?;
-        self.parse_struct_definition(Some(name), None, name_loc)
+        let key = TypeEntryKey::Named(name);
+        let result = self.parse_struct_definition(name_loc, &key)?;
+        self.record_non_struct_type(name_loc, &key, result)
     }
 
     /// `%N = type ...` — mirrors `LLParser::parseUnnamedType`.
@@ -6978,163 +6979,201 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // the keyword, where `parseNamedType` says `after name` for both.
         self.expect_punct(PunctKind::Equal, "'=' after name")?;
         self.expect_keyword(Keyword::Type, "'type' after '='")?;
-        self.parse_struct_definition(None, Some(id), loc)
+        let key = TypeEntryKey::Numbered(id);
+        let result = self.parse_struct_definition(loc, &key)?;
+        self.record_non_struct_type(loc, &key, result)
     }
 
-    /// Common path between `parseNamedType` and `parseUnnamedType`. The
-    /// directive's RHS is restricted to a struct type (or `opaque`) per
-    /// upstream `parseStructDefinition`; non-struct RHS is a typed error.
+    /// The tail `LLParser::parseNamedType` and `parseUnnamedType` share: a
+    /// struct is in its entry already, or it is an alias to a struct, for which
+    /// upstream records nothing. A non-struct result that found its entry filled
+    /// was named by its own right-hand side.
+    fn record_non_struct_type(
+        &mut self,
+        loc: Span,
+        key: &TypeEntryKey,
+        result: Type<'ctx, B>,
+    ) -> ParseResult<()> {
+        if !result.is_struct() {
+            if self.type_entry(key).is_some() {
+                return Err(self.message_at(loc, "non-struct types may not be recursive"));
+            }
+            self.set_type_entry(
+                key,
+                TypeEntry {
+                    ty: result,
+                    forward_ref_loc: None,
+                },
+            );
+        }
+        Ok(())
+    }
+
     /// `%name = type ...` / `%N = type ...`. Mirrors
-    /// `LLParser::parseStructDefinition`.
+    /// `LLParser::parseStructDefinition`, statement by statement; the `Type`
+    /// returned is its `ResultTy`.
     ///
-    /// The table entry's `forward_ref_loc` is the whole state machine:
+    /// A key missing from its table is upstream's entry whose `first` is null.
+    /// The table entry's `forward_ref_loc` is the rest of the state machine:
     /// present means "referenced, not yet defined", absent means "defined".
     /// Upstream spells the same thing as the validity of the `LocTy` half of
     /// its `std::pair<Type *, LocTy>`.
     fn parse_struct_definition(
         &mut self,
-        name: Option<String>,
-        slot: Option<u32>,
-        decl_loc: Span,
-    ) -> ParseResult<()> {
-        let existing = match (&name, slot) {
-            (Some(n), None) => self.named_types.get(n.as_str()).copied(),
-            (None, Some(id)) => self.numbered_types.get(&id).copied(),
-            _ => unreachable!("parse_struct_definition called without a name xor slot"),
-        };
-        // Already defined once — `Entry.first && !Entry.second.isValid()`.
-        if let Some(entry) = existing
+        type_loc: Span,
+        key: &TypeEntryKey,
+    ) -> ParseResult<Type<'ctx, B>> {
+        let entry = self.type_entry(key);
+        // If the type was already defined, diagnose the redefinition.
+        if let Some(entry) = entry
             && entry.forward_ref_loc.is_none()
         {
-            return Err(self.message_at(decl_loc, "redefinition of type"));
+            return Err(self.message_at(type_loc, "redefinition of type"));
         }
 
-        // `%t = type opaque` counts as a definition even though it leaves the
-        // body unset, which is why a later `%t = type {i32}` is a redefinition.
+        // If we have opaque, just return without filling in the definition for
+        // the struct. This counts as a definition as far as the .ll file goes.
         if matches!(self.peek(), Token::Kw(Keyword::Opaque)) {
             self.bump()?;
-            let ty = match existing {
-                Some(entry) => entry.ty,
-                None => self.fresh_identified_struct(&name),
-            };
-            self.record_type_definition(name, slot, ty);
-            return Ok(());
+            return Ok(self.define_struct_entry(key, entry));
         }
 
-        // `<` here is either a packed struct body or a vector type alias.
+        // If the type starts with '<', then it is either a packed struct or a
+        // vector.
         let is_packed = self.eat_punct(PunctKind::Less)?;
+
+        // If we don't have a struct, then we have a random type alias, which
+        // we accept for compatibility with old files. These types are not
+        // allowed to be forward referenced and not allowed to be recursive.
         if !matches!(self.peek(), Token::LBrace) {
-            // A random type alias, accepted for compatibility with old files.
-            // These may not be forward referenced, because there is no
-            // identified struct to fill in later.
-            if existing.is_some() {
-                return Err(self.message_at(decl_loc, "forward references to non-struct type"));
+            if entry.is_some() {
+                return Err(self.message_at(type_loc, "forward references to non-struct type"));
             }
-            let aliased = if is_packed {
-                self.parse_array_or_vector_after_open(true)?
-            } else {
-                self.parse_type(false)?
-            };
-            self.record_type_definition(name, slot, aliased);
-            return Ok(());
+            if is_packed {
+                return self.parse_array_or_vector_after_open(true);
+            }
+            return self.parse_type(false);
         }
 
-        // `<` was already eaten above when present, so the two shapes take
-        // different helpers: the brace-only one when we are inside `<{...}>`,
-        // and the general one — which handles its own `<` — otherwise.
-        let (elements, packed) = if is_packed {
-            let (elements, _) = self.parse_struct_body_braces()?;
+        // The entry is made before the body is parsed, so a body that names
+        // this definition meets this struct.
+        let ty = self.define_struct_entry(key, entry);
+        let struct_ty: StructType<'ctx, llvmkit_ir::StructBodyDyn, B> = StructType::try_from(ty)
+            .unwrap_or_else(|_| {
+                unreachable!(
+                    "`cast<StructType>(Entry.first)`: an undefined entry is a forward \
+                     reference, which `parseType` creates as a struct"
+                )
+            });
+
+        let body = self.parse_struct_body()?;
+        if is_packed {
             self.expect_punct(PunctKind::Greater, "'>' in packed struct")?;
-            (elements, true)
-        } else {
-            self.parse_struct_body()?
-        };
+        }
 
-        let ty = match existing {
-            Some(entry) => entry.ty,
-            None => self.fresh_identified_struct(&name),
-        };
-        let handle: StructType<'ctx, llvmkit_ir::StructBodyDyn, B> = StructType::try_from(ty)
-            .map_err(|_| ParseError::Message {
-                message: "redefinition of type".into(),
-                loc: decl_loc,
-            })?;
+        // `setBodyOrError`'s message goes straight to `tokError`.
         self.module
-            .set_struct_body_dyn(handle, elements, packed)
-            .map_err(|e| match e {
-                // `parseStructDefinition` hands `setBodyOrError`'s message
-                // straight to `tokError`, so it is printed verbatim.
-                IrError::RecursiveStructBody { .. } => ParseError::Message {
-                    message: e.to_string().into(),
-                    loc: decl_loc,
-                },
-                other => ParseError::Expected {
-                    expected: format!("valid struct body: {other}").into(),
-                    loc: decl_loc,
-                },
-            })?;
-        self.record_type_definition(name, slot, ty);
-        Ok(())
+            .set_struct_body_dyn(struct_ty, body, is_packed)
+            .map_err(|e| self.message(e.to_string()))?;
+        Ok(ty)
     }
 
-    /// The identified struct a `type` directive defines when the name has not
-    /// been uttered before — named or anonymous, matching upstream's two
-    /// `StructType::create` overloads.
-    fn fresh_identified_struct(&self, name: &Option<String>) -> Type<'ctx, B> {
-        match name {
-            Some(n) => self.module.get_or_insert_named_struct(n).as_type(),
-            None => self.module.anonymous_identified_struct().as_type(),
-        }
-    }
-
-    /// Record a completed `type` definition, clearing the forward-reference
-    /// location so a second definition is caught as a redefinition.
-    fn record_type_definition(
+    /// The two statements `parseStructDefinition` opens each struct arm with:
+    /// clear the location to say this type is being defined, and if this name
+    /// or number has never been uttered, create it.
+    fn define_struct_entry(
         &mut self,
-        name: Option<String>,
-        slot: Option<u32>,
-        ty: Type<'ctx, B>,
-    ) {
-        let entry = TypeEntry {
-            ty,
-            forward_ref_loc: None,
+        key: &TypeEntryKey,
+        entry: Option<TypeEntry<'ctx, B>>,
+    ) -> Type<'ctx, B> {
+        let ty = match (entry, key) {
+            (Some(entry), _) => entry.ty,
+            (None, TypeEntryKey::Named(name)) => self.create_identified_struct(Some(name)),
+            (None, TypeEntryKey::Numbered(_)) => self.create_identified_struct(None),
         };
-        match (name, slot) {
-            (Some(n), _) => {
-                self.named_types.insert(n, entry);
-            }
-            (None, Some(id)) => {
-                self.numbered_types.insert(id, entry);
-                self.next_unnamed_type_id = self.next_unnamed_type_id.max(id.saturating_add(1));
-            }
-            (None, None) => unreachable!("a type definition is either named or numbered"),
+        self.set_type_entry(
+            key,
+            TypeEntry {
+                ty,
+                forward_ref_loc: None,
+            },
+        );
+        ty
+    }
+
+    /// Mirrors `StructType::create(Context, Name)`: always a new struct, and
+    /// `setName` keeps its name unique, so a name the module already uses takes
+    /// a `.N` suffix rather than meeting the struct that holds it.
+    fn create_identified_struct(&self, name: Option<&str>) -> Type<'ctx, B> {
+        let st = self.module.anonymous_identified_struct();
+        if let Some(name) = name {
+            self.module.set_struct_name(st, name).unwrap_or_else(|_| {
+                unreachable!(
+                    "a struct created on the line above is this module's, identified, \
+                     and held by no schema"
+                )
+            });
+        }
+        st.as_type()
+    }
+
+    /// The entry at `key`: `NamedTypes[Name]` or `NumberedTypes[TypeID]`.
+    fn type_entry(&self, key: &TypeEntryKey) -> Option<TypeEntry<'ctx, B>> {
+        match key {
+            TypeEntryKey::Named(name) => self.named_types.get(name).copied(),
+            TypeEntryKey::Numbered(id) => self.numbered_types.get(id).copied(),
         }
     }
 
-    /// Parse a struct body: `{ T, T, ... }` or `<{ T, T, ... }>` (packed).
-    fn parse_struct_body(&mut self) -> ParseResult<(Vec<Type<'ctx, B>>, bool)> {
-        let packed;
-        if self.eat_punct(PunctKind::Less)? {
-            packed = true;
-            self.expect_punct(PunctKind::LBrace, "'{' after '<' in packed struct")?;
-        } else {
-            packed = false;
-            self.expect_punct(PunctKind::LBrace, "'{' to start struct body")?;
-        }
-        let mut elems = Vec::new();
-        if !matches!(self.peek(), Token::RBrace) {
-            loop {
-                elems.push(self.parse_struct_element()?);
-                if !self.eat_punct(PunctKind::Comma)? {
-                    break;
-                }
+    /// Write the entry at `key`.
+    fn set_type_entry(&mut self, key: &TypeEntryKey, entry: TypeEntry<'ctx, B>) {
+        match key {
+            TypeEntryKey::Named(name) => {
+                self.named_types.insert(name.clone(), entry);
+            }
+            TypeEntryKey::Numbered(id) => {
+                self.numbered_types.insert(*id, entry);
             }
         }
-        self.expect_punct(PunctKind::RBrace, "'}' to close struct body")?;
-        if packed {
-            self.expect_punct(PunctKind::Greater, "'>' to close packed struct")?;
+    }
+
+    /// Mirrors `LLParser::parseStructBody`. Each caller stands on the `{`, as
+    /// upstream's `assert` says. The `<` of a packed struct and the `>` after it
+    /// belong to the caller: the two callers word that `>` differently.
+    fn parse_struct_body(&mut self) -> ParseResult<Vec<Type<'ctx, B>>> {
+        self.bump()?; // Consume the '{'
+
+        let mut body = Vec::new();
+        // Handle the empty struct.
+        if self.eat_punct(PunctKind::RBrace)? {
+            return Ok(body);
         }
-        Ok((elems, packed))
+
+        body.push(self.parse_struct_element()?);
+        while self.eat_punct(PunctKind::Comma)? {
+            body.push(self.parse_struct_element()?);
+        }
+
+        self.expect_punct(PunctKind::RBrace, "'}' at end of struct")?;
+        Ok(body)
+    }
+
+    /// Mirrors `LLParser::parseAnonStructType`: `StructType::get` of the body,
+    /// which `parse_struct_element` has checked element by element, so the
+    /// constructor's own refusal is a backstop only.
+    fn parse_anon_struct_type(
+        &mut self,
+        type_loc: Span,
+        packed: bool,
+    ) -> ParseResult<Type<'ctx, B>> {
+        let elements = self.parse_struct_body()?;
+        if packed {
+            self.module.packed_struct_type(elements)
+        } else {
+            self.module.struct_type(elements)
+        }
+        .map(|st| st.as_type())
+        .map_err(|e| self.builder_err_at(type_loc, "struct type", e))
     }
 
     // ── Type grammar (`LLParser::parseType`) ─────────────────────────────
@@ -7173,33 +7212,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         ty
                     }
                 }
-                Token::LBrace => {
-                    // `parse_struct_element` refused an invalid element at
-                    // its own location, as `LLParser::parseStructBody` does,
-                    // so the constructor's own refusal is a backstop only:
-                    // `LLParser::parseAnonStructType` calls `StructType::get`
-                    // with nothing after it that can fail.
-                    let (elems, packed) = self.parse_struct_body()?;
-                    if packed {
-                        self.module.packed_struct_type(elems)
-                    } else {
-                        self.module.struct_type(elems)
-                    }
-                    .map_err(|e| self.builder_err_at(type_loc, "struct type", e))?
-                    .as_type()
-                }
+                Token::LBrace => self.parse_anon_struct_type(type_loc, false)?,
                 Token::Less => {
                     // `<` introduces vector or `<{ packed-struct }>`.
                     self.bump()?; // eat `<`
                     if matches!(self.peek(), Token::LBrace) {
-                        let (elems, _was_packed_redundant) = self.parse_struct_body_braces()?;
+                        let packed = self.parse_anon_struct_type(type_loc, true)?;
                         self.expect_punct(PunctKind::Greater, "'>' at end of packed struct")?;
-                        // As in the `{` arm: the elements were checked where
-                        // they were parsed.
-                        self.module
-                            .packed_struct_type(elems)
-                            .map_err(|e| self.builder_err_at(type_loc, "struct type", e))?
-                            .as_type()
+                        packed
                     } else {
                         self.parse_array_or_vector_after_open(true)?
                     }
@@ -7397,23 +7417,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    fn parse_struct_body_braces(&mut self) -> ParseResult<(Vec<Type<'ctx, B>>, bool)> {
-        // Used after `<` is already eaten; the inner `{...}` then `>`. We
-        // re-use `parse_struct_body`'s logic without re-eating the `<`.
-        self.expect_punct(PunctKind::LBrace, "'{' after '<' in packed struct")?;
-        let mut elems = Vec::new();
-        if !matches!(self.peek(), Token::RBrace) {
-            loop {
-                elems.push(self.parse_struct_element()?);
-                if !self.eat_punct(PunctKind::Comma)? {
-                    break;
-                }
-            }
-        }
-        self.expect_punct(PunctKind::RBrace, "'}' in packed struct body")?;
-        Ok((elems, true))
-    }
-
     /// One struct element, checked where `LLParser::parseStructBody` checks
     /// it — per element, against the element's own location.
     fn parse_struct_element(&mut self) -> ParseResult<Type<'ctx, B>> {
@@ -7609,15 +7612,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if let Some(entry) = self.named_types.get(name) {
             return entry.ty;
         }
-        let st = self.module.get_or_insert_named_struct(name);
+        let ty = self.create_identified_struct(Some(name));
         self.named_types.insert(
             name.to_owned(),
             TypeEntry {
-                ty: st.as_type(),
+                ty,
                 forward_ref_loc: Some(loc),
             },
         );
-        st.as_type()
+        ty
     }
 
     /// The `lltok::LocalVarID` twin of [`Self::lookup_or_forward_named_type`],
@@ -7631,15 +7634,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if let Some(entry) = self.numbered_types.get(&id) {
             return entry.ty;
         }
-        let st = self.module.anonymous_identified_struct();
+        let ty = self.create_identified_struct(None);
         self.numbered_types.insert(
             id,
             TypeEntry {
-                ty: st.as_type(),
+                ty,
                 forward_ref_loc: Some(loc),
             },
         );
-        st.as_type()
+        ty
     }
 
     // ── Globals ──────────────────────────────────────────────────────────
@@ -8393,7 +8396,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
                 let Some(lanes) = NonZeroU32::new(u32::try_from(values.len()).unwrap_or(u32::MAX))
                 else {
-                    return Err(self.message("constant vector must not be empty"));
+                    return Err(self.message_at(loc, "constant vector must not be empty"));
                 };
                 let element_ty = values[0].ty();
                 if !element_ty.is_integer()
