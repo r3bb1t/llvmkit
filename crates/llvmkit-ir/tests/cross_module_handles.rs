@@ -530,10 +530,7 @@ fn a_struct_schema_operand_rejects_a_value_from_another_module() {
     // Take the token before the snapshot: interning a type is not the
     // mutation under test — upstream's `StructType`s live in the
     // `LLVMContext`, not the module.
-    let nest = home
-        .as_view()
-        .get_or_insert_struct_of::<Nest>()
-        .expect("%Nest");
+    let nest = home.get_or_insert_struct_of::<Nest>().expect("%Nest");
 
     let before = format!("{home}");
     let field = b.extract_field::<Pair, i32, _, _>(foreign_pair, 0, "first");

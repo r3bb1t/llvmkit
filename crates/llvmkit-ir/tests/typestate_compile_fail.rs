@@ -275,6 +275,7 @@ fn typestate_compile_fail() {
     // reported everything preserved. The token is now required, matching the
     // metadata setters on `FunctionValue`/`GlobalVariable` and `set_name`.
     t.compile_fail("tests/compile_fail/verified_module_metadata_is_immutable.rs");
+    t.compile_fail("tests/compile_fail/verified_module_cannot_mint_a_schema_struct.rs");
     // Capability typestate (D1, D8): a verified module's value is `ReadOnly`,
     // and a `ReadOnly` handle has no setter — even beside a second module's
     // mutation token of the same brand, which the run-time id check alone

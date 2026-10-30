@@ -1360,9 +1360,22 @@ fn print_escaped_string<W: fmt::Write>(f: &mut W, bytes: &[u8]) -> fmt::Result {
     Ok(())
 }
 
-fn fmt_llvm_name(f: &mut fmt::Formatter<'_>, prefix: &str, name: &str) -> fmt::Result {
+pub(crate) fn fmt_llvm_name(f: &mut fmt::Formatter<'_>, prefix: &str, name: &str) -> fmt::Result {
     f.write_str(prefix)?;
     fmt_llvm_name_without_prefix(f, name)
+}
+
+/// `%name` as `TypePrinting::print` spells an identified struct.
+pub(crate) fn struct_name_spelling(name: &str) -> String {
+    struct StructName<'a>(&'a str);
+
+    impl fmt::Display for StructName<'_> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            fmt_llvm_name(f, "%", self.0)
+        }
+    }
+
+    StructName(name).to_string()
 }
 
 /// `printLLVMName(Out, Name, NoPrefix)` (`lib/IR/AsmWriter.cpp`).

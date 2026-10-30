@@ -589,6 +589,17 @@ impl<'ctx, B: ModuleBrand, C: Capability> ModuleRef<'ctx, B, C> {
         }
     }
 
+    /// This module's read-only view, the public surface of a reference: what
+    /// a hand-written [`FunctionParam`](crate::FunctionParam) names its type
+    /// through.
+    #[inline]
+    pub fn as_view(self) -> ModuleView<'ctx, B> {
+        ModuleView {
+            core: self.core,
+            _brand: PhantomData,
+        }
+    }
+
     /// Crate-internal: the one door from any capability to [`Mutable`]. Sound
     /// only where the caller holds mutation authority over this very module —
     /// a real `&Module<B, Unverified>` it has compared with [`Self::id`], or a
@@ -1096,17 +1107,23 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
             .named_struct(name)
             .map(|id| StructType::new(id, self))
     }
+}
 
+// Minting creates `%S` or sets an opaque one's body, and each changes what the
+// module prints, so it takes the `Mutable` reference only an unverified module
+// or a builder holds (D8). Type interning above stays open to any capability:
+// a structural type that nothing uses prints nowhere.
+impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
     /// Idempotently intern schema `S`'s named struct type; see
-    /// [`ModuleView::get_or_insert_struct_of`].
-    pub(super) fn get_or_insert_struct_of<S>(self) -> IrResult<StructOf<'ctx, S, B, C>>
+    /// [`Module::get_or_insert_struct_of`].
+    pub(super) fn get_or_insert_struct_of<S>(self) -> IrResult<StructOf<'ctx, S, B>>
     where
         S: StructSchema,
     {
         let id = self.mint_struct_of::<S>(&mut Minting::new())?;
         // A fresh minting call has no schema in progress, so the minter took
         // its full path, which ends with `%S`'s body set or refused.
-        Ok(StructOf::new_unchecked(StructType::<BodySet, B, C>::new(
+        Ok(StructOf::new_unchecked(StructType::<BodySet, B>::new(
             id, self,
         )))
     }
@@ -2162,35 +2179,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     #[inline]
     pub fn named_struct(self, name: &str) -> Option<StructType<'ctx, StructBodyDyn, B, ReadOnly>> {
         self.read_only_ref().named_struct(name)
-    }
-
-    /// Idempotently intern the named LLVM struct type described by schema `S`,
-    /// filling its body the first time from the field layouts.
-    ///
-    /// This lives on the read-only view for the same reason the primitive
-    /// constructors above do: it is preservation-**neutral**. It interns into
-    /// the context's type table and either fills a body that was empty or
-    /// confirms one that already matches — it never touches a function, block,
-    /// or global, and a mismatch is refused with
-    /// [`IrError::StructBodyMismatch`] rather than rewriting anything. That is
-    /// what lets the typed-signature traits name a schema's type through a
-    /// `ModuleView` instead of a `&Module<Unverified>` token — which in turn
-    /// is what lets [`crate::IrBuilder`] answer schema queries without
-    /// fabricating a module token it does not own.
-    ///
-    /// Mirrors `StructType::setBodyOrError` for the body: a hand-written
-    /// schema that contains itself by value, directly or through others, is
-    /// [`IrError::RecursiveStructBody`] — the minter never recurses into a
-    /// schema it is already minting. An empty `S::NAME` does not compile.
-    ///
-    /// The *typestate* body setters — [`Module::set_struct_body`] and
-    /// [`Module::set_struct_body_dyn`], which drive an `Opaque` struct handle
-    /// to `BodySet` — stay on the token alone.
-    pub fn get_or_insert_struct_of<S>(self) -> IrResult<StructOf<'ctx, S, B, ReadOnly>>
-    where
-        S: StructSchema,
-    {
-        self.read_only_ref().get_or_insert_struct_of::<S>()
     }
 
     /// Target extension type `target("name", type_params..., int_params...)`.
@@ -4932,9 +4920,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.capability_ref().named_struct(name)
     }
 
-    /// Idempotently intern schema `S`'s named struct type. Shares its body
-    /// with [`ModuleView::get_or_insert_struct_of`], which is where the
-    /// schema traits reach it.
+    /// Idempotently intern the named LLVM struct type described by schema `S`,
+    /// filling its body the first time from the field layouts.
+    ///
+    /// Only an unverified module can do this: it creates `%S` or sets the body
+    /// of an opaque one, both of which change what the module prints, so a
+    /// [`ModuleView`] or a verified module has no such method (D8). A body
+    /// that differs is refused with [`IrError::StructBodyMismatch`] rather
+    /// than rewritten.
+    ///
+    /// Mirrors `StructType::setBodyOrError` for the body: a hand-written
+    /// schema that contains itself by value, directly or through others, is
+    /// [`IrError::RecursiveStructBody`] — the minter never recurses into a
+    /// schema it is already minting. An empty `S::NAME` does not compile.
     pub fn get_or_insert_struct_of<S>(&'ctx self) -> IrResult<StructOf<'ctx, S, B>>
     where
         S: StructSchema,
@@ -5149,8 +5147,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Ret: FunctionReturn,
         Params: FunctionParamList,
     {
-        let ret = Ret::ir_type(self.as_view())?;
-        let params = Params::ir_types(self.as_view())?;
+        let ret = Ret::ir_type(self.capability_ref())?;
+        let params = Params::ir_types(self.capability_ref())?;
         self.function_type(ret, params)
     }
 
@@ -5171,8 +5169,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Ret: FunctionReturn,
         Params: FunctionParamList,
     {
-        let ret = Ret::ir_type(self.as_view())?;
-        let params = Params::ir_types(self.as_view())?;
+        let ret = Ret::ir_type(self.capability_ref())?;
+        let params = Params::ir_types(self.capability_ref())?;
         self.variadic_function_type(ret, params)
     }
 

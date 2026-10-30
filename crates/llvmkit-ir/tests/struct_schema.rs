@@ -232,8 +232,8 @@ fn struct_schema_params_are_branded_wrappers() -> Result<(), IrError> {
     let (point,) = m.view(f).params();
     let _: Hand<'_, Point, _> = point;
     assert_eq!(
-        point.as_struct_value().ty().as_type().read_only(),
-        m.as_view().get_or_insert_struct_of::<Point>()?.as_type()
+        point.as_struct_value().ty().as_type(),
+        m.get_or_insert_struct_of::<Point>()?.as_type()
     );
     Ok(())
 }
@@ -248,9 +248,101 @@ fn struct_schema_try_new_wraps_raw_struct() -> Result<(), IrError> {
     let f = m.add_function_dyn("raw_take_point", fn_ty, Linkage::External)?;
     let point = Hand::from_schema_value(SchemaValue::<Point, _>::try_new(m.view(f).param(0)?)?);
     assert_eq!(
-        point.as_struct_value().ty().as_type().read_only(),
-        m.as_view().get_or_insert_struct_of::<Point>()?.as_type()
+        point.as_struct_value().ty().as_type(),
+        m.get_or_insert_struct_of::<Point>()?.as_type()
     );
+    Ok(())
+}
+
+/// Named so `AsmWriter` must quote it.
+struct Quoted;
+
+impl StructSchema for Quoted {
+    type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = Hand<'ctx, Self, B, C>;
+    type Fields = (i32,);
+
+    const NAME: &'static str = "needs quotes";
+}
+
+/// A refused schema check changes nothing: the schema's struct is named in the
+/// error, not created to be named, and an opaque struct of that name keeps no
+/// body. llvmkit-specific regression (D8): spelling the expected type minted
+/// it, so a failed check added a struct the printed module then showed
+/// (`docs/divergences.md`, entry 143), and on a verified module filled an
+/// opaque struct's body through a read-only handle.
+#[test]
+fn a_refused_schema_check_mints_nothing() -> Result<(), IrError> {
+    let m = module_new!("schema")?;
+    let rect_ty = m.get_or_insert_struct_of::<Rect>()?;
+    let fn_ty = m.function_type(m.void_type(), [rect_ty.as_type()])?;
+    let f = m.add_function_dyn("raw_take_rect", fn_ty, Linkage::External)?;
+    let before = format!("{m}");
+
+    let Err(IrError::TypeIdentityMismatch { expected, got }) =
+        SchemaValue::<Quoted, _>::try_new(m.view(f).param(0)?)
+    else {
+        panic!("a Rect is not a Quoted");
+    };
+    assert_eq!(expected.spelling(), "%\"needs quotes\"");
+    assert_eq!(expected.kind(), got.kind());
+    assert!(m.named_struct("needs quotes").is_none());
+    assert_eq!(format!("{m}"), before);
+
+    let void_f = m.function::<()>("raw_take_rect")?.expect("declared above");
+    let refused = m.view(void_f).with_typed_signature::<fn(Quoted)>();
+    assert!(
+        matches!(refused, Err(IrError::TypeIdentityMismatch { .. })),
+        "{refused:?}"
+    );
+    assert!(m.named_struct("needs quotes").is_none());
+    assert_eq!(format!("{m}"), before);
+
+    let opaque = m.opaque_struct("needs quotes")?;
+    assert!(SchemaValue::<Quoted, _>::try_new(m.view(f).param(0)?).is_err());
+    assert!(opaque.is_opaque());
+    Ok(())
+}
+
+/// The spelling a refused check names is the one `Type::rendered` gives the
+/// schema's own type once it exists, quoting included: `TypePrinting::print`
+/// spells an identified struct through `printLLVMName`
+/// (`lib/IR/AsmWriter.cpp`). llvmkit-specific regression: `Type`'s `Display`
+/// wrote `%needs quotes`, which no parser reads.
+#[test]
+fn a_refused_schema_check_spells_the_type_the_schema_mints() -> Result<(), IrError> {
+    let m = module_new!("schema")?;
+    let rect_ty = m.get_or_insert_struct_of::<Rect>()?;
+    let fn_ty = m.function_type(m.void_type(), [rect_ty.as_type()])?;
+    let f = m.add_function_dyn("raw_take_rect", fn_ty, Linkage::External)?;
+    let Err(IrError::TypeIdentityMismatch { expected, .. }) =
+        SchemaValue::<Quoted, _>::try_new(m.view(f).param(0)?)
+    else {
+        panic!("a Rect is not a Quoted");
+    };
+    let minted = m.get_or_insert_struct_of::<Quoted>()?;
+    assert_eq!(expected, minted.as_type().rendered());
+    assert_eq!(minted.as_type().to_string(), "%\"needs quotes\"");
+    Ok(())
+}
+
+/// A refused field read names its field's type without minting it. Mirrors
+/// the same rule as [`a_refused_schema_check_mints_nothing`], on the builder's
+/// route: `extract_field` spelled the expected type by building it.
+/// llvmkit-specific regression (D8).
+#[test]
+fn a_refused_field_read_mints_nothing() -> Result<(), IrError> {
+    let m = module_new!("schema")?;
+    let f = m.add_typed_function::<(), (Point,), _>("takes_point", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
+    let (point,) = m.view(f).params();
+    let Err(IrError::TypeIdentityMismatch { expected, .. }) =
+        b.extract_field::<Point, Rect, _, _>(point, 0, "x")
+    else {
+        panic!("field 0 of a Point is no Rect");
+    };
+    assert_eq!(expected.spelling(), "%Rect");
+    assert!(m.named_struct("Rect").is_none());
     Ok(())
 }
 
@@ -401,7 +493,6 @@ fn struct_schema_can_be_function_return() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new(&m).position_at_end(entry);
     let poison = m
-        .as_view()
         .get_or_insert_struct_of::<Point>()?
         .as_type()
         .poison()

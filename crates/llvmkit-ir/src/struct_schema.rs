@@ -20,7 +20,7 @@ use crate::capability::{Capability, Mutable, ReadOnly};
 use crate::constant::Constant;
 use crate::derived_types::StructType;
 use crate::element::VecElem;
-use crate::error::{IrError, IrResult, TypeKindLabel};
+use crate::error::{IrError, IrResult, RenderedType, TypeKindLabel};
 use crate::float_kind::{Bfloat, Fp128, Half, IntoFloatValue, PpcFp128, X86Fp80};
 use crate::function::FunctionValue;
 use crate::function_signature::{
@@ -30,7 +30,7 @@ use crate::function_signature::{
 use crate::instruction::{Instruction, state::Attached};
 use crate::int_width::{IntoIntValue, Width};
 use crate::marker::{Dyn, Ptr, ReturnMarker};
-use crate::module::{ModuleBrand, ModuleRef, ModuleView, UniqueBrand};
+use crate::module::{ModuleBrand, ModuleRef, UniqueBrand};
 use crate::struct_body_state::BodySet;
 use crate::r#type::{Type, TypeData};
 use crate::value::{
@@ -108,15 +108,25 @@ pub trait FieldLayout: layout_sealed::Sealed + Sized + 'static {
     /// The value of a field of this layout: what a field read returns.
     type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability>: Copy;
 
-    /// Build this layout's type in `module`. A schema's struct type may be
-    /// refused — [`IrError::StructBodyMismatch`],
+    /// Build this layout's type in `module`, whose reference is [`Mutable`]
+    /// because a schema's struct is created and its body set here (D8). A
+    /// schema's struct type may be refused — [`IrError::StructBodyMismatch`],
     /// [`IrError::RecursiveStructBody`] — and a scalar's never is.
     #[doc(hidden)]
-    fn mint_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-        module: ModuleRef<'ctx, B, C>,
+    fn mint_type<'ctx, B: ModuleBrand + 'ctx>(
+        module: ModuleRef<'ctx, B>,
         minting: &mut Minting,
         token: CrateOnly,
-    ) -> IrResult<Type<'ctx, B, C>>;
+    ) -> IrResult<Type<'ctx, B>>;
+
+    /// This layout's type as a diagnostic names it, at any capability: a
+    /// schema is spelled from its name, so naming the type a check wanted
+    /// never creates it.
+    #[doc(hidden)]
+    fn rendered<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        module: ModuleRef<'ctx, B, C>,
+        token: CrateOnly,
+    ) -> RenderedType;
 
     /// Whether `ty` is this layout's type.
     #[doc(hidden)]
@@ -506,11 +516,7 @@ where
         // required — and `expected: TypeKindLabel::Struct` rendered that as
         // "expected struct, got struct".
         return Err(IrError::TypeIdentityMismatch {
-            expected: got
-                .module()
-                .get_or_insert_struct_of::<S>()?
-                .as_type()
-                .rendered(),
+            expected: <S as FieldLayout>::rendered(got.module, CrateOnly(())),
             got: got.rendered(),
         });
     }
@@ -542,13 +548,21 @@ where
     type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = S::Value<'ctx, B, C>;
 
     #[inline]
-    fn mint_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-        module: ModuleRef<'ctx, B, C>,
+    fn mint_type<'ctx, B: ModuleBrand + 'ctx>(
+        module: ModuleRef<'ctx, B>,
         minting: &mut Minting,
         _token: CrateOnly,
-    ) -> IrResult<Type<'ctx, B, C>> {
+    ) -> IrResult<Type<'ctx, B>> {
         let slot = module.mint_struct_of::<S>(minting)?;
         Ok(Type::new(slot, module))
+    }
+
+    #[inline]
+    fn rendered<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        _module: ModuleRef<'ctx, B, C>,
+        _token: CrateOnly,
+    ) -> RenderedType {
+        RenderedType::of_named_struct(S::NAME)
     }
 
     fn matches_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
@@ -650,12 +664,20 @@ macro_rules! impl_int_layout {
             type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = IntValue<'ctx, $w, B, C>;
 
             #[inline]
-            fn mint_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-                module: ModuleRef<'ctx, B, C>,
+            fn mint_type<'ctx, B: ModuleBrand + 'ctx>(
+                module: ModuleRef<'ctx, B>,
                 _minting: &mut Minting,
                 _token: CrateOnly,
-            ) -> IrResult<Type<'ctx, B, C>> {
+            ) -> IrResult<Type<'ctx, B>> {
                 Ok(module.$method().as_type())
+            }
+
+            #[inline]
+            fn rendered<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+                module: ModuleRef<'ctx, B, C>,
+                _token: CrateOnly,
+            ) -> RenderedType {
+                module.$method().as_type().rendered()
             }
 
             #[inline]
@@ -751,12 +773,20 @@ impl<const N: u32> FieldLayout for Width<N> {
     type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = IntValue<'ctx, Width<N>, B, C>;
 
     #[inline]
-    fn mint_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-        module: ModuleRef<'ctx, B, C>,
+    fn mint_type<'ctx, B: ModuleBrand + 'ctx>(
+        module: ModuleRef<'ctx, B>,
         _minting: &mut Minting,
         _token: CrateOnly,
-    ) -> IrResult<Type<'ctx, B, C>> {
+    ) -> IrResult<Type<'ctx, B>> {
         Ok(module.int_type_n::<N>().as_type())
+    }
+
+    #[inline]
+    fn rendered<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        module: ModuleRef<'ctx, B, C>,
+        _token: CrateOnly,
+    ) -> RenderedType {
+        module.int_type_n::<N>().as_type().rendered()
     }
 
     #[inline]
@@ -831,12 +861,20 @@ macro_rules! impl_float_layout {
             type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = FloatValue<'ctx, $k, B, C>;
 
             #[inline]
-            fn mint_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-                module: ModuleRef<'ctx, B, C>,
+            fn mint_type<'ctx, B: ModuleBrand + 'ctx>(
+                module: ModuleRef<'ctx, B>,
                 _minting: &mut Minting,
                 _token: CrateOnly,
-            ) -> IrResult<Type<'ctx, B, C>> {
+            ) -> IrResult<Type<'ctx, B>> {
                 Ok(module.$method().as_type())
+            }
+
+            #[inline]
+            fn rendered<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+                module: ModuleRef<'ctx, B, C>,
+                _token: CrateOnly,
+            ) -> RenderedType {
+                module.$method().as_type().rendered()
             }
 
             #[inline]
@@ -907,12 +945,20 @@ impl<const AS: u32> FieldLayout for Ptr<AS> {
         PointerValue<'ctx, crate::Space<AS>, B, C>;
 
     #[inline]
-    fn mint_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-        module: ModuleRef<'ctx, B, C>,
+    fn mint_type<'ctx, B: ModuleBrand + 'ctx>(
+        module: ModuleRef<'ctx, B>,
         _minting: &mut Minting,
         _token: CrateOnly,
-    ) -> IrResult<Type<'ctx, B, C>> {
+    ) -> IrResult<Type<'ctx, B>> {
         Ok(module.ptr_type_in::<AS>().as_type())
+    }
+
+    #[inline]
+    fn rendered<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        module: ModuleRef<'ctx, B, C>,
+        _token: CrateOnly,
+    ) -> RenderedType {
+        module.ptr_type_in::<AS>().as_type().rendered()
     }
 
     /// A pointer in address space `AS` exactly.
@@ -992,13 +1038,26 @@ impl<L: ArrayElementLayout, const N: usize> FieldLayout for [L; N] {
     /// `[N x L]`. Mirrors `ArrayType::get`, whose `isValidElementType`
     /// assert holds for every scalar layout.
     #[inline]
-    fn mint_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-        module: ModuleRef<'ctx, B, C>,
+    fn mint_type<'ctx, B: ModuleBrand + 'ctx>(
+        module: ModuleRef<'ctx, B>,
         minting: &mut Minting,
         token: CrateOnly,
-    ) -> IrResult<Type<'ctx, B, C>> {
+    ) -> IrResult<Type<'ctx, B>> {
         let element = L::mint_type(module, minting, token)?;
         Ok(module.array_type(element, static_len_u64(N))?.as_type())
+    }
+
+    /// `[N x L]`, as `TypePrinting::print`'s `ArrayTyID` arm spells it.
+    #[inline]
+    fn rendered<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        module: ModuleRef<'ctx, B, C>,
+        token: CrateOnly,
+    ) -> RenderedType {
+        let element = L::rendered(module, token);
+        RenderedType::new(
+            TypeKindLabel::Array,
+            format!("[{N} x {element}]").into_boxed_str(),
+        )
     }
 
     #[inline]
@@ -1156,11 +1215,11 @@ impl_struct_operand!(IntoCallArg::into_call_arg);
 pub trait FieldList: field_list_sealed::Sealed {
     /// Each field's type, minted in `module` from its layout.
     #[doc(hidden)]
-    fn mint_types<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-        module: ModuleRef<'ctx, B, C>,
+    fn mint_types<'ctx, B: ModuleBrand + 'ctx>(
+        module: ModuleRef<'ctx, B>,
         minting: &mut Minting,
         token: CrateOnly,
-    ) -> IrResult<Vec<Type<'ctx, B, C>>>;
+    ) -> IrResult<Vec<Type<'ctx, B>>>;
 
     /// Whether `types` are the fields' types: one per field, each its
     /// field's layout's.
@@ -1175,11 +1234,11 @@ impl field_list_sealed::Sealed for () {}
 
 impl FieldList for () {
     #[inline]
-    fn mint_types<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-        _module: ModuleRef<'ctx, B, C>,
+    fn mint_types<'ctx, B: ModuleBrand + 'ctx>(
+        _module: ModuleRef<'ctx, B>,
         _minting: &mut Minting,
         _token: CrateOnly,
-    ) -> IrResult<Vec<Type<'ctx, B, C>>> {
+    ) -> IrResult<Vec<Type<'ctx, B>>> {
         Ok(Vec::new())
     }
 
@@ -1198,11 +1257,11 @@ macro_rules! impl_field_list {
 
         impl<$($f: IrField),+> FieldList for ($($f,)+) {
             #[inline]
-            fn mint_types<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-                module: ModuleRef<'ctx, B, C>,
+            fn mint_types<'ctx, B: ModuleBrand + 'ctx>(
+                module: ModuleRef<'ctx, B>,
                 minting: &mut Minting,
                 token: CrateOnly,
-            ) -> IrResult<Vec<Type<'ctx, B, C>>> {
+            ) -> IrResult<Vec<Type<'ctx, B>>> {
                 Ok(vec![$(<$f::Layout as FieldLayout>::mint_type(module, minting, token)?),+])
             }
 
@@ -1315,7 +1374,7 @@ where
         <S::Fields as FunctionParamList>::Values<'ctx, B, C>;
 
     #[inline]
-    fn ir_types<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Vec<Type<'ctx, B, ReadOnly>>>
+    fn ir_types<'ctx, B>(module: ModuleRef<'ctx, B>) -> IrResult<Vec<Type<'ctx, B, ReadOnly>>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -1374,11 +1433,11 @@ where
     type Marker = Dyn;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
+    fn ir_type<'ctx, B>(module: ModuleRef<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
     where
         B: ModuleBrand + 'ctx,
     {
-        Ok(module.get_or_insert_struct_of::<S>()?.as_type())
+        Ok(module.get_or_insert_struct_of::<S>()?.as_type().read_only())
     }
 
     #[inline]
@@ -1414,11 +1473,11 @@ where
     type Value<'ctx, B: ModuleBrand + 'ctx, C: Capability> = S::Value<'ctx, B, C>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
+    fn ir_type<'ctx, B>(module: ModuleRef<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>
     where
         B: ModuleBrand + 'ctx,
     {
-        Ok(module.get_or_insert_struct_of::<S>()?.as_type())
+        Ok(module.get_or_insert_struct_of::<S>()?.as_type().read_only())
     }
 
     #[inline]
@@ -1439,12 +1498,7 @@ where
             // Same reasoning as `check_struct_identity` above: the guard is
             // finer than the kind, so both sides must carry their spelling.
             Err(IrError::TypeIdentityMismatch {
-                expected: arg
-                    .ty()
-                    .module()
-                    .get_or_insert_struct_of::<S>()?
-                    .as_type()
-                    .rendered(),
+                expected: <S as FieldLayout>::rendered(arg.ty().module, CrateOnly(())),
                 got: arg.ty().rendered(),
             })
         }

@@ -239,8 +239,10 @@ impl fmt::Display for TargetExtParameterRule {
 /// facts, so a public pair would make `RenderedType { kind: Integer, spelling:
 /// "float" }` writable — a representable state that no `Type` can produce, and
 /// the same disease the variants using this type exist to cure.
-/// [`Type::rendered`](crate::Type::rendered) is the only constructor;
-/// [`kind`](Self::kind) and [`spelling`](Self::spelling) read it back.
+/// [`Type::rendered`](crate::Type::rendered) is the public constructor;
+/// [`kind`](Self::kind) and [`spelling`](Self::spelling) read it back. A
+/// schema's type is rendered from its name alone (`of_named_struct`), so a
+/// check can name the type it wanted without creating it.
 ///
 /// llvmkit-specific: upstream passes a `Type *` into its `Twine` and prints it
 /// at render time, which needs the context llvmkit's errors deliberately do
@@ -253,11 +255,19 @@ pub struct RenderedType {
 }
 
 impl RenderedType {
-    /// Captures a type's kind and spelling. Crate-internal so that
-    /// [`Type::rendered`](crate::Type::rendered), which cannot produce a
-    /// disagreeing pair, stays the only way to build one.
+    /// Captures a type's kind and spelling. Crate-internal so that no caller
+    /// outside llvmkit can write a disagreeing pair.
     pub(crate) fn new(kind: TypeKindLabel, spelling: Box<str>) -> Self {
         Self { kind, spelling }
+    }
+
+    /// What [`Type::rendered`](crate::Type::rendered) answers for the
+    /// identified struct `%name`, with no such struct in hand.
+    pub(crate) fn of_named_struct(name: &str) -> Self {
+        Self::new(
+            TypeKindLabel::Struct,
+            crate::asm_writer::struct_name_spelling(name).into_boxed_str(),
+        )
     }
 
     /// The type's kind — branch on this rather than on the spelling.

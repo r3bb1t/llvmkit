@@ -982,7 +982,7 @@ impl<'ctx, B: ModuleBrand, C: Capability> fmt::Display for Type<'ctx, B, C> {
                 // its body inline.
                 match &s.identity {
                     StructIdentity::Identified { name: Some(name) } => {
-                        return write!(f, "%{name}");
+                        return crate::asm_writer::fmt_llvm_name(f, "%", name);
                     }
                     StructIdentity::Identified { name: None } => {
                         return match self

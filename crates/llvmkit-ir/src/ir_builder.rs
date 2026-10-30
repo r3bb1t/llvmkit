@@ -1401,7 +1401,7 @@ where
         // Build the parameter IR types first, so a failure here appends no
         // block (the erased sibling admits its `&[Type]` up front for the
         // same reason).
-        let param_types = Params::ir_types(self.schema_view())?;
+        let param_types = Params::ir_types(self.mutable_ref())?;
         let bb = function.append_basic_block_unchecked(name);
         // Internal: the block was minted in this module just above.
         let bb_id = bb.slot_trusting_same_module();
@@ -3906,7 +3906,7 @@ where
             // integer, got integer". The layout's own type is what the check
             // actually compares against.
             return Err(IrError::TypeIdentityMismatch {
-                expected: self.schema_ir_type::<Field>()?.rendered(),
+                expected: <Field::Layout as FieldLayout>::rendered(leaf.module, CrateOnly(())),
                 got: leaf.rendered(),
             });
         }
@@ -6343,10 +6343,10 @@ where
         Callee: IntoPointerValue<'ctx, B>,
     {
         let callee = callee.into_pointer_value(self.mutable_ref())?;
-        let module = self.schema_view();
+        let module = self.mutable_ref();
         let ret = <Sig::Ret as FunctionReturn>::ir_type(module)?;
         let params = <Sig::Params as FunctionParamList>::ir_types(module)?;
-        let fn_ty = module.function_type(ret, params)?;
+        let fn_ty = self.schema_view().function_type(ret, params)?;
         let callee_v = IsValue::as_erased(callee);
         let arg_ids = args.lower(self.mutable_ref(), CrateOnly(()))?.0;
         let payload = CallInstData::new(
