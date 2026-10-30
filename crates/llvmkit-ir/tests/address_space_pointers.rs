@@ -17,10 +17,10 @@
 
 use llvmkit_ir::{
     AddressSpace, Align, ConstantIntValue, ConstantPointerNull, DataLayout, Dyn, InstructionKind,
-    InstructionView, IntDyn, IntValue, IntrinsicId, IrBuilder, IrError, IrStruct, Linkage,
-    MaybeAlign, Module, NoFolder, PointerPhiInstId, PointerType, PointerValue, PointerValueId,
-    PointerVariable, Ptr, Space, SpaceDyn, SsaBuilder, SsaState, TypedPointerValue, UnnamedAddr,
-    address_space, module_new,
+    InstructionView, IntDyn, IntPredicate, IntValue, IntrinsicId, IrBuilder, IrError, IrStruct,
+    Linkage, MaybeAlign, Module, NoFolder, PointerPhiInstId, PointerType, PointerValue,
+    PointerValueId, PointerVariable, Ptr, Space, SpaceDyn, SsaBuilder, SsaState,
+    TypedPointerValue, UnnamedAddr, address_space, module_new,
 };
 
 /// Port of `unittests/IR/ValueTest.cpp::TEST(GlobalTest, CreateAddressSpace)`.
@@ -354,6 +354,60 @@ fn pointer_load_names_the_space_it_loads() -> Result<(), IrError> {
         text.contains("%q = load ptr addrspace(1), ptr %slot"),
         "{text}"
     );
+    Ok(())
+}
+
+/// `AssemblyWriter` prints an operand with its `GV->getType()`, which for a
+/// function is a pointer in the function's own address space, so a `P1` module
+/// spells `ptr addrspace(1) @f` inside a constant expression. llvmkit's
+/// `constant_ptr_operand_type` printed `ptr @f`, which the type of the
+/// expression then contradicted. llvmkit-specific (rule anchor): the shape is
+/// `FunctionValue::as_aggregate_ptr`'s, which has no upstream counterpart.
+#[test]
+fn a_function_operand_prints_its_address_space() -> Result<(), IrError> {
+    let m = module_new!("spaces")?;
+    m.set_data_layout(DataLayout::parse("P1").expect("a valid layout"));
+    let fn_ty = m.function_type_no_parameters(m.void_type().as_type())?;
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let pointer = m.view(f).as_aggregate_ptr(m.view(f).address_space());
+    m.add_global_constant("p", pointer)?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("getelementptr inbounds (i8, ptr addrspace(1) @f, i64 0)"),
+        "{text}"
+    );
+    Ok(())
+}
+
+/// `CmpInst`'s constructor asserts its operands have one type (`AssertOK`,
+/// `lib/IR/Instructions.cpp`). The marker enforces that for two `Space<N>`
+/// pointers, and two `SpaceDyn` pointers are only known at run time, so
+/// `pointer_cmp` refuses them as `select` refuses its arms, and an `icmp` no
+/// parser reads back is never built. llvmkit-specific (D10). The same space is
+/// the positive control.
+#[test]
+fn a_pointer_compare_refuses_two_address_spaces() -> Result<(), IrError> {
+    let m = module_new!("spaces")?;
+    let f = m.add_typed_function::<(), (), _>("f", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let near = m
+        .view(b.alloca_in::<0, _, _>(m.i32_type(), "near")?)
+        .as_dyn();
+    let far = m
+        .view(b.alloca_in::<1, _, _>(m.i32_type(), "far")?)
+        .as_dyn();
+    let Err(IrError::TypeIdentityMismatch { expected, got }) =
+        b.pointer_cmp(IntPredicate::Eq, near, far, "same").map(|_| ())
+    else {
+        panic!("`ptr` and `ptr addrspace(1)` compare as two types");
+    };
+    assert_eq!(expected.spelling(), "ptr");
+    assert_eq!(got.spelling(), "ptr addrspace(1)");
+    assert_eq!(b.insert_block().instructions().len(), 2);
+
+    b.pointer_cmp(IntPredicate::Eq, near, near, "same")?;
+    b.ret_void();
     Ok(())
 }
 

@@ -405,6 +405,73 @@ fn no_cfi_round_trips() {
     assert_parse_print_parse_stable(&text);
 }
 
+/// `DSOLocalEquivalent::DSOLocalEquivalent` and `NoCFIValue::NoCFIValue`
+/// (`lib/IR/Constants.cpp`) take `GV->getType()`, so each is a pointer in the
+/// function's own address space, which a `P1` layout makes 1. llvmkit typed both
+/// as a plain `ptr`, so the module was refused with a type mismatch.
+/// llvmkit-specific (rule anchor): `test/Assembler/dso_local_equivalent.ll` and
+/// `no_cfi.ll` run with no layout. There is no round trip here because the
+/// printed `@p` comes before `declare @f`, which makes it the forward reference
+/// `a_forward_dso_local_equivalent_is_in_the_default_globals_space` covers, and a
+/// `P1` module with no `G1` refuses that: the placeholder is in space 0.
+#[test]
+fn a_function_constant_is_in_the_function_address_space() {
+    let text = parse_and_render(
+        "function_constant_space",
+        b"target datalayout = \"P1\"\n\
+          declare void @f()\n\
+          @p = global ptr addrspace(1) dso_local_equivalent @f\n\
+          @q = global ptr addrspace(1) no_cfi @f\n",
+    );
+    assert_check_lines(
+        &text,
+        &[
+            "@p = global ptr addrspace(1) dso_local_equivalent @f",
+            "@q = global ptr addrspace(1) no_cfi @f",
+        ],
+    );
+}
+
+/// `LLParser::parseValID`'s `kw_dso_local_equivalent` arm makes its forward
+/// reference with `new GlobalVariable(*M, Int8Ty, ...)` and no address space,
+/// which takes `DataLayout::getDefaultGlobalsAddressSpace`
+/// (`GlobalVariable::GlobalVariable`, `lib/IR/Globals.cpp`), so in a `G1` module
+/// the placeholder is a `ptr addrspace(1)`. A plain `ptr` initializer is then a
+/// mismatch, where llvmkit's placeholder was always `ptr`. The `P1` half is the
+/// positive control: the function it resolves to is in that space too.
+/// llvmkit-specific (rule anchor): no upstream fixture sets `G`.
+#[test]
+fn a_forward_dso_local_equivalent_is_in_the_default_globals_space() {
+    assert_parse_error(
+        b"target datalayout = \"G1\"\n\
+          @p = global ptr dso_local_equivalent @f\n\
+          declare void @f()\n",
+        "constant expression type mismatch: got type 'ptr addrspace(1)' but expected 'ptr'",
+    );
+    let text = parse_and_render(
+        "forward_dso_local_equivalent_space",
+        b"target datalayout = \"P1-G1\"\n\
+          @p = global ptr addrspace(1) dso_local_equivalent @f\n\
+          declare void @f()\n",
+    );
+    assert_check_lines(
+        &text,
+        &["@p = global ptr addrspace(1) dso_local_equivalent @f"],
+    );
+    assert_parse_print_parse_stable(&text);
+
+    // A placeholder in space 1 that resolves to a function in space 0:
+    // `replaceAllUsesWith` asserts upstream, and this is the refusal
+    // `docs/divergences.md` D25 records.
+    assert_parse_error(
+        b"target datalayout = \"G1\"\n\
+          @p = global ptr addrspace(1) dso_local_equivalent @f\n\
+          declare void @f()\n",
+        "expected valid forward dso_local_equivalent: type mismatch: \
+         expected 'ptr addrspace(1)', got 'ptr'",
+    );
+}
+
 /// Mirrors `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none`:
 /// `none` is accepted for token constants.
 #[test]

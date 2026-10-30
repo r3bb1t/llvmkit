@@ -7703,8 +7703,8 @@ where
     ///
     /// Both operands share one address-space marker, so comparing a
     /// `Space<0>` pointer with a `Space<1>` one is a type error; a `SpaceDyn`
-    /// pair in different address spaces is left to the verifier's
-    /// same-type check on `icmp`, as before.
+    /// pair in different address spaces is [`IrError::TypeIdentityMismatch`],
+    /// as a [`select`](Self::select)'s two arms are.
     pub fn pointer_cmp<L, R2, Name>(
         &self,
         pred: super::cmp_predicate::IntPredicate,
@@ -7719,6 +7719,15 @@ where
     {
         let lhs = lhs.into_pointer_value(self.mutable_ref())?;
         let rhs = rhs.into_pointer_value(self.mutable_ref())?;
+        // `CmpInst::AssertOK`: the marker settles this for two `Space<N>`
+        // pointers, and two `SpaceDyn` ones only know at run time.
+        let (lhs_ty, rhs_ty) = (IsValue::as_erased(lhs).ty(), IsValue::as_erased(rhs).ty());
+        if lhs_ty != rhs_ty {
+            return Err(IrError::TypeIdentityMismatch {
+                expected: lhs_ty.rendered(),
+                got: rhs_ty.rendered(),
+            });
+        }
         let folded = self.folder.fold_cmp_dyn(
             pred.into(),
             IsValue::as_erased(lhs),

@@ -1446,13 +1446,14 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
         Ok(constant_handle::<B, _, _>(id, self, ty))
     }
 
-    /// `dso_local_equivalent @function`.
+    /// `dso_local_equivalent @function`. Mirrors
+    /// `DSOLocalEquivalent::DSOLocalEquivalent`, typed `GV->getType()`.
     pub(crate) fn dso_local_equivalent<FunctionCapability: Capability>(
         self,
         function: FunctionValue<'ctx, Dyn, B, FunctionCapability>,
     ) -> Constant<'ctx, B, C> {
         let ty = self
-            .ptr_type(crate::AddressSpace::DEFAULT)
+            .ptr_type(function.address_space())
             .as_type()
             .slot_trusting_same_module();
         // boundary (F1): refused by Task 26
@@ -1492,23 +1493,21 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
                 message: "dso_local_equivalent expects a function, alias to function, or ifunc",
             });
         }
-        let ty = self
-            .ptr_type(crate::AddressSpace::DEFAULT)
-            .as_type()
-            .slot_trusting_same_module();
+        let ty = global_value_type(value).slot_trusting_same_module();
         let id = self
             .context()
             .intern_constant_dso_local_equivalent(ty, value_slot);
         Ok(constant_handle::<B, _, _>(id, self, ty))
     }
 
-    /// `no_cfi @function`.
+    /// `no_cfi @function`. Mirrors `NoCFIValue::NoCFIValue`, typed
+    /// `GV->getType()`.
     pub(crate) fn no_cfi<FunctionCapability: Capability>(
         self,
         function: FunctionValue<'ctx, Dyn, B, FunctionCapability>,
     ) -> Constant<'ctx, B, C> {
         let ty = self
-            .ptr_type(crate::AddressSpace::DEFAULT)
+            .ptr_type(function.address_space())
             .as_type()
             .slot_trusting_same_module();
         // boundary (F1): refused by Task 26
@@ -1543,10 +1542,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
                 });
             }
         }
-        let ty = self
-            .ptr_type(crate::AddressSpace::DEFAULT)
-            .as_type()
-            .slot_trusting_same_module();
+        let ty = global_value_type(value).slot_trusting_same_module();
         let id = self.context().intern_constant_no_cfi(ty, value_slot);
         Ok(constant_handle::<B, _, _>(id, self, ty))
     }
@@ -2896,6 +2892,21 @@ pub(super) fn intern_aggregate<'ctx, B: ModuleBrand + 'ctx, Cap: Capability>(
         .context()
         .intern_constant_aggregate(slot, ids);
     ConstantAggregate::from_parts(constant_handle(id, module, slot))
+}
+
+/// `GV->getType()`: a global value as a pointer, in its address space. Every
+/// other global's own type is that pointer; a function's is its signature, so
+/// the pointer is built here.
+pub(crate) fn global_value_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Type<'ctx, B, C> {
+    match &value.data().kind {
+        ValueKindData::Function(function) => value
+            .module
+            .ptr_type(*function.address_space.borrow())
+            .as_type(),
+        _ => value.ty(),
+    }
 }
 
 #[inline]

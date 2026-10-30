@@ -1044,55 +1044,112 @@ fn admit_overload_types<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     Ok(())
 }
 
-/// Whether `id`'s descriptor table ends in `IIT_VARARG`, which is what
-/// `matchIntrinsicVarArg(/*isVarArg=*/true, TableRef)` answers once the fixed
-/// types have been matched off the table.
-pub(crate) fn intrinsic_takes_var_args(id: IntrinsicId) -> IrResult<bool> {
-    let descriptors = iit_descriptors(id.record())?;
-    Ok(matches!(descriptors.last(), Some(IitDescriptor::VarArg)))
+/// What `Intrinsic::matchIntrinsicSignature` leaves behind: the overload types
+/// it found, and the descriptors it did not consume, `TableRef` upstream.
+pub(crate) struct FixedTypesMatch<'ctx, B: ModuleBrand, C: Capability> {
+    descriptors: Vec<IitDescriptor>,
+    consumed: usize,
+    overloads: Vec<Option<Type<'ctx, B, C>>>,
 }
 
-pub(crate) fn match_intrinsic_signature<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+/// Mirrors `Intrinsic::matchIntrinsicSignature`: the return type, then each
+/// parameter, matched off the descriptor table. A parameter with no descriptor
+/// left, or against `IIT_VARARG`, is `matchIntrinsicType`'s failure for those.
+/// Whether the table's tail is variadic is
+/// [`var_arg_matches`](FixedTypesMatch::var_arg_matches)'s question, as it is
+/// `matchIntrinsicVarArg`'s upstream.
+pub(crate) fn match_intrinsic_fixed_types<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     id: IntrinsicId,
     module: ModuleRef<'ctx, B, C>,
     fn_ty: FunctionType<'ctx, B, C>,
-) -> IrResult<Box<[Type<'ctx, B, C>]>> {
+) -> IrResult<FixedTypesMatch<'ctx, B, C>> {
     let descriptors = iit_descriptors(id.record())?;
     let mut cursor = descriptors.as_slice();
     let mut overloads = vec![None; overload_slot_count(&descriptors)];
     match_fixed_type(module, &mut cursor, &mut overloads, fn_ty.return_type())?;
 
-    let params: Vec<_> = fn_ty.params().collect();
-    let mut param_index = 0;
-    let mut is_var_arg = false;
-    while !cursor.is_empty() {
-        if matches!(cursor[0], IitDescriptor::VarArg) {
-            cursor = &cursor[1..];
-            is_var_arg = true;
-            break;
+    for param in fn_ty.params() {
+        if matches!(cursor.first(), None | Some(IitDescriptor::VarArg)) {
+            return Err(intrinsic_mismatch_for_id(id));
         }
-        let Some(param) = params.get(param_index).copied() else {
-            return Err(intrinsic_mismatch_for_id(id));
-        };
         match_fixed_type(module, &mut cursor, &mut overloads, param)?;
-        param_index += 1;
     }
-    if !cursor.is_empty() || param_index != params.len() || fn_ty.is_var_arg() != is_var_arg {
-        return Err(intrinsic_mismatch_for_id(id));
+    let consumed = descriptors.len() - cursor.len();
+    Ok(FixedTypesMatch {
+        descriptors,
+        consumed,
+        overloads,
+    })
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> FixedTypesMatch<'ctx, B, C> {
+    /// Mirrors `Intrinsic::matchIntrinsicVarArg`, whose `false` is a match: this
+    /// is `true` when the table's tail agrees with `is_var_arg`, and consumes
+    /// the `IIT_VARARG` it finds.
+    pub(crate) fn var_arg_matches(&mut self, is_var_arg: bool) -> bool {
+        let remaining = &self.descriptors[self.consumed..];
+        // If there are no descriptors left, then it can't be a vararg.
+        if remaining.is_empty() {
+            return !is_var_arg;
+        }
+
+        // There should be only one descriptor remaining at this point.
+        if remaining.len() != 1 {
+            return false;
+        }
+
+        // Check and verify the descriptor.
+        let descriptor = remaining[0];
+        self.consumed += 1;
+        if matches!(descriptor, IitDescriptor::VarArg) {
+            return is_var_arg;
+        }
+
+        false
     }
-    let mut resolved = Vec::with_capacity(overloads.len());
-    for overload in overloads {
-        let Some(overload) = overload else {
+
+    /// The overload types, once `fn_ty` is the final signature. Upstream's
+    /// `assert(TableRef.empty())` and its `assert` on the match are an error
+    /// here, and `validate_intrinsic_overload_constraints` and the comparison
+    /// with the generated type stand for `matchIntrinsicType`'s deferred checks.
+    pub(crate) fn into_overloads(
+        self,
+        id: IntrinsicId,
+        module: ModuleRef<'ctx, B, C>,
+        fn_ty: FunctionType<'ctx, B, C>,
+    ) -> IrResult<Box<[Type<'ctx, B, C>]>> {
+        if self.consumed != self.descriptors.len() {
             return Err(intrinsic_mismatch_for_id(id));
-        };
-        resolved.push(overload);
+        }
+        let mut resolved = Vec::with_capacity(self.overloads.len());
+        for overload in self.overloads {
+            let Some(overload) = overload else {
+                return Err(intrinsic_mismatch_for_id(id));
+            };
+            resolved.push(overload);
+        }
+        validate_intrinsic_overload_constraints(&self.descriptors, &resolved)?;
+        let expected =
+            generated_function_type_from_descriptors(module, &self.descriptors, &resolved)?;
+        if expected != fn_ty {
+            return Err(intrinsic_mismatch_for_id(id));
+        }
+        Ok(resolved.into_boxed_slice())
     }
-    validate_intrinsic_overload_constraints(&descriptors, &resolved)?;
-    let expected = generated_function_type_from_descriptors(module, &descriptors, &resolved)?;
-    if expected != fn_ty {
+}
+
+/// `Intrinsic::getIntrinsicSignature`'s order: the fixed types, then whether
+/// `fn_ty`'s variadic flag agrees with the table's tail.
+fn match_intrinsic_signature<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    id: IntrinsicId,
+    module: ModuleRef<'ctx, B, C>,
+    fn_ty: FunctionType<'ctx, B, C>,
+) -> IrResult<Box<[Type<'ctx, B, C>]>> {
+    let mut matched = match_intrinsic_fixed_types(id, module, fn_ty)?;
+    if !matched.var_arg_matches(fn_ty.is_var_arg()) {
         return Err(intrinsic_mismatch_for_id(id));
     }
-    Ok(resolved.into_boxed_slice())
+    matched.into_overloads(id, module, fn_ty)
 }
 
 fn match_fixed_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(

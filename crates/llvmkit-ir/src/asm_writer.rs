@@ -33,6 +33,7 @@ use super::constant::{
     Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode,
 };
 use super::constant_range::ConstantRange;
+use super::constants::global_value_type;
 use super::function::FunctionValue;
 use super::global_alias::GlobalAlias;
 use super::global_ifunc::GlobalIfunc;
@@ -890,7 +891,7 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             write!(
                 f,
                 "getelementptr inbounds (i8, {} ",
-                constant_ptr_operand_type(base)
+                global_value_type(base)
             )?;
             fmt_operand_ref(f, base, None)?;
             write!(f, ", i64 {off})")
@@ -907,12 +908,12 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                 module,
                 module.context().value_data(*lo_id).ty,
             );
-            write!(f, "sub (i64 ptrtoint ({} ", constant_ptr_operand_type(hi))?;
+            write!(f, "sub (i64 ptrtoint ({} ", global_value_type(hi))?;
             fmt_operand_ref(f, hi, None)?;
             write!(
                 f,
                 " to i64), i64 ptrtoint ({} ",
-                constant_ptr_operand_type(lo)
+                global_value_type(lo)
             )?;
             fmt_operand_ref(f, lo, None)?;
             f.write_str(" to i64))")
@@ -936,13 +937,13 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             write!(
                 f,
                 "add (i64 sub (i64 ptrtoint ({} ",
-                constant_ptr_operand_type(hi)
+                global_value_type(hi)
             )?;
             fmt_operand_ref(f, hi, None)?;
             write!(
                 f,
                 " to i64), i64 ptrtoint ({} ",
-                constant_ptr_operand_type(lo)
+                global_value_type(lo)
             )?;
             fmt_operand_ref(f, lo, None)?;
             write!(f, " to i64)), i64 {addend})")
@@ -1132,19 +1133,6 @@ fn maybe_print_call_addr_space<B: ModuleBrand>(
     // `!Mod` case: an instruction always has a module.
     let force_print_addr_space = module.data_layout().program_addr_space() != 0;
     print_address_space(f, call_addr_space, " ", "", force_print_addr_space)
-}
-
-fn constant_ptr_operand_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    value: Value<'ctx, B, C>,
-) -> Type<'ctx, B, C> {
-    match &value.data().kind {
-        ValueKindData::Function(_) => value
-            .module
-            .ptr_type(crate::AddressSpace::DEFAULT)
-            .as_type(),
-        ValueKindData::GlobalAlias(_) | ValueKindData::GlobalIfunc(_) => value.ty(),
-        _ => value.ty(),
-    }
 }
 
 fn fmt_int_constant<B: ModuleBrand, C: Capability>(

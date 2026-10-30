@@ -88,7 +88,7 @@ use super::int_width::{IntDyn, Width};
 use super::intrinsics::IntrinsicFunctionData;
 use super::intrinsics::{
     IntrinsicDescriptor, IntrinsicId, IntrinsicNameResolution, descriptor_for_name,
-    intrinsic_takes_var_args, match_intrinsic_signature, resolve_intrinsic_name,
+    match_intrinsic_fixed_types, resolve_intrinsic_name,
 };
 use super::llvm_context::{Context, NamedStructSlot};
 use super::marker::Dyn;
@@ -2939,11 +2939,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
             return self.get_or_insert_intrinsic_declaration(&descriptor);
         }
 
-        let is_var_arg = intrinsic_takes_var_args(id)?;
-        let fn_ty = self.raw_function_type(return_type, argument_types, is_var_arg)?;
+        let fn_ty = self.raw_function_type(return_type, argument_types, false)?;
 
         // Automatically determine the overloaded types.
-        let overloads = match_intrinsic_signature(id, self, fn_ty)?;
+        let mut matched = match_intrinsic_fixed_types(id, self, fn_ty)?;
+
+        // If intrinsic requires vararg, recreate the FunctionType accordingly.
+        let fn_ty = if matched.var_arg_matches(true) {
+            self.raw_function_type(fn_ty.return_type(), fn_ty.params(), true)?
+        } else {
+            fn_ty
+        };
+
+        let overloads = matched.into_overloads(id, self, fn_ty)?;
         let descriptor = IntrinsicDescriptor::new(id, overloads)?;
         self.get_or_insert_intrinsic_declaration(&descriptor)
     }

@@ -9488,9 +9488,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         loc: Span,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
         // Upstream's placeholder is `new GlobalVariable(*M, Int8Ty, ...)` with
-        // no address space, so the reference types as a plain `ptr`; the
+        // no address space, which takes `getDefaultGlobalsAddressSpace`; the
         // demanded type is compared against it by `convertValIDToValue`.
-        let ptr_ty = self.module.ptr_type_in::<0>().as_type();
+        let ptr_ty = self
+            .module
+            .ptr_type(self.module.data_layout().default_globals_addr_space())
+            .as_type();
         let existing = match &reference {
             NameOrId::Name(name) => self.forward_ref_dso_local_equivalent_names.get(name),
             NameOrId::Id(id) => self.forward_ref_dso_local_equivalent_ids.get(id),

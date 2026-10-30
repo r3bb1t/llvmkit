@@ -931,6 +931,31 @@ on a scalable size. Each needs its own test.
 
 **Guarded by:** nothing: this entry records what was left.
 
+### D25 — A forward `dso_local_equivalent` that resolves to another address space is refused where upstream asserts
+
+**Severity:** wrong-message, against a release build of upstream; an assertions
+build aborts instead.
+**Where:** `crates/llvmkit-asmparser/src/ll_parser.rs` —
+`resolve_one_forward_ref_dso_local_equivalent`.
+
+**LLVM:** `LLParser::parseValID`'s `kw_dso_local_equivalent` arm makes its forward
+reference a `GlobalVariable` in `DataLayout::getDefaultGlobalsAddressSpace`, and
+`validateEndOfModule` replaces it with `DSOLocalEquivalent::get(GV)`, typed by the
+function's own address space. When `G` and `P` differ the two types differ, and
+`Value::doRAUW` asserts that they agree. A release build carries on.
+
+**llvmkit:** `replace_all_uses_with` refuses the mismatch, so the module is refused
+with `expected valid forward dso_local_equivalent: type mismatch: expected 'ptr
+addrspace(1)', got 'ptr'`, anchored at the token the parse stopped on.
+
+**Why:** a type mismatch on a use is invalid IR, and a replace that cannot be done
+must not abort (Doctrine D10).
+
+**Fix:** none owed — this is hardening of an assert, as D17 and D18 are. The text
+is llvmkit's, because upstream's assert has none a user would see.
+
+**Guarded by:** `crates/llvmkit-asmparser/tests/parser_constants.rs::a_forward_dso_local_equivalent_is_in_the_default_globals_space`.
+
 ---
 
 ---
