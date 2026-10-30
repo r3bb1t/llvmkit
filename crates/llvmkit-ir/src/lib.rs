@@ -164,6 +164,7 @@ pub mod target_library_info;
 pub mod term_open_state;
 pub mod r#type;
 pub mod type_components;
+pub mod type_size;
 pub mod typed_pointer_type;
 pub mod typed_pointer_value;
 pub mod r#use;
@@ -390,6 +391,7 @@ pub use struct_schema::{
 pub use sync_scope::SyncScope;
 pub use target_library_info::{LibFunc, TargetLibraryInfo};
 pub use r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeKind};
+pub use type_size::TypeSize;
 pub use type_components::{ArrayElement, VectorElement, lanes};
 pub use typed_pointer_type::{TypedPointee, TypedPointerElement, TypedPointerType};
 pub use typed_pointer_value::TypedPointerValue;

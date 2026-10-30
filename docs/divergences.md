@@ -896,6 +896,41 @@ the proof false.
 `crates/llvmkit-ir/tests/derived_struct_schema.rs::a_struct_a_typed_signature_checked_keeps_its_name`,
 `crates/llvmkit-ir/tests/derived_struct_schema.rs::a_struct_no_schema_holds_can_be_renamed`.
 
+### D24 — Some readers of a scalable size take its known minimum where upstream branches or refuses
+
+**Severity:** model-gap, by D19's reading of the table: the query answers, and
+upstream's stops or takes another branch. Derived by reading: no test exhibits it.
+**Where:** `crates/llvmkit-ir/src/type_size.rs` — `TypeSize::fixed_value_or_known_min`,
+whose callers `rg -n "fixed_value_or_known_min" crates/llvmkit-ir/src` lists;
+`crates/llvmkit-ir/src/constant_folding.rs` —
+`constant_fold_load_from_const_trusting_same_module` and
+`constant_fold_load_through_bitcast_trusting_same_module`;
+`crates/llvmkit-ir/src/value_tracking.rs` — the `getelementptr` arm of known bits.
+
+**LLVM:** `TypeSize::getFixedValue` asserts on a scalable size, and its implicit
+`uint64_t` conversion reports a fatal error (`TypeSize::operator ScalarTy`).
+Three readers branch instead. `ConstantFoldLoadFromConst` tests
+`!Size.isScalable()` before it folds an out-of-bounds load to poison.
+`ConstantFoldLoadThroughBitcast` compares with `TypeSize::isKnownGE` and
+`operator==`, both of which read scalability. `computeKnownBitsFromOperator`
+tests `Stride.isScalable()` for the stride of any index.
+
+**llvmkit:** each reads the known minimum, as it did when `DataLayout` answered a
+bare number, so a scalable size is treated as a fixed one of that value. The
+`getelementptr` arm does branch on scalability, by the indexed type's kind, so an
+array of scalable vectors takes the fixed path.
+
+**Why:** `TypeSize` landed on 2026-10-30 as a change of type at these sites, with
+only `CastInst::castIsValid` changing its answer. A panic is not an option for the
+assert (Doctrine D10), and a reader that returns `None` on a scalable size would
+have changed each routine's verdict with no test behind it.
+
+**Fix:** port the three branches, now that `TypeSize::is_scalable` is there to
+test, and give each `fixed_value_or_known_min` caller the answer its routine wants
+on a scalable size. Each needs its own test.
+
+**Guarded by:** nothing: this entry records what was left.
+
 ---
 
 ---

@@ -36,6 +36,7 @@ use crate::error::RenderedType;
 use crate::error::{IrError, IrResult};
 use crate::llvm_context::Context;
 use crate::module::{ModuleBrand, ModuleCore, ModuleId, ModuleRef, ModuleView};
+use crate::type_size::TypeSize;
 
 /// Minimum legal integer width. Mirrors `IntegerType::MIN_INT_BITS`
 /// (`DerivedTypes.h`).
@@ -775,29 +776,39 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Type<'ctx, B, C> {
     /// Mirrors `Type::getScalarSizeInBits`, whose zero return is the "not a
     /// sized primitive" signal the cast table relies on.
     pub fn scalar_size_in_bits(self) -> u32 {
-        self.scalar_type().primitive_size_in_bits()
+        // "It is safe to assume that the scalar types have a fixed size." It is
+        // `unsigned` upstream too, and no scalar is wider than `MAX_INT_BITS`.
+        u32::try_from(
+            self.scalar_type()
+                .primitive_size_in_bits()
+                .known_min_value(),
+        )
+        .unwrap_or(u32::MAX)
     }
 
     /// Mirrors `Type::getPrimitiveSizeInBits`: the bit width of a primitive
-    /// or vector of primitives, and 0 for everything else. A scalable vector
-    /// reports its minimum width, matching upstream's `TypeSize` in the
-    /// contexts the parser uses this for.
-    pub fn primitive_size_in_bits(self) -> u32 {
+    /// or vector of primitives, and 0 for everything else. The product is 64
+    /// bits wide: 2^32 lanes of the widest element fit.
+    pub fn primitive_size_in_bits(self) -> TypeSize {
+        // Upstream's `ETS.getFixedValue()`, behind an `assert`: an element is
+        // never a vector, so its size is fixed.
+        let element_bits =
+            |elem: TypeSlot| Type::new(elem, self.module).primitive_size_in_bits().known_min_value();
         match self.data() {
-            TypeData::Half | TypeData::Bfloat => 16,
-            TypeData::Float => 32,
-            TypeData::Double => 64,
-            TypeData::X86Fp80 => 80,
-            TypeData::Fp128 | TypeData::PpcFp128 => 128,
-            TypeData::X86Amx => 8192,
-            TypeData::Integer { bits } => *bits,
-            TypeData::FixedVector { elem, n } => Type::new(*elem, self.module)
-                .primitive_size_in_bits()
-                .saturating_mul(n.get()),
-            TypeData::ScalableVector { elem, min } => Type::new(*elem, self.module)
-                .primitive_size_in_bits()
-                .saturating_mul(min.get()),
-            _ => 0,
+            TypeData::Half | TypeData::Bfloat => TypeSize::fixed(16),
+            TypeData::Float => TypeSize::fixed(32),
+            TypeData::Double => TypeSize::fixed(64),
+            TypeData::X86Fp80 => TypeSize::fixed(80),
+            TypeData::Fp128 | TypeData::PpcFp128 => TypeSize::fixed(128),
+            TypeData::X86Amx => TypeSize::fixed(8192),
+            TypeData::Integer { bits } => TypeSize::fixed(u64::from(*bits)),
+            TypeData::FixedVector { elem, n } => {
+                TypeSize::fixed(element_bits(*elem) * u64::from(n.get()))
+            }
+            TypeData::ScalableVector { elem, min } => {
+                TypeSize::scalable(element_bits(*elem) * u64::from(min.get()))
+            }
+            _ => TypeSize::fixed(0),
         }
     }
 
@@ -1206,7 +1217,7 @@ fn contains_homogeneous_scalable_vector_types(module: &ModuleCore, elements: &[T
 /// `Type::isScalableTargetExtTy`. Note that upstream does *not* recurse
 /// through a fixed vector's element type here — a fixed vector of scalable
 /// vectors is unrepresentable — so neither does this.
-fn is_scalable(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot>) -> bool {
+pub(crate) fn is_scalable(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot>) -> bool {
     match module.context().type_data(id) {
         TypeData::Array { elem, .. } => is_scalable(module, *elem, visited),
         TypeData::Struct(data) => {

@@ -300,11 +300,15 @@ pub(crate) fn constant_fold_load_from_const_trusting_same_module<
     let Some(start) = offset.try_zext_u64() else {
         return Ok(None);
     };
-    let alloc_size = dl.type_alloc_size(erase_type(constant.ty()));
+    let alloc_size = dl
+        .type_alloc_size(erase_type(constant.ty()))
+        .fixed_value_or_known_min();
     if start >= alloc_size {
         return Ok(Some(ty.poison().as_constant()));
     }
-    let load_size = dl.type_store_size(erase_type(ty));
+    let load_size = dl
+        .type_store_size(erase_type(ty))
+        .fixed_value_or_known_min();
     let Some(end) = start.checked_add(load_size) else {
         return Ok(None);
     };
@@ -1513,8 +1517,10 @@ pub(crate) fn constant_fold_load_through_bitcast_trusting_same_module<
         if value.ty() == dest_ty {
             return Ok(Some(value));
         }
-        let src_size = dl.type_size_in_bits(erase_type(value.ty()));
-        let dest_size = dl.type_size_in_bits(erase_type(dest_ty));
+        // Upstream's `TypeSize::isKnownGE` and `operator==` read scalability as
+        // well; these two read the known minimum (`docs/divergences.md` D24).
+        let src_size = dl.type_size_in_bits(erase_type(value.ty())).known_min_value();
+        let dest_size = dl.type_size_in_bits(erase_type(dest_ty)).known_min_value();
         if src_size < dest_size {
             return Ok(None);
         }
@@ -1882,7 +1888,8 @@ fn constant_gep_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         if position == 0 {
             offset = offset.wrapping_add(&scaled_offset(
                 &index,
-                dl.type_alloc_size(erase_type(current_ty)),
+                dl.type_alloc_size(erase_type(current_ty))
+                    .fixed_value_or_known_min(),
                 index_bits,
             ));
             continue;
@@ -1893,7 +1900,8 @@ fn constant_gep_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                 let elem_ty = Type::new(*elem, module);
                 offset = offset.wrapping_add(&scaled_offset(
                     &index,
-                    dl.type_alloc_size(erase_type(elem_ty)),
+                    dl.type_alloc_size(erase_type(elem_ty))
+                        .fixed_value_or_known_min(),
                     index_bits,
                 ));
                 current_ty = elem_ty;
@@ -1902,7 +1910,8 @@ fn constant_gep_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                 let elem_ty = Type::new(*elem, module);
                 offset = offset.wrapping_add(&scaled_offset(
                     &index,
-                    dl.type_alloc_size(erase_type(elem_ty)),
+                    dl.type_alloc_size(erase_type(elem_ty))
+                        .fixed_value_or_known_min(),
                     index_bits,
                 ));
                 current_ty = elem_ty;
@@ -2299,7 +2308,9 @@ fn constant_at_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     match constant.ty().data() {
         TypeData::Array { elem, .. } => {
             let elem_ty = Type::new(*elem, module);
-            let stride = dl.type_alloc_size(erase_type(elem_ty));
+            let stride = dl
+                .type_alloc_size(erase_type(elem_ty))
+                .fixed_value_or_known_min();
             constant_at_indexed_offset(elements, elem_ty, stride, module, offset, dl)
         }
         TypeData::FixedVector { elem, .. } => {
@@ -2307,7 +2318,9 @@ fn constant_at_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             if !dl.type_size_equals_store_size(erase_type(elem_ty)) {
                 return Ok(None);
             }
-            let stride = dl.type_store_size(erase_type(elem_ty));
+            let stride = dl
+                .type_store_size(erase_type(elem_ty))
+                .fixed_value_or_known_min();
             constant_at_indexed_offset(elements, elem_ty, stride, module, offset, dl)
         }
         TypeData::Struct(_) => {
@@ -2317,7 +2330,9 @@ fn constant_at_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                     return Ok(None);
                 };
                 let start = layout.element_offset(index);
-                let size = dl.type_alloc_size(erase_type(element.ty()));
+                let size = dl
+                    .type_alloc_size(erase_type(element.ty()))
+                    .fixed_value_or_known_min();
                 let Some(end) = start.checked_add(size) else {
                     return Ok(None);
                 };
@@ -2641,7 +2656,11 @@ fn aggregate_first_element<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         TypeData::Struct(_) => {
             for id in elements.iter().copied() {
                 let element = constant_from_id(module, id)?;
-                if dl.type_size_in_bits(erase_type(element.ty())) != 0 {
+                if dl
+                    .type_size_in_bits(erase_type(element.ty()))
+                    .known_min_value()
+                    != 0
+                {
                     return Some(element);
                 }
             }
@@ -2675,7 +2694,10 @@ fn constant_to_store_bytes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             let Some(bits) = constant.ty().data().as_integer() else {
                 return Ok(None);
             };
-            let byte_len = usize_from_u64(dl.type_store_size(erase_type(constant.ty())))?;
+            let byte_len = usize_from_u64(
+                dl.type_store_size(erase_type(constant.ty()))
+                    .fixed_value_or_known_min(),
+            )?;
             Ok(Some(apint_to_store_bytes(
                 &ApInt::from_words(bits, words),
                 byte_len,
@@ -2686,7 +2708,10 @@ fn constant_to_store_bytes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             let Ok(fp) = ConstantFloatValue::<FloatDyn, B, C>::try_from(constant) else {
                 return Ok(None);
             };
-            let byte_len = usize_from_u64(dl.type_store_size(erase_type(constant.ty())))?;
+            let byte_len = usize_from_u64(
+                dl.type_store_size(erase_type(constant.ty()))
+                    .fixed_value_or_known_min(),
+            )?;
             Ok(Some(apint_to_store_bytes(
                 &fp.ap_float().to_bits(),
                 byte_len,
@@ -2701,7 +2726,10 @@ fn constant_to_store_bytes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                 return Ok(None);
             };
             let bits = dl.pointer_size_in_bits(addr_space.get());
-            let byte_len = usize_from_u64(dl.type_store_size(erase_type(constant.ty())))?;
+            let byte_len = usize_from_u64(
+                dl.type_store_size(erase_type(constant.ty()))
+                    .fixed_value_or_known_min(),
+            )?;
             Ok(Some(apint_to_store_bytes(&ApInt::zero(bits), byte_len, dl)))
         }
         ValueKindData::Constant(ConstantData::Poison)
@@ -2719,7 +2747,10 @@ fn aggregate_to_store_bytes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     match ty.data() {
         TypeData::Array { elem, .. } => {
             let elem_ty = Type::new(*elem, module);
-            let elem_alloc = usize_from_u64(dl.type_alloc_size(erase_type(elem_ty)))?;
+            let elem_alloc = usize_from_u64(
+                dl.type_alloc_size(erase_type(elem_ty))
+                    .fixed_value_or_known_min(),
+            )?;
             let mut out = Vec::new();
             for id in elements.iter().copied() {
                 let data = module.context().value_data(id);
@@ -2734,7 +2765,10 @@ fn aggregate_to_store_bytes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         }
         TypeData::FixedVector { elem, .. } => {
             let elem_ty = Type::new(*elem, module);
-            let elem_store = usize_from_u64(dl.type_store_size(erase_type(elem_ty)))?;
+            let elem_store = usize_from_u64(
+                dl.type_store_size(erase_type(elem_ty))
+                    .fixed_value_or_known_min(),
+            )?;
             let mut out = Vec::new();
             for id in elements.iter().copied() {
                 let data = module.context().value_data(id);
@@ -2748,7 +2782,10 @@ fn aggregate_to_store_bytes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             Ok(Some(out))
         }
         TypeData::Struct(_) => {
-            let total = usize_from_u64(dl.type_alloc_size(erase_type(ty)))?;
+            let total = usize_from_u64(
+                dl.type_alloc_size(erase_type(ty))
+                    .fixed_value_or_known_min(),
+            )?;
             let mut out = vec![0; total];
             let layout = dl.struct_layout(erase_type(ty));
             for (index, id) in elements.iter().copied().enumerate() {
@@ -2901,7 +2938,13 @@ fn fold_bitcast_with_layout<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     {
         return Ok(Some(folded));
     }
-    if dl.type_store_size(erase_type(operand.ty())) != dl.type_store_size(erase_type(dest_ty)) {
+    if dl
+        .type_store_size(erase_type(operand.ty()))
+        .fixed_value_or_known_min()
+        != dl
+            .type_store_size(erase_type(dest_ty))
+            .fixed_value_or_known_min()
+    {
         return Ok(None);
     }
     let Some(bytes) = constant_to_store_bytes(operand, dl)? else {

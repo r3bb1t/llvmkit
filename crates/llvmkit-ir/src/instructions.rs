@@ -4941,15 +4941,8 @@ pub fn cast_is_valid<'ctx, B: ModuleBrand + 'ctx>(
             }
             let Some(src_space) = src_ptr else {
                 // Non-pointer: a no-op cast of type only, so the bit widths
-                // must match exactly. Upstream compares the two
-                // `getPrimitiveSizeInBits()` `TypeSize`s, whose equality
-                // includes scalability; `primitive_size_in_bits` is the known
-                // minimum, so the scalability is compared beside it.
-                let size = |elements: Option<ElementCount>, bits: u32| {
-                    (bits, elements.is_some_and(|count| count.scalable))
-                };
-                return size(src_elements, src.primitive_size_in_bits())
-                    == size(dst_elements, dst.primitive_size_in_bits());
+                // must match exactly, scalability included.
+                return src.primitive_size_in_bits() == dst.primitive_size_in_bits();
             };
             if Some(src_space) != dst_ptr {
                 return false;

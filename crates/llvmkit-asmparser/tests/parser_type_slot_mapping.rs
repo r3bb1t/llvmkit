@@ -12,7 +12,7 @@ use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_asmparser::{SlotMapping, parse_type_at_beginning_with_slots, parse_type_with_slots};
 use llvmkit_ir::{
     AnyTypeEnum, DynBrand, ElemDyn, LenDyn, Module, StructBodyDyn, StructType, Type, TypeKind,
-    VectorType,
+    TypeSize, VectorType,
 };
 
 /// Both tests' `Source`, split where upstream splits its literals.
@@ -63,7 +63,7 @@ fn assert_all_elements_are_i32(st: StructType<'_, StructBodyDyn, DynBrand>) {
     for i in 0..st.field_count() {
         let ty = st.field_type(i).expect("`i` is below `field_count`");
         assert!(ty.is_integer());
-        assert_eq!(ty.primitive_size_in_bits(), 32);
+        assert_eq!(ty.primitive_size_in_bits(), TypeSize::fixed(32));
     }
 }
 
@@ -76,12 +76,12 @@ fn upstream_type_with_slot_mapping_parsing() {
     // Check we properly parse integer types.
     let ty = parse_type_with_slots(b"i32", &m, &mapping).expect("`i32` parses");
     assert!(ty.is_integer());
-    assert_eq!(ty.primitive_size_in_bits(), 32);
+    assert_eq!(ty.primitive_size_in_bits(), TypeSize::fixed(32));
 
     // Check we properly parse integer types with exotic size.
     let ty = parse_type_with_slots(b"i13", &m, &mapping).expect("`i13` parses");
     assert!(ty.is_integer());
-    assert_eq!(ty.primitive_size_in_bits(), 13);
+    assert_eq!(ty.primitive_size_in_bits(), TypeSize::fixed(13));
 
     // Check we properly parse floating point types.
     let ty = parse_type_with_slots(b"float", &m, &mapping).expect("`float` parses");
@@ -116,10 +116,10 @@ fn upstream_type_with_slot_mapping_parsing() {
     // Check the details of the vector.
     let vt = vector_of(ty);
     assert_eq!(vt.min_len().get(), 5);
-    assert_eq!(vt.as_type().primitive_size_in_bits(), 160);
+    assert_eq!(vt.as_type().primitive_size_in_bits(), TypeSize::fixed(160));
     let ty = vt.element();
     assert!(ty.is_integer());
-    assert_eq!(ty.primitive_size_in_bits(), 32);
+    assert_eq!(ty.primitive_size_in_bits(), TypeSize::fixed(32));
 
     // Opaque struct.
     let ty = parse_type_with_slots(b"%opaque", &m, &mapping).expect("`%opaque` parses");
@@ -146,14 +146,14 @@ fn upstream_type_at_beginning_with_slot_mapping_parsing() {
     let (ty, read) =
         parse_type_at_beginning_with_slots(b"i32", &m, &mapping).expect("`i32` parses");
     assert!(ty.is_integer());
-    assert_eq!(ty.primitive_size_in_bits(), 32);
+    assert_eq!(ty.primitive_size_in_bits(), TypeSize::fixed(32));
     assert_eq!(read, 3);
 
     // Check we properly parse integer types with exotic size.
     let (ty, read) =
         parse_type_at_beginning_with_slots(b"i13", &m, &mapping).expect("`i13` parses");
     assert!(ty.is_integer());
-    assert_eq!(ty.primitive_size_in_bits(), 13);
+    assert_eq!(ty.primitive_size_in_bits(), TypeSize::fixed(13));
     assert_eq!(read, 3);
 
     // Check we properly parse floating point types.
@@ -198,10 +198,10 @@ fn upstream_type_at_beginning_with_slot_mapping_parsing() {
     // Check the details of the vector.
     let vt = vector_of(ty);
     assert_eq!(vt.min_len().get(), 5);
-    assert_eq!(vt.as_type().primitive_size_in_bits(), 160);
+    assert_eq!(vt.as_type().primitive_size_in_bits(), TypeSize::fixed(160));
     let ty = vt.element();
     assert!(ty.is_integer());
-    assert_eq!(ty.primitive_size_in_bits(), 32);
+    assert_eq!(ty.primitive_size_in_bits(), TypeSize::fixed(32));
 
     // Opaque struct.
     let (ty, read) =
@@ -223,7 +223,7 @@ fn upstream_type_at_beginning_with_slot_mapping_parsing() {
     let (ty, read) = parse_type_at_beginning_with_slots(b"i32 garbage", &m, &mapping)
         .expect("the prefix parses");
     assert!(ty.is_integer());
-    assert_eq!(ty.primitive_size_in_bits(), 32);
+    assert_eq!(ty.primitive_size_in_bits(), TypeSize::fixed(32));
     // We go to the next token, i.e., we read "i32" + ' '.
     assert_eq!(read, 4);
 }

@@ -35,8 +35,9 @@ use crate::align::{Align, MaybeAlign};
 use crate::capability::Capability;
 use crate::error::DataLayoutError;
 use crate::module::{ModuleBrand, ModuleCore};
-use crate::r#type::{MAX_INT_BITS, Type, TypeData, TypeSlot, TypeSlotAccess};
+use crate::r#type::{MAX_INT_BITS, Type, TypeData, TypeSlot, TypeSlotAccess, is_scalable};
 use crate::type_components::lanes;
+use crate::type_size::TypeSize;
 
 // --------------------------------------------------------------------------
 // Sub-records
@@ -607,23 +608,21 @@ impl DataLayout {
     /// Bit-size of `ty` when held as an SSA value. Mirrors
     /// `DataLayout::getTypeSizeInBits` (the inline definition in
     /// `DataLayout.h`).
-    pub fn type_size_in_bits<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> u64 {
+    pub fn type_size_in_bits<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> TypeSize {
         self.type_size_in_bits_inner(ty.module().core_ref(), ty.slot_trusting_same_module())
     }
 
     /// Mirrors `DataLayout::getTypeStoreSize`. Bytes.
-    pub fn type_store_size<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> u64 {
-        let bits = self.type_size_in_bits(ty);
-        align_to_power_of_two(bits, 8) / 8
+    pub fn type_store_size<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> TypeSize {
+        self.type_store_size_inner(ty.module().core_ref(), ty.slot_trusting_same_module())
     }
 
     /// Mirrors `DataLayout::getTypeStoreSizeInBits`.
     pub fn type_store_size_in_bits<B: ModuleBrand, C: Capability>(
         &self,
         ty: Type<'_, B, C>,
-    ) -> u64 {
-        let bits = self.type_size_in_bits(ty);
-        align_to_power_of_two(bits, 8)
+    ) -> TypeSize {
+        self.type_store_size_in_bits_inner(ty.module().core_ref(), ty.slot_trusting_same_module())
     }
 
     /// Mirrors `DataLayout::typeSizeEqualsStoreSize`.
@@ -636,7 +635,7 @@ impl DataLayout {
 
     /// Mirrors `DataLayout::getTypeAllocSize`. Bytes including
     /// trailing alignment padding.
-    pub fn type_alloc_size<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> u64 {
+    pub fn type_alloc_size<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> TypeSize {
         self.type_alloc_size_inner(ty.module().core_ref(), ty.slot_trusting_same_module())
     }
 
@@ -644,8 +643,8 @@ impl DataLayout {
     pub fn type_alloc_size_in_bits<B: ModuleBrand, C: Capability>(
         &self,
         ty: Type<'_, B, C>,
-    ) -> u64 {
-        self.type_alloc_size(ty).saturating_mul(8)
+    ) -> TypeSize {
+        self.type_alloc_size(ty).saturating_scaled(8)
     }
 
     /// Mirrors `DataLayout::getABITypeAlign`.
@@ -696,33 +695,37 @@ impl DataLayout {
 // --------------------------------------------------------------------------
 
 impl DataLayout {
-    fn type_size_in_bits_inner(&self, module: &ModuleCore, id: TypeSlot) -> u64 {
+    fn type_size_in_bits_inner(&self, module: &ModuleCore, id: TypeSlot) -> TypeSize {
+        // Upstream's `getTypeSizeInBits(VTy->getElementType()).getFixedValue()`:
+        // an element is never a vector, so its size is fixed.
+        let element_bits =
+            |elem: TypeSlot| self.type_size_in_bits_inner(module, elem).known_min_value();
         match module.context().type_data(id) {
-            TypeData::Label => u64::from(self.pointer_size_in_bits(0)),
+            TypeData::Label => TypeSize::fixed(u64::from(self.pointer_size_in_bits(0))),
             TypeData::Pointer { addr_space } => {
-                u64::from(self.pointer_size_in_bits(addr_space.get()))
+                TypeSize::fixed(u64::from(self.pointer_size_in_bits(addr_space.get())))
             }
-            TypeData::Array { elem, n } => {
-                n.saturating_mul(self.type_alloc_size_inner(module, *elem).saturating_mul(8))
-            }
+            TypeData::Array { elem, n } => self
+                .type_alloc_size_inner(module, *elem)
+                .saturating_scaled(8)
+                .saturating_scaled(*n),
             TypeData::Struct(_) => self.struct_layout_inner(module, id).size_in_bits(),
-            TypeData::Integer { bits } => u64::from(*bits),
-            TypeData::Half | TypeData::Bfloat => 16,
-            TypeData::Float => 32,
-            TypeData::Double => 64,
-            TypeData::PpcFp128 | TypeData::Fp128 => 128,
-            TypeData::X86Fp80 => 80,
-            TypeData::X86Amx => 8192,
+            TypeData::Integer { bits } => TypeSize::fixed(u64::from(*bits)),
+            TypeData::Half | TypeData::Bfloat => TypeSize::fixed(16),
+            TypeData::Float => TypeSize::fixed(32),
+            TypeData::Double => TypeSize::fixed(64),
+            TypeData::PpcFp128 | TypeData::Fp128 => TypeSize::fixed(128),
+            TypeData::X86Fp80 => TypeSize::fixed(80),
+            TypeData::X86Amx => TypeSize::fixed(8192),
             TypeData::FixedVector { elem, n } => {
-                u64::from(n.get()).saturating_mul(self.type_size_in_bits_inner(module, *elem))
+                TypeSize::fixed(u64::from(n.get()).saturating_mul(element_bits(*elem)))
             }
             TypeData::ScalableVector { elem, min } => {
-                // Mirrors upstream: getKnownMinValue path.
-                u64::from(min.get()).saturating_mul(self.type_size_in_bits_inner(module, *elem))
+                TypeSize::scalable(u64::from(min.get()).saturating_mul(element_bits(*elem)))
             }
             TypeData::TargetExt(_) => match target_ext_layout_type(module, id) {
                 Some(layout) => self.type_size_in_bits_inner(module, layout),
-                None => 0,
+                None => TypeSize::fixed(0),
             },
             // Unsized cases: void, function, label-only, metadata, token,
             // and WebAssembly exception references.
@@ -730,18 +733,18 @@ impl DataLayout {
             | TypeData::Function { .. }
             | TypeData::Metadata
             | TypeData::Token
-            | TypeData::WasmExnRef => 0,
+            | TypeData::WasmExnRef => TypeSize::fixed(0),
         }
     }
 
-    fn type_alloc_size_inner(&self, module: &ModuleCore, id: TypeSlot) -> u64 {
+    fn type_alloc_size_inner(&self, module: &ModuleCore, id: TypeSlot) -> TypeSize {
         match module.context().type_data(id) {
-            TypeData::Array { elem, n } => {
-                n.saturating_mul(self.type_alloc_size_inner(module, *elem))
-            }
+            TypeData::Array { elem, n } => self
+                .type_alloc_size_inner(module, *elem)
+                .saturating_scaled(*n),
             TypeData::Struct(_) => {
                 let layout = self.struct_layout_inner(module, id);
-                let size = layout.size_bytes();
+                let size = layout.size_in_bytes();
                 let is_packed = matches!(
                     module.context().type_data(id),
                     TypeData::Struct(s) if s.body.borrow().as_ref().is_some_and(|b| b.packed)
@@ -750,32 +753,43 @@ impl DataLayout {
                     size
                 } else {
                     let a = std::cmp::max(self.struct_abi_align, layout.alignment());
-                    align_to(size, a)
+                    align_type_size(size, a)
                 }
             }
             TypeData::Integer { bits } => {
-                let bytes = u64::from(div_ceil_u32(*bits, 8));
+                let bytes = TypeSize::fixed(u64::from(div_ceil_u32(*bits, 8)));
                 let a = self.integer_alignment(*bits, true);
-                align_to(bytes, a)
+                align_type_size(bytes, a)
             }
             TypeData::Pointer { addr_space } => {
-                let size = u64::from(self.pointer_size(addr_space.get()));
-                align_to(size, self.pointer_abi_align(addr_space.get()))
+                let size = TypeSize::fixed(u64::from(self.pointer_size(addr_space.get())));
+                align_type_size(size, self.pointer_abi_align(addr_space.get()))
             }
             TypeData::TargetExt(_) => match target_ext_layout_type(module, id) {
                 Some(layout) => self.type_alloc_size_inner(module, layout),
-                None => 0,
+                None => TypeSize::fixed(0),
             },
             _ => {
                 let store = self.type_store_size_inner(module, id);
-                align_to(store, self.alignment(module, id, true))
+                align_type_size(store, self.alignment(module, id, true))
             }
         }
     }
 
-    fn type_store_size_inner(&self, module: &ModuleCore, id: TypeSlot) -> u64 {
-        let bits = self.type_size_in_bits_inner(module, id);
-        align_to_power_of_two(bits, 8) / 8
+    fn type_store_size_in_bits_inner(&self, module: &ModuleCore, id: TypeSlot) -> TypeSize {
+        let base_size = self.type_size_in_bits_inner(module, id);
+        TypeSize::new(
+            align_to_power_of_two(base_size.known_min_value(), 8),
+            base_size.is_scalable(),
+        )
+    }
+
+    fn type_store_size_inner(&self, module: &ModuleCore, id: TypeSlot) -> TypeSize {
+        let store_size_in_bits = self.type_store_size_in_bits_inner(module, id);
+        TypeSize::new(
+            store_size_in_bits.known_min_value() / 8,
+            store_size_in_bits.is_scalable(),
+        )
     }
 
     fn alignment(&self, module: &ModuleCore, id: TypeSlot, abi_or_pref: bool) -> Align {
@@ -808,6 +822,7 @@ impl DataLayout {
             TypeData::FixedVector { .. } | TypeData::ScalableVector { .. } => {
                 let bit_width = self
                     .type_size_in_bits_inner(module, id)
+                    .known_min_value()
                     .try_into()
                     .unwrap_or(u32::MAX);
                 if let Some(s) = self
@@ -821,9 +836,10 @@ impl DataLayout {
                         s.pref_align()
                     }
                 } else {
-                    let store_bits =
-                        align_to_power_of_two(self.type_size_in_bits_inner(module, id), 8);
-                    let store_bytes_u32: u32 = (store_bits / 8).try_into().unwrap_or(u32::MAX);
+                    // "It doesn't have to be based on the full size for
+                    // scalable vectors": `getKnownMinValue`, in `getAlignment`.
+                    let store_bytes = self.type_store_size_inner(module, id).known_min_value();
+                    let store_bytes_u32: u32 = store_bytes.try_into().unwrap_or(u32::MAX);
                     pow2_ceil_align(store_bytes_u32)
                 }
             }
@@ -910,33 +926,39 @@ impl DataLayout {
         let elements: &[TypeSlot] = &body.elements;
         let packed = body.packed;
 
-        let mut size_bytes: u64 = 0;
+        let mut size = TypeSize::fixed(0);
         let mut alignment = Align::ONE;
         let mut is_padded = false;
         let mut member_offsets = Vec::with_capacity(elements.len());
 
-        for &elem in elements {
+        for (index, &elem) in elements.iter().enumerate() {
+            if index == 0 && is_scalable(module, elem, &mut Vec::new()) {
+                size = TypeSize::scalable(0);
+            }
+
             let ty_align = if packed {
                 Align::ONE
             } else {
                 self.alignment(module, elem, true)
             };
-            if !size_bytes.is_multiple_of(ty_align.value()) {
+            // Only a homogeneous struct of scalable vectors has a scalable
+            // size, and its members need no padding.
+            if !size.is_scalable() && !size.known_min_value().is_multiple_of(ty_align.value()) {
                 is_padded = true;
-                size_bytes = align_to(size_bytes, ty_align);
+                size = TypeSize::fixed(align_to(size.known_min_value(), ty_align));
             }
             if ty_align.value() > alignment.value() {
                 alignment = ty_align;
             }
-            member_offsets.push(size_bytes);
-            size_bytes = size_bytes.saturating_add(self.type_alloc_size_inner(module, elem));
+            member_offsets.push(size.known_min_value());
+            size = size.saturating_add(self.type_alloc_size_inner(module, elem));
         }
-        if !size_bytes.is_multiple_of(alignment.value()) {
+        if !size.is_scalable() && !size.known_min_value().is_multiple_of(alignment.value()) {
             is_padded = true;
-            size_bytes = align_to(size_bytes, alignment);
+            size = TypeSize::fixed(align_to(size.known_min_value(), alignment));
         }
 
-        StructLayoutInfo::new(size_bytes, alignment, is_padded, member_offsets)
+        StructLayoutInfo::new(size, alignment, is_padded, member_offsets)
     }
 
     fn set_pointer_spec(&mut self, spec: PointerSpec) {
@@ -989,16 +1011,16 @@ impl DataLayout {
 /// `class StructLayout` in `DataLayout.h` for the values we expose.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructLayoutInfo {
-    size_bytes: u64,
+    size: TypeSize,
     alignment: Align,
     is_padded: bool,
     member_offsets: Vec<u64>,
 }
 
 impl StructLayoutInfo {
-    /// Construct computed struct-layout information.
+    /// Construct computed struct-layout information. `size` is in bytes.
     pub fn new<Offsets>(
-        size_bytes: u64,
+        size: TypeSize,
         alignment: Align,
         is_padded: bool,
         member_offsets: Offsets,
@@ -1008,27 +1030,27 @@ impl StructLayoutInfo {
     {
         let member_offsets = member_offsets.into();
         Self {
-            size_bytes,
+            size,
             alignment,
             is_padded,
             member_offsets,
         }
     }
 
-    /// Mirrors `StructLayout::getSizeInBytes`.
+    /// The known minimum of [`size_in_bytes`](Self::size_in_bytes).
     #[inline]
     pub fn size_bytes(&self) -> u64 {
-        self.size_bytes
+        self.size.known_min_value()
     }
     /// Mirrors `StructLayout::getSizeInBytes`.
     #[inline]
-    pub fn size_in_bytes(&self) -> u64 {
-        self.size_bytes()
+    pub fn size_in_bytes(&self) -> TypeSize {
+        self.size
     }
     /// Mirrors `StructLayout::getSizeInBits`.
     #[inline]
-    pub fn size_in_bits(&self) -> u64 {
-        self.size_bytes().saturating_mul(8)
+    pub fn size_in_bits(&self) -> TypeSize {
+        self.size.saturating_scaled(8)
     }
     /// Mirrors `StructLayout::getAlignment`.
     #[inline]
@@ -1650,6 +1672,13 @@ fn div_ceil_u32(value: u32, denom: u32) -> u32 {
 fn align_to(value: u64, align: Align) -> u64 {
     let a = align.value();
     (value + a - 1) & !(a - 1)
+}
+
+/// Mirrors `llvm::alignTo(TypeSize, uint64_t)` (`Support/TypeSize.h`): the
+/// quantity aligned, the scalability kept.
+#[inline]
+fn align_type_size(size: TypeSize, align: Align) -> TypeSize {
+    TypeSize::new(align_to(size.known_min_value(), align), size.is_scalable())
 }
 
 #[inline]

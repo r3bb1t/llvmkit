@@ -1,15 +1,10 @@
 //! Ports `unittests/IR/VectorTypesTest.cpp`, all six `TEST`s, in its order.
 //!
-//! Two upstream types have no public llvmkit spelling, and each test reads the
-//! same two facts apart instead:
-//!
-//! * `ElementCount` is [`element_count`]: `VectorType::min_len` plus
-//!   `VectorType::is_scalable`.
-//! * `TypeSize` is a `(known minimum, is scalable)` pair, [`primitive_size`]
-//!   and the `DataLayout` queries' own number paired by [`sized`]. Upstream's
-//!   `operator==` on `TypeSize` compares both halves, so comparing the pair is
-//!   that comparison; `getKnownMinValue` and `getFixedValue` read its first
-//!   half.
+//! `ElementCount` has no public llvmkit spelling, so [`element_count`] reads
+//! the same two facts apart: `VectorType::min_len` plus
+//! `VectorType::is_scalable`. `TypeSize` is `llvmkit_ir::TypeSize`, compared as
+//! upstream compares it. `EXPECT_EQ` of a `TypeSize` against a number is
+//! upstream's implicit `uint64_t`, which is `fixed_value`.
 //!
 //! `EXPECT_VTY_EQ` / `EXPECT_VTY_NE` are `assert_eq!` / `assert_ne!`. Their
 //! null checks port upstream's `dyn_cast` to a vector kind: every `dyn_cast`
@@ -18,23 +13,15 @@
 
 use core::num::NonZeroU32;
 
-use llvmkit_ir::{DataLayout, DynBrand, ElemDyn, LenDyn, Module, TypeKind, VectorType, lanes};
+use llvmkit_ir::{
+    DataLayout, DynBrand, ElemDyn, LenDyn, Module, TypeKind, TypeSize, VectorType, lanes,
+};
 
 type Vector<'m> = VectorType<'m, ElemDyn, LenDyn, DynBrand>;
 
 /// Upstream's `getElementCount()`.
 fn element_count(vector: Vector<'_>) -> (u32, bool) {
     (vector.min_len().get(), vector.is_scalable())
-}
-
-/// Upstream's `getPrimitiveSizeInBits()`, as a `TypeSize`.
-fn primitive_size(vector: Vector<'_>) -> (u64, bool) {
-    sized(vector, u64::from(vector.as_type().primitive_size_in_bits()))
-}
-
-/// A `DataLayout` query's number, as the `TypeSize` upstream's returns.
-fn sized(vector: Vector<'_>, known_min: u64) -> (u64, bool) {
-    (known_min, vector.is_scalable())
 }
 
 /// `dyn_cast<FixedVectorType>` succeeded.
@@ -337,41 +324,56 @@ fn upstream_fixed_len_comparisons() {
 
     let v2_int64_ty = fixed(&m, int64_ty, lanes::<2>());
 
-    let v2_i32_len = primitive_size(v2_int32_ty);
-    assert_eq!(v2_i32_len.0, 64);
-    assert!(!v2_i32_len.1);
-
-    assert!(primitive_size(v2_int32_ty).0 < primitive_size(v4_int32_ty).0);
-    assert!(primitive_size(v2_int64_ty).0 > primitive_size(v2_int32_ty).0);
-    assert_eq!(primitive_size(v4_int32_ty), primitive_size(v2_int64_ty));
-    assert_ne!(primitive_size(v2_int32_ty), primitive_size(v2_int64_ty));
-
-    // Check that a fixed-only comparison works for fixed size vectors.
-    assert_eq!(primitive_size(v2_int64_ty).0, primitive_size(v4_int32_ty).0);
-
-    // Check the DataLayout interfaces.
     let (v2_i32, v4_i32, v2_i64) = (
         v2_int32_ty.as_type(),
         v4_int32_ty.as_type(),
         v2_int64_ty.as_type(),
     );
+
+    let v2_i32_len = v2_i32.primitive_size_in_bits();
+    assert_eq!(v2_i32_len.known_min_value(), 64);
+    assert!(!v2_i32_len.is_scalable());
+
+    let fixed_value = |size: TypeSize| size.fixed_value().expect("a fixed vector's size");
+    assert!(
+        fixed_value(v2_i32.primitive_size_in_bits()) < fixed_value(v4_i32.primitive_size_in_bits())
+    );
+    assert!(
+        fixed_value(v2_i64.primitive_size_in_bits()) > fixed_value(v2_i32.primitive_size_in_bits())
+    );
+    assert_eq!(
+        v4_i32.primitive_size_in_bits(),
+        v2_i64.primitive_size_in_bits()
+    );
+    assert_ne!(
+        v2_i32.primitive_size_in_bits(),
+        v2_i64.primitive_size_in_bits()
+    );
+
+    // Check that a fixed-only comparison works for fixed size vectors.
+    assert_eq!(
+        fixed_value(v2_i64.primitive_size_in_bits()),
+        fixed_value(v4_i32.primitive_size_in_bits())
+    );
+
+    // Check the DataLayout interfaces.
     assert_eq!(dl.type_size_in_bits(v2_i64), dl.type_size_in_bits(v4_i32));
-    assert_eq!(dl.type_size_in_bits(v2_i32), 64);
-    assert_eq!(dl.type_size_in_bits(v2_i64), 128);
+    assert_eq!(dl.type_size_in_bits(v2_i32).fixed_value(), Some(64));
+    assert_eq!(dl.type_size_in_bits(v2_i64).fixed_value(), Some(128));
     assert_eq!(dl.type_store_size(v2_i64), dl.type_store_size(v4_i32));
     assert_ne!(
         dl.type_store_size_in_bits(v2_i32),
         dl.type_store_size_in_bits(v2_i64)
     );
-    assert_eq!(dl.type_store_size_in_bits(v2_i32), 64);
-    assert_eq!(dl.type_store_size(v2_i64), 16);
+    assert_eq!(dl.type_store_size_in_bits(v2_i32).fixed_value(), Some(64));
+    assert_eq!(dl.type_store_size(v2_i64).fixed_value(), Some(16));
     assert_eq!(dl.type_alloc_size(v4_i32), dl.type_alloc_size(v2_i64));
     assert_ne!(
         dl.type_alloc_size_in_bits(v2_i32),
         dl.type_alloc_size_in_bits(v2_i64)
     );
-    assert_eq!(dl.type_alloc_size_in_bits(v4_i32), 128);
-    assert_eq!(dl.type_alloc_size(v2_i32), 8);
+    assert_eq!(dl.type_alloc_size_in_bits(v4_i32).fixed_value(), Some(128));
+    assert_eq!(dl.type_alloc_size(v2_i32).fixed_value(), Some(8));
     assert!(dl.type_size_equals_store_size(v4_i32));
 }
 
@@ -389,52 +391,41 @@ fn upstream_scalable_comparisons() {
 
     let sc_v2_int64_ty = scalable(&m, int64_ty, lanes::<2>());
 
-    let sc_v2_i32_len = primitive_size(sc_v2_int32_ty);
-    assert_eq!(sc_v2_i32_len.0, 64);
-    assert!(sc_v2_i32_len.1);
-
-    assert!(primitive_size(sc_v2_int32_ty).0 < primitive_size(sc_v4_int32_ty).0);
-    assert!(primitive_size(sc_v2_int64_ty).0 > primitive_size(sc_v2_int32_ty).0);
-    assert_eq!(
-        primitive_size(sc_v4_int32_ty).0,
-        primitive_size(sc_v2_int64_ty).0
-    );
-    assert_ne!(
-        primitive_size(sc_v2_int32_ty).0,
-        primitive_size(sc_v2_int64_ty).0
-    );
-
-    // Check the DataLayout interfaces.
     let (v2_i32, v4_i32, v2_i64) = (
         sc_v2_int32_ty.as_type(),
         sc_v4_int32_ty.as_type(),
         sc_v2_int64_ty.as_type(),
     );
-    assert_eq!(
-        sized(sc_v2_int64_ty, dl.type_size_in_bits(v2_i64)),
-        sized(sc_v4_int32_ty, dl.type_size_in_bits(v4_i32))
-    );
-    assert_eq!(dl.type_size_in_bits(v2_i32), 64);
-    assert_eq!(
-        sized(sc_v2_int64_ty, dl.type_store_size(v2_i64)),
-        sized(sc_v4_int32_ty, dl.type_store_size(v4_i32))
-    );
+
+    let sc_v2_i32_len = v2_i32.primitive_size_in_bits();
+    assert_eq!(sc_v2_i32_len.known_min_value(), 64);
+    assert!(sc_v2_i32_len.is_scalable());
+
+    let v2_i32_min = v2_i32.primitive_size_in_bits().known_min_value();
+    let v4_i32_min = v4_i32.primitive_size_in_bits().known_min_value();
+    let v2_i64_min = v2_i64.primitive_size_in_bits().known_min_value();
+    assert!(v2_i32_min < v4_i32_min);
+    assert!(v2_i64_min > v2_i32_min);
+    assert_eq!(v4_i32_min, v2_i64_min);
+    assert_ne!(v2_i32_min, v2_i64_min);
+
+    // Check the DataLayout interfaces.
+    assert_eq!(dl.type_size_in_bits(v2_i64), dl.type_size_in_bits(v4_i32));
+    assert_eq!(dl.type_size_in_bits(v2_i32).known_min_value(), 64);
+    assert_eq!(dl.type_store_size(v2_i64), dl.type_store_size(v4_i32));
     assert_ne!(
-        sized(sc_v2_int32_ty, dl.type_store_size_in_bits(v2_i32)),
-        sized(sc_v2_int64_ty, dl.type_store_size_in_bits(v2_i64))
+        dl.type_store_size_in_bits(v2_i32),
+        dl.type_store_size_in_bits(v2_i64)
     );
-    assert_eq!(dl.type_store_size_in_bits(v2_i32), 64);
-    assert_eq!(dl.type_store_size(v2_i64), 16);
-    assert_eq!(
-        sized(sc_v4_int32_ty, dl.type_alloc_size(v4_i32)),
-        sized(sc_v2_int64_ty, dl.type_alloc_size(v2_i64))
-    );
+    assert_eq!(dl.type_store_size_in_bits(v2_i32).known_min_value(), 64);
+    assert_eq!(dl.type_store_size(v2_i64).known_min_value(), 16);
+    assert_eq!(dl.type_alloc_size(v4_i32), dl.type_alloc_size(v2_i64));
     assert_ne!(
-        sized(sc_v2_int32_ty, dl.type_alloc_size_in_bits(v2_i32)),
-        sized(sc_v2_int64_ty, dl.type_alloc_size_in_bits(v2_i64))
+        dl.type_alloc_size_in_bits(v2_i32),
+        dl.type_alloc_size_in_bits(v2_i64)
     );
-    assert_eq!(dl.type_alloc_size_in_bits(v4_i32), 128);
-    assert_eq!(dl.type_alloc_size(v2_i32), 8);
+    assert_eq!(dl.type_alloc_size_in_bits(v4_i32).known_min_value(), 128);
+    assert_eq!(dl.type_alloc_size(v2_i32).known_min_value(), 8);
     assert!(dl.type_size_equals_store_size(v4_i32));
 }
 
@@ -450,11 +441,20 @@ fn upstream_cross_comparisons() {
 
     // Even though the minimum size is the same, a scalable vector could be
     // larger so we don't consider them to be the same size.
-    assert_ne!(primitive_size(v4_int32_ty), primitive_size(sc_v4_int32_ty));
+    assert_ne!(
+        v4_int32_ty.as_type().primitive_size_in_bits(),
+        sc_v4_int32_ty.as_type().primitive_size_in_bits()
+    );
     // If we are only checking the minimum, then they are the same size.
     assert_eq!(
-        primitive_size(v4_int32_ty).0,
-        primitive_size(sc_v4_int32_ty).0
+        v4_int32_ty
+            .as_type()
+            .primitive_size_in_bits()
+            .known_min_value(),
+        sc_v4_int32_ty
+            .as_type()
+            .primitive_size_in_bits()
+            .known_min_value()
     );
 
     // We can't use ordering comparisons (<,<=,>,>=) between scalable and

@@ -5617,7 +5617,8 @@ where
             TypeData::Array { elem, .. } | TypeData::FixedVector { elem, .. } => {
                 let stride = query
                     .data_layout()
-                    .type_alloc_size(erase_type(Type::new(*elem, module)));
+                    .type_alloc_size(erase_type(Type::new(*elem, module)))
+                    .known_min_value();
                 add_gep_index(
                     &mut known,
                     &mut offset,
@@ -5636,7 +5637,8 @@ where
             TypeData::ScalableVector { elem, .. } => {
                 let stride = query
                     .data_layout()
-                    .type_alloc_size(erase_type(Type::new(*elem, module)));
+                    .type_alloc_size(erase_type(Type::new(*elem, module)))
+                    .known_min_value();
                 let mut scale = KnownBits::unknown(index_width);
                 scale.set_known_zero_bits_from(stride.trailing_zeros());
                 add_gep_index_bits(
@@ -5652,7 +5654,10 @@ where
                 indexed_ty = *elem;
             }
             _ => {
-                let stride = query.data_layout().type_alloc_size(erase_type(ty));
+                let stride = query
+                    .data_layout()
+                    .type_alloc_size(erase_type(ty))
+                    .known_min_value();
                 add_gep_index(
                     &mut known,
                     &mut offset,

@@ -2407,7 +2407,12 @@ fn global_pointer_alignment<B: ModuleBrand>(
             {
                 let mut alignment = dl.pref_type_align(erase_type(value_ty));
                 let large_alignment = Align::new(16).ok()?;
-                if alignment < large_alignment && dl.type_size_in_bits(erase_type(value_ty)) > 128 {
+                if alignment < large_alignment
+                    && dl
+                        .type_size_in_bits(erase_type(value_ty))
+                        .fixed_value_or_known_min()
+                        > 128
+                {
                     alignment = large_alignment;
                 }
                 Some(alignment)

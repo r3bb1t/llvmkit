@@ -15113,7 +15113,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 format!("atomicrmw {op} operand must be an integer"),
             ));
         }
-        let size = self.module.data_layout().type_store_size_in_bits(val_ty);
+        // Upstream's `unsigned Size` is the implicit `uint64_t` conversion. A
+        // scalable operand was refused above, so the size is fixed.
+        let store_size = self.module.data_layout().type_store_size_in_bits(val_ty);
+        let size = store_size
+            .fixed_value()
+            .unwrap_or(store_size.known_min_value());
         if size < 8 || !size.is_power_of_two() {
             return Err(self.message_at(
                 val_loc,

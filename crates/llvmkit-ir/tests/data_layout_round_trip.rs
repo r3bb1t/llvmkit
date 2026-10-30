@@ -9,7 +9,8 @@
 //! intentionally differs from upstream `FailedWithMessage` text.
 
 use llvmkit_ir::{
-    Align, DataLayout, DataLayoutError, ManglingMode, MaybeAlign, Module, address_space, module_new,
+    Align, DataLayout, DataLayoutError, ManglingMode, MaybeAlign, Module, TypeSize, VectorType,
+    address_space, lanes, module_new,
 };
 
 fn parse(s: &str) -> DataLayout {
@@ -659,15 +660,19 @@ fn module_emits_module_asm_directive() {
 fn type_size_in_bits_basic_types() {
     let m = module_new!("m").expect("fresh module");
     let dl = DataLayout::default();
-    assert_eq!(dl.type_size_in_bits(m.bool_type().as_type()), 1);
-    assert_eq!(dl.type_size_in_bits(m.i8_type().as_type()), 8);
-    assert_eq!(dl.type_size_in_bits(m.i32_type().as_type()), 32);
-    assert_eq!(dl.type_size_in_bits(m.i64_type().as_type()), 64);
-    assert_eq!(dl.type_size_in_bits(m.half_type().as_type()), 16);
-    assert_eq!(dl.type_size_in_bits(m.f32_type().as_type()), 32);
-    assert_eq!(dl.type_size_in_bits(m.f64_type().as_type()), 64);
-    assert_eq!(dl.type_size_in_bits(m.fp128_type().as_type()), 128);
-    assert_eq!(dl.type_size_in_bits(m.x86_fp80_type().as_type()), 80);
+    for (ty, bits) in [
+        (m.bool_type().as_type(), 1),
+        (m.i8_type().as_type(), 8),
+        (m.i32_type().as_type(), 32),
+        (m.i64_type().as_type(), 64),
+        (m.half_type().as_type(), 16),
+        (m.f32_type().as_type(), 32),
+        (m.f64_type().as_type(), 64),
+        (m.fp128_type().as_type(), 128),
+        (m.x86_fp80_type().as_type(), 80),
+    ] {
+        assert_eq!(dl.type_size_in_bits(ty), TypeSize::fixed(bits), "{ty}");
+    }
 }
 
 /// `llvmkit-specific`: mirrors `DataLayout::getTypeStoreSize` for
@@ -677,8 +682,11 @@ fn type_store_size_non_power_of_two() {
     let m = module_new!("m").expect("fresh module");
     let dl = DataLayout::default();
     let i36 = m.custom_width_int_type(36).expect("i36");
-    assert_eq!(dl.type_store_size(i36.as_type()), 5);
-    assert_eq!(dl.type_store_size(m.x86_fp80_type().as_type()), 10);
+    assert_eq!(dl.type_store_size(i36.as_type()), TypeSize::fixed(5));
+    assert_eq!(
+        dl.type_store_size(m.x86_fp80_type().as_type()),
+        TypeSize::fixed(10)
+    );
 }
 
 /// `llvmkit-specific`: mirrors `DataLayout::getTypeAllocSize` for the
@@ -690,7 +698,7 @@ fn type_alloc_size_i64_default() {
     let dl = DataLayout::default();
     // Default i64 spec is `i64:32:64` (ABI=4, pref=8). So an i64
     // alloc-size rounds 8 up to 4-byte alignment -- still 8.
-    assert_eq!(dl.type_alloc_size(m.i64_type().as_type()), 8);
+    assert_eq!(dl.type_alloc_size(m.i64_type().as_type()), TypeSize::fixed(8));
 }
 
 /// `llvmkit-specific`: mirrors `DataLayout::getABITypeAlign` for
@@ -732,7 +740,7 @@ fn struct_layout_simple() {
     assert_eq!(layout.element_offset(0), 0);
     // i64 default ABI alignment is 4, so i64 placed at offset 4.
     assert_eq!(layout.element_offset(1), 4);
-    assert_eq!(layout.size_in_bytes(), 12);
+    assert_eq!(layout.size_in_bytes(), TypeSize::fixed(12));
 }
 
 /// `llvmkit-specific`: mirrors `StructLayout::StructLayout` packed
@@ -749,7 +757,54 @@ fn struct_layout_packed() {
     let layout = dl.struct_layout(st.as_type());
     assert_eq!(layout.element_offset(0), 0);
     assert_eq!(layout.element_offset(1), 1);
-    assert_eq!(layout.size_in_bytes(), 5);
+    assert_eq!(layout.size_in_bytes(), TypeSize::fixed(5));
+}
+
+/// Mirrors `DataLayout::getTypeSizeInBits`, `getTypeAllocSize` and the
+/// `StructLayout` constructor: scalability survives an array's multiplication
+/// (`operator*`) and a homogeneous struct's sum (`if (i == 0 &&
+/// Ty->isScalableTy()) StructSize = TypeSize::getScalable(0)`, then
+/// `operator+=`). llvmkit-specific (rule anchor): no upstream test reads either.
+#[test]
+fn a_scalable_size_stays_scalable_through_an_array_and_a_struct() {
+    let m = module_new!("m").expect("fresh module");
+    let dl = DataLayout::default();
+    let vector = VectorType::scalable_of(m.i32_type(), lanes::<4>()).as_type();
+    assert_eq!(dl.type_size_in_bits(vector), TypeSize::scalable(128));
+
+    let array = m.array_type(vector, 2).expect("a valid element").as_type();
+    assert_eq!(dl.type_size_in_bits(array), TypeSize::scalable(256));
+    assert_eq!(dl.type_alloc_size(array), TypeSize::scalable(32));
+    assert_eq!(dl.type_store_size(array), TypeSize::scalable(32));
+
+    let tuple = m
+        .struct_type([vector, vector])
+        .expect("valid struct elements")
+        .as_type();
+    assert_eq!(dl.type_size_in_bits(tuple), TypeSize::scalable(256));
+    assert_eq!(dl.type_alloc_size(tuple), TypeSize::scalable(32));
+    let layout = dl.struct_layout(tuple);
+    assert_eq!(layout.size_in_bytes(), TypeSize::scalable(32));
+    assert_eq!(layout.size_in_bits(), TypeSize::scalable(256));
+    assert!(!layout.is_padded());
+
+    // `operator+=` alone takes a non-zero field's scalability. A first field of
+    // size zero is what `getScalable(0)` is for.
+    let empty_array = m.array_type(vector, 0).expect("a valid element").as_type();
+    let empty_tuple = m
+        .struct_type([empty_array])
+        .expect("valid struct elements")
+        .as_type();
+    assert_eq!(
+        dl.struct_layout(empty_tuple).size_in_bytes(),
+        TypeSize::scalable(0)
+    );
+
+    let i64_array = m.array_type(m.i64_type(), 2).expect("a valid element");
+    assert_eq!(
+        dl.type_size_in_bits(i64_array.as_type()),
+        TypeSize::fixed(128)
+    );
 }
 
 // ---------------------------------------------------------------------------

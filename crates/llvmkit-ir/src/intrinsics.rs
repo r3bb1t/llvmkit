@@ -2578,40 +2578,18 @@ where
     }
 }
 
-fn primitive_size_in_bits<'ctx, B, C>(
-    module: ModuleRef<'ctx, B, C>,
-    ty: Type<'ctx, B, C>,
-) -> Option<u32>
-where
-    B: ModuleBrand + 'ctx,
-    C: Capability,
-{
-    match ty.data() {
-        TypeData::Integer { bits } => Some(*bits),
-        TypeData::Half | TypeData::Bfloat => Some(16),
-        TypeData::Float => Some(32),
-        TypeData::Double => Some(64),
-        TypeData::X86Fp80 => Some(80),
-        TypeData::PpcFp128 | TypeData::Fp128 => Some(128),
-        TypeData::X86Amx => Some(8192),
-        TypeData::FixedVector { elem, n } | TypeData::ScalableVector { elem, min: n } => {
-            primitive_size_in_bits(module, Type::new(*elem, module))?.checked_mul(n.get())
-        }
-        _ => None,
-    }
-}
-
+/// `IntegerType::get` of an element's `getPrimitiveSizeInBits`, as
+/// `VectorType::getInteger` reads it. `element` is a vector's element, so its
+/// scalar size is its primitive size.
 fn integer_type_matching_primitive_size<'ctx, B, C>(
     module: ModuleRef<'ctx, B, C>,
-    ty: Type<'ctx, B, C>,
+    element: Type<'ctx, B, C>,
 ) -> IrResult<Type<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
     C: Capability,
 {
-    let Some(bits) = primitive_size_in_bits(module, ty) else {
-        return Err(intrinsic_mismatch());
-    };
+    let bits = element.scalar_size_in_bits();
     if bits == 0 {
         return Err(intrinsic_mismatch());
     }
@@ -2695,9 +2673,7 @@ where
         | TypeData::PpcFp128
         | TypeData::Fp128 => Err(intrinsic_mismatch()),
         _ => {
-            let Some(bits) = primitive_size_in_bits(module, elem) else {
-                return Err(intrinsic_mismatch());
-            };
+            let bits = elem.scalar_size_in_bits();
             if bits == 0 || bits % 2 != 0 {
                 return Err(intrinsic_mismatch());
             }

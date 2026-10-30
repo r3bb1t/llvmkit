@@ -697,7 +697,9 @@ pub fn constant_data_array_info<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     let value_type = Type::new(data.value_type, module_ref(global));
 
     if is_null_constant(initializer) {
-        let size_in_bytes = data_layout.type_store_size(value_type);
+        let size_in_bytes = data_layout
+            .type_store_size(value_type)
+            .fixed_value_or_known_min();
         let length = size_in_bytes / element_size_in_bytes;
         // An empty slice for an undersized constant, so callers can still fold
         // an otherwise-undefined library call into a well-defined expression.
@@ -926,7 +928,7 @@ pub fn is_bytewise_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }
 
     // Poison for a zero-sized type.
-    if data_layout.type_store_size(value.ty()) == 0 {
+    if data_layout.type_store_size(value.ty()).known_min_value() == 0 {
         return Some(BytewiseValue::AnyByte);
     }
 
@@ -1692,7 +1694,12 @@ fn gep_constant_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 
         if position == 0 {
             // The leading index strides whole `source_ty`s.
-            let stride = i64::try_from(data_layout.type_alloc_size(current)).ok()?;
+            let stride = i64::try_from(
+                data_layout
+                    .type_alloc_size(current)
+                    .fixed_value_or_known_min(),
+            )
+            .ok()?;
             offset =
                 offset.wrapping_add(&signed_ap_int(index_value.checked_mul(stride)?, index_bits));
             continue;
@@ -1707,7 +1714,12 @@ fn gep_constant_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             }
             TypeKind::Array | TypeKind::FixedVector | TypeKind::ScalableVector => {
                 let element = element_type(current)?;
-                let stride = i64::try_from(data_layout.type_alloc_size(element)).ok()?;
+                let stride = i64::try_from(
+                    data_layout
+                        .type_alloc_size(element)
+                        .fixed_value_or_known_min(),
+                )
+                .ok()?;
                 offset = offset
                     .wrapping_add(&signed_ap_int(index_value.checked_mul(stride)?, index_bits));
                 current = element;

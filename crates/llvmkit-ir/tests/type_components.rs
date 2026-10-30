@@ -2,11 +2,42 @@
 //! them, and the erased routes that refuse to.
 
 use llvmkit_ir::{
-    AddressSpace, ArrLenDyn, ArrayType, ConstantFolder, DataLayout, Dyn, ElemDyn, IntrinsicId,
-    IrBuilder, IrBuilderFolder, IrError, LenDyn, Linkage, MAX_INT_BITS, Module, ShuffleMaskElem,
-    TargetExtParameterRule, TargetExtProperty, Type, TypeKindLabel, TypePosition, TypedPointee,
-    TypedPointerType, VectorType, address_space, constant_fold_shuffle_vector_instruction, lanes,
+    AddressSpace, ArrLenDyn, ArrayType, CastOpcode, ConstantFolder, DataLayout, Dyn, ElemDyn,
+    IntrinsicId, IrBuilder, IrBuilderFolder, IrError, LenDyn, Linkage, MAX_INT_BITS, Module,
+    ShuffleMaskElem, TargetExtParameterRule, TargetExtProperty, Type, TypeKindLabel, TypePosition,
+    TypeSize, TypedPointee, TypedPointerType, VectorType, address_space, cast_is_valid,
+    constant_fold_shuffle_vector_instruction, lanes,
 };
+
+/// Mirrors the `BitCast` arm of `CastInst::castIsValid`, which compares two
+/// `getPrimitiveSizeInBits` `TypeSize`s, and `Type::getPrimitiveSizeInBits`,
+/// which multiplies in 64 bits. `<536870912 x i64>` is 2^35 bits and
+/// `<1073741824 x i64>` 2^36: they differ, so the bitcast is invalid.
+/// llvmkit-specific (rule anchor): upstream has no vector this wide in a test.
+/// llvmkit's `u32` size saturated, both read `u32::MAX`, and the cast passed.
+#[test]
+fn a_bitcast_compares_sizes_past_32_bits() {
+    let m = Module::dynamic("components");
+    let i64_ty = m.i64_type();
+    let narrower = m
+        .vector_type(i64_ty, lanes::<536_870_912>())
+        .expect("i64 is a valid element")
+        .as_type();
+    let wider = m
+        .vector_type(i64_ty, lanes::<1_073_741_824>())
+        .expect("i64 is a valid element")
+        .as_type();
+    assert_eq!(
+        narrower.primitive_size_in_bits(),
+        TypeSize::fixed(34_359_738_368)
+    );
+    assert_eq!(
+        wider.primitive_size_in_bits(),
+        TypeSize::fixed(68_719_476_736)
+    );
+    assert!(!cast_is_valid(CastOpcode::BitCast, narrower, wider));
+    assert!(cast_is_valid(CastOpcode::BitCast, narrower, narrower));
+}
 
 /// `VectorType::of` keeps the element marker and builds in the element's own
 /// module. llvmkit-specific (D3): the typed route `FixedVectorType::get`'s
@@ -135,7 +166,11 @@ fn a_target_type_upstream_asserts_on_has_no_layout() {
             .target_ext_type(name, types, ints.clone())
             .expect("`checkParams` admits it");
         assert!(!ty.as_type().is_sized(), "{name} {ints:?}");
-        assert_eq!(dl.type_size_in_bits(ty.as_type()), 0, "{name} {ints:?}");
+        assert_eq!(
+            dl.type_size_in_bits(ty.as_type()),
+            TypeSize::fixed(0),
+            "{name} {ints:?}"
+        );
         for property in [
             TargetExtProperty::HasZeroInit,
             TargetExtProperty::CanBeGlobal,
@@ -174,8 +209,8 @@ fn a_spirv_type_layout_multiplies_as_upstream_does() {
             .expect("three integer parameters");
         dl.type_size_in_bits(ty.as_type())
     };
-    assert_eq!(size_of(1 << 29), 0);
-    assert_eq!(size_of(4), 32);
+    assert_eq!(size_of(1 << 29), TypeSize::fixed(0));
+    assert_eq!(size_of(4), TypeSize::fixed(32));
 }
 
 /// An intrinsic name whose overload suffix spells a zero-lane vector, or a
