@@ -922,7 +922,7 @@ The mark is no IR: it prints nowhere, and a verified module stays verified.
 upstream's stops. No build of upstream answers: the `TypeSize` conversion below
 is a `reportFatalInternalError`, not an `assert`.
 **Where:** `crates/llvmkit-ir/src/constant_folding.rs` — `gep_index_for_offset` and
-`aggregate_to_store_bytes`; `crates/llvmkit-ir/src/value_tracking.rs` —
+`read_struct_data_from_global`; `crates/llvmkit-ir/src/value_tracking.rs` —
 `gep_known_bits_from_values`; `crates/llvmkit-ir/src/constant_fold.rs` —
 `global_pointer_alignment`; `crates/llvmkit-ir/src/pointer_analysis.rs` —
 `constant_data_array_info`.
@@ -979,59 +979,53 @@ is llvmkit's, because upstream's assert has none a user would see.
 
 **Guarded by:** `crates/llvmkit-asmparser/tests/parser_constants.rs::a_forward_dso_local_equivalent_is_in_the_default_globals_space`.
 
-### D26 — A load from a constant reads its bytes whole, not through `ReadDataFromGlobal`
+### D28 — A `zeroinitializer` costs memory in proportion to its length
 
-**Severity:** model-gap. Derived by reading, one arm at a time, against
-`FoldReinterpretLoadFromConst` and `ReadDataFromGlobal` (`ConstantFolding.cpp`).
-Only the second bullet below has a test, and it pins the difference.
-**Where:** `crates/llvmkit-ir/src/constant_folding.rs` —
-`fold_reinterpret_load_from_const`, `constant_to_store_bytes`,
-`zero_constant_for_type`, `fold_bitcast_with_layout`.
+**Severity:** rejects-valid, on an input large enough; below that, model-gap.
+Every size this entry implies is arithmetic from the code, not a run: no fixture
+that asks for one has been parsed here.
+**Where:** `crates/llvmkit-ir/src/constant.rs` — `ConstantData::Aggregate`,
+`ConstantDataKind::AggregateZero`; `crates/llvmkit-asmparser/src/ll_parser.rs` —
+`zero_initializer_constant`; `crates/llvmkit-ir/src/constant_fold.rs` —
+`null_constant_for_type`.
 
-**LLVM:** `FoldReinterpretLoadFromConst` is the last step of
-`ConstantFoldLoadFromConst`. It turns a load into an integer load of at most 32
-bytes and fills a zeroed buffer from `ReadDataFromGlobal`, which walks the
-constant to the bytes the load asks for. A non-integer load is that integer
-cast afterwards.
+**LLVM:** a `ConstantAggregateZero` is one object per type, whatever the type's
+length, so `[4294967295 x [0 x i32]] zeroinitializer` costs nothing more than
+`[1 x i32] zeroinitializer`.
 
-**llvmkit:** `fold_reinterpret_load_from_const` keeps upstream's two scalable
-guards, then serialises the whole constant and slices it. So:
+**llvmkit:** `ConstantData::Aggregate` is a flat `Box<[ValueSlot]>`, and
+`ConstantDataKind::AggregateZero` classifies such a list without storing anything.
+So `zero_initializer_constant`, the parser's `t_Zero` arm, allocates a `Vec` of the
+array's length with `with_capacity`, pushes one zero element per lane, and hands the
+list to `const_array`.
 
-- A negative offset declines. Upstream answers poison when no byte of the load
-  is in the constant, and otherwise folds with the missing low bytes zero.
-- A load that starts inside the constant and runs past its end is poison. Upstream
-  fills the bytes it cannot read with zero, so `load i32` of `[1 x i8] [i8 7]` is
-  `i32 7` there. The same goes for a load that reaches a scalar's padding.
-- Only an integer or float load folds. Upstream also folds a pointer or vector
-  load, through `FoldBitCast` and `inttoptr`.
-- An integer load wider than 32 bytes folds. Upstream declines.
-- An integer whose width is no whole number of bytes, and a float other than
-  `half`, `float` and `double`, serialise here. `ReadDataFromGlobal` answers `false`
-  for each.
-- An `undef` or `poison` element stops the fold, and so does an `inttoptr`
-  constant. Upstream reads the first as zero bytes and the second through its
-  operand.
+- `ValueSlot` wraps a `NonZeroUsize`, so the stored list costs 8 bytes per element on
+  a 64-bit target. The parser's temporary `Vec` of handles comes on top of that.
+- One short `.ll` line can ask for more memory than the machine has, and a failed
+  `Vec::with_capacity` aborts the process rather than returning a `ParseError`. So a
+  `.ll` with a large `zeroinitializer` costs that much memory at parse time, or does
+  not parse at all.
+- A large zero-initialised C array is the same shape of IR, so this is reachable from
+  ordinary compiler output, not only from contrived fixtures.
 
-Two neighbours share the shape. `zero_constant_for_type` answers no array, struct,
-token or target type, so a load that the uniform fold could answer with
-`Constant::getNullValue` of one declines: a `ConstantAggregateZero` costs upstream
-nothing, and llvmkit's would be a list of every element at whatever length the
-load type names. `fold_bitcast_with_layout` answers a fixed bitcast from the same
-bytes, and declines one that has no bytes, where `FoldBitCast` works element by
-element and otherwise builds the `bitcast` expression.
+`null_constant_for_type`, the port of `Constant::getNullValue`, builds the same list
+for a load of an aggregate from a uniform constant. It is the same gap with one
+difference: there a list that cannot be allocated declines the fold.
 
-**Why:** the byte route predates the port of the rest of
-`ConstantFoldLoadFromConst`. Closing the scalable branches moved everything before
-it to upstream's order, and left this step as it was.
+The fixtures that ask for one, what each would cost, and what the fix touches are in
+`docs/future-work.md`, under "`zeroinitializer` is stored one slot per element".
 
-**Fix:** port `FoldReinterpretLoadFromConst` and `ReadDataFromGlobal` whole, then
-`FoldBitCast`. Then `load_from_const_ptr_oob_returns_poison`, which pins the second
-bullet, becomes a port of its upstream answer, and the fixtures of
-`test/Transforms/InstSimplify/ConstProp/loads.ll` that need these routines can be
-ported, such as `load_i8_from_i9`, `load_ptr_from_i8_data` and `load_i40_struct_padding`.
+**Why:** llvmkit has no storage for an aggregate with no element list but the
+`Undef` and `Poison` markers.
 
-**Guarded by:** `crates/llvmkit-ir/tests/constant_folding_analysis.rs::load_from_const_ptr_oob_returns_poison`
-pins the second bullet. Nothing pins the rest.
+**Fix:** a storage variant with no elements; see that section.
+
+**Guarded by:** nothing yet.
+`test/Transforms/InstSimplify/ConstProp/loads.ll::test_array_of_zero_size_array` is
+the test that would fail, and it is left out of
+`crates/llvmkit-asmparser/tests/constant_fold_loads.rs` and of that fixture's copy,
+each of which says so. `crates/llvmkit-ir/tests/constant_folding_analysis.rs::a_zero_load_too_long_to_build_is_not_folded`
+pins the fold's decline, and no test pins the parser's abort.
 
 ---
 

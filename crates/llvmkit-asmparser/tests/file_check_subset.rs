@@ -8,7 +8,9 @@
 
 pub mod support;
 
-use support::{Check, check_directives, read_check_directives};
+use support::{
+    Check, check_directives, read_check_directives, read_check_directives_with_prefixes,
+};
 
 /// `FileCheckString::CheckSame`: the match stays on the previous match's line.
 #[test]
@@ -165,4 +167,54 @@ fn directives_are_read_from_the_fixture() {
 #[should_panic(expected = "this FileCheck subset does not read the directive in")]
 fn an_unimplemented_directive_is_refused() {
     read_check_directives("; CHECK-NOT: a\n");
+}
+
+/// The patterns of `checks`, trimmed, whatever their directive.
+fn patterns<'a>(checks: &[Check<'a>]) -> Vec<&'a str> {
+    checks
+        .iter()
+        .map(|check| match check {
+            Check::Line(pattern)
+            | Check::Next(pattern)
+            | Check::Same(pattern)
+            | Check::Label(pattern) => pattern.trim(),
+        })
+        .collect()
+}
+
+/// `--check-prefixes`: each named prefix reads its lines, and an unnamed one
+/// reads none, so one fixture answers per `RUN` line.
+#[test]
+fn only_the_named_prefixes_are_read() {
+    let source = "; CHECK: both\n; LE-NEXT: little\n; BE-NEXT: big\n";
+    let little = read_check_directives_with_prefixes(source, &["CHECK", "LE"]);
+    let big = read_check_directives_with_prefixes(source, &["CHECK", "BE"]);
+    assert_eq!(patterns(&little), ["both", "little"]);
+    assert_eq!(patterns(&big), ["both", "big"]);
+}
+
+/// `DefaultCommentPrefixes` and `FindCheckType`'s `CheckComment`: a `RUN` line
+/// is a comment, so the `CHECK` of its `--check-prefixes=CHECK,LE` is not read.
+#[test]
+fn a_run_line_is_a_comment() {
+    let source = "; RUN: opt | FileCheck %s --check-prefixes=CHECK,LE\n; CHECK: a\n";
+    let checks = read_check_directives_with_prefixes(source, &["CHECK", "LE"]);
+    assert_eq!(patterns(&checks), ["a"]);
+}
+
+/// `FindCheckType`'s `CheckNone`: with no `:` or `-` after it a prefix names no
+/// directive, and `SkipWord` moves past it. The line is not given up on.
+#[test]
+fn a_prefix_with_no_directive_is_skipped() {
+    let source = "; CHECK,LE\n; CHECK-XYZ: a\n; CHECK, CHECK: b\n";
+    assert_eq!(patterns(&read_check_directives(source)), ["b"]);
+}
+
+/// `FindFirstMatchingPrefix`'s `IsPartOfWord`: a short prefix meets its letters
+/// inside other words. `BE` is in `0xDEADBEEF` and in `LABEL`.
+#[test]
+fn a_prefix_inside_a_word_is_no_directive() {
+    let source = "; 0xDEADBEEF\n; LE-LABEL: @f\n; BE-LABEL: @g\n";
+    let checks = read_check_directives_with_prefixes(source, &["BE"]);
+    assert_eq!(patterns(&checks), ["@g"]);
 }

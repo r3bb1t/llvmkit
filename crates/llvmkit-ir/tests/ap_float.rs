@@ -969,3 +969,62 @@ fn ppc_next_uses_low_component() -> Result<(), IrError> {
     );
     Ok(())
 }
+
+/// `ApFloat::from_bits` on an `x86_fp80` pattern of two words, low first.
+fn ap_x87(significand: u64, sign_and_exponent: u64) -> Result<ApFloat, IrError> {
+    ApFloat::from_bits(
+        ApFloatSemantics::X87DoubleExtended,
+        &ApInt::from_words(80, &[significand, sign_and_exponent]),
+    )
+}
+
+/// Ports the `UnnormalZero` block of `TEST(APFloatTest, toString)`
+/// (`unittests/ADT/APFloatTest.cpp`): `APInt(80, {0, 1})` is a NaN. llvmkit has
+/// no `toString`, so the assertion reads the category it prints. The second
+/// pattern is `loads.ll::test_x86_fp80`'s, whose `CHECK` line is the exponent
+/// `convertF80LongDoubleAPFloatToAPInt` writes for a NaN: `0x7fff`, sign kept.
+#[test]
+fn an_x87_unnormal_reads_as_a_nan() -> Result<(), IrError> {
+    let unnormal_zero = ap_x87(0, 1)?;
+    assert!(unnormal_zero.is_nan());
+
+    let unnormal = ap_x87(0x7b, 0xbff8)?;
+    assert!(unnormal.is_nan());
+    assert_eq!(unnormal.to_bits(), ApInt::from_words(80, &[0x7b, 0xffff]));
+    Ok(())
+}
+
+/// **No upstream counterpart as a test**: pins the other pattern
+/// `initFromF80LongDoubleAPInt` and `convertF80LongDoubleAPFloatToAPInt` rewrite.
+/// Exponent `0` with the integer bit set is read at exponent `-16382`, and that
+/// bit makes the biased exponent `1` on the way out. A true denormal, a normal,
+/// an infinity, a zero and a NaN are the positive controls: each comes back as
+/// it went in. At exponent `0x7fff` only one significand is an infinity.
+#[test]
+fn an_x87_pseudo_denormal_is_written_at_exponent_one() -> Result<(), IrError> {
+    let integer_bit = 0x8000_0000_0000_0000;
+    let pseudo_denormal = ap_x87(integer_bit | 1, 0)?;
+    assert_eq!(
+        pseudo_denormal.to_bits(),
+        ApInt::from_words(80, &[integer_bit | 1, 1])
+    );
+
+    for (significand, sign_and_exponent) in [
+        (1, 0),
+        (integer_bit, 0x3fff),
+        (integer_bit, 0x7fff),
+        (0, 0),
+        (integer_bit | 1, 0x7fff),
+    ] {
+        assert_eq!(
+            ap_x87(significand, sign_and_exponent)?.to_bits(),
+            ApInt::from_words(80, &[significand, sign_and_exponent])
+        );
+    }
+    assert_eq!(
+        ap_x87(integer_bit, 0x7fff)?.category(),
+        ApFloatCategory::Infinity
+    );
+    assert_eq!(ap_x87(0, 0x7fff)?.category(), ApFloatCategory::Nan);
+    Ok(())
+}

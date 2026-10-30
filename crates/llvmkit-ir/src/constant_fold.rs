@@ -29,7 +29,10 @@ use super::constant::{
 };
 use super::constants::{ConstantExprOptions, ConstantFloatValue, ConstantIntValue};
 use super::data_layout::FunctionPtrAlignType;
-use super::derived_types::{ArrayType, FloatType, IntType, PointerType, StructType, VectorType};
+use super::derived_types::{
+    ArrayType, FloatType, IntType, PointerType, StructType, TargetExtProperty, TargetExtType,
+    VectorType,
+};
 use super::element::ElemDyn;
 use super::float_kind::FloatDyn;
 use super::gep_no_wrap_flags::GepNoWrapFlags;
@@ -2762,8 +2765,14 @@ fn fold_float_predicate(predicate: FloatPredicate, cmp: ApFloatCmpResult) -> boo
     }
 }
 
-/// Mirrors `Constant::getNullValue`, as far as a caller here needs. `None`
-/// covers upstream's `llvm_unreachable` for a type with no null constant.
+/// Mirrors `Constant::getNullValue`. `None` covers upstream's `llvm_unreachable`
+/// for a type with no null constant, a target type with no zero initializer,
+/// which `ConstantTargetNone::get` asserts on, and an unsized struct.
+///
+/// `ConstantAggregateZero` costs upstream nothing, whatever its length.
+/// llvmkit's is one element per lane (`docs/divergences.md` D28), built as the
+/// parser's `zero_initializer_constant` builds it, but a list that cannot be
+/// allocated answers `None` rather than aborting.
 pub(crate) fn null_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     ty: Type<'ctx, B, C>,
 ) -> IrResult<Option<Constant<'ctx, B, C>>> {
@@ -2777,8 +2786,8 @@ pub(crate) fn null_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>
     if let Ok(ptr_ty) = PointerType::<crate::SpaceDyn, _, _>::try_from(ty) {
         return Ok(Some(ptr_ty.const_null().as_constant()));
     }
+    let module = ty.module;
     if let Some((element_ty, lanes, scalable)) = ty.data().as_vector() {
-        let module = ty.module;
         let element_ty = Type::new(element_ty, module);
         let Some(element) = null_constant_for_type(element_ty)? else {
             return Ok(None);
@@ -2790,6 +2799,48 @@ pub(crate) fn null_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>
         return vector_ty
             .const_vector((0..lane_count).map(|_| element))
             .map(|constant| Some(constant.as_constant()));
+    }
+    if let Ok(array_ty) = ArrayType::<ElemDyn, ArrLenDyn, _, C>::try_from(ty) {
+        let Some(element) = null_constant_for_type(array_ty.element())? else {
+            return Ok(None);
+        };
+        let Ok(length) = usize::try_from(array_ty.len()) else {
+            return Ok(None);
+        };
+        let mut elements = Vec::new();
+        if elements.try_reserve_exact(length).is_err() {
+            return Ok(None);
+        }
+        elements.resize(length, element);
+        return array_ty
+            .const_array::<Constant<'ctx, B, C>, _>(elements)
+            .map(|constant| Some(constant.as_constant()));
+    }
+    if let Ok(struct_ty) = StructType::try_from(ty) {
+        if !ty.is_sized() {
+            return Ok(None);
+        }
+        let mut elements = Vec::with_capacity(struct_ty.field_count());
+        for index in 0..struct_ty.field_count() {
+            let Some(field_ty) = struct_ty.field_type(index) else {
+                return Ok(None);
+            };
+            let Some(field) = null_constant_for_type(field_ty)? else {
+                return Ok(None);
+            };
+            elements.push(field);
+        }
+        return struct_ty
+            .const_struct::<Constant<'ctx, B, C>, _>(elements)
+            .map(|constant| Some(constant.as_constant()));
+    }
+    if ty.is_token() {
+        return Ok(Some(module.token_none()));
+    }
+    if let Ok(target_ty) = TargetExtType::try_from(ty)
+        && target_ty.has_property(TargetExtProperty::HasZeroInit)
+    {
+        return module.target_ext_none(ty).map(Some);
     }
     Ok(None)
 }
@@ -3132,7 +3183,7 @@ fn is_not_poison_for_select<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         _ => false,
     }
 }
-fn constant_aggregate_from_elements<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+pub(crate) fn constant_aggregate_from_elements<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     ty: Type<'ctx, B, C>,
     elements: Vec<Constant<'ctx, B, C>>,
 ) -> IrResult<Option<Constant<'ctx, B, C>>> {
@@ -3408,7 +3459,7 @@ fn poison_for<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 /// their answer: `element` is `module`'s own and a valid vector element — the
 /// element of a vector `module` interned, its `i1` or `ptr`, or the type of an
 /// integer or floating-point constant — and `lanes` is a [`NonZeroU32`].
-fn vector_type_with_scalability<'ctx, B: ModuleBrand + 'ctx, C: Capability, T>(
+pub(crate) fn vector_type_with_scalability<'ctx, B: ModuleBrand + 'ctx, C: Capability, T>(
     module: ModuleRef<'ctx, B, C>,
     element: T,
     lanes: NonZeroU32,

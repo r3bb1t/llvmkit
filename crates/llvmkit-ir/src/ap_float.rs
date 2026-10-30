@@ -240,9 +240,13 @@ impl ApFloat {
                 rhs: bits.bit_width(),
             });
         }
+        let bits = match semantics {
+            ApFloatSemantics::X87DoubleExtended => x87_bits_as_read(bits),
+            _ => bits.clone(),
+        };
         Ok(Self {
             semantics,
-            repr: ApFloatRepr::Bits(bits.clone()),
+            repr: ApFloatRepr::Bits(bits),
         })
     }
 
@@ -621,10 +625,15 @@ impl ApFloat {
         } else {
             bits.wrapping_sub(&step)
         };
-        match Self::from_bits(self.semantics, &next_bits) {
-            Ok(v) => (v, ApFloatStatus::OK),
-            Err(_) => (self.clone(), ApFloatStatus::INVALID_OP),
-        }
+        // The step is on the raw pattern, so it is not read as `from_bits` reads
+        // one: on `x86_fp80` it can pass through a clear integer bit.
+        (
+            Self {
+                semantics: self.semantics,
+                repr: ApFloatRepr::Bits(next_bits),
+            },
+            ApFloatStatus::OK,
+        )
     }
 
     pub fn change_sign(&self) -> ApFloat {
@@ -1262,7 +1271,11 @@ impl ApFloat {
                 ApFloatCategory::Zero
             }
         } else if exp == exp_all_ones {
-            if frac_nonzero {
+            // `initFromF80LongDoubleAPInt`: x87 keeps its integer bit, and only
+            // the significand `0x8000000000000000` is an infinity.
+            let x87_no_integer_bit =
+                matches!(self.semantics, ApFloatSemantics::X87DoubleExtended) && !bits.bit(63);
+            if frac_nonzero || x87_no_integer_bit {
                 ApFloatCategory::Nan
             } else {
                 ApFloatCategory::Infinity
@@ -3639,6 +3652,30 @@ fn pack_decimal_bits(
         }
         ApFloatSemantics::PpcDoubleDouble => None,
     }
+}
+
+/// What `IEEEFloat::initFromF80LongDoubleAPInt` and then
+/// `convertF80LongDoubleAPFloatToAPInt` make of an `x86_fp80` pattern. Upstream
+/// keeps a category, an exponent and a significand, and writes the pattern from
+/// them. llvmkit keeps the pattern, so it keeps that answer.
+///
+/// Two inputs come back changed. An exponent neither `0` nor `0x7fff` with a
+/// clear integer bit is an unnormal, which upstream reads as a NaN and writes
+/// with exponent `0x7fff`. Exponent `0` with the integer bit set is a
+/// pseudo-denormal, read at exponent `-16382`, which is written back as biased
+/// exponent `1`, because that integer bit is set.
+fn x87_bits_as_read(bits: &ApInt) -> ApInt {
+    const EXPONENT_LOW_BIT: u32 = 64;
+    const EXPONENT_MASK: u64 = 0x7fff;
+    let exponent = extract_bits_u64(bits, EXPONENT_LOW_BIT, 15);
+    let integer_bit = bits.bit(63);
+    let mut read = bits.clone();
+    if exponent != 0 && exponent != EXPONENT_MASK && !integer_bit {
+        read.set_bits(EXPONENT_LOW_BIT, EXPONENT_LOW_BIT + 15);
+    } else if exponent == 0 && integer_bit {
+        read.set_bit(EXPONENT_LOW_BIT);
+    }
+    read
 }
 
 fn quad_to_f64(bits: &ApInt) -> f64 {

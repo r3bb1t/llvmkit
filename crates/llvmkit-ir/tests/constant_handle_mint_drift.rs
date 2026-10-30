@@ -38,12 +38,6 @@ const AUDITED: &[(&str, &str, usize, &str)] = &[
     ("constant.rs", "splat_value", 1, ELEMENT),
     ("constant_fold.rs", "aggregate_elements", 1, ELEMENT),
     ("constant_fold.rs", "constant_from_id", 1, GUARDED),
-    (
-        "constant_folding.rs",
-        "aggregate_to_store_bytes",
-        3,
-        ELEMENT,
-    ),
     ("constant_folding.rs", "build_canonical_i8_gep", 1, INTERNED),
     ("constant_folding.rs", "constant_fold_constant", 1, INTERNED),
     (
@@ -55,12 +49,6 @@ const AUDITED: &[(&str, &str, usize, &str)] = &[
     ("constant_folding.rs", "fold_int_to_ptr_pair", 1, ELEMENT),
     ("constant_folding.rs", "fold_ptr_to_int_pair", 1, ELEMENT),
     ("constant_folding.rs", "peel_one_gep_level", 1, INTERNED),
-    (
-        "constant_folding.rs",
-        "strip_and_accumulate_constant_offset",
-        1,
-        INTERNED,
-    ),
     ("constants.rs", "as_constant", 4, REMINT),
     ("constants.rs", "constant_handle", 1, INTERNED),
     ("function.rs", "as_aggregate_ptr", 1, INTERNED),

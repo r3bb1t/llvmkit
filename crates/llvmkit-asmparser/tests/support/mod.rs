@@ -67,39 +67,122 @@ impl<'a> Check<'a> {
 }
 
 /// `source`'s own `CHECK` block, in order, so a test compares the fixture's
-/// directives rather than a hand-copied list. Mirrors the
-/// `FindFirstMatchingPrefix` / `FindCheckType` scan in `FileCheck::readCheckFile`,
-/// for the one prefix `CHECK`: an occurrence inside a word is not a directive,
+/// directives rather than a hand-copied list.
+pub fn read_check_directives(source: &str) -> Vec<Check<'_>> {
+    read_check_directives_with_prefixes(source, &["CHECK"])
+}
+
+/// `DefaultCommentPrefixes`: the rest of a line after `RUN:` or `COM:` is a
+/// comment, which is why the `--check-prefixes=CHECK,LE` of a `RUN` line names
+/// no directive.
+const COMMENT_PREFIXES: [&str; 2] = ["COM", "RUN"];
+
+/// `source`'s directives for `prefixes`, in order, as `--check-prefixes` reads
+/// them. Mirrors the `FindFirstMatchingPrefix` / `FindCheckType` scan in
+/// `FileCheck::readCheckFile`: an occurrence inside a word is not a directive,
 /// and the pattern runs to the end of the line.
 ///
 /// A suffix this subset does not implement is a panic rather than a skipped
 /// line: a fixture needing one is *unported*, not narrowed.
-pub fn read_check_directives(source: &str) -> Vec<Check<'_>> {
-    let mut checks = Vec::new();
-    for line in source.lines() {
-        let directive = line.match_indices("CHECK").find(|(start, _)| {
-            !line[..*start]
-                .chars()
-                .next_back()
-                .is_some_and(|c| c.is_alphanumeric() || c == '-' || c == '_')
-        });
-        let Some((start, prefix)) = directive else {
-            continue;
-        };
-        let suffix = &line[start + prefix.len()..];
-        checks.push(if let Some(pattern) = suffix.strip_prefix(':') {
-            Check::Line(pattern)
-        } else if let Some(pattern) = suffix.strip_prefix("-NEXT:") {
-            Check::Next(pattern)
-        } else if let Some(pattern) = suffix.strip_prefix("-SAME:") {
-            Check::Same(pattern)
-        } else if let Some(pattern) = suffix.strip_prefix("-LABEL:") {
-            Check::Label(pattern)
-        } else {
-            panic!("this FileCheck subset does not read the directive in: {line}");
-        });
+pub fn read_check_directives_with_prefixes<'a>(
+    source: &'a str,
+    prefixes: &[&str],
+) -> Vec<Check<'a>> {
+    source
+        .lines()
+        .filter_map(|line| directive_in_line(line, prefixes))
+        .collect()
+}
+
+/// `IsPartOfWord`.
+fn is_part_of_word(c: char) -> bool {
+    c.is_alphanumeric() || c == '-' || c == '_'
+}
+
+/// `FindFirstMatchingPrefix`, over one line, which is what it comes to because
+/// a directive and a comment each take the rest of theirs.
+fn directive_in_line<'a>(line: &'a str, prefixes: &[&str]) -> Option<Check<'a>> {
+    let mut scanned = 0;
+    loop {
+        // The first occurrence of any prefix, the longest at one position.
+        let (start, prefix) = prefixes
+            .iter()
+            .chain(&COMMENT_PREFIXES)
+            .filter_map(|prefix| {
+                line[scanned..]
+                    .find(prefix)
+                    .map(|at| (scanned + at, *prefix))
+            })
+            .min_by_key(|(start, prefix)| (*start, core::cmp::Reverse(prefix.len())))?;
+        let after = &line[start + prefix.len()..];
+        // Check that the matched prefix isn't a suffix of some other
+        // check-like word.
+        if !line[..start]
+            .chars()
+            .next_back()
+            .is_some_and(is_part_of_word)
+        {
+            match check_type(after, prefix, line) {
+                CheckType::Directive(check) => return Some(check),
+                CheckType::Comment => return None,
+                CheckType::None => {}
+            }
+        }
+        // `SkipWord`.
+        let word = after.find(|c| !is_part_of_word(c)).unwrap_or(after.len());
+        scanned = start + prefix.len() + word;
     }
-    checks
+}
+
+/// What `FindCheckType` makes of the text after a prefix.
+enum CheckType<'a> {
+    Directive(Check<'a>),
+    Comment,
+    None,
+}
+
+/// `FindCheckType`. The arms it has and this subset does not implement panic;
+/// `CheckNone` skips the word, so a `CHECK,LE` is no directive.
+fn check_type<'a>(after: &'a str, prefix: &str, line: &str) -> CheckType<'a> {
+    if COMMENT_PREFIXES.contains(&prefix) {
+        return if after.starts_with(':') {
+            CheckType::Comment
+        } else {
+            CheckType::None
+        };
+    }
+    if let Some(pattern) = after.strip_prefix(':') {
+        return CheckType::Directive(Check::Line(pattern));
+    }
+    let suffix = match after.strip_prefix('-') {
+        Some(suffix) => suffix,
+        None if after.starts_with(['{', '_']) => {
+            panic!("this FileCheck subset does not read the directive in: {line}")
+        }
+        None => return CheckType::None,
+    };
+    if let Some(pattern) = suffix.strip_prefix("NEXT:") {
+        return CheckType::Directive(Check::Next(pattern));
+    }
+    if let Some(pattern) = suffix.strip_prefix("SAME:") {
+        return CheckType::Directive(Check::Same(pattern));
+    }
+    if let Some(pattern) = suffix.strip_prefix("LABEL:") {
+        return CheckType::Directive(Check::Label(pattern));
+    }
+    let names_a_directive =
+        ["NEXT", "SAME", "NOT", "DAG", "LABEL", "EMPTY"]
+            .iter()
+            .any(|keyword| {
+                suffix
+                    .strip_prefix(keyword)
+                    .is_some_and(|rest| rest.starts_with([':', '{']))
+            });
+    assert!(
+        !names_a_directive && !suffix.starts_with("COUNT-"),
+        "this FileCheck subset does not read the directive in: {line}"
+    );
+    CheckType::None
 }
 
 /// One piece of a parsed pattern.

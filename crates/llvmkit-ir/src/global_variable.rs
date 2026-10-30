@@ -424,6 +424,20 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GlobalVariable<'ctx, B, C> {
         self.data().initializer.get().is_some()
     }
 
+    /// Whether the global has an initializer that every other instance of it
+    /// is guaranteed to share. Mirrors `GlobalVariable::hasDefinitiveInitializer`:
+    /// the initializer of an interposable global may change to something
+    /// arbitrary at link time, and that of an `externally_initialized` one at
+    /// run time before C++ initializers are evaluated.
+    ///
+    /// Only the linkage half of `GlobalValue::isInterposable` is asked; see
+    /// [`crate::pointer_analysis`]'s module docs.
+    pub fn has_definitive_initializer(self) -> bool {
+        self.has_initializer()
+            && !crate::constant_fold::linkage_is_interposable(self.linkage())
+            && !self.is_externally_initialized()
+    }
+
     /// Initializer constant, if any. Mirrors
     /// `GlobalVariable::getInitializer`.
     pub fn initializer(self) -> Option<Constant<'ctx, B, C>> {
