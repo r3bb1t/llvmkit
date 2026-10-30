@@ -2728,9 +2728,13 @@ items below are the deferred / known-remaining points.
 ## Tests — two CHECK oracles in one crate, and the ordered one cannot express CHECK-NEXT (found 2026-08-20, fix round 3)
 
 `crates/llvmkit-asmparser/tests` carries two substitutes for FileCheck.
-`check_directives` implements `CHECK` and `CHECK-NEXT` against
-`FileCheckString::Check` / `FileCheckString::CheckNext` / `Pattern::match` /
-`FileCheck::CanonicalizeFile`. `assert_check_lines` — byte-identical copies at
+`check_directives` implements `CHECK`, `CHECK-NEXT`, `CHECK-SAME` and
+`CHECK-LABEL`, plus `{{...}}` blocks and `[[NAME:...]]` / `[[NAME]]` variables
+whose regex holds only literal text and `.*`, against `FileCheck::checkInput` /
+`FileCheckString::Check` / `CheckNext` / `CheckSame` / `Pattern::parsePattern` /
+`Pattern::match` / `FileCheck::CanonicalizeFile`; `read_check_directives` reads
+a fixture's own block, and `tests/file_check_subset.rs` pins what the harness
+must refuse. `assert_check_lines` — byte-identical copies at
 parser_calls.rs, parser_constants.rs, parser_modifiers.rs and
 parser_remaining_opcodes.rs — has upstream's byte cursor but **no CHECK-NEXT
 concept**, so an upstream `CHECK-NEXT` ported into one of those files silently

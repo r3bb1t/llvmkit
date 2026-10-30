@@ -7345,22 +7345,29 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // `vscale x N x T>` ?
         let scalable = if is_vector && matches!(self.peek(), Token::Kw(Keyword::Vscale)) {
             self.bump()?;
-            self.expect_keyword(Keyword::X, "'x' after 'vscale'")?;
+            self.expect_keyword(Keyword::X, "'x' after vscale")?;
             true
         } else {
             false
         };
-        // Upstream reads the count as an APSInt and only *then* range-checks
-        // it, so an over-large vector count is `size too large for vector`
-        // rather than a parse failure. Reading it as u64 here keeps that
-        // ordering.
+        // `Lex.getKind() != lltok::APSInt || Lex.getAPSIntVal().isSigned() ||
+        // Lex.getAPSIntVal().getBitWidth() > 64`. The word "address space" is
+        // upstream's, in a routine that reads a size. An over-large vector
+        // count fits in 64 bits and is `size too large for vector` below.
+        let size = self
+            .peek_unsigned_apsint()
+            .map(|lit| self.apsint_from_int_lit(lit))
+            .transpose()?
+            .filter(|size| size.bit_width() <= 64)
+            .ok_or_else(|| self.expected("number in address space"))?;
         let size_loc = self.loc();
-        let n = self.parse_uint64()?;
-        self.expect_keyword(Keyword::X, "'x' between count and element type")?;
+        let n = size.value.limited_value(u64::MAX);
+        self.bump()?;
+        self.expect_keyword(Keyword::X, "'x' after element count")?;
         let elem_loc = self.loc();
         let elem = self.parse_type(false)?;
         if is_vector {
-            self.expect_punct(PunctKind::Greater, "'>' at end of vector type")?;
+            self.expect_punct(PunctKind::Greater, "end of sequential type")?;
             let Some(lanes) = NonZeroU64::new(n) else {
                 return Err(self.message_at(size_loc, "zero element vector is illegal"));
             };
@@ -7378,7 +7385,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .map_err(|e| self.builder_err_at(elem_loc, "vector type", e))?;
             Ok(v.as_type())
         } else {
-            self.expect_punct(PunctKind::RSquare, "']' at end of array type")?;
+            self.expect_punct(PunctKind::RSquare, "end of sequential type")?;
             if !elem.is_valid_array_element() {
                 return Err(self.message_at(elem_loc, "invalid array element type"));
             }
