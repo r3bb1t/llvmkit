@@ -75,7 +75,7 @@ pub trait FunctionReturn: Sized + 'static {
     type Marker: ReturnMarker;
 
     /// Construct this schema's LLVM IR return type in `module`, whose
-    /// reference is [`Mutable`](crate::Mutable) because a struct schema's type
+    /// reference is [`Mutable`] because a struct schema's type
     /// is created here (D8). Other schemas read through
     /// [`as_view`](ModuleRef::as_view).
     fn ir_type<'ctx, B>(module: ModuleRef<'ctx, B>) -> IrResult<Type<'ctx, B, ReadOnly>>

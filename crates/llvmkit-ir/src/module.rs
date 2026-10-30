@@ -32,12 +32,11 @@
 //! and relies on the [`ModuleId`] tag alone.
 //!
 //! Public handle accessors expose [`ModuleView`], a branded view of the
-//! storage. It carries every *type* constructor — interning a type is
-//! preservation-neutral, so it needs no mutation authority, which is what lets
-//! the typed-signature traits (`FunctionParam`, `FunctionReturn`) be declared
-//! against it and a struct schema's type be minted through it. Module-structural
-//! work — declaring functions, globals, aliases, ifuncs, and the typestate
-//! struct-body setters — requires the unverified [`Module`] token instead.
+//! storage. It carries the *type* constructors — interning a type is
+//! preservation-neutral, so it needs no mutation authority. Module-structural
+//! work — declaring functions, globals, aliases, ifuncs, minting a struct
+//! schema's type, and the typestate struct-body setters — requires the
+//! unverified [`Module`] token instead.
 
 use crate::Branded;
 use crate::CrateOnly;
@@ -1245,10 +1244,10 @@ impl<B: ModuleBrand, C: Capability> core::fmt::Debug for ModuleRef<'_, B, C> {
 /// `ModuleView` lets handles report their owning module without exposing the
 /// crate-private storage or the linear verification-state token. Beyond reads
 /// it carries the full type-constructor surface (see the `Type constructors`
-/// section below for why that is not a loosening), which is what the
-/// user-implementable typed-signature traits (the `FunctionReturn` /
-/// `FunctionParam` family) are declared against, and what mints a
-/// [`StructSchema`]'s type ([`get_or_insert_struct_of`](Self::get_or_insert_struct_of)).
+/// section below for why that is not a loosening). A [`StructSchema`]'s named
+/// struct is the exception: creating it or setting its body changes what the
+/// module prints, so that takes
+/// [`Module::get_or_insert_struct_of`] on an unverified module (D8).
 ///
 /// This is the **read capability** grade over a module's storage;
 /// [`ModuleRef`] is the bare **storage pointer** grade. The two have the same
