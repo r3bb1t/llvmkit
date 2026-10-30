@@ -28,6 +28,7 @@ use core::fmt;
 
 use super::float_kind::{Bfloat, FloatDyn, Fp128, Half, PpcFp128, X86Fp80};
 use super::int_width::{IntDyn, Width};
+use crate::addr_space::{AddressSpace, address_space};
 use crate::error::TypeKindLabel;
 use crate::float_kind::FloatKind;
 use crate::int_width::IntWidth;
@@ -45,7 +46,7 @@ use crate::r#type::sealed;
 pub enum ExpectedRetKind {
     Void,
     /// A pointer in this address space.
-    Ptr(u32),
+    Ptr(AddressSpace),
     Dyn,
     IntStatic(u32),
     IntDyn,
@@ -126,7 +127,7 @@ impl<const AS: u32> sealed::Sealed for Ptr<AS> {}
 impl<const AS: u32> ReturnMarker for Ptr<AS> {
     #[inline]
     fn expected_kind() -> ExpectedRetKind {
-        ExpectedRetKind::Ptr(AS)
+        ExpectedRetKind::Ptr(address_space::<AS>())
     }
 }
 

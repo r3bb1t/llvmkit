@@ -523,22 +523,22 @@ impl DataLayout {
     }
 
     /// Mirrors `DataLayout::isNonIntegralAddressSpace`.
-    pub fn is_non_integral_address_space(&self, addr_space: u32) -> bool {
+    pub fn is_non_integral_address_space(&self, addr_space: AddressSpace) -> bool {
         self.pointer_spec(addr_space).is_non_integral()
     }
 
     /// Mirrors `DataLayout::hasUnstableRepresentation(unsigned)`.
-    pub fn has_unstable_representation(&self, addr_space: u32) -> bool {
+    pub fn has_unstable_representation(&self, addr_space: AddressSpace) -> bool {
         self.pointer_spec(addr_space).has_unstable_representation()
     }
 
     /// Mirrors `DataLayout::hasExternalState(unsigned)`.
-    pub fn has_external_state(&self, addr_space: u32) -> bool {
+    pub fn has_external_state(&self, addr_space: AddressSpace) -> bool {
         self.pointer_spec(addr_space).has_external_state()
     }
 
     /// Mirrors `DataLayout::getAddressSpaceName`.
-    pub fn address_space_name(&self, addr_space: u32) -> &str {
+    pub fn address_space_name(&self, addr_space: AddressSpace) -> &str {
         self.pointer_spec(addr_space).address_space_name()
     }
 
@@ -553,43 +553,43 @@ impl DataLayout {
     // ----- Pointer accessors -----
 
     /// Mirrors `DataLayout::getPointerSize(AS)`. Bytes.
-    pub fn pointer_size(&self, addr_space: u32) -> u32 {
+    pub fn pointer_size(&self, addr_space: AddressSpace) -> u32 {
         div_ceil_u32(self.pointer_spec(addr_space).bit_width(), 8)
     }
 
     /// Mirrors `DataLayout::getPointerSizeInBits(AS)`.
     #[inline]
-    pub fn pointer_size_in_bits(&self, addr_space: u32) -> u32 {
+    pub fn pointer_size_in_bits(&self, addr_space: AddressSpace) -> u32 {
         self.pointer_spec(addr_space).bit_width()
     }
 
     /// Mirrors `DataLayout::getIndexSize(AS)`. Bytes.
-    pub fn index_size(&self, addr_space: u32) -> u32 {
+    pub fn index_size(&self, addr_space: AddressSpace) -> u32 {
         div_ceil_u32(self.pointer_spec(addr_space).index_bit_width(), 8)
     }
 
     /// Mirrors `DataLayout::getIndexSizeInBits(AS)`.
     #[inline]
-    pub fn index_size_in_bits(&self, addr_space: u32) -> u32 {
+    pub fn index_size_in_bits(&self, addr_space: AddressSpace) -> u32 {
         self.pointer_spec(addr_space).index_bit_width()
     }
 
     /// Mirrors `DataLayout::getPointerABIAlignment(AS)`.
     #[inline]
-    pub fn pointer_abi_align(&self, addr_space: u32) -> Align {
+    pub fn pointer_abi_align(&self, addr_space: AddressSpace) -> Align {
         self.pointer_spec(addr_space).abi_align()
     }
 
     /// Mirrors `DataLayout::getPointerPrefAlignment(AS)`.
     #[inline]
-    pub fn pointer_pref_align(&self, addr_space: u32) -> Align {
+    pub fn pointer_pref_align(&self, addr_space: AddressSpace) -> Align {
         self.pointer_spec(addr_space).pref_align()
     }
 
     /// Mirrors `DataLayout::getPointerSpec`. Exposes the parsed
     /// pointer-layout record without exposing its representation.
-    pub fn pointer_spec(&self, addr_space: u32) -> &PointerSpec {
-        if addr_space != 0
+    pub fn pointer_spec(&self, addr_space: AddressSpace) -> &PointerSpec {
+        if addr_space != AddressSpace::DEFAULT
             && let Some(spec) = self
                 .pointer_specs
                 .iter()
@@ -701,9 +701,9 @@ impl DataLayout {
         let element_bits =
             |elem: TypeSlot| self.type_size_in_bits_inner(module, elem).known_min_value();
         match module.context().type_data(id) {
-            TypeData::Label => TypeSize::fixed(u64::from(self.pointer_size_in_bits(0))),
+            TypeData::Label => TypeSize::fixed(u64::from(self.pointer_size_in_bits(AddressSpace::DEFAULT))),
             TypeData::Pointer { addr_space } => {
-                TypeSize::fixed(u64::from(self.pointer_size_in_bits(addr_space.get())))
+                TypeSize::fixed(u64::from(self.pointer_size_in_bits(*addr_space)))
             }
             TypeData::Array { elem, n } => self
                 .type_alloc_size_inner(module, *elem)
@@ -762,8 +762,8 @@ impl DataLayout {
                 align_type_size(bytes, a)
             }
             TypeData::Pointer { addr_space } => {
-                let size = TypeSize::fixed(u64::from(self.pointer_size(addr_space.get())));
-                align_type_size(size, self.pointer_abi_align(addr_space.get()))
+                let size = TypeSize::fixed(u64::from(self.pointer_size(*addr_space)));
+                align_type_size(size, self.pointer_abi_align(*addr_space))
             }
             TypeData::TargetExt(_) => match target_ext_layout_type(module, id) {
                 Some(layout) => self.type_alloc_size_inner(module, layout),
@@ -845,16 +845,16 @@ impl DataLayout {
             }
             TypeData::Pointer { addr_space } => {
                 if abi_or_pref {
-                    self.pointer_abi_align(addr_space.get())
+                    self.pointer_abi_align(*addr_space)
                 } else {
-                    self.pointer_pref_align(addr_space.get())
+                    self.pointer_pref_align(*addr_space)
                 }
             }
             TypeData::Label => {
                 if abi_or_pref {
-                    self.pointer_abi_align(0)
+                    self.pointer_abi_align(AddressSpace::DEFAULT)
                 } else {
-                    self.pointer_pref_align(0)
+                    self.pointer_pref_align(AddressSpace::DEFAULT)
                 }
             }
             TypeData::Array { elem, .. } => self.alignment(module, *elem, abi_or_pref),
@@ -1153,7 +1153,7 @@ impl DataLayout {
             // Mirrors the post-pass: clone the existing spec for the
             // given AS (or AS 0 if there is none), then mark it
             // non-integral.
-            let base = self.pointer_spec(as_id.get()).clone();
+            let base = self.pointer_spec(as_id).clone();
             self.set_pointer_spec(base.into_non_integral_address_space(as_id));
         }
         Ok(())
@@ -1332,9 +1332,8 @@ impl DataLayout {
         }
         // <size> component must be empty or the literal "0".
         if !components[0].is_empty() {
-            let bit_width: u32 = components[0]
-                .parse()
-                .map_err(|_| invalid("size must be zero".into()))?;
+            let bit_width: u32 =
+                to_integer(components[0]).ok_or_else(|| invalid("size must be zero".into()))?;
             if bit_width != 0 {
                 return Err(invalid("size must be zero".into()));
             }
@@ -1449,9 +1448,8 @@ fn parse_size(s: &str, name: &str) -> Result<u32, DataLayoutError> {
     if s.is_empty() {
         return Err(invalid(format!("{name} component cannot be empty")));
     }
-    let v: u64 = s
-        .parse()
-        .map_err(|_| invalid(format!("{name} must be a non-zero 24-bit integer")))?;
+    let v: u64 = to_integer(s)
+        .ok_or_else(|| invalid(format!("{name} must be a non-zero 24-bit integer")))?;
     if v == 0 || v > (1u64 << 24) - 1 {
         return Err(invalid(format!("{name} must be a non-zero 24-bit integer")));
     }
@@ -1470,9 +1468,8 @@ fn parse_alignment(s: &str, name: &str, allow_zero: bool) -> Result<Align, DataL
             "{name} alignment component cannot be empty"
         )));
     }
-    let v: u64 = s
-        .parse()
-        .map_err(|_| invalid(format!("{name} alignment must be a 16-bit integer")))?;
+    let v: u64 = to_integer(s)
+        .ok_or_else(|| invalid(format!("{name} alignment must be a 16-bit integer")))?;
     if v > u64::from(u16::MAX) {
         return Err(invalid(format!(
             "{name} alignment must be a 16-bit integer"
@@ -1496,11 +1493,21 @@ fn parse_alignment(s: &str, name: &str, allow_zero: bool) -> Result<Align, DataL
         .unwrap_or_else(|_| unreachable!("v / 8 is a non-zero power of two within Align's range")))
 }
 
+/// Mirrors `to_integer(Str, N, 10)`: all of `s`, in base 10.
+/// `consumeUnsignedInteger` consumes digits and nothing else, where `str::parse`
+/// also takes a leading `+`.
+fn to_integer<N: FromStr>(s: &str) -> Option<N> {
+    if s.bytes().all(|byte| byte.is_ascii_digit()) {
+        s.parse().ok()
+    } else {
+        None
+    }
+}
+
 /// The digits `s` as an address space. `parseAddrSpace`'s number and its
 /// `isUInt<24>` check, which [`AddressSpace::new`] is.
 fn parse_addr_space_digits(s: &str) -> Result<AddressSpace, DataLayoutError> {
-    s.parse()
-        .ok()
+    to_integer(s)
         .and_then(AddressSpace::new)
         .ok_or_else(|| invalid("address space must be a 24-bit integer".into()))
 }

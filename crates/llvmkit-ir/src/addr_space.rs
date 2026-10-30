@@ -24,7 +24,8 @@
 //! [`AddressSpace`] is the run-time number itself, and it holds only what LLVM
 //! can: 24 bits. Every route that names an address space takes one, so a wider
 //! number is refused once, where it becomes an [`AddressSpace`], and nothing
-//! past that point can fail.
+//! past that point can fail. `rg -n "(addr|address)_space: u32" crates` prints
+//! nothing, measured on top of `5af2503`.
 
 use core::fmt;
 

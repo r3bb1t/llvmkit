@@ -9804,7 +9804,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let bit_width = self
             .module
             .data_layout()
-            .index_size_in_bits(address_space.get());
+            .index_size_in_bits(address_space);
         let in_range = ConstantExprInRange::new(
             start.extend_or_truncate(bit_width),
             end.extend_or_truncate(bit_width),

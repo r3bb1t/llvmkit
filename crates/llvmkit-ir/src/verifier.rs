@@ -481,7 +481,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             let pointer_width = self
                 .module
                 .data_layout()
-                .pointer_size_in_bits(g.address_space().get());
+                .pointer_size_in_bits(g.address_space());
             let pointer_int_ty = self.module.context().int_type(pointer_width);
             self.verify_range_like_metadata_global(
                 g,
@@ -3034,7 +3034,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     let index_bits = self
                         .module
                         .data_layout()
-                        .index_size_in_bits(addr_space.get());
+                        .index_size_in_bits(addr_space);
                     if dst_bits != index_bits || src_shape != dst_shape {
                         return Err(self.fail(
                             f,

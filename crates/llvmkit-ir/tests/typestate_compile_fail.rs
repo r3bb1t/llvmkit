@@ -84,6 +84,7 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/build_with_dyn_pointer.rs");
     t.compile_fail("tests/compile_fail/try_build_with_dyn_pointer.rs");
     t.compile_fail("tests/compile_fail/type_size_has_no_order.rs");
+    t.compile_fail("tests/compile_fail/data_layout_takes_an_address_space.rs");
     t.compile_fail("tests/compile_fail/build_with_id.rs");
     t.compile_fail("tests/compile_fail/typed_pointer_is_not_an_ir_type.rs");
     t.compile_fail("tests/compile_fail/cross_module_value_brand.rs");

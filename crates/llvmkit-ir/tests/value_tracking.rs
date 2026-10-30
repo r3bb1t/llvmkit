@@ -246,7 +246,8 @@ fn pointer_null_and_alloca_alignment_compute_low_zero_bits() -> Result<(), IrErr
     let dl = m.data_layout();
     let query = ValueTrackingQuery::new(&dl);
     let null_bits = known(ptr_ty.const_null().as_erased(), &query)?;
-    let ptr_width = usize::try_from(dl.pointer_size_in_bits(0)).expect("u32 fits usize");
+    let ptr_width = usize::try_from(dl.pointer_size_in_bits(llvmkit_ir::address_space::<0>()))
+        .expect("u32 fits usize");
     assert_eq!(null_bits.to_string(), zeros(ptr_width));
 
     let alloca_bits = known(b.view(alloca).as_erased(), &query)?;

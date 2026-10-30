@@ -254,6 +254,36 @@ fn parse_addr_space_rejects_bad_value() {
     }
 }
 
+/// `parseAddrSpace`, `parseSize`, `parseAlignment` and the aggregate spec each
+/// read a number with `to_integer(Str, N, 10)`, and its
+/// `consumeUnsignedInteger` (`lib/Support/StringRef.cpp`) has no sign arm, so a
+/// leading `+` is a byte it cannot consume. llvmkit's `str::parse` takes one.
+/// llvmkit-specific (rule anchor): `TEST(DataLayout, ...)` has no signed number.
+#[test]
+fn a_layout_number_takes_no_sign() {
+    let cases = [
+        ("P+5", "address space must be a 24-bit integer"),
+        ("A+5", "address space must be a 24-bit integer"),
+        ("G+5", "address space must be a 24-bit integer"),
+        ("p+1:64:64", "address space must be a 24-bit integer"),
+        ("ni:+1", "address space must be a 24-bit integer"),
+        ("i+8:8", "size must be a non-zero 24-bit integer"),
+        ("p:+64:64", "pointer size must be a non-zero 24-bit integer"),
+        ("a+0:8", "size must be zero"),
+        ("i8:+8", "ABI alignment must be a 16-bit integer"),
+        ("S+8", "stack natural alignment must be a 16-bit integer"),
+    ];
+    let accepted: Vec<&str> = cases
+        .iter()
+        .map(|(s, _)| *s)
+        .filter(|s| DataLayout::parse(s).is_ok())
+        .collect();
+    assert!(accepted.is_empty(), "accepted {accepted:?}");
+    for (s, expected) in cases {
+        assert_parse_err_eq(s, expected);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Function-pointer spec
 // ---------------------------------------------------------------------------
@@ -424,9 +454,9 @@ fn get_pointer_size_in_bits_table() {
     ];
     for (s, v0, v1, v2) in cases {
         let dl = parse(s);
-        assert_eq!(dl.pointer_size_in_bits(0), *v0, "{s} AS 0");
-        assert_eq!(dl.pointer_size_in_bits(1), *v1, "{s} AS 1");
-        assert_eq!(dl.pointer_size_in_bits(2), *v2, "{s} AS 2");
+        assert_eq!(dl.pointer_size_in_bits(address_space::<0>()), *v0, "{s} AS 0");
+        assert_eq!(dl.pointer_size_in_bits(address_space::<1>()), *v1, "{s} AS 1");
+        assert_eq!(dl.pointer_size_in_bits(address_space::<2>()), *v2, "{s} AS 2");
     }
 }
 
@@ -442,9 +472,9 @@ fn get_pointer_size_table() {
     ];
     for (s, v0, v1, v2) in cases {
         let dl = parse(s);
-        assert_eq!(dl.pointer_size(0), *v0, "{s} AS 0");
-        assert_eq!(dl.pointer_size(1), *v1, "{s} AS 1");
-        assert_eq!(dl.pointer_size(2), *v2, "{s} AS 2");
+        assert_eq!(dl.pointer_size(address_space::<0>()), *v0, "{s} AS 0");
+        assert_eq!(dl.pointer_size(address_space::<1>()), *v1, "{s} AS 1");
+        assert_eq!(dl.pointer_size(address_space::<2>()), *v2, "{s} AS 2");
     }
 }
 
@@ -460,9 +490,9 @@ fn get_index_size_in_bits_table() {
     ];
     for (s, v0, v1, v2) in cases {
         let dl = parse(s);
-        assert_eq!(dl.index_size_in_bits(0), *v0, "{s} AS 0");
-        assert_eq!(dl.index_size_in_bits(1), *v1, "{s} AS 1");
-        assert_eq!(dl.index_size_in_bits(2), *v2, "{s} AS 2");
+        assert_eq!(dl.index_size_in_bits(address_space::<0>()), *v0, "{s} AS 0");
+        assert_eq!(dl.index_size_in_bits(address_space::<1>()), *v1, "{s} AS 1");
+        assert_eq!(dl.index_size_in_bits(address_space::<2>()), *v2, "{s} AS 2");
     }
 }
 
@@ -478,9 +508,9 @@ fn get_index_size_table() {
     ];
     for (s, v0, v1, v2) in cases {
         let dl = parse(s);
-        assert_eq!(dl.index_size(0), *v0, "{s} AS 0");
-        assert_eq!(dl.index_size(1), *v1, "{s} AS 1");
-        assert_eq!(dl.index_size(2), *v2, "{s} AS 2");
+        assert_eq!(dl.index_size(address_space::<0>()), *v0, "{s} AS 0");
+        assert_eq!(dl.index_size(address_space::<1>()), *v1, "{s} AS 1");
+        assert_eq!(dl.index_size(address_space::<2>()), *v2, "{s} AS 2");
     }
 }
 
@@ -496,9 +526,9 @@ fn get_pointer_abi_alignment_table() {
     ];
     for (s, v0, v1, v2) in cases {
         let dl = parse(s);
-        assert_eq!(dl.pointer_abi_align(0).value(), *v0, "{s} AS 0");
-        assert_eq!(dl.pointer_abi_align(1).value(), *v1, "{s} AS 1");
-        assert_eq!(dl.pointer_abi_align(2).value(), *v2, "{s} AS 2");
+        assert_eq!(dl.pointer_abi_align(address_space::<0>()).value(), *v0, "{s} AS 0");
+        assert_eq!(dl.pointer_abi_align(address_space::<1>()).value(), *v1, "{s} AS 1");
+        assert_eq!(dl.pointer_abi_align(address_space::<2>()).value(), *v2, "{s} AS 2");
     }
 }
 
@@ -514,9 +544,9 @@ fn get_pointer_pref_alignment_table() {
     ];
     for (s, v0, v1, v2) in cases {
         let dl = parse(s);
-        assert_eq!(dl.pointer_pref_align(0).value(), *v0, "{s} AS 0");
-        assert_eq!(dl.pointer_pref_align(1).value(), *v1, "{s} AS 1");
-        assert_eq!(dl.pointer_pref_align(2).value(), *v2, "{s} AS 2");
+        assert_eq!(dl.pointer_pref_align(address_space::<0>()).value(), *v0, "{s} AS 0");
+        assert_eq!(dl.pointer_pref_align(address_space::<1>()).value(), *v1, "{s} AS 1");
+        assert_eq!(dl.pointer_pref_align(address_space::<2>()).value(), *v2, "{s} AS 2");
     }
 }
 
@@ -524,10 +554,10 @@ fn get_pointer_pref_alignment_table() {
 #[test]
 fn address_space_name() {
     let dl = parse("p:16:32-p1(foo):16:32-p10(bar):16:16");
-    assert_eq!(dl.address_space_name(0), "");
-    assert_eq!(dl.address_space_name(1), "foo");
-    assert_eq!(dl.address_space_name(10), "bar");
-    assert_eq!(dl.address_space_name(3), "");
+    assert_eq!(dl.address_space_name(address_space::<0>()), "");
+    assert_eq!(dl.address_space_name(address_space::<1>()), "foo");
+    assert_eq!(dl.address_space_name(address_space::<10>()), "bar");
+    assert_eq!(dl.address_space_name(address_space::<3>()), "");
     assert_eq!(
         dl.named_address_space("foo"),
         llvmkit_ir::AddressSpace::new(1)
@@ -544,18 +574,18 @@ fn address_space_name() {
 fn is_non_integral_address_space() {
     let default = DataLayout::default();
     assert!(default.non_standard_address_spaces().next().is_none());
-    assert!(!default.is_non_integral_address_space(0));
-    assert!(!default.is_non_integral_address_space(1));
+    assert!(!default.is_non_integral_address_space(address_space::<0>()));
+    assert!(!default.is_non_integral_address_space(address_space::<1>()));
 
     let custom = parse("ni:2:16777215");
     assert_eq!(
         custom.non_integral_address_spaces().collect::<Vec<_>>(),
         vec![2u32, 16777215u32]
     );
-    assert!(!custom.is_non_integral_address_space(0));
-    assert!(!custom.is_non_integral_address_space(1));
-    assert!(custom.is_non_integral_address_space(2));
-    assert!(custom.is_non_integral_address_space(16777215));
+    assert!(!custom.is_non_integral_address_space(address_space::<0>()));
+    assert!(!custom.is_non_integral_address_space(address_space::<1>()));
+    assert!(custom.is_non_integral_address_space(address_space::<2>()));
+    assert!(custom.is_non_integral_address_space(address_space::<16777215>()));
 }
 
 // ---------------------------------------------------------------------------
@@ -575,8 +605,8 @@ fn x86_64_linux_round_trip() {
     assert_eq!(dl.string_representation(), s);
     assert!(dl.is_little_endian());
     assert_eq!(dl.mangling_mode(), ManglingMode::Elf);
-    assert_eq!(dl.pointer_size_in_bits(0), 64);
-    assert_eq!(dl.pointer_size_in_bits(270), 32);
+    assert_eq!(dl.pointer_size_in_bits(address_space::<0>()), 64);
+    assert_eq!(dl.pointer_size_in_bits(address_space::<270>()), 32);
     assert!(dl.is_legal_integer(64));
     assert_eq!(dl.stack_alignment(), Some(Align::new(16).expect("a")));
 }
@@ -600,10 +630,10 @@ fn wasm32_round_trip() {
     let s = "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-n32:64-S128-ni:1:10:20";
     let dl = parse(s);
     assert_eq!(format!("{dl}"), s);
-    assert_eq!(dl.pointer_size_in_bits(0), 32);
-    assert!(dl.is_non_integral_address_space(1));
-    assert!(dl.is_non_integral_address_space(10));
-    assert!(dl.is_non_integral_address_space(20));
+    assert_eq!(dl.pointer_size_in_bits(address_space::<0>()), 32);
+    assert!(dl.is_non_integral_address_space(address_space::<1>()));
+    assert!(dl.is_non_integral_address_space(address_space::<10>()));
+    assert!(dl.is_non_integral_address_space(address_space::<20>()));
 }
 
 // ---------------------------------------------------------------------------

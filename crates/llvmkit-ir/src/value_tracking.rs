@@ -4116,7 +4116,7 @@ fn ptr_to_int_same_size<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     (result_width
         == query
             .data_layout()
-            .pointer_size_in_bits(address_space.get()))
+            .pointer_size_in_bits(address_space))
     .then_some(pointer)
 }
 
@@ -5506,7 +5506,7 @@ fn alloca_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 ) -> KnownBits {
     let width = query
         .data_layout()
-        .pointer_size_in_bits(data.addr_space.get());
+        .pointer_size_in_bits(data.addr_space);
     let module = module_ref(value);
     let allocated_ty = erase_type(Type::new(data.allocated_ty, module));
     let align = data
@@ -5584,7 +5584,7 @@ where
         indices,
     } = input;
     let addr_space = pointer_addr_space(anchor.ty()).unwrap_or(crate::AddressSpace::DEFAULT);
-    let index_width = query.data_layout().index_size_in_bits(addr_space.get());
+    let index_width = query.data_layout().index_size_in_bits(addr_space);
     let mut offset = ApInt::zero(index_width);
     let mut indexed_ty = source_ty;
     let module = module_ref(anchor);
@@ -6440,7 +6440,7 @@ fn type_bit_width<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 ) -> Option<u32> {
     match ty.kind() {
         TypeKind::Integer { bits } => Some(bits),
-        TypeKind::Pointer { addr_space } => Some(dl.pointer_size_in_bits(addr_space.get())),
+        TypeKind::Pointer { addr_space } => Some(dl.pointer_size_in_bits(addr_space)),
         TypeKind::FixedVector | TypeKind::ScalableVector => {
             let (elem, _, _) = ty.data().as_vector()?;
             type_bit_width(Type::new(elem, module_ref_from_type(ty)), dl)

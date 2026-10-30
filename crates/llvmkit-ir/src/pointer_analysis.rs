@@ -31,6 +31,7 @@
 //!   element width, or a zeroinitializer, are read. Declining to read narrows
 //!   coverage; it never reads the wrong bytes.
 
+use crate::addr_space::AddressSpace;
 use crate::attributes::{AttrIndex, AttrKind, AttributeStored};
 use crate::capability::{Capability, Mutable};
 use crate::constant::{
@@ -1762,12 +1763,12 @@ fn index_type_size_in_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     data_layout: &DataLayout,
 ) -> u32 {
     match ty.kind() {
-        TypeKind::Pointer { addr_space } => data_layout.index_size_in_bits(addr_space.get()),
+        TypeKind::Pointer { addr_space } => data_layout.index_size_in_bits(addr_space),
         TypeKind::FixedVector | TypeKind::ScalableVector => match element_type(ty) {
             Some(element) => index_type_size_in_bits(element, data_layout),
-            None => data_layout.index_size_in_bits(0),
+            None => data_layout.index_size_in_bits(AddressSpace::DEFAULT),
         },
-        _ => data_layout.index_size_in_bits(0),
+        _ => data_layout.index_size_in_bits(AddressSpace::DEFAULT),
     }
 }
 

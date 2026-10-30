@@ -10499,7 +10499,7 @@ where
         let address_bits = self
             .module
             .data_layout()
-            .index_size_in_bits(addr_space.get());
+            .index_size_in_bits(addr_space);
         let int_ty = self.int_type_for_bits(address_bits)?.as_type();
         let Some((lanes, scalable)) = vector_shape else {
             return Ok(int_ty);

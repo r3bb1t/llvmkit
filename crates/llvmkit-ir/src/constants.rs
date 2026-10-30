@@ -2616,7 +2616,7 @@ pub(super) fn verify_constant_expr_data(
             module,
             scalar_type_slot(module, src_ty.slot_trusting_same_module()),
         )
-        .map(|as_id| module.data_layout().index_size_in_bits(as_id.get()));
+        .map(|as_id| module.data_layout().index_size_in_bits(as_id));
         if addr_bits != scalar_int_bits(module, result_ty.slot_trusting_same_module()) {
             return Err(IrError::InvalidOperation {
                 message: "PtrToAddr result must be address width",
@@ -2685,7 +2685,7 @@ fn validate_gep_constant_expr(
     {
         let index_bit_width = module
             .data_layout()
-            .index_size_in_bits(base_addr_space.get());
+            .index_size_in_bits(base_addr_space);
         if in_range.bit_width() != index_bit_width {
             return Err(IrError::InvalidOperation {
                 message: "invalid getelementptr inrange bit width",

@@ -693,7 +693,7 @@ fn non_integral_pointer_load_through_bitcast_declines() -> Result<(), IrError> {
         .initializer(i8_ty.const_int(0_i8))
         .build()?;
 
-    assert!(dl.is_non_integral_address_space(1));
+    assert!(dl.is_non_integral_address_space(llvmkit_ir::address_space::<1>()));
     assert_eq!(
         constant_fold_load_through_bitcast(
             m.view(g).as_global_constant_ptr(),
