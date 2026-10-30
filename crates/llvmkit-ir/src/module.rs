@@ -1831,11 +1831,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     /// another module, checked first.
     ///
     /// ```
-    /// # use llvmkit_ir::Module;
+    /// # use llvmkit_ir::{AddressSpace, Module};
     /// let m = Module::dynamic("doc");
     /// let view = m.as_view();
-    /// assert_eq!(view.typed_pointer_type(view.i32_type(), 0)?.to_string(), "typedptr(i32, 0)");
-    /// assert!(view.typed_pointer_type(view.void_type(), 0).is_err());
+    /// let space = AddressSpace::DEFAULT;
+    /// assert_eq!(view.typed_pointer_type(view.i32_type(), space)?.to_string(), "typedptr(i32, 0)");
+    /// assert!(view.typed_pointer_type(view.void_type(), space).is_err());
     /// # Ok::<(), llvmkit_ir::IrError>(())
     /// ```
     #[inline]
@@ -4717,10 +4718,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// ([`IrError::ForeignType`]).
     ///
     /// ```
-    /// # use llvmkit_ir::Module;
+    /// # use llvmkit_ir::{AddressSpace, Module};
     /// let m = Module::dynamic("doc");
-    /// assert_eq!(m.typed_pointer_type(m.i32_type(), 0)?.to_string(), "typedptr(i32, 0)");
-    /// assert!(m.typed_pointer_type(m.void_type(), 0).is_err());
+    /// let space = AddressSpace::DEFAULT;
+    /// assert_eq!(m.typed_pointer_type(m.i32_type(), space)?.to_string(), "typedptr(i32, 0)");
+    /// assert!(m.typed_pointer_type(m.void_type(), space).is_err());
     /// # Ok::<(), llvmkit_ir::IrError>(())
     /// ```
     pub fn typed_pointer_type<T>(
