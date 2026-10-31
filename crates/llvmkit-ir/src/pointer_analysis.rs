@@ -17,9 +17,6 @@
 //!   object changes every iteration — and llvmkit has no loop analysis, so the
 //!   phi is always looked through. That is also upstream's behaviour at its own
 //!   default of `LI == nullptr`.
-//! - `GlobalValue::isInterposable` also answers true when the module sets
-//!   semantic interposition and the value is not `dso_local`. Nothing here
-//!   reads that module flag, so only the linkage half is consulted.
 //! - [`find_inserted_value`] has no `InsertBefore`. Upstream's optional
 //!   parameter lets it *synthesise* `insertvalue` instructions to rebuild a
 //!   sub-aggregate; an analysis that edits the IR it is asked about has no
@@ -36,11 +33,12 @@ use crate::capability::{Capability, Mutable};
 use crate::constant::{
     Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode,
 };
-use crate::constant_fold::linkage_is_interposable;
+use crate::constant_fold::global_is_interposable;
 use crate::constant_folding::accumulate_constant_offset;
 use crate::constants::global_value_type;
 use crate::data_layout::DataLayout;
 use crate::gep_no_wrap_flags::GepNoWrapFlags;
+use crate::global_variable::GlobalVariable;
 use crate::instr_types::{GepInstData, Opcode};
 use crate::instruction::{InstructionKindData, InstructionView};
 use crate::intrinsics::descriptor_for_callee;
@@ -115,8 +113,7 @@ fn peel_one_layer<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }
 
     if let ValueKindData::GlobalAlias(alias) = &value.data().kind {
-        // Only the linkage half of `isInterposable`; see the module docs.
-        if linkage_is_interposable(alias.linkage.get()) {
+        if global_is_interposable(value.module(), value.slot_trusting_same_module()) {
             return None;
         }
         return Some(value_from_slot(value, alias.aliasee.get()));
@@ -336,7 +333,6 @@ pub(crate) struct ConstantOffsetStrip {
 ///
 /// As in [`strip_pointer_casts_and_offsets`], every value the walk reaches is
 /// read as the global its `ptr @g` constant names (`docs/divergences.md` D3).
-/// Only the linkage half of `isInterposable` is asked; see the module docs.
 pub(crate) fn strip_and_accumulate_constant_offsets<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
     offset: ApInt,
@@ -387,7 +383,7 @@ pub(crate) fn strip_and_accumulate_constant_offsets<'ctx, B: ModuleBrand + 'ctx,
                 None => return (current, offset),
             }
         } else if let ValueKindData::GlobalAlias(alias) = &current.data().kind {
-            if linkage_is_interposable(alias.linkage.get()) {
+            if global_is_interposable(current.module(), current.slot_trusting_same_module()) {
                 current
             } else {
                 value_from_slot(current, alias.aliasee.get())
@@ -783,18 +779,13 @@ pub fn constant_data_array_info<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     // Drill down through the pointer expression, ignoring intervening casts,
     // and identify the object it references.
     let global = underlying_object(value, MAX_LOOKUP_SEARCH_DEPTH);
-    let ValueKindData::GlobalVariable(data) = &global.data().kind else {
+    let Ok(global_variable) = GlobalVariable::try_from(global) else {
         return None;
     };
-    if !data.is_constant {
+    if !global_variable.is_constant() || !global_variable.has_definitive_initializer() {
         return None;
     }
-    // `hasDefinitiveInitializer`: an initializer the linker cannot replace.
-    let initializer = data.initializer.get()?;
-    if linkage_is_interposable(data.linkage.get()) || data.externally_initialized.get() {
-        return None;
-    }
-    let initializer = value_from_slot(global, initializer);
+    let initializer = global_variable.initializer()?.as_erased();
 
     // The offset from the global has to be a constant, and the walk has to land
     // on the global itself.
@@ -822,7 +813,7 @@ pub fn constant_data_array_info<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }
     let offset = offset.checked_add(start_index / element_size_in_bytes)?;
 
-    let value_type = Type::new(data.value_type, module_ref(global));
+    let value_type = global_variable.value_type();
 
     if is_null_constant(initializer) {
         // `getFixedValue`, which asserts on a scalable global: an invalid one,
@@ -1441,9 +1432,9 @@ fn is_opaque_pointer<'ctx, B: ModuleBrand + 'ctx, C: Capability>(ty: Type<'ctx, 
 /// instruction, a `getelementptr` constant expression, or llvmkit's compact
 /// `getelementptr inbounds (i8, ptr @g, i64 off)` (`ConstantData::GepOffset`),
 /// which stands for the constant expression of that spelling.
-struct GepOperator<'ctx, B: ModuleBrand, C: Capability> {
+pub(crate) struct GepOperator<'ctx, B: ModuleBrand, C: Capability> {
     /// `GEPOperator::getPointerOperand`.
-    pointer_operand: Value<'ctx, B, C>,
+    pub(crate) pointer_operand: Value<'ctx, B, C>,
     form: GepForm<'ctx>,
 }
 
@@ -1460,7 +1451,7 @@ enum GepForm<'ctx> {
 
 impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GepOperator<'ctx, B, C> {
     /// `dyn_cast<GEPOperator>(V)`.
-    fn of(value: Value<'ctx, B, C>) -> Option<Self> {
+    pub(crate) fn of(value: Value<'ctx, B, C>) -> Option<Self> {
         if let Some(InstructionKindData::Gep(data)) = instruction_kind(value) {
             return Some(Self {
                 pointer_operand: value_from_slot(value, data.ptr.get()),
@@ -1509,9 +1500,23 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GepOperator<'ctx, B, C> {
         }
     }
 
+    /// `GEP->getOperand(1)`, when `GEP->getNumIndices() == 1` and
+    /// `GEP->getSourceElementType()->isIntegerTy(8)`, for a constant expression.
+    /// The compact form has no slot for its index, which is a `ConstantInt`.
+    pub(crate) fn sole_index_of_byte_gep_expr(&self) -> Option<ValueSlot> {
+        let GepForm::Expr(expr) = &self.form else {
+            return None;
+        };
+        let [_, index] = expr.operands.as_ref() else {
+            return None;
+        };
+        let source_ty = Type::new(expr.source_ty?, module_ref(self.pointer_operand));
+        matches!(source_ty.kind(), TypeKind::Integer { bits: 8 }).then_some(*index)
+    }
+
     /// `GEPOperator::accumulateConstantOffset`, onto a zero of `index_bits`.
     /// `None` is upstream's `false`.
-    fn accumulate_constant_offset(
+    pub(crate) fn accumulate_constant_offset(
         &self,
         index_bits: u32,
         data_layout: &DataLayout,
@@ -1819,7 +1824,7 @@ fn element_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 }
 
 /// The index width `DataLayout::getIndexTypeSizeInBits` gives for `ty`.
-fn index_type_size_in_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+pub(crate) fn index_type_size_in_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     ty: Type<'ctx, B, C>,
     data_layout: &DataLayout,
 ) -> u32 {

@@ -12,15 +12,16 @@ use llvmkit_ir::{
     ApFloat, ApFloatSemantics, ApInt, AttrIndex, Attribute, BinaryIntrinsic, BinaryOpcode,
     CmpPredicate, ConstantExprFlags, ConstantExprOpcode, ConstantExprOptions, ConstantFloatValue,
     ConstantIntValue, DataLayout, DenormalMode, DenormalModeKind, DenormalModeSide, DynBrand,
-    FastMathFlags, FoldNonDeterminism, GepNoWrapFlags, InstructionView, IntDyn, IntPredicate,
-    IrBuilder, IrError, LibFunc, Linkage, NoFolder, PreservedCastFlags, RoundingMode,
+    FastMathFlags, FoldNonDeterminism, GepNoWrapFlags, GlobalValue, InstructionView, IntDyn,
+    IntPredicate, IrBuilder, IrError, LibFunc, Linkage, NoFolder, PreservedCastFlags, RoundingMode,
     TargetLibraryInfo, UnaryOpcode, attributes::AttributeStorage, constant_fold_binary_intrinsic,
     constant_fold_binary_op_operands, constant_fold_compare_inst_operands, constant_fold_constant,
     constant_fold_extract_element_instruction, constant_fold_fp_inst_operands,
     constant_fold_inst_operands, constant_fold_integer_cast, constant_fold_load_from_const,
     constant_fold_load_from_uniform_value, constant_fold_load_through_bitcast,
     constant_fold_unary_op_operand, constant_offset_from_global, is_constant_offset_from_global,
-    lossless_inv_cast, lossless_signed_trunc, lossless_unsigned_trunc, module_new,
+    is_eliminable_cast_pair, lossless_inv_cast, lossless_signed_trunc, lossless_unsigned_trunc,
+    module_new,
 };
 use llvmkit_ir::{ArrayType, Constant, Type, VectorType, lanes};
 
@@ -78,13 +79,153 @@ fn a_load_past_the_end_of_a_constant_reads_zero_bytes() -> Result<(), IrError> {
     Ok(())
 }
 
+/// Port of `TEST(InstructionsTest, isEliminableCastPair)`, on upstream's two
+/// layouts, with `None` for its `0U`.
+#[test]
+fn is_eliminable_cast_pair_answers_as_upstream() -> Result<(), IrError> {
+    use CastOpcode::{AddrSpaceCast, BitCast, IntToPtr, PtrToAddr, PtrToInt, Trunc, Zext};
+
+    let m = module_new!("analysis-eliminable-cast-pair")?;
+    let dl1 = DataLayout::parse("p1:32:32-p2:64:64:64:32")?;
+    let int16_ty = m.i16_type().as_type();
+    let int32_ty = m.i32_type().as_type();
+    let int64_ty = m.i64_type().as_type();
+    let ptr_ty64 = m.ptr_type_in::<0>().as_type();
+    let ptr_ty32 = m.ptr_type_in::<1>().as_type();
+    let ptr_ty64_32 = m.ptr_type_in::<2>().as_type();
+
+    // Source and destination pointers have same size -> bitcast.
+    assert_eq!(
+        is_eliminable_cast_pair(PtrToInt, IntToPtr, ptr_ty32, int64_ty, ptr_ty32, Some(&dl1)),
+        Some(BitCast)
+    );
+
+    // Source and destination have unknown sizes.
+    assert_eq!(
+        is_eliminable_cast_pair(PtrToInt, IntToPtr, ptr_ty32, int64_ty, ptr_ty32, None),
+        None
+    );
+
+    // Middle pointer big enough -> bitcast.
+    assert_eq!(
+        is_eliminable_cast_pair(IntToPtr, PtrToInt, int64_ty, ptr_ty64, int64_ty, Some(&dl1)),
+        Some(BitCast)
+    );
+
+    // Middle pointer too small -> fail.
+    assert_eq!(
+        is_eliminable_cast_pair(IntToPtr, PtrToInt, int64_ty, ptr_ty32, int64_ty, Some(&dl1)),
+        None
+    );
+
+    // Destination larger than source. Pointer type same as destination.
+    assert_eq!(
+        is_eliminable_cast_pair(IntToPtr, PtrToInt, int16_ty, ptr_ty64, int64_ty, Some(&dl1)),
+        Some(Zext)
+    );
+
+    // Destination larger than source. Pointer type different from destination.
+    assert_eq!(
+        is_eliminable_cast_pair(IntToPtr, PtrToInt, int16_ty, ptr_ty32, int64_ty, Some(&dl1)),
+        Some(Zext)
+    );
+
+    // Destination smaller than source. Pointer type same as source.
+    assert_eq!(
+        is_eliminable_cast_pair(IntToPtr, PtrToInt, int64_ty, ptr_ty64, int16_ty, Some(&dl1)),
+        Some(Trunc)
+    );
+
+    // Destination smaller than source. Pointer type different from source.
+    assert_eq!(
+        is_eliminable_cast_pair(IntToPtr, PtrToInt, int64_ty, ptr_ty32, int16_ty, Some(&dl1)),
+        Some(Trunc)
+    );
+
+    // ptrtoaddr with address size != pointer size. Truncating case.
+    assert_eq!(
+        is_eliminable_cast_pair(
+            IntToPtr,
+            PtrToAddr,
+            int64_ty,
+            ptr_ty64_32,
+            int32_ty,
+            Some(&dl1)
+        ),
+        Some(Trunc)
+    );
+
+    // ptrtoaddr with address size != pointer size. Non-truncating case.
+    assert_eq!(
+        is_eliminable_cast_pair(
+            IntToPtr,
+            PtrToAddr,
+            int32_ty,
+            ptr_ty64_32,
+            int32_ty,
+            Some(&dl1)
+        ),
+        Some(BitCast)
+    );
+
+    // Test that we don't eliminate bitcasts between different address spaces,
+    // or if we don't have available pointer size information.
+    let dl2 = DataLayout::parse(
+        "e-p:32:32:32-p1:16:16:16-p2:64:64:64-i1:8:8-i8:8:8-i16:16:16\
+         -i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64\
+         -v128:128:128-a:0:64-s:64:64-f80:128:128-n8:16:32:64-S128",
+    )?;
+    let int64_ptr_ty_as1 = m.ptr_type_in::<1>().as_type();
+    let int64_ptr_ty_as2 = m.ptr_type_in::<2>().as_type();
+
+    // Cannot simplify inttoptr, addrspacecast
+    assert_eq!(
+        is_eliminable_cast_pair(
+            IntToPtr,
+            AddrSpaceCast,
+            int16_ty,
+            int64_ptr_ty_as1,
+            int64_ptr_ty_as2,
+            Some(&dl2)
+        ),
+        None
+    );
+
+    // Cannot simplify addrspacecast, ptrtoint
+    assert_eq!(
+        is_eliminable_cast_pair(
+            AddrSpaceCast,
+            PtrToInt,
+            int64_ptr_ty_as1,
+            int64_ptr_ty_as2,
+            int16_ty,
+            Some(&dl2)
+        ),
+        None
+    );
+
+    // Pass since the bitcast address spaces are the same
+    assert_eq!(
+        is_eliminable_cast_pair(
+            IntToPtr,
+            BitCast,
+            int16_ty,
+            int64_ptr_ty_as1,
+            int64_ptr_ty_as1,
+            None
+        ),
+        Some(IntToPtr)
+    );
+    Ok(())
+}
+
 /// Port of `CastInst::isEliminableCastPair` case 11 (`llvm/lib/IR/Instructions.cpp`):
 /// the `ptrtoint(inttoptr x)` collapse is sized by the *pointer* size, not the
 /// index size — even though this layout's index size (32) is narrower than
 /// its pointer size (64), the round trip preserves the bit set above the
 /// index-size boundary (bit 32), because case 11 sizes the collapse using
-/// `getPointerTypeSizeInBits`, reached before the (unimplemented in llvmkit)
-/// index-size-based switch-fallback in `ConstantFoldCastOperand`.
+/// `getPointerTypeSizeInBits`, reached before the index-size arm of
+/// `ConstantFoldCastOperand`.
 #[test]
 fn ptrtoint_of_inttoptr_uses_pointer_size() -> Result<(), IrError> {
     let m = module_new!("analysis-ptr-index")?;
@@ -604,7 +745,7 @@ fn crate_root_constant_offset_from_global_resolves_global_pointer() -> Result<()
     let resolved = constant_offset_from_global(m.view(g).ptr_offset(3), &dl)
         .expect("global pointer plus constant offset resolves");
 
-    assert_eq!(resolved.global(), m.view(g));
+    assert_eq!(resolved.global(), GlobalValue::Variable(m.view(g)));
     assert_eq!(resolved.offset(), &ApInt::from_words(64, &[3]));
     Ok(())
 }
@@ -673,7 +814,7 @@ fn recursive_gep_load_through_bitcast_from_global_folds() -> Result<(), IrError>
 
     let resolved = constant_offset_from_global(gep, &dl)
         .expect("recursive GEP offset resolves to the base global");
-    assert_eq!(resolved.global(), m.view(g));
+    assert_eq!(resolved.global(), GlobalValue::Variable(m.view(g)));
     assert_eq!(resolved.offset(), &ApInt::from_words(64, &[4]));
 
     let folded = constant_fold_load_from_const_ptr(gep, f32_ty.as_type(), ApInt::zero(64), &dl)?
@@ -1345,7 +1486,7 @@ fn gep_i32_index_canonicalizes_to_i8_offset() -> Result<(), IrError> {
     assert_eq!(folded.to_string(), m.view(g).ptr_offset(16).to_string());
     let resolved = constant_offset_from_global(folded, &dl)
         .expect("canonical i8 GEP resolves to base + offset");
-    assert_eq!(resolved.global(), m.view(g));
+    assert_eq!(resolved.global(), GlobalValue::Variable(m.view(g)));
     assert_eq!(resolved.offset(), &ApInt::from_words(64, &[16]));
     Ok(())
 }
@@ -1391,7 +1532,7 @@ fn nested_gep_merges_into_single_i8_offset() -> Result<(), IrError> {
     assert_eq!(folded.to_string(), m.view(g).ptr_offset(8).to_string());
     let resolved = constant_offset_from_global(folded, &dl)
         .expect("merged nested GEP resolves to base + offset");
-    assert_eq!(resolved.global(), m.view(g));
+    assert_eq!(resolved.global(), GlobalValue::Variable(m.view(g)));
     assert_eq!(resolved.offset(), &ApInt::from_words(64, &[8]));
     Ok(())
 }
@@ -1446,7 +1587,7 @@ fn nested_gep_cancelling_offsets_fold_to_base_pointer() -> Result<(), IrError> {
     assert_eq!(folded.to_string(), g_ptr.to_string());
     let resolved =
         constant_offset_from_global(folded, &dl).expect("cancelling GEP resolves to base");
-    assert_eq!(resolved.global(), m.view(g));
+    assert_eq!(resolved.global(), GlobalValue::Variable(m.view(g)));
     assert_eq!(resolved.offset(), &ApInt::zero(64));
     Ok(())
 }

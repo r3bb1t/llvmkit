@@ -2735,22 +2735,6 @@ items below are the deferred / known-remaining points.
   by design (each is a distinct pending reference); see
   `tests/constant_uniquing.rs` for the law and its exceptions.
 
-- **`ptrtoint`/`ptrtoaddr` mid-width on `pointer_size != index_size` (CHERI-like)
-  layouts — a deliberate, reasoned divergence (needs a decision).** In the
-  `isEliminableCastPair` case-11 *declined* sub-case (`MidSize < SrcSize &&
-  MidSize < DstSize`), llvmkit's `fold_ptr_to_int_pair` always two-steps through
-  the case-11 mid (`ptrtoint`→pointer size, `ptrtoaddr`→index/address size),
-  whereas upstream falls to its switch path (`ConstantFoldCastOperand`'s
-  `PtrToInt`/`PtrToAddr` case, `ConstantFolding.cpp`: `PtrToInt` takes
-  `DL.getAddressType`, `PtrToAddr` takes `DL.getIntPtrType` — the inverse).
-  Example on
-  `p:128:128:128:64`: `ptrtoaddr(inttoptr(i128 x)):i128` → llvmkit `x mod 2^64`
-  (the semantically-correct address extraction), upstream `x`. llvmkit's value is
-  arguably the *more correct* side; matching upstream would introduce a wrong
-  mask to copy an upstream quirk, only on layouts x86/bin_lift never use.
-  Deliberately NOT matched; recorded for an explicit decision if CHERI parity is
-  ever in scope.
-
 - **`SymbolicallyEvaluateGEP` sub-cases not ported (each only declines, never
   mis-folds):** `CastGEPIndices` vector-index width normalization; nested-GEP
   `in_range` preservation; the null/`inttoptr`-nonzero-base → `inttoptr` fold
@@ -3276,16 +3260,14 @@ above superseded ones the supplement made without being able to verify them
 Derived at the commit that adds this entry: `rg -l
 "[Aa]ddr[Ss]pace|AddressSpace|addrspace" llvm/unittests/IR/*.cpp` names 9 files;
 taking from each the `TEST`, `TEST_F` and `TEST_P` whose body holds a match gives
-18 tests; and `rg -c -F` over `UPSTREAM.md` found no row for 6 of them. A sixth,
-`TEST(DataLayout, NonIntegralHelpers)`, has since been ported, which leaves these 5.
+18 tests; and `rg -c -F` over `UPSTREAM.md` found no row for 6 of them. Two,
+`TEST(DataLayout, NonIntegralHelpers)` and `TEST(InstructionsTest, isEliminableCastPair)`,
+have since been ported, which leaves the 4 below.
 None tests what a type constructor does with an address space; those ports are done.
 
 - `TEST(AsmWriterTest, PrintAddrspaceWithNullOperand)` prints a `CallInst` after
   `dropAllReferences` has nulled its operands. `rg -n "drop_all_references"
   crates/llvmkit-ir/src` finds nothing, so llvmkit has no such state to print.
-- `TEST(InstructionsTest, isEliminableCastPair)` needs
-  `CastInst::isEliminableCastPair` as one routine. `constant_folding.rs` ports
-  cases of it, not the routine.
 - `TEST(InstructionsTest, CastCAPI)` tests the C API, which is out of scope.
 - `TEST_F(DIDerivedTypeTest, get)` and `getWithLargeValues` test the debug-info
   `DIDerivedType` node, whose `dwarfAddressSpace` is a DWARF field and no IR

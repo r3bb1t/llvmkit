@@ -11,7 +11,88 @@
 use core::fmt;
 use core::str::FromStr;
 
+use crate::Branded;
+use crate::capability::{Capability, Mutable};
+use crate::constant_fold::{global_is_dso_local, global_is_interposable};
 use crate::error::IrError;
+use crate::function::FunctionValue;
+use crate::global_alias::GlobalAlias;
+use crate::global_ifunc::GlobalIfunc;
+use crate::global_variable::GlobalVariable;
+use crate::marker::Dyn;
+use crate::module::{ModuleBrand, ModuleView};
+use crate::pointer_analysis::global_value_or_self;
+use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
+
+/// A global of any kind: upstream's `GlobalValue *`, whose four subclasses are
+/// the four handles here.
+#[derive(Branded)]
+#[branded(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GlobalValue<'ctx, B: ModuleBrand, C: Capability = Mutable> {
+    /// `GlobalVariable`.
+    Variable(GlobalVariable<'ctx, B, C>),
+    /// `Function`.
+    Function(FunctionValue<'ctx, Dyn, B, C>),
+    /// `GlobalAlias`.
+    Alias(GlobalAlias<'ctx, B, C>),
+    /// `GlobalIFunc`.
+    Ifunc(GlobalIfunc<'ctx, B, C>),
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GlobalValue<'ctx, B, C> {
+    /// `dyn_cast<GlobalValue>(V)`, which is true of `ptr @g` as of `@g`
+    /// (`docs/divergences.md` D3).
+    pub(crate) fn of(value: Value<'ctx, B, C>) -> Option<Self> {
+        let global = global_value_or_self(value);
+        match &global.data().kind {
+            ValueKindData::GlobalVariable(_) => {
+                GlobalVariable::try_from(global).ok().map(Self::Variable)
+            }
+            ValueKindData::Function(_) => FunctionValue::<Dyn, B, C>::try_from(global)
+                .ok()
+                .map(Self::Function),
+            ValueKindData::GlobalAlias(_) => GlobalAlias::try_from(global).ok().map(Self::Alias),
+            ValueKindData::GlobalIfunc(_) => GlobalIfunc::try_from(global).ok().map(Self::Ifunc),
+            _ => None,
+        }
+    }
+
+    /// Widen to the erased [`Value`] handle, at the same capability.
+    #[inline]
+    pub fn as_erased(self) -> Value<'ctx, B, C> {
+        match self {
+            Self::Variable(global) => global.as_erased(),
+            Self::Function(function) => function.as_erased(),
+            Self::Alias(alias) => alias.as_erased(),
+            Self::Ifunc(ifunc) => ifunc.as_erased(),
+        }
+    }
+
+    fn module_and_slot(self) -> (ModuleView<'ctx, B>, ValueSlot) {
+        let value = self.as_erased();
+        (value.module(), value.slot_trusting_same_module())
+    }
+
+    /// Whether the global's definition may be replaced by something
+    /// non-equivalent at link time. Mirrors `GlobalValue::isInterposable`.
+    pub fn is_interposable(self) -> bool {
+        let (module, slot) = self.module_and_slot();
+        global_is_interposable(module, slot)
+    }
+
+    /// Whether the global resolves within its own linkage unit. Mirrors
+    /// `GlobalValue::isDSOLocal`.
+    pub fn is_dso_local(self) -> bool {
+        let (module, slot) = self.module_and_slot();
+        global_is_dso_local(module, slot)
+    }
+}
+
+/// Ports `GlobalValue::isImplicitDSOLocal`, on the two fields it reads.
+pub(crate) const fn is_implicit_dso_local(linkage: Linkage, visibility: Visibility) -> bool {
+    linkage.is_local()
+        || (!matches!(visibility, Visibility::Default) && !matches!(linkage, Linkage::ExternalWeak))
+}
 
 /// Linkage type. Mirrors `GlobalValue::LinkageTypes`. The discriminant
 /// values are not stable across LLVM bitcode versions, so we encode

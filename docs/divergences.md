@@ -1027,6 +1027,46 @@ the test that would fail, and it is left out of
 each of which says so. `crates/llvmkit-ir/tests/constant_folding_analysis.rs::a_zero_load_too_long_to_build_is_not_folded`
 pins the fold's decline, and no test pins the parser's abort.
 
+### D29 — `isDSOLocal` is read from a keyword, and the printer writes that keyword
+
+**Severity:** wrong-output (narrow)
+**Where:** `crates/llvmkit-ir/src/constant_fold.rs` — `global_is_dso_local`;
+`crates/llvmkit-ir/src/asm_writer.rs` — `fmt_function_with_use_lists`, `fmt_global`,
+`fmt_alias`, `fmt_ifunc`.
+
+**LLVM:** a `GlobalValue` keeps one bit. `setLinkage` and `setVisibility` set it
+whenever `isImplicitDSOLocal` holds, and only `setDSOLocal(false)` clears it.
+`LLParser`'s `maybeSetDSOLocal` only ever sets it, so `dso_preemptable` leaves no
+mark. `printDSOLocation` prints `dso_local` only when the bit is set and
+`isImplicitDSOLocal` is false.
+
+**llvmkit:** `DsoLocality` stores the keyword as written, and `global_is_dso_local`
+answers `Local` or `isImplicitDSOLocal` of the current linkage and visibility. That
+agrees on anything the parser can build, and differs in two ways.
+
+- Through the setters: a global made `internal` and then `external` again stays
+  `dso_local` upstream and is not here, and `setDSOLocal(false)` on an `internal`
+  global clears the bit upstream and changes no answer here.
+- In print: `dso_preemptable` is printed, and so are `internal dso_local` and
+  `dso_local hidden`. Upstream prints none of those three (`derived` from
+  `printDSOLocation`). `parser_attribute_matrix.rs` and
+  `parser_module_headers.rs::dso_local_precedes_visibility_and_dll_storage` assert
+  llvmkit's bytes, the second under a doc that calls `dso_local hidden` the spelling
+  `llvm-as` produces.
+
+`rg -n "dso_preempt" docs/divergences.md docs/future-work.md docs/fixture-coverage.md`
+printed nothing before this entry, over `5a8eabb`.
+
+**Why:** found while porting `isInterposable`, which needs only the read. Closing the
+rest moves those tests and every `set_linkage` and `set_visibility`.
+
+**Fix:** store the bit, set it in those setters and the builders, and port
+`printDSOLocation` at the four printer sites.
+
+**Guarded by:** the read, by
+`crates/llvmkit-asmparser/tests/constant_fold_loads.rs::a_preemptible_global_stays_under_semantic_interposition`.
+Nothing guards the rest.
+
 ---
 
 ---
@@ -1854,21 +1894,6 @@ The parser/printer contract is that printed output matches `AsmWriter.cpp` byte 
 <details><summary>Verification evidence</summary>
 
 Cited lines all check out exactly. crates/llvmkit-asmparser/src/ll_token.rs:88-104 has the nine Token::Dwarf* variants, each holding &'src str keyword text. crates/llvmkit-asmparser/src/ll_parser.rs:5865-5881 collapses all nine (plus ChecksumKind/EmissionKind/NameTableKind/FixedPointKind) into MetadataFieldValue::Enum(value) carrying the source spelling. crates/llvmkit-asmparser/src/ll_parser.rs:5652-5666: the W11 `keyword` validator matches only the Enum arm and returns Ok(()) for everything else, so a numeric value passes through unconverted. crates/llvmkit-ir/src/asm_writer.rs:3477-3478 (Operation(name) => write_str(name), Literal(value) => write!("{value}")), :3491 (Integer(v) => write!("{v}")), :3497 (Enum(s) => write_str(s)); a grep for `dwarf::` across asm_writer.rs returns nothing. crates/llvmkit-ir/src/metadata.rs:2100-2107 defines DwarfExpressionOperand::Operation(String). Upstream lib/IR/AsmWriter.cpp MDFieldPrinter::printTag calls dwarf::TagString(N->getTag()) and falls back to the raw number only when empty; printDwarfEnum does the same via its Stringifier; writeDIExpression prints OperationEncodingString when N->isValid(). Upstream lib/AsmParser/LLParser.cpp parseMDField(..., DwarfTagField&) routes an APSInt token to MDUnsignedField and a keyword through dwarf::getTag, storing an unsigned either way. Empirical probe (temporary test, since deleted, run on +1.96.0 --release, parsing then re-printing): `!DIBasicType(tag: 15, name: "x")` printed back as `tag: 15`; `encoding: 4` printed back as `encoding: 4` (upstream DW_ATE_float, Dwarf.def HANDLE_DW_ATE(0x04, float)); `!DIExpression(6)` printed back as `!DIExpression(6)` where DW_OP_deref (0x6) IS in DIExpression::isValid's accept list so llvm-dis prints the name; `!DIExpression(DW_OP_LLVM_convert, 16, 5)` printed back with a bare `5`. Keyword-written forms round-trip correctly, so the divergence is exactly the normalisation half, as claimed. Unrelated side-finding from the same probe: unreferenced `!N = !DIExpression(...)` nodes are dropped entirely from format!("{module}") — they printed only once a named metadata node referenced them, whereas llvm-dis emits every numbered node.
-
-</details>
-
-### 44. `ptrtoint`/`ptrtoaddr` mid-width folding diverges on `pointer_size != index_size` layouts
-
-*constant folder* — crates/llvmkit-ir/src/constant_folding.rs (`fold_ptr_to_int_pair`)
-
-- **LLVM:** In `isEliminableCastPair`'s case-11 *declined* sub-case (`MidSize < SrcSize && MidSize < DstSize`), `ConstantFoldCastOperand` falls to its switch path, where `PtrToInt` takes `DL.getAddressType` and `PtrToAddr` takes `DL.getIntPtrType` — the inverse of each other. On `p:128:128:128:64`, `ptrtoaddr(inttoptr(i128 x)):i128` folds to `x`.
-- **llvmkit:** `fold_ptr_to_int_pair` always two-steps through the case-11 mid (`ptrtoint` to the pointer size, `ptrtoaddr` to the index/address size), so the same expression folds to `x mod 2^64` — the semantically correct address extraction, and a different constant from upstream's.
-- **Why:** Recorded as a deliberate, reasoned divergence awaiting an explicit decision: llvmkit's value is arguably the more correct side, and matching upstream would mean introducing a wrong mask to copy an upstream quirk, on layouts x86 and the `bin_lift` consumer never use.
-- **Fix:** Only if CHERI-like parity comes into scope: mirror the switch path's type choice (`getAddressType` for `PtrToInt`, `getIntPtrType` for `PtrToAddr`) in the declined case-11 sub-case, and port the upstream fixture that pins it so the quirk is documented as copied rather than invented.
-
-<details><summary>Verification evidence</summary>
-
-Confirmed real and unchanged. (1) llvmkit: crates/llvmkit-ir/src/constant_folding.rs:2432 `fold_ptr_to_int_pair`, lines 2462-2466, picks `mid_bits` as `PtrToInt => dl.pointer_size_in_bits(addr_space)`, `PtrToAddr => dl.index_size_in_bits(addr_space)`, then two-steps source -> mid_ty -> dest_ty via `fold_integer_cast_constant` (2467-2471). It is reached unconditionally from `constant_fold_cast_operand` (lines 307-311); `grep -rn "eliminable" --include=*.rs crates/` returns nothing, so llvmkit has no `isEliminableCastPair` accept/decline branch and never falls through to a different mid width. (2) Upstream: orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/Analysis/ConstantFolding.cpp:1508-1510 in `ConstantFoldCastOperand`'s switch uses `MidTy = Opcode == Instruction::PtrToInt ? DL.getAddressType(CE->getType()) : DL.getIntPtrType(CE->getType())` — and DataLayout.h:679 defines `getAddressType(PtrTy)` as `getIndexType(PtrTy)` (index size) while DataLayout.cpp:976-984 defines `getIntPtrType(Type*)` via `getPointerTypeSizeInBits`. That is exactly the inverse of llvmkit's mapping, and also the inverse of upstream's own case 11 at Instructions.cpp:2965-2967 (`secondOp == PtrToAddr ? DL->getAddressSizeInBits(MidTy) : DL->getPointerTypeSizeInBits(MidTy)`), so upstream's two sites disagree and the declined sub-case (`MidSize < SrcSize && MidSize < DstSize`, Instructions.cpp:2972-2973) is where it becomes observable. (3) Empirically, with a temporary integration test run on `cargo +1.96.0 test --release -p llvmkit-ir` (since deleted; `git status` on the tests dir is clean): on `e-p:128:128:128:64`, `ptrtoaddr(inttoptr(i128 0x1_0000_0000_0000_0001)) to i128` folds in llvmkit to `ApInt{bit_width:128, words:[1]}` i.e. `x mod 2^64`, whereas upstream's case 11 declines (MidSize 64 < 128 and < 128) and the fallback's `getIntPtrType` = i128 makes `ConstantFoldIntegerCast` a no-op, yielding `x` = `words:[1,1]`. The `ptrtoint` half diverges too, in the opposite direction: `ptrtoint(inttoptr(i256 x)) to i256` gives llvmkit `x mod 2^128` (pointer size) versus upstream's fallback `getAddressType` = i64 giving `x mod 2^64`. (4) The scoping in the claim checks out: when case 11 accepts, llvmkit's two-step is value-equivalent to upstream's direct trunc/zext/bitcast (truncation is transitive; zext-then-cast is identical), and when `pointer_size == index_size` the two mid widths coincide, so the divergence is confined to declined case-11 on `pointer_size != index_size` layouts. (5) llvmkit already knows about the gap but does not pin it: the doc comment on `crates/llvmkit-ir/tests/constant_folding_analysis.rs:78-84` calls out "the (unimplemented in llvmkit) index-size-based switch-fallback in `ConstantFoldCastOperand`", and neither of the two `p:128:128:128:64` tests there (lines 86, 116) reaches a declined case-11.
 
 </details>
 

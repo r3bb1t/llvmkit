@@ -236,6 +236,295 @@ define <3 x float> @load_vec3() {
     );
 }
 
+/// Ports the functions of `test/Transforms/InstSimplify/ptrtoaddr.ll` whose
+/// casts have a constant to fold, which are `ConstantFoldCastOperand`'s, on that
+/// fixture's layout: `isEliminableCastPair`'s case 11 with its two sizes, the
+/// `getelementptr` of null, and the `sub 0` index. `inttoptr_of_ptrtoaddr` is why
+/// the table has no case for `ptrtoaddr` then `inttoptr`.
+///
+/// `ptrtoaddr_inttoptr_noas1` is left out because its `getelementptr` of null has
+/// to fold first, and `symbolically_evaluate_gep` defers a null base. The other
+/// functions are `simplifyCastInst`, `simplifyGEPInst`,
+/// `SymbolicallyEvaluateBinop` or compares, which are not this routine.
+#[test]
+fn a_cast_of_a_constant_expression_folds_as_ptrtoaddr_ll_does() {
+    let source = r#"
+target datalayout = "pe1:64:64:64:32"
+
+@g = external global i8
+@g2 = external global i8
+
+@g.as1 = external addrspace(1) global i8
+@g2.as1 = external addrspace(1) global i8
+
+define i32 @ptrtoaddr_inttoptr() {
+; CHECK-LABEL: define i32 @ptrtoaddr_inttoptr() {
+; CHECK-NEXT:    ret i32 -1
+;
+  %toptr = inttoptr i32 -1 to ptr addrspace(1)
+  %toaddr = ptrtoaddr ptr addrspace(1) %toptr to i32
+  ret i32 %toaddr
+}
+
+define i32 @ptrtoaddr_inttoptr_diff_size1() {
+; CHECK-LABEL: define i32 @ptrtoaddr_inttoptr_diff_size1() {
+; CHECK-NEXT:    ret i32 -1
+;
+  %toptr = inttoptr i64 -1 to ptr addrspace(1)
+  %toaddr = ptrtoaddr ptr addrspace(1) %toptr to i32
+  ret i32 %toaddr
+}
+
+define i32 @ptrtoaddr_inttoptr_diff_size2() {
+; CHECK-LABEL: define i32 @ptrtoaddr_inttoptr_diff_size2() {
+; CHECK-NEXT:    ret i32 65535
+;
+  %toptr = inttoptr i16 -1 to ptr addrspace(1)
+  %toaddr = ptrtoaddr ptr addrspace(1) %toptr to i32
+  ret i32 %toaddr
+}
+
+define i64 @ptr2addr2_inttoptr_noas2() {
+; CHECK-LABEL: define i64 @ptr2addr2_inttoptr_noas2() {
+; CHECK-NEXT:    ret i64 123
+;
+  %toptr = inttoptr i64 123 to ptr
+  %toaddr = ptrtoaddr ptr %toptr to i64
+  ret i64 %toaddr
+}
+
+define i64 @ptrtoaddr_inttoptr_noas_diff_size1() {
+; CHECK-LABEL: define i64 @ptrtoaddr_inttoptr_noas_diff_size1() {
+; CHECK-NEXT:    ret i64 4294967295
+;
+  %toptr = inttoptr i32 -1 to ptr
+  %toaddr = ptrtoaddr ptr %toptr to i64
+  ret i64 %toaddr
+}
+
+define i64 @ptrtoaddr_inttoptr_noas_diff_size2() {
+; CHECK-LABEL: define i64 @ptrtoaddr_inttoptr_noas_diff_size2() {
+; CHECK-NEXT:    ret i64 -1
+;
+  %toptr = inttoptr i128 -1 to ptr
+  %toaddr = ptrtoaddr ptr %toptr to i64
+  ret i64 %toaddr
+}
+
+define i64 @ptrtoaddr_gep_null() {
+; CHECK-LABEL: define i64 @ptrtoaddr_gep_null() {
+; CHECK-NEXT:    ret i64 42
+;
+  %toaddr = ptrtoaddr ptr getelementptr (i8, ptr null, i64 42) to i64
+  ret i64 %toaddr
+}
+
+define i32 @ptrtoaddr_gep_null_addrsize() {
+; CHECK-LABEL: define i32 @ptrtoaddr_gep_null_addrsize() {
+; CHECK-NEXT:    ret i32 42
+;
+  %toaddr = ptrtoaddr ptr addrspace(1) getelementptr (i8, ptr addrspace(1) null, i32 42) to i32
+  ret i32 %toaddr
+}
+
+define i64 @ptrtoaddr_gep_sub() {
+; CHECK-LABEL: define i64 @ptrtoaddr_gep_sub() {
+; CHECK-NEXT:    ret i64 sub (i64 ptrtoaddr (ptr @g to i64), i64 ptrtoaddr (ptr @g2 to i64))
+;
+  %toaddr = ptrtoaddr ptr getelementptr (i8, ptr @g, i64 sub (i64 0, i64 ptrtoaddr (ptr @g2 to i64))) to i64
+  ret i64 %toaddr
+}
+
+define i32 @ptrtoaddr_gep_sub_addrsize() {
+; CHECK-LABEL: define i32 @ptrtoaddr_gep_sub_addrsize() {
+; CHECK-NEXT:    ret i32 sub (i32 ptrtoaddr (ptr addrspace(1) @g.as1 to i32), i32 ptrtoaddr (ptr addrspace(1) @g2.as1 to i32))
+;
+  %toaddr = ptrtoaddr ptr addrspace(1) getelementptr (i8, ptr addrspace(1) @g.as1, i32 sub (i32 0, i32 ptrtoaddr (ptr addrspace(1) @g2.as1 to i32))) to i32
+  ret i32 %toaddr
+}
+
+; Don't fold inttoptr of ptrtoaddr away. inttoptr will pick a previously
+; exposed provenance, which is not necessarily that of @g (especially as
+; ptrtoaddr does not expose the provenance.)
+define ptr @inttoptr_of_ptrtoaddr() {
+; CHECK-LABEL: define ptr @inttoptr_of_ptrtoaddr() {
+; CHECK-NEXT:    ret ptr inttoptr (i64 ptrtoaddr (ptr @g to i64) to ptr)
+;
+  %toptr = inttoptr i64 ptrtoaddr (ptr @g to i64) to ptr
+  ret ptr %toptr
+}
+"#;
+    check_directives(
+        &instsimplify(source, None),
+        &read_check_directives_with_prefixes(source, &["CHECK"]),
+    );
+}
+
+/// **No upstream counterpart**: no fixture takes a `ptrtoint` past
+/// `isEliminableCastPair` into `ConstantFoldCastOperand`'s own `inttoptr` arm. On
+/// this layout a pointer has 64 bits and 32 of index. `@wide` is both wider than
+/// the pointer, so case 11 declines, and the arm truncates to the *address* type,
+/// not the pointer's size, which is `getAddressType` read as upstream reads it.
+/// `@narrow` is the positive control: case 11 takes it, by the pointer's size.
+/// `@round_trip` is case 7, which only a `DataLayout` allows.
+#[test]
+fn a_pointer_cast_reads_the_sizes_cast_operand_reads() {
+    let printed = instsimplify(
+        r#"
+target datalayout = "p:64:64:64:32"
+
+@g = external global i8
+
+define i128 @wide() {
+  %v = ptrtoint ptr inttoptr (i128 -1 to ptr) to i128
+  ret i128 %v
+}
+
+define i64 @narrow() {
+  %v = ptrtoint ptr inttoptr (i128 -1 to ptr) to i64
+  ret i64 %v
+}
+
+define ptr @round_trip() {
+  %v = inttoptr i64 ptrtoint (ptr @g to i64) to ptr
+  ret ptr %v
+}
+"#,
+        None,
+    );
+    let body = |name: &str| {
+        let start = printed
+            .find(&format!("@{name}("))
+            .unwrap_or_else(|| panic!("@{name} is printed"));
+        let rest = &printed[start..];
+        rest[..rest.find('}').expect("a function ends")].to_owned()
+    };
+    assert!(body("wide").contains("ret i128 4294967295"), "{printed}");
+    assert!(body("narrow").contains("ret i64 -1"), "{printed}");
+    assert!(body("round_trip").contains("ret ptr @g"), "{printed}");
+}
+
+/// **No upstream counterpart**: `test/Transforms/Inline/inline-semantic-interposition.ll`
+/// is the only fixture that sets this flag on a pass, and the inliner is not here.
+/// `GlobalValue::isInterposable` also answers true when `getSemanticInterposition`
+/// holds and the global is not `dso_local`, which its linkage or visibility can
+/// make it implicitly. Each of `hasDefinitiveInitializer`, the alias arm of
+/// `getUnderlyingObject` and `areGlobalsPotentiallyEqual` asks it, so a preemptible
+/// global stays and the others fold. With the flag `i32 0`, everything folds.
+#[test]
+fn a_preemptible_global_stays_under_semantic_interposition() {
+    let source = |flag: u32| {
+        format!(
+            r#"
+@preemptible = constant i32 1
+@local = dso_local constant i32 2
+@hidden = hidden constant i32 3
+@internal = internal constant i32 4
+@preemptible_alias = alias i32, ptr @local
+@local_alias = dso_local alias i32, ptr @local
+
+define i32 @load_preemptible() {{
+  %v = load i32, ptr @preemptible
+  ret i32 %v
+}}
+
+define i32 @load_local() {{
+  %v = load i32, ptr @local
+  ret i32 %v
+}}
+
+define i32 @load_hidden() {{
+  %v = load i32, ptr @hidden
+  ret i32 %v
+}}
+
+define i32 @load_internal() {{
+  %v = load i32, ptr @internal
+  ret i32 %v
+}}
+
+define i32 @load_preemptible_alias() {{
+  %v = load i32, ptr @preemptible_alias
+  ret i32 %v
+}}
+
+define i32 @load_local_alias() {{
+  %v = load i32, ptr @local_alias
+  ret i32 %v
+}}
+
+define i1 @compare_preemptible() {{
+  %v = icmp eq ptr @preemptible, @local
+  ret i1 %v
+}}
+
+define i1 @compare_local() {{
+  %v = icmp eq ptr @hidden, @local
+  ret i1 %v
+}}
+
+!llvm.module.flags = !{{!0}}
+!0 = !{{i32 1, !"SemanticInterposition", i32 {flag}}}
+"#
+        )
+    };
+    let body = |printed: &str, name: &str| {
+        let start = printed
+            .find(&format!("@{name}("))
+            .unwrap_or_else(|| panic!("@{name} is printed"));
+        let rest = &printed[start..];
+        rest[..rest.find('}').expect("a function ends")].to_owned()
+    };
+
+    let printed = instsimplify(&source(1), None);
+    assert!(
+        body(&printed, "load_preemptible").contains("= load"),
+        "{printed}"
+    );
+    assert!(
+        body(&printed, "load_local").contains("ret i32 2"),
+        "{printed}"
+    );
+    assert!(
+        body(&printed, "load_hidden").contains("ret i32 3"),
+        "{printed}"
+    );
+    assert!(
+        body(&printed, "load_internal").contains("ret i32 4"),
+        "{printed}"
+    );
+    assert!(
+        body(&printed, "load_preemptible_alias").contains("= load"),
+        "{printed}"
+    );
+    assert!(
+        body(&printed, "load_local_alias").contains("ret i32 2"),
+        "{printed}"
+    );
+    assert!(
+        body(&printed, "compare_preemptible").contains("= icmp"),
+        "{printed}"
+    );
+    assert!(
+        body(&printed, "compare_local").contains("ret i1 false"),
+        "{printed}"
+    );
+
+    let printed = instsimplify(&source(0), None);
+    assert!(
+        body(&printed, "load_preemptible").contains("ret i32 1"),
+        "{printed}"
+    );
+    assert!(
+        body(&printed, "load_preemptible_alias").contains("ret i32 2"),
+        "{printed}"
+    );
+    assert!(
+        body(&printed, "compare_preemptible").contains("ret i1 false"),
+        "{printed}"
+    );
+}
+
 /// **No upstream counterpart as a fixture**, one assertion per arm of
 /// `ReadDataFromGlobal` and `FoldReinterpretLoadFromConst` no fixture here pins.
 /// `bytes_loaded > 32` declines. An `undef` element reads as zero bytes. An

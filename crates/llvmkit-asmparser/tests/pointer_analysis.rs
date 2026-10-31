@@ -17,13 +17,14 @@ use llvmkit_asmparser::parser;
 use llvmkit_ir::constant_folding::constant_fold_instruction;
 use llvmkit_ir::eh_personalities::{EhPersonality, classify_eh_personality};
 use llvmkit_ir::{
-    BytewiseValue, DynBrand, InstructionView, Module, Unverified, Value, ValueTrackingQuery,
-    argument_aliasing_to_returned_pointer, constant_data_array_info, constant_string_info,
-    find_alloca_for_value, find_inserted_value, is_bytewise_value,
-    is_intrinsic_returning_pointer_aliasing_argument_without_capturing, is_known_not_poison,
-    only_used_by_lifetime_markers, only_used_by_lifetime_markers_or_droppable_instructions,
-    pointer_base_with_constant_offset, string_length, underlying_object,
-    underlying_object_aggressive, underlying_objects, underlying_objects_for_code_gen,
+    BytewiseValue, DynBrand, GlobalValue, InstructionView, Module, Unverified, Value,
+    ValueTrackingQuery, argument_aliasing_to_returned_pointer, constant_data_array_info,
+    constant_offset_from_global, constant_string_info, find_alloca_for_value, find_inserted_value,
+    is_bytewise_value, is_intrinsic_returning_pointer_aliasing_argument_without_capturing,
+    is_known_not_poison, only_used_by_lifetime_markers,
+    only_used_by_lifetime_markers_or_droppable_instructions, pointer_base_with_constant_offset,
+    string_length, underlying_object, underlying_object_aggressive, underlying_objects,
+    underlying_objects_for_code_gen,
 };
 
 fn parse(source: &str) -> Module<DynBrand, Unverified> {
@@ -950,4 +951,73 @@ define void @f() {
     );
     assert_eq!(fold("scalable"), None);
     assert!(fold("fixed").is_some());
+}
+
+/// **No upstream counterpart**: `IsConstantOffsetFromGlobal` has no test of its
+/// own. It answers for any `GlobalValue`, reports the `DSOLocalEquivalent` it came
+/// through, and looks through `ptrtoint` and `bitcast` but not `addrspacecast`.
+#[test]
+fn a_constant_offset_is_from_any_global_value() {
+    let module = parse(
+        r#"
+target datalayout = "e-p:64:64:64-p1:32:32:32"
+
+@v = global [4 x i32] zeroinitializer
+@a = alias [4 x i32], ptr @v
+@i = ifunc void (), ptr @r
+
+declare void @f()
+
+define ptr @r() {
+  ret ptr null
+}
+
+@of_variable = global ptr getelementptr (i8, ptr @v, i64 4)
+@of_function = global ptr getelementptr (i8, ptr @f, i64 8)
+@of_alias = global ptr getelementptr (i8, ptr @a, i64 12)
+@of_ifunc = global ptr @i
+@of_equivalent = global ptr dso_local_equivalent @f
+@of_offset_equivalent = global ptr getelementptr (i8, ptr dso_local_equivalent @f, i64 2)
+@through_ptrtoint = global i64 ptrtoint (ptr getelementptr (i8, ptr @f, i64 8) to i64)
+@through_addrspacecast = global ptr addrspace(1) addrspacecast (ptr @v to ptr addrspace(1))
+@of_null = global ptr null
+"#,
+    );
+    let data_layout = module.data_layout();
+    let resolve = |name: &str| {
+        let global = module.global(name).expect("fixture defines it");
+        let initializer = module.view(global).initializer().expect("it is defined");
+        constant_offset_from_global(initializer, &data_layout)
+    };
+    let offset_of = |name: &str| {
+        let resolved = resolve(name).unwrap_or_else(|| panic!("@{name} resolves"));
+        let is_equivalent = resolved.dso_local_equivalent().is_some();
+        let offset = resolved.offset().try_zext_u64().expect("offsets fit");
+        (resolved.global(), offset, is_equivalent)
+    };
+
+    let (global, offset, is_equivalent) = offset_of("of_variable");
+    assert!(matches!(global, GlobalValue::Variable(_)));
+    assert_eq!((offset, is_equivalent), (4, false));
+    let (global, offset, is_equivalent) = offset_of("of_function");
+    assert!(matches!(global, GlobalValue::Function(_)));
+    assert_eq!((offset, is_equivalent), (8, false));
+    let (global, offset, is_equivalent) = offset_of("of_alias");
+    assert!(matches!(global, GlobalValue::Alias(_)));
+    assert_eq!((offset, is_equivalent), (12, false));
+    let (global, offset, is_equivalent) = offset_of("of_ifunc");
+    assert!(matches!(global, GlobalValue::Ifunc(_)));
+    assert_eq!((offset, is_equivalent), (0, false));
+    let (global, offset, is_equivalent) = offset_of("of_equivalent");
+    assert!(matches!(global, GlobalValue::Function(_)));
+    assert_eq!((offset, is_equivalent), (0, true));
+    let (global, offset, is_equivalent) = offset_of("of_offset_equivalent");
+    assert!(matches!(global, GlobalValue::Function(_)));
+    assert_eq!((offset, is_equivalent), (2, true));
+    let (global, offset, is_equivalent) = offset_of("through_ptrtoint");
+    assert!(matches!(global, GlobalValue::Function(_)));
+    assert_eq!((offset, is_equivalent), (8, false));
+
+    assert!(resolve("through_addrspacecast").is_none());
+    assert!(resolve("of_null").is_none());
 }

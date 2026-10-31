@@ -46,8 +46,6 @@ const AUDITED: &[(&str, &str, usize, &str)] = &[
         1,
         GUARDED,
     ),
-    ("constant_folding.rs", "fold_int_to_ptr_pair", 1, ELEMENT),
-    ("constant_folding.rs", "fold_ptr_to_int_pair", 1, ELEMENT),
     ("constant_folding.rs", "peel_one_gep_level", 1, INTERNED),
     ("constants.rs", "as_constant", 4, REMINT),
     ("constants.rs", "constant_handle", 1, INTERNED),

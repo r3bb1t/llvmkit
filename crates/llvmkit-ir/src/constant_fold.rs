@@ -38,10 +38,11 @@ use super::float_kind::FloatDyn;
 use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::global_alias::GlobalAlias;
 use super::global_ifunc::GlobalIfunc;
-use super::global_value::Linkage;
+use super::global_value::{DsoLocality, Linkage, is_implicit_dso_local};
 use super::global_variable::GlobalVariable;
 use super::instr_types::{BinaryOpcode, CastOpcode, ShuffleMaskElem, UnaryOpcode};
 use super::instruction::{InstructionKindData, InstructionView};
+use super::instructions::is_eliminable_cast_pair;
 use super::int_width::IntDyn;
 use super::module::{ModuleBrand, ModuleRef, ModuleView};
 use super::r#type::{ElementCount, IrType, Type, TypeData, TypeSlotAccess, erase_type};
@@ -812,32 +813,43 @@ pub(crate) fn constant_fold_cast_instruction_trusting_same_module<
     }
 }
 
+/// `dyn_cast<ConstantExpr>(C)` with `CE->isCast()`: its opcode and
+/// `CE->getOperand(0)`.
+pub(crate) fn constant_cast_expr<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+) -> Option<(CastOpcode, Constant<'ctx, B, C>)> {
+    let ValueKindData::Constant(ConstantData::Expr(expr)) = &constant.as_erased().data().kind
+    else {
+        return None;
+    };
+    if !expr.opcode.is_cast() {
+        return None;
+    }
+    let opcode = cast_opcode_from_constant_expr(expr.opcode)?;
+    let [source] = expr.operands.as_ref() else {
+        return None;
+    };
+    Some((opcode, constant_from_id(constant.module, *source)?))
+}
+
+/// Ports the `CE->isCast()` arm of `ConstantFoldCastInstruction`, with
+/// `foldConstantCastPair`: no `DataLayout`, so a pair that needs one stands.
 fn fold_constant_cast_pair<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     opcode: CastOpcode,
     operand: Constant<'ctx, B, C>,
     dest_ty: Type<'ctx, B, C>,
 ) -> IrResult<Option<Constant<'ctx, B, C>>> {
-    let ValueKindData::Constant(ConstantData::Expr(expr)) = &operand.as_erased().data().kind else {
+    let Some((first_opcode, source)) = constant_cast_expr(operand) else {
         return Ok(None);
     };
-    if !expr.opcode.is_cast() {
-        return Ok(None);
-    }
-    let Some(first_opcode) = cast_opcode_from_constant_expr(expr.opcode) else {
-        return Ok(None);
-    };
-    let [source_id] = expr.operands.as_ref() else {
-        return Ok(None);
-    };
-    let module = operand.module;
-    let source_data = module.context().value_data(*source_id);
-    let source_value = Value::from_parts(*source_id, module, source_data.ty);
-    let Ok(source) = Constant::try_from(source_value) else {
-        return Ok(None);
-    };
-    let Some(new_opcode) =
-        fold_constant_cast_pair_opcode(first_opcode, opcode, source.ty(), operand.ty(), dest_ty)
-    else {
+    let Some(new_opcode) = is_eliminable_cast_pair(
+        first_opcode,
+        opcode,
+        source.ty(),
+        operand.ty(),
+        dest_ty,
+        None,
+    ) else {
         return Ok(None);
     };
     fold_maybe_undesirable_cast(new_opcode, source, dest_ty)
@@ -865,73 +877,6 @@ fn fold_maybe_undesirable_cast<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             .map(Some);
     }
     constant_fold_cast_instruction_trusting_same_module(opcode, value, dest_ty)
-}
-
-fn fold_constant_cast_pair_opcode<B: ModuleBrand, C: Capability>(
-    first_opcode: CastOpcode,
-    second_opcode: CastOpcode,
-    source_ty: Type<'_, B, C>,
-    middle_ty: Type<'_, B, C>,
-    dest_ty: Type<'_, B, C>,
-) -> Option<CastOpcode> {
-    match (first_opcode, second_opcode) {
-        (CastOpcode::Trunc, CastOpcode::Trunc) => Some(CastOpcode::Trunc),
-        (CastOpcode::Trunc, CastOpcode::BitCast)
-            if !type_is_vector(source_ty) && type_is_integer(dest_ty) =>
-        {
-            Some(CastOpcode::Trunc)
-        }
-        (CastOpcode::PtrToInt, CastOpcode::Trunc) => Some(CastOpcode::PtrToInt),
-        (CastOpcode::PtrToInt, CastOpcode::BitCast)
-            if !type_is_vector(source_ty) && type_is_integer(dest_ty) =>
-        {
-            Some(CastOpcode::PtrToInt)
-        }
-        (CastOpcode::PtrToAddr, CastOpcode::BitCast)
-            if !type_is_vector(source_ty) && type_is_integer(dest_ty) =>
-        {
-            Some(CastOpcode::PtrToAddr)
-        }
-        (CastOpcode::IntToPtr, CastOpcode::BitCast)
-            if pointer_address_space(middle_ty) == pointer_address_space(dest_ty) =>
-        {
-            Some(CastOpcode::IntToPtr)
-        }
-        (CastOpcode::BitCast, CastOpcode::Trunc) if type_is_integer(source_ty) => {
-            Some(CastOpcode::Trunc)
-        }
-        (CastOpcode::BitCast, CastOpcode::PtrToAddr)
-            if pointer_address_space(source_ty) == pointer_address_space(middle_ty)
-                && type_is_integer(dest_ty) =>
-        {
-            Some(CastOpcode::PtrToAddr)
-        }
-        (CastOpcode::BitCast, CastOpcode::PtrToInt)
-            if pointer_address_space(source_ty) == pointer_address_space(middle_ty)
-                && type_is_integer(dest_ty) =>
-        {
-            Some(CastOpcode::PtrToInt)
-        }
-        (CastOpcode::BitCast, CastOpcode::IntToPtr) if type_is_integer(source_ty) => {
-            Some(CastOpcode::IntToPtr)
-        }
-        (CastOpcode::BitCast, CastOpcode::BitCast) => Some(CastOpcode::BitCast),
-        (CastOpcode::BitCast, CastOpcode::AddrSpaceCast) => Some(CastOpcode::AddrSpaceCast),
-        (CastOpcode::AddrSpaceCast, CastOpcode::BitCast)
-            if pointer_address_space(source_ty) != pointer_address_space(middle_ty)
-                && pointer_address_space(middle_ty) == pointer_address_space(dest_ty) =>
-        {
-            Some(CastOpcode::AddrSpaceCast)
-        }
-        (CastOpcode::AddrSpaceCast, CastOpcode::AddrSpaceCast) => {
-            if pointer_address_space(source_ty) == pointer_address_space(dest_ty) {
-                Some(CastOpcode::BitCast)
-            } else {
-                Some(CastOpcode::AddrSpaceCast)
-            }
-        }
-        _ => None,
-    }
 }
 
 fn cast_opcode_from_constant_expr(opcode: ConstantExprOpcode) -> Option<CastOpcode> {
@@ -969,17 +914,6 @@ fn constant_expr_opcode_from_cast(opcode: CastOpcode) -> Option<ConstantExprOpco
         | CastOpcode::UiToFp
         | CastOpcode::SiToFp => None,
     }
-}
-
-fn type_is_vector<B: ModuleBrand, C: Capability>(ty: Type<'_, B, C>) -> bool {
-    matches!(
-        ty.data(),
-        TypeData::FixedVector { .. } | TypeData::ScalableVector { .. }
-    )
-}
-
-fn type_is_integer<B: ModuleBrand, C: Capability>(ty: Type<'_, B, C>) -> bool {
-    IntType::<IntDyn, B, C>::try_from(ty).is_ok()
 }
 
 /// Fold an integer or floating-point compare instruction.
@@ -1427,9 +1361,7 @@ fn are_globals_potentially_equal<B: ModuleBrand>(
 }
 
 fn global_is_unsafe_for_equality<B: ModuleBrand>(module: ModuleView<'_, B>, id: ValueSlot) -> bool {
-    if global_linkage(module, id).is_some_and(linkage_is_interposable)
-        || global_has_global_unnamed_addr(module, id)
-    {
+    if global_is_interposable(module, id) || global_has_global_unnamed_addr(module, id) {
         return true;
     }
     match &module.context().value_data(id).kind {
@@ -1442,11 +1374,58 @@ fn global_is_unsafe_for_equality<B: ModuleBrand>(module: ModuleView<'_, B>, id: 
     }
 }
 
-pub(crate) fn linkage_is_interposable(linkage: Linkage) -> bool {
+/// Ports `GlobalValue::isInterposable`. Upstream's `getParent() &&` has no
+/// counterpart: a global here always has its module.
+pub(crate) fn global_is_interposable<B: ModuleBrand>(
+    module: ModuleView<'_, B>,
+    id: ValueSlot,
+) -> bool {
+    if global_linkage(module, id).is_some_and(linkage_is_interposable) {
+        return true;
+    }
+    module.semantic_interposition() && !global_is_dso_local(module, id)
+}
+
+/// Ports `GlobalValue::isInterposableLinkage`.
+fn linkage_is_interposable(linkage: Linkage) -> bool {
     matches!(
         linkage,
         Linkage::WeakAny | Linkage::LinkOnceAny | Linkage::Common | Linkage::ExternalWeak
     )
+}
+
+/// Ports `GlobalValue::isDSOLocal`. Upstream keeps a bit that the parser's
+/// `dso_local` sets, and that `setLinkage` and `setVisibility` set whenever
+/// `isImplicitDSOLocal` holds. llvmkit keeps the keyword it was given, so the
+/// implicit half is read here (`docs/divergences.md` D29).
+pub(crate) fn global_is_dso_local<B: ModuleBrand>(
+    module: ModuleView<'_, B>,
+    id: ValueSlot,
+) -> bool {
+    let (locality, linkage, visibility) = match &module.context().value_data(id).kind {
+        ValueKindData::GlobalVariable(data) => (
+            data.dso_locality.get(),
+            data.linkage.get(),
+            data.visibility.get(),
+        ),
+        ValueKindData::Function(data) => (
+            *data.dso_locality.borrow(),
+            *data.linkage.borrow(),
+            *data.visibility.borrow(),
+        ),
+        ValueKindData::GlobalAlias(data) => (
+            data.dso_locality.get(),
+            data.linkage.get(),
+            data.visibility.get(),
+        ),
+        ValueKindData::GlobalIfunc(data) => (
+            data.dso_locality.get(),
+            data.linkage.get(),
+            data.visibility.get(),
+        ),
+        _ => return false,
+    };
+    locality == DsoLocality::Local || is_implicit_dso_local(linkage, visibility)
 }
 
 fn linkage_is_weak_for_linker(linkage: Linkage) -> bool {

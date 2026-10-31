@@ -1621,6 +1621,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         ModuleRef::new(self.core)
     }
 
+    /// Whether the `"SemanticInterposition"` module flag is set. Mirrors
+    /// `Module::getSemanticInterposition`.
+    #[inline]
+    pub fn semantic_interposition(self) -> bool {
+        self.core.semantic_interposition()
+    }
+
     /// Module identifier.
     #[inline]
     pub fn name(self) -> &'ctx str {
@@ -3690,6 +3697,15 @@ impl<'ctx> ModuleCore {
         None
     }
 
+    /// Mirrors `Module::getSemanticInterposition` (`lib/IR/Module.cpp`). Upstream's
+    /// two `cast`s assert on a flag that is no constant integer, which the verifier
+    /// refuses. It parses, and on it this answers `false`, as for no flag.
+    pub(super) fn semantic_interposition(&self) -> bool {
+        self.module_flag_value(ModuleFlagKey::SemanticInterposition.key())
+            .and_then(|flag| self.metadata_constant_int_value(flag))
+            .is_some_and(|(_, value)| !value.is_zero())
+    }
+
     /// Decode every well-formed flag tuple. Mirrors
     /// `Module::getModuleFlagsMetadata(SmallVectorImpl<ModuleFlagEntry>&)`
     /// (`lib/IR/Module.cpp`).
@@ -4098,6 +4114,13 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     #[inline]
     pub fn name(&self) -> &str {
         self.core().name()
+    }
+
+    /// Whether the `"SemanticInterposition"` module flag is set. Mirrors
+    /// `Module::getSemanticInterposition`.
+    #[inline]
+    pub fn semantic_interposition(&self) -> bool {
+        self.core().semantic_interposition()
     }
 
     /// Read-only branded view.

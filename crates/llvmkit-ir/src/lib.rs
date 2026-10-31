@@ -275,7 +275,9 @@ pub use function_signature::{
 pub use gep_no_wrap_flags::GepNoWrapFlags;
 pub use global_alias::{GlobalAlias, GlobalAliasBuilder};
 pub use global_ifunc::{GlobalIfunc, GlobalIfuncBuilder};
-pub use global_value::{DllStorageClass, DsoLocality, Linkage, ThreadLocalMode, Visibility};
+pub use global_value::{
+    DllStorageClass, DsoLocality, GlobalValue, Linkage, ThreadLocalMode, Visibility,
+};
 pub use global_variable::{CodeModel, GlobalBuilder, GlobalVariable, SanitizerMetadata};
 pub use inline_asm::{
     AsmDialect, ConstraintInfo, ConstraintKind, ConstraintParseError, InlineAsm, InlineAsmOptions,
@@ -306,7 +308,9 @@ pub use instructions::{
     TruncInst, TypedCallInst, UdivInst, UiToFpInst, UnreachableInst, UremInst, VaArgInst, XorInst,
     ZextInst,
 };
-pub use instructions::{cast_is_valid, indexed_aggregate_type, indexed_gep_type};
+pub use instructions::{
+    cast_is_valid, indexed_aggregate_type, indexed_gep_type, is_eliminable_cast_pair,
+};
 pub use intrinsic_inst::{IntrinsicInst, LifetimeIntrinsic, MemIntrinsic};
 pub use intrinsics::{
     BinaryIntrinsic, IntrinsicDescriptor, IntrinsicId, IntrinsicNameResolution,
