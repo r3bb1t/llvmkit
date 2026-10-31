@@ -2355,6 +2355,7 @@ Two failure modes are worth naming, because both have shipped:
 | `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::ilogb` | `TEST(APFloatTest, ilogb)`, including the `IEK_NaN` / `IEK_Zero` / `IEK_Inf` sentinels | port |
 | `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::x87_largest` | `TEST(APFloatTest, x87Largest)` | port |
 | `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::x87_next` | `TEST(APFloatTest, x87Next)` | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::an_x87_step_keeps_the_integer_bit_at_every_boundary` | no upstream counterpart — `TEST(APFloatTest, x87Next)` reads only `ilogb`; pins the patterns `IEEEFloat::next` writes through `convertF80LongDoubleAPFloatToAPInt` at each boundary of the explicit integer bit | llvmkit-specific regression (D11) |
 | `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::exact_inverse` | `TEST(APFloatTest, exactInverse)` for the modeled semantics; upstream's host-`float`/`double` constructors are spelled as the equivalent literals | port |
 | `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::comparisons` | `TEST(APFloatTest, Comparisons)` — the ten ordered values compared pairwise | port |
 | `crates/llvmkit-ir/tests/ap_float_upstream_convert.rs::upstream_convert` | `llvm/unittests/ADT/APFloatTest.cpp::TEST(APFloatTest, convert)` — ported in upstream's order, asserting the converted value, the `losesInfo` flag, and the status where upstream checks it | port |

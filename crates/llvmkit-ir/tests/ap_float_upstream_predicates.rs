@@ -641,6 +641,43 @@ fn x87_next() {
     assert_eq!(stepped.ilogb(), BinaryExponent::Finite(-1));
 }
 
+/// No upstream counterpart: `TEST(APFloatTest, x87Next)` reads only `ilogb`, and a
+/// step that left an unnormal answered that too. These are the steps of
+/// `IEEEFloat::next` that cross a boundary of `x86_fp80`'s explicit integer bit,
+/// read through `convertF80LongDoubleAPFloatToAPInt`, which `to_bits` stands for.
+#[test]
+fn an_x87_step_keeps_the_integer_bit_at_every_boundary() {
+    use ApFloatNextDirection::{TowardNegative, TowardPositive};
+    const ONE: u64 = 1 << 63;
+    const FRACTION: u64 = ONE - 1;
+    let pattern = |exponent: u64, significand: u64| ApInt::from_words(80, &[significand, exponent]);
+    let rows = [
+        // A binade, in each of the two ways `next` crosses one.
+        (pattern(0xBFFF, ONE), TowardPositive, (0xBFFE, u64::MAX)),
+        (pattern(0xBFFE, u64::MAX), TowardNegative, (0xBFFF, ONE)),
+        (pattern(0x3FFF, ONE), TowardNegative, (0x3FFE, u64::MAX)),
+        (pattern(0x3FFE, u64::MAX), TowardPositive, (0x3FFF, ONE)),
+        // Denormal to smallest normal: the bit sets at the same exponent, which
+        // writes as biased `1`.
+        (pattern(0, FRACTION), TowardPositive, (1, ONE)),
+        (pattern(1, ONE), TowardNegative, (0, FRACTION)),
+        // Largest to infinity, whose significand is not zero here.
+        (pattern(0x7FFE, u64::MAX), TowardPositive, (0x7FFF, ONE)),
+        (pattern(0xFFFE, u64::MAX), TowardNegative, (0xFFFF, ONE)),
+    ];
+    for (value, direction, (exponent, significand)) in rows {
+        let value = ApFloat::from_bits(X87, &value)
+            .unwrap_or_else(|e| panic!("an 80-bit pattern is an x87 value: {e}"));
+        let (stepped, status) = value.next(direction);
+        assert_eq!(status, ApFloatStatus::OK, "{value:?} {direction:?}");
+        assert_eq!(
+            bits_of(&stepped),
+            pattern(exponent, significand),
+            "{value:?} {direction:?}"
+        );
+    }
+}
+
 /// Port of `TEST(APFloatTest, exactInverse)`, restricted to the modeled
 /// semantics. Upstream's host-`float`/`double` constructors are spelled here
 /// as the equivalent literals in the same semantics.

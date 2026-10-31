@@ -560,80 +560,23 @@ impl ApFloat {
         (rounded, status)
     }
 
+    /// Ports `APFloat::next`, which dispatches on the semantics:
+    /// `DoubleAPFloat::next` for a `PpcDoubleDouble`, `IEEEFloat::next` for
+    /// anything else.
+    ///
+    /// `IEEEFloat::next` implements only nextUp, because
+    /// `nextDown(x) = -nextUp(-x)`: it swaps the sign, computes, and swaps back.
     pub fn next(&self, direction: ApFloatNextDirection) -> (ApFloat, ApFloatStatus) {
-        if self.is_nan() {
-            // IEEE-754R 2008 6.2 par 2: `nextUp(sNaN) = qNaN`, invalid flag
-            // set; `nextUp(qNaN) = qNaN`, which must be the identity so the
-            // payload survives.
-            //
-            // Upstream's `IEEEFloat::next` spells the signaling case
-            // `makeNaN(false, isNegative(), nullptr)` — a **fresh, payload-less**
-            // quiet NaN carrying only the sign — not `makeQuiet()`. The two
-            // differ: quieting `snan` leaves the "make it a NaN, not an
-            // infinity" filler bit set alongside the quiet bit. This is a
-            // deliberate asymmetry with `scalbn` / `frexp` / `convert`, which
-            // *do* quiet in place and keep the payload.
-            if self.is_signaling() {
-                return (
-                    Self::qnan(
-                        self.semantics,
-                        sign_from_negative(self.is_negative()),
-                        NanPayload::Absent,
-                    ),
-                    ApFloatStatus::INVALID_OP,
-                );
-            }
-            return (self.clone(), ApFloatStatus::OK);
-        }
         if matches!(self.semantics, ApFloatSemantics::PpcDoubleDouble) {
             return ppc_next(self, direction);
         }
-        if self.is_zero() {
-            let sign = match direction {
-                ApFloatNextDirection::TowardPositive => ApFloatSign::Positive,
-                ApFloatNextDirection::TowardNegative => ApFloatSign::Negative,
-            };
-            return (Self::smallest(self.semantics, sign), ApFloatStatus::OK);
+        match direction {
+            ApFloatNextDirection::TowardPositive => ieee_next_up(self),
+            ApFloatNextDirection::TowardNegative => {
+                let (next, status) = ieee_next_up(&self.change_sign());
+                (next.change_sign(), status)
+            }
         }
-        if self.is_pos_infinity() {
-            return match direction {
-                ApFloatNextDirection::TowardPositive => (self.clone(), ApFloatStatus::OK),
-                ApFloatNextDirection::TowardNegative => (
-                    Self::largest(self.semantics, ApFloatSign::Positive),
-                    ApFloatStatus::OK,
-                ),
-            };
-        }
-        if self.is_neg_infinity() {
-            return match direction {
-                ApFloatNextDirection::TowardPositive => (
-                    Self::largest(self.semantics, ApFloatSign::Negative),
-                    ApFloatStatus::OK,
-                ),
-                ApFloatNextDirection::TowardNegative => (self.clone(), ApFloatStatus::OK),
-            };
-        }
-
-        let bits = self.to_bits();
-        let step = ApInt::from_words(bits.bit_width(), &[1]);
-        let increment = match direction {
-            ApFloatNextDirection::TowardPositive => !self.is_negative(),
-            ApFloatNextDirection::TowardNegative => self.is_negative(),
-        };
-        let next_bits = if increment {
-            bits.wrapping_add(&step)
-        } else {
-            bits.wrapping_sub(&step)
-        };
-        // The step is on the raw pattern, so it is not read as `from_bits` reads
-        // one: on `x86_fp80` it can pass through a clear integer bit.
-        (
-            Self {
-                semantics: self.semantics,
-                repr: ApFloatRepr::Bits(next_bits),
-            },
-            ApFloatStatus::OK,
-        )
     }
 
     pub fn change_sign(&self) -> ApFloat {
@@ -1877,6 +1820,149 @@ fn ppc_harrison_ulp(value: &ApFloat) -> Option<ApFloat> {
     .map(|(ulp, _)| ulp)
 }
 
+/// The `fcNaN` arm that `IEEEFloat::next` and `DoubleAPFloat::next` share.
+///
+/// IEEE-754R 2008 6.2 par 2: `nextUp(sNaN) = qNaN`, invalid flag set;
+/// `nextUp(qNaN) = qNaN`, which must be the identity so the payload survives.
+///
+/// Upstream spells the signaling case `makeNaN(false, isNegative(), nullptr)` — a
+/// **fresh, payload-less** quiet NaN carrying only the sign — not `makeQuiet()`.
+/// The two differ: quieting `snan` leaves the "make it a NaN, not an infinity"
+/// filler bit set alongside the quiet bit. This is a deliberate asymmetry with
+/// `scalbn` / `frexp` / `convert`, which *do* quiet in place and keep the payload.
+fn next_up_of_nan(value: &ApFloat) -> (ApFloat, ApFloatStatus) {
+    if value.is_signaling() {
+        return (
+            ApFloat::qnan(
+                value.semantics,
+                sign_from_negative(value.is_negative()),
+                NanPayload::Absent,
+            ),
+            ApFloatStatus::INVALID_OP,
+        );
+    }
+    (value.clone(), ApFloatStatus::OK)
+}
+
+/// Ports nextUp, the body of `IEEEFloat::next`.
+///
+/// Upstream's arms for a `fltSemantics` with `NegativeZero` NaNs, no zero,
+/// `NanOnly` or `FiniteOnly` non-finite behaviour, or no significand are not here:
+/// [`ApFloatSemantics`] has none of those formats.
+fn ieee_next_up(value: &ApFloat) -> (ApFloat, ApFloatStatus) {
+    let semantics = value.semantics;
+    let negative = value.is_negative();
+    match value.category() {
+        ApFloatCategory::Infinity => {
+            // nextUp(+inf) = +inf
+            if !negative {
+                return (value.clone(), ApFloatStatus::OK);
+            }
+            // nextUp(-inf) = -getLargest()
+            (
+                ApFloat::largest(semantics, ApFloatSign::Negative),
+                ApFloatStatus::OK,
+            )
+        }
+        ApFloatCategory::Nan => next_up_of_nan(value),
+        // nextUp(pm 0) = +getSmallest()
+        ApFloatCategory::Zero => (
+            ApFloat::smallest(semantics, ApFloatSign::Positive),
+            ApFloatStatus::OK,
+        ),
+        ApFloatCategory::Normal => {
+            // nextUp(-getSmallest()) = -0
+            if value.is_smallest() && negative {
+                return (
+                    ApFloat::zero(semantics, ApFloatSign::Negative),
+                    ApFloatStatus::OK,
+                );
+            }
+            // nextUp(getLargest()) == INFINITY
+            if value.is_largest() && !negative {
+                return (
+                    ApFloat::inf(semantics, ApFloatSign::Positive),
+                    ApFloatStatus::OK,
+                );
+            }
+            let Some(next) = ieee_next_up_of_normal(value) else {
+                unreachable!(
+                    "a finite non-zero value outside ppc_double_double has components, and \
+                     stepping one that is neither boundary above stays in its format's range"
+                );
+            };
+            (next, ApFloatStatus::OK)
+        }
+    }
+}
+
+/// `nextUp(normal) == normal + inc`, the tail of `IEEEFloat::next`'s `fcNormal`
+/// arm. Here, as there, the significand carries its integer bit explicitly, and a
+/// denormal has the minimum exponent with that bit clear.
+fn ieee_next_up_of_normal(value: &ApFloat) -> Option<ApFloat> {
+    let semantics = value.semantics;
+    let BinaryFloatComponents {
+        negative,
+        mut exponent,
+        precision,
+        magnitude: mut significand,
+    } = value.binary_components()?;
+    let integer_bit = precision.checked_sub(1)?;
+    let inc = ApInt::from_words(precision, &[1]);
+    if negative {
+        // We only cross a binade boundary if we are not in the smallest binade
+        // and the significand, excluding the integer bit, is all zeros.
+        let will_cross_binade_boundary =
+            exponent != semantics.min_exponent() && !has_fraction_bits(&significand, integer_bit);
+        // Decrement always: on a crossing it leaves a clear integer bit over all
+        // ones, and on a normal -> denormal step the bit is meant to clear.
+        significand = significand.wrapping_sub(&inc);
+        if will_cross_binade_boundary {
+            significand.set_bit(integer_bit);
+            exponent = exponent.checked_sub(1)?;
+        }
+    } else {
+        // A denormal always increments: it and the smallest normal binade have
+        // the same exponent. `isSignificandAllOnes` excludes the integer bit.
+        let fraction_mask = ApInt::low_bits_set(precision, integer_bit);
+        let will_cross_binade_boundary =
+            !value.is_denormal() && significand.bitand(&fraction_mask) == fraction_mask;
+        if will_cross_binade_boundary {
+            significand = ApInt::one_bit_set(precision, integer_bit);
+            exponent = exponent.checked_add(1)?;
+        } else {
+            significand = significand.wrapping_add(&inc);
+        }
+    }
+    finite_from_components(semantics, negative, exponent, &significand)
+}
+
+/// The `isFiniteNonZero` arm of `IEEEFloat::convertIEEEFloatToAPInt` and
+/// `convertF80LongDoubleAPFloatToAPInt`, the pattern of upstream's
+/// `(sign, exponent, significand)`: "denormals have exponent minExponent in
+/// APFloat, but minExponent-1 in the actual IEEE representations".
+fn finite_from_components(
+    semantics: ApFloatSemantics,
+    negative: bool,
+    exponent: i32,
+    significand: &ApInt,
+) -> Option<ApFloat> {
+    let integer_bit = semantics.precision().checked_sub(1)?;
+    let mut biased_exponent = exponent.checked_add(exponent_bias(semantics)?)?;
+    if biased_exponent == 1 && !significand.bit(integer_bit) {
+        biased_exponent = 0;
+    }
+    let whole = significand.try_zext_u128()?;
+    let bits = pack_decimal_bits(
+        semantics,
+        negative,
+        u64::try_from(biased_exponent).ok()?,
+        whole & low_bits_mask(integer_bit),
+        whole,
+    )?;
+    Some(ApFloat::from_bits_unchecked(semantics, &bits))
+}
+
 fn ppc_next(value: &ApFloat, direction: ApFloatNextDirection) -> (ApFloat, ApFloatStatus) {
     if matches!(direction, ApFloatNextDirection::TowardNegative) {
         let negated = value.change_sign();
@@ -1891,6 +1977,9 @@ fn ppc_next(value: &ApFloat, direction: ApFloatNextDirection) -> (ApFloat, ApFlo
             ApFloat::largest(ApFloatSemantics::PpcDoubleDouble, ApFloatSign::Negative),
             ApFloatStatus::OK,
         );
+    }
+    if value.is_nan() {
+        return next_up_of_nan(value);
     }
     if value.is_zero() {
         return (
