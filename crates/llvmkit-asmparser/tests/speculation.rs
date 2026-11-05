@@ -17,10 +17,10 @@
 
 use llvmkit_asmparser::parser;
 use llvmkit_ir::{
-    Capability, DominatorTree, DynBrand, InstructionView, Module, Unverified, User, Value,
-    ValueTrackingQuery, VectorType, can_create_poison, can_create_undef_or_poison,
-    is_guaranteed_to_transfer_execution_to_successor, is_known_not_poison,
-    is_known_not_undef_or_poison, lanes, program_undefined_if_poison,
+    Capability, DominatorTree, Dyn, DynBrand, InstructionView, IrBuilder, Module, NoFolder,
+    Unpositioned, Unverified, User, Value, ValueTrackingQuery, VectorType, can_create_poison,
+    can_create_undef_or_poison, is_guaranteed_to_transfer_execution_to_successor,
+    is_known_not_poison, is_known_not_undef_or_poison, lanes, program_undefined_if_poison,
     program_undefined_if_undef_or_poison,
 };
 
@@ -762,4 +762,152 @@ fn a_scalable_lane_below_the_known_minimum_is_in_range() {
             "canCreateUndefOrPoison of row {index}: {written}"
         );
     }
+}
+
+/// Builds `%x3` to `%x0` before the `ret` that opens `%body`, each an `xor` of
+/// the one before with 1, the first over `@a - @b`. That symbol difference is
+/// built with `try_delta_from`, llvmkit's compact form, which no `.ll` spells.
+/// Returns `%x0` and the `ret`, the context instruction.
+///
+/// Asking about `%x0` reaches `%x3` at depth 3, the difference at depth 4, and
+/// its two casts, `ptrtoint (ptr @a to i64)` and `ptrtoint (ptr @b to i64)`, at
+/// depth 5. There each cast asks about its global at
+/// `MaxAnalysisRecursionDepth`, which answers `false` on its first line, so the
+/// casts' operand walks fail. Only the arms after the walk, the
+/// dominating-condition loop among them, can prove a cast.
+fn xor_chain_over_a_symbol_difference(
+    module: &Module<DynBrand, Unverified>,
+) -> (
+    Value<'_, DynBrand>,
+    InstructionView<'_, DynBrand, llvmkit_ir::ReadOnly>,
+) {
+    let a = module.global("a").expect("fixture defines @a");
+    let b = module.global("b").expect("fixture defines @b");
+    let difference = module
+        .view(a)
+        .try_delta_from(module.view(b))
+        .expect("@a and @b are globals of one module");
+    let context = module
+        .as_view()
+        .functions()
+        .flat_map(|function| function.basic_blocks())
+        .find(|block| block.name().as_deref() == Some("body"))
+        .expect("fixture defines %body")
+        .instructions()
+        .next()
+        .expect("%body is not empty");
+    let unpositioned: IrBuilder<'_, '_, DynBrand, NoFolder, Unpositioned, Dyn> =
+        IrBuilder::with_folder(module, NoFolder);
+    let builder = unpositioned
+        .position_before(context.placed().expect("the `ret` is in a block"))
+        .expect("the `ret` is this module's");
+    let x3 = builder
+        .int_xor(difference, 1_i64, "x3")
+        .expect("an `xor` of two `i64`s builds");
+    let x2 = builder.int_xor(x3, 1_i64, "x2").expect("builds");
+    let x1 = builder.int_xor(x2, 1_i64, "x1").expect("builds");
+    let x0 = builder.int_xor(x1, 1_i64, "x0").expect("builds");
+    (module.view(x0).as_erased(), context)
+}
+
+/// At the recursion limit, a dominating `switch` on a cast that a symbol
+/// difference prints inside itself proves the cast, so the difference and the
+/// `xor`s over it are well defined.
+///
+/// **The IR has no upstream counterpart.** The oracle is the
+/// dominating-condition loop of `isGuaranteedNotToBeUndefOrPoison`
+/// (`ValueTracking.cpp`), whose `if (Cond == V)` compares uniqued constants: a
+/// condition that is the same expression is `V`. llvmkit stores the difference
+/// and not its casts, so the cast is compared with each stored condition as the
+/// expression it is. The `switch` is the real test of that comparison. A `br`
+/// condition is an `i1` and the cast is an `i64`, so only a `switch` can be the
+/// cast itself. And for the question `freeze` asks, which includes `undef`,
+/// `Cond == V` is the only comparison the loop makes. The unanchored query is
+/// the control: without the loop, nothing proves the casts.
+#[test]
+fn a_dominating_switch_proves_a_cast_a_symbol_difference_prints() {
+    let module = parse(
+        r"
+@a = global i32 0
+@b = global i32 0
+
+define void @test() {
+entry:
+  switch i64 ptrtoint (ptr @a to i64), label %next []
+
+next:
+  switch i64 ptrtoint (ptr @b to i64), label %body []
+
+body:
+  ret void
+}
+",
+    );
+    let (x0, context) = xor_chain_over_a_symbol_difference(&module);
+    let dominator_tree = dominator_tree(&module);
+    let data_layout = module.data_layout();
+
+    let unanchored = ValueTrackingQuery::<DynBrand>::new(&data_layout);
+    assert!(
+        !well_defined(x0, &unanchored),
+        "no arm but the dominating-condition loop can prove the casts"
+    );
+
+    let query = ValueTrackingQuery::<DynBrand>::new(&data_layout)
+        .with_dominator_tree(&dominator_tree)
+        .with_context_instruction(&context);
+    assert!(well_defined(x0, &query));
+}
+
+/// The poison half of the same loop: a dominating `br` on an `icmp` of the cast
+/// proves the cast not poison, because the `icmp` propagates poison from its
+/// operand (`propagatesPoison`'s `ICmp` arm). It does not prove the cast free
+/// of `undef`: upstream looks at the condition's operands only when
+/// `!includesUndef(Kind)`.
+///
+/// **The IR has no upstream counterpart**; the oracle is the loop's
+/// `else if (!includesUndef(Kind) && isa<Operator>(Cond))` arm. The unanchored
+/// query is the control, as above.
+#[test]
+fn a_dominating_branch_on_a_compare_of_the_cast_proves_it_not_poison() {
+    let module = parse(
+        r"
+@a = global i32 0
+@b = global i32 0
+
+define void @test() {
+entry:
+  %ca = icmp eq i64 ptrtoint (ptr @a to i64), 0
+  br i1 %ca, label %next, label %exit
+
+next:
+  %cb = icmp eq i64 ptrtoint (ptr @b to i64), 0
+  br i1 %cb, label %body, label %exit
+
+body:
+  ret void
+
+exit:
+  ret void
+}
+",
+    );
+    let (x0, context) = xor_chain_over_a_symbol_difference(&module);
+    let dominator_tree = dominator_tree(&module);
+    let data_layout = module.data_layout();
+
+    let unanchored = ValueTrackingQuery::<DynBrand>::new(&data_layout);
+    assert!(
+        !not_poison(x0, &unanchored),
+        "no arm but the dominating-condition loop can prove the casts"
+    );
+
+    let query = ValueTrackingQuery::<DynBrand>::new(&data_layout)
+        .with_dominator_tree(&dominator_tree)
+        .with_context_instruction(&context);
+    assert!(not_poison(x0, &query));
+    assert!(
+        !well_defined(x0, &query),
+        "a `br` reaches the cast only through the poison-only arm"
+    );
 }

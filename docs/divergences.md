@@ -1120,41 +1120,48 @@ replacement path, as it already sends a `ConstantAggregateZero` or an `undef`.
 **Guarded by:** nothing yet. Found in Task 1 of the crash-proofing plan
 (`task-1-report.md`, Concern 4), porting the `AllSame` arms.
 
-### D36 — No branch condition is compared with an operand a symbol difference prints but does not store
+### D37 — An `insertvalue` into a zero array of 2^32 elements or more declines
 
-**Severity:** model-gap
-**Where:** `crates/llvmkit-ir/src/value_tracking.rs` — `unstored_expression_is_well_defined`,
-which answers for the `ptrtoint` and `sub` expressions that `ConstantData::SymbolDelta` and
-`ConstantData::SymbolDeltaPlus` print inside themselves.
+**Severity:** model-gap, and hardening where upstream asserts or answers a constant of the wrong
+type.
+**Where:** `crates/llvmkit-ir/src/constant_fold.rs` —
+`constant_fold_insert_value_instruction`, through `aggregate_elements_for_rebuild` and
+`aggregate_elements`, which declines a zero array whose length does not fit `unsigned`.
 
-**LLVM:** a symbol difference is `sub (i64 ptrtoint (ptr @hi to i64), i64 ptrtoint (ptr @lo to
-i64))`, and each operand is a uniqued constant expression. `isGuaranteedNotToBeUndefOrPoison`
-asks about each operand through `OpCheck`, one level deeper. When the operand's own walk fails,
-which for a cast of a global variable happens only at `MaxAnalysisRecursionDepth`, the routine
-goes on to its dominating-condition loop. That loop proves the cast when a dominating `br` or
-`switch` condition is the cast, or is an instruction that propagates poison from it, such as an
-`icmp` (derived from the loop, not run).
+**LLVM:** `ConstantFoldInsertValueInstruction` (`ConstantFold.cpp`) counts the aggregate's
+elements as `unsigned NumElts = cast<ArrayType>(...)->getNumElements()`, so for an array of 2^32
+elements or more it walks only the low 32 bits' worth and hands `ConstantArray::get` a list
+shorter than the type. `ConstantArray::getImpl` (`Constants.cpp`) answers that list in one of
+three ways:
+- an empty list, or one that is all `poison`, all `undef` or all null, gets the full type's
+  constant, which drops an insertion at an index past the short count;
+- a list of `ConstantInt`s or `ConstantFP`s gets `getSequenceIfElementsMatch`'s
+  `ConstantDataArray` of the list's own length, a constant of the wrong type;
+- any other list reaches the `ConstantArray` constructor's
+  `V.size() == T->getNumElements()` assert.
 
-**llvmkit:** stores the compact constant and not those operands, so there is no value for a
-condition to be compared with. `unstored_expression_is_well_defined` runs every arm before the
-loop and answers `false` where the operand walk fails. The answer can only be weaker than
-upstream's: a `false` where upstream proves `true`, at the recursion limit, under a dominating
-condition built from the same constant expression.
+All of this is derived from the routines and was not run.
 
-**Why:** the compact forms are llvmkit storage for constants upstream builds as expressions, and
-the loop's `Cond == V` test compares identities. Before this entry,
-`rg -n "SymbolDelta|GepOffset|compact form" docs/divergences.md docs/future-work.md` printed only
-the entry this one replaces and `future-work.md`'s closed note on interning the compact forms.
+**llvmkit:** `aggregate_elements` refuses to walk a zero whose narrowed count differs from its
+length, so the fold answers `None` in all three cases. In the first case it answers `None`
+where upstream answers a constant, which is right only when no insertion was dropped.
 
-**Fix:** compare a condition with such an operand by the expression it is (a stored `ptrtoint`
-of the same global at the same type, or a stored `sub` of two), or store the operands. Either
-needs a test that reaches the recursion limit through a compact constant.
+**Why:** the walk would have to build a list of 2^32 elements or more to answer as the type
+says, or answer as upstream's narrowed count says, which is either wrong or an assert. Before
+this entry,
+`rg -n "aggregate_elements|getAggregateElement|aggregate_element\b|2\^32|4294967304|insertvalue|InsertValue" docs/divergences.md docs/future-work.md`
+printed only unrelated lines: an `insertvalue` built through `NoFolder` in D23, an evidence
+block on the three index-type walks, and a fixture list in `future-work.md`.
+Fix round 3 of Task 1 of the crash-proofing plan ported `ConstantFoldExtractValueInstruction`'s
+one-element read. It answered an `extractvalue` of the same arrays through the same decline, and
+upstream answers it, so this is what remains of that decline.
 
-**Guarded by:** nothing. Found in fix round 2 of Task 1 of the crash-proofing plan
-(`task-1-report.md`, "Fix round 2"), porting the `dyn_cast<Operator>` arm. The splat's
-`insertelement`, the third expression llvmkit prints without storing, has no such gap: it is a
-scalable vector, which no `br` or `switch` takes as its condition and no poison-propagating
-instruction turns into an `i1`.
+**Fix:** none owed for the second and third cases, which are hardening. The first could be
+answered as upstream does once Task 3's cap on materialised elements decides how a long zero is
+walked.
+
+**Guarded by:** nothing. The `extractvalue` side is pinned by
+`crates/llvmkit-ir/tests/constant_aggregate_zero.rs::extractvalue_reads_one_element_of_a_long_array`.
 
 ---
 

@@ -11,7 +11,8 @@
 
 use llvmkit_ir::{
     ArrayType, Constant, ConstantAggregateKind, ConstantDataKind, ConstantKind, DynBrand, IrResult,
-    Module, Type, VectorType, lanes, possibly_demanded_elements_in_mask,
+    Module, Type, VectorType, constant_fold_extract_value_instruction, lanes,
+    possibly_demanded_elements_in_mask,
 };
 
 /// `ty`'s null value, which every type these tests ask about has.
@@ -96,6 +97,48 @@ fn an_element_count_keeps_its_low_32_bits() {
     );
     assert_eq!(none_left.undef().as_constant().aggregate_element(0), None);
     assert_eq!(zero_of(none_left).aggregate_element(0), None);
+}
+
+/// `ConstantFoldExtractValueInstruction` (`ConstantFold.cpp`) reads one element
+/// per index and walks nothing: `if (Constant *C =
+/// Agg->getAggregateElement(Idxs[0])) return
+/// ConstantFoldExtractValueInstruction(C, Idxs.slice(1));`. So element 3 of a
+/// `[4294967304 x i8]` zero is `i8 0`, read under the `unsigned` count that
+/// `an_element_count_keeps_its_low_32_bits` pins. The same holds of that array
+/// as a struct's field, and element 3 of its `undef` is `i8 undef`. A
+/// `[1099511627776 x i8]` `undef` has no element 3 to give.
+///
+/// Regression: the fold walked every element of the aggregate. It declined the
+/// zero, whose walk refuses a narrowed count, and it would have built one
+/// handle per element of the `undef`. llvmkit-specific (D11): no upstream test
+/// extracts from an array this long.
+#[test]
+fn extractvalue_reads_one_element_of_a_long_array() -> IrResult<()> {
+    let m = Module::dynamic("extractvalue");
+    let i8_ty = m.i8_type();
+    let i32_ty = m.i32_type();
+    let past = ArrayType::of(i8_ty, (1 << 32) + 8).as_type();
+    let zero_byte = i8_ty.const_zero().as_constant();
+
+    assert_eq!(
+        constant_fold_extract_value_instruction(zero_of(past), &[3]),
+        Some(zero_byte)
+    );
+    let record = m.struct_type([i32_ty.as_type(), past])?.as_type();
+    assert_eq!(
+        constant_fold_extract_value_instruction(zero_of(record), &[1, 3]),
+        Some(zero_byte)
+    );
+    assert_eq!(
+        constant_fold_extract_value_instruction(past.undef().as_constant(), &[3]),
+        Some(i8_ty.as_type().undef().as_constant())
+    );
+    let none_left = ArrayType::of(i8_ty, 1 << 40).as_type();
+    assert_eq!(
+        constant_fold_extract_value_instruction(none_left.undef().as_constant(), &[3]),
+        None
+    );
+    Ok(())
 }
 
 /// Pins the canonicalisation in `ConstantArray::getImpl` — `if

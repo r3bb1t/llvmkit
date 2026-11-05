@@ -6339,9 +6339,9 @@ fn require_int_or_pointer_width<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 /// Its `dyn_cast<Operator>` arm takes a constant expression as well as an
 /// instruction ([`OperatorRef`]), and llvmkit's compact constants answer there
 /// as the expressions they print as. The expressions those print inside
-/// themselves are not stored, and are answered by
-/// [`unstored_expression_is_well_defined`], with one gap that can only weaken
-/// the answer (`docs/divergences.md` D36).
+/// themselves are not stored. [`unstored_expression_is_well_defined`] answers
+/// them through the same arms, and the dominating-condition loop compares a
+/// condition with one as the expression it is ([`ConditionTarget`]).
 ///
 /// One of upstream's arms is **not** ported, and can only make the answer weaker
 /// — a `false` where upstream proves `true` — so no caller is misled: the
@@ -6434,7 +6434,8 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx, C: C
         return Ok(true);
     }
 
-    if dominating_condition_proves_well_defined(value, query, kind) {
+    let target = ConditionTarget::Stored(value.slot_trusting_same_module());
+    if dominating_condition_proves_well_defined(value, target, query, kind) {
         return Ok(true);
     }
 
@@ -6614,14 +6615,16 @@ fn operand_is_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 /// `sub` without flags a binary operator, and an `insertelement` at lane 0 is
 /// in range of any vector. So the operand walk decides.
 ///
-/// Where the walk fails, the arms after it prove none of them. None is a load;
-/// `programUndefinedIfUndefOrPoison` scans from an instruction or an argument
-/// only; and the dominating-condition walk compares conditions with the value
-/// itself, which llvmkit does not store. That last one is
-/// `docs/divergences.md` D36 for the two `i64` expressions. The
-/// `insertelement` has no such gap: it is a scalable vector, which no `br` or
-/// `switch` takes as its condition and no poison-propagating instruction turns
-/// into an `i1`.
+/// Where the walk fails, the arms after it run as they run for any value. None
+/// of these is a load, and `programUndefinedIfUndefOrPoison` scans from an
+/// instruction or an argument only, so neither proves one. The
+/// dominating-condition loop compares each condition with the expression as
+/// the expression it is ([`ConditionTarget`]), so it finds a stored constant
+/// that is the same `ptrtoint` or `sub`. The `insertelement` takes no loop: it
+/// is a scalable vector, which no `br` or `switch` takes as its condition, and
+/// no instruction that propagates poison from its operand turns one into an
+/// `i1` (`propagatesPoison`'s arms are binary, unary and cast operators,
+/// `icmp`, `fcmp` and `getelementptr`, each with a vector result here).
 fn unstored_expression_is_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     anchor: Value<'ctx, B, C>,
     expression: UnstoredExpression,
@@ -6644,7 +6647,17 @@ fn unstored_expression_is_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capab
             OperatorOperand::Int,
         ],
     };
-    operands_are_well_defined(anchor, operands, query, depth + 1, kind)
+    if operands_are_well_defined(anchor, operands, query, depth + 1, kind)? {
+        return Ok(true);
+    }
+    let target = match expression {
+        UnstoredExpression::PtrToInt { global } => ConditionTarget::PtrToInt { global },
+        UnstoredExpression::SymbolDelta { hi, lo } => ConditionTarget::SymbolDelta { hi, lo },
+        UnstoredExpression::InsertIntoPoison { .. } => return Ok(false),
+    };
+    Ok(dominating_condition_proves_well_defined(
+        anchor, target, query, kind,
+    ))
 }
 
 /// Whether a `load` carries `!noundef`, `!dereferenceable` or
@@ -6689,8 +6702,13 @@ fn load_metadata_asserts_well_defined<'ctx, B: ModuleBrand + 'ctx, C: Capability
 /// two early `return false`s — no context instruction or dominator tree, and an
 /// unreachable context block — are `false` here rather than early returns,
 /// because llvmkit has one more arm after this point.
+///
+/// `anchor` is any value of the module; `target` is upstream's `V`
+/// ([`ConditionTarget`]), the value itself or an expression a compact constant
+/// prints but llvmkit does not store.
 fn dominating_condition_proves_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    value: Value<'ctx, B, C>,
+    anchor: Value<'ctx, B, C>,
+    target: ConditionTarget,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     kind: UndefPoisonKind,
 ) -> bool {
@@ -6706,21 +6724,19 @@ fn dominating_condition_proves_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx, C: 
 
     // Purely a compile-time guard upstream: the walk can be skipped when the
     // question includes undef and the value is not an integer.
-    if kind.includes_undef() && !matches!(value.ty().kind(), TypeKind::Integer { .. }) {
+    if kind.includes_undef() && !condition_target_is_integer(anchor, target) {
         return false;
     }
 
     for block in dominator_tree.strictly_dominating_blocks(context_block) {
-        let Some(terminator) = block_terminator(value, block) else {
+        let Some(terminator) = block_terminator(anchor, block) else {
             continue;
         };
         let Some(condition) = branch_or_switch_condition(terminator) else {
             continue;
         };
-        // boundary (F2): Task 27
-        // Conditions read from the query's dominator tree and context,
-        // compared with the caller's value.
-        if condition == value.slot_trusting_same_module() {
+        // `if (Cond == V) return true;`
+        if is_condition_target(anchor, condition, target) {
             return true;
         }
         // For poison — but not undef, which does not propagate eagerly — a
@@ -6729,7 +6745,14 @@ fn dominating_condition_proves_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx, C: 
         if kind.includes_undef() {
             continue;
         }
-        let condition = value_from_slot(value, condition);
+        // Upstream asks `isa<Operator>(Cond)`, which a constant expression
+        // passes too. Its operand positions propagate poison only when it is a
+        // `getelementptr` (`propagatesPoison`'s `default` asks
+        // `isa<BinaryOperator>`, `isa<UnaryOperator>` and `isa<CastInst>`,
+        // which no expression is), and a `getelementptr` is a pointer, which no
+        // `br` or `switch` takes as its condition. So only an instruction
+        // condition can answer here.
+        let condition = value_from_slot(anchor, condition);
         let Some(condition_kind) = instruction_kind(condition) else {
             continue;
         };
@@ -6738,14 +6761,145 @@ fn dominating_condition_proves_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx, C: 
             .iter()
             .enumerate()
             .any(|(index, operand)| {
-                // boundary (F2): Task 27
-                *operand == value.slot_trusting_same_module() && propagates_poison(condition, index)
+                is_condition_target(anchor, *operand, target) && propagates_poison(condition, index)
             });
         if propagates {
             return true;
         }
     }
     false
+}
+
+/// Upstream's `V` in the dominating-condition loop of
+/// `isGuaranteedNotToBeUndefOrPoison`: the value the loop compares each
+/// condition, and each operand of one, with.
+///
+/// Upstream uniques constants, so `Cond == V` holds of a condition that is the
+/// same expression, however it was built. A stored value is compared by slot.
+/// An expression that a compact symbol difference prints but llvmkit does not
+/// store is compared with each stored constant as the expression it is, in each
+/// spelling llvmkit stores that expression in.
+#[derive(Clone, Copy)]
+enum ConditionTarget {
+    /// A value llvmkit stores.
+    Stored(ValueSlot),
+    /// `ptrtoint (ptr @global to i64)`, an operand of a symbol difference.
+    PtrToInt { global: ValueSlot },
+    /// The symbol difference a `SymbolDeltaPlus` adds to: `sub (i64 ptrtoint
+    /// (ptr @hi to i64), i64 ptrtoint (ptr @lo to i64))`.
+    SymbolDelta { hi: ValueSlot, lo: ValueSlot },
+}
+
+/// `V->getType()->isIntegerTy()`, for the loop's compile-time guard. Both
+/// unstored expressions are `i64`.
+fn condition_target_is_integer<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    target: ConditionTarget,
+) -> bool {
+    match target {
+        ConditionTarget::Stored(slot) => matches!(
+            value_from_slot(anchor, slot).ty().kind(),
+            TypeKind::Integer { .. }
+        ),
+        ConditionTarget::PtrToInt { .. } | ConditionTarget::SymbolDelta { .. } => true,
+    }
+}
+
+/// `Cond == V`, or `V == U` for an operand `U` of a condition: whether the value
+/// at `slot` is `target`.
+fn is_condition_target<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    slot: ValueSlot,
+    target: ConditionTarget,
+) -> bool {
+    match target {
+        // boundary (F2): Task 27
+        // Conditions read from the query's dominator tree and context,
+        // compared with the caller's value.
+        ConditionTarget::Stored(stored) => slot == stored,
+        ConditionTarget::PtrToInt { global } => stores_ptr_to_int_of(anchor, slot, global),
+        ConditionTarget::SymbolDelta { hi, lo } => stores_symbol_delta_of(anchor, slot, hi, lo),
+    }
+}
+
+/// Whether the constant at `slot` is `ptrtoint (ptr @global to i64)`: a
+/// `ptrtoint` expression of type `i64` whose operand names `global`.
+fn stores_ptr_to_int_of<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    slot: ValueSlot,
+    global: ValueSlot,
+) -> bool {
+    let module = module_ref(anchor);
+    let data = module.value_data(slot);
+    let ValueKindData::Constant(ConstantData::Expr(expression)) = &data.kind else {
+        return false;
+    };
+    expression.opcode == ConstantExprOpcode::PtrToInt
+        && is_i64(anchor, data.ty)
+        && matches!(
+            expression.operands.as_ref(),
+            [operand] if names_global(anchor, *operand, global)
+        )
+}
+
+/// Whether the constant at `slot` is the symbol difference of `hi` and `lo`:
+/// the compact form of it (a `SymbolDelta`, or a `SymbolDeltaPlus` whose zero
+/// addend `Constant::kind` reads as the `sub` itself), or a stored `sub`
+/// expression of type `i64` without `nuw` or `nsw` over `ptrtoint (ptr @hi to
+/// i64)` and `ptrtoint (ptr @lo to i64)`.
+fn stores_symbol_delta_of<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    slot: ValueSlot,
+    hi: ValueSlot,
+    lo: ValueSlot,
+) -> bool {
+    let module = module_ref(anchor);
+    let data = module.value_data(slot);
+    match &data.kind {
+        ValueKindData::Constant(
+            ConstantData::SymbolDelta { hi_id, lo_id }
+            | ConstantData::SymbolDeltaPlus {
+                hi_id,
+                lo_id,
+                addend: 0,
+            },
+        ) => *hi_id == hi && *lo_id == lo,
+        ValueKindData::Constant(ConstantData::Expr(expression)) => {
+            expression.opcode == ConstantExprOpcode::Sub
+                && is_i64(anchor, data.ty)
+                && !expression_has_poison_generating_flags(expression)
+                && matches!(
+                    expression.operands.as_ref(),
+                    [minuend, subtrahend]
+                        if stores_ptr_to_int_of(anchor, *minuend, hi)
+                            && stores_ptr_to_int_of(anchor, *subtrahend, lo)
+                )
+        }
+        _ => false,
+    }
+}
+
+/// Whether the value at `slot` is the global `global`: the global itself, or
+/// the constant pointer ([`ConstantData::GlobalValueRef`]) that wraps it as an
+/// operand.
+fn names_global<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    slot: ValueSlot,
+    global: ValueSlot,
+) -> bool {
+    slot == global
+        || matches!(
+            &module_ref(anchor).value_data(slot).kind,
+            ValueKindData::Constant(ConstantData::GlobalValueRef { value }) if *value == global
+        )
+}
+
+/// Whether `ty` is `i64`.
+fn is_i64<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    ty: TypeSlot,
+) -> bool {
+    Type::new(ty, module_ref(anchor)).kind() == TypeKind::Integer { bits: 64 }
 }
 
 /// The terminator of `block`, as a value.

@@ -1940,20 +1940,25 @@ pub fn shufflevector_mask_from_constant<'ctx, B: ModuleBrand + 'ctx, C: Capabili
 }
 
 /// Fold an `extractvalue` with a constant aggregate operand: the element at
-/// `indices`, or `None` where it cannot be read out of the constant. Mirrors
+/// `indices`, or `None` where it cannot be read out of the constant. Ports
 /// `ConstantFoldExtractValueInstruction` (`lib/IR/ConstantFold.cpp`), which
 /// answers a `Constant *` (null for no fold) and cannot fail.
+///
+/// It reads one element per index, through `getAggregateElement`
+/// ([`Constant::aggregate_element`]), and walks nothing, so an element of a
+/// long zero or `undef` is answered without building the others.
 pub fn constant_fold_extract_value_instruction<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     aggregate: Constant<'ctx, B, C>,
     indices: &[u32],
 ) -> Option<Constant<'ctx, B, C>> {
-    let mut current = aggregate;
-    for index in indices.iter().copied() {
-        let elements = aggregate_elements_for_rebuild(current)?;
-        let index = usize::try_from(index).ok()?;
-        current = elements.get(index).copied()?;
-    }
-    Some(current)
+    // Base case: no indices, so return the entire value.
+    let Some((&first, rest)) = indices.split_first() else {
+        return Some(aggregate);
+    };
+    // `if (Constant *C = Agg->getAggregateElement(Idxs[0])) return
+    // ConstantFoldExtractValueInstruction(C, Idxs.slice(1)); return nullptr;`
+    let element = aggregate.aggregate_element(first)?;
+    constant_fold_extract_value_instruction(element, rest)
 }
 
 /// Fold an `insertvalue` with constant operands.
@@ -3095,12 +3100,19 @@ pub(crate) fn constant_aggregate_from_elements<'ctx, B: ModuleBrand + 'ctx, C: C
 /// elements are its type's per-element null values, counted as upstream
 /// counts them, in `unsigned` (`aggregate_element_count`).
 ///
-/// An array of 2^32 elements or more declines. Upstream's walking folds count
-/// such an array in `unsigned` too (`ConstantFoldInsertValueInstruction`'s
-/// `NumElts` is `cast<ArrayType>(...)->getNumElements()` converted), so they
-/// walk fewer elements than the type has and build a list `ConstantArray::get`
-/// asserts on. Declining is the hardening of that assert, not upstream's
-/// answer.
+/// A zero array of 2^32 elements or more declines. The walking fold that can
+/// reach one, `ConstantFoldInsertValueInstruction`, counts its elements in
+/// `unsigned` (`NumElts` is `cast<ArrayType>(...)->getNumElements()`
+/// converted), so it walks fewer elements than the type has and hands
+/// `ConstantArray::get` a list shorter than the type. `ConstantArray::getImpl`
+/// answers such a list in one of three ways. An empty list, or one that is all
+/// `poison`, all `undef` or all null, gets the full type's constant. A list of
+/// `ConstantInt`s or `ConstantFP`s of a `ConstantDataSequential`-compatible type
+/// gets a `ConstantDataArray` of the list's own, shorter length, so the answer
+/// has the wrong type. Any other list reaches the constructor's
+/// `V.size() == T->getNumElements()` assert. Declining refuses all three
+/// (`docs/divergences.md` D37). A fold that reads one element, as
+/// `constant_fold_extract_value_instruction` does, does not come here.
 fn aggregate_elements<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     constant: Constant<'ctx, B, C>,
 ) -> Option<Vec<Constant<'ctx, B, C>>> {
