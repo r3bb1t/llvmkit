@@ -1150,7 +1150,8 @@ fn is_valid_shufflevector<'ctx, B: ModuleBrand + 'ctx>(
 #[derive(Clone, Copy)]
 struct ParsedAliasHeader {
     linkage: Linkage,
-    dso_locality: llvmkit_ir::DsoLocality,
+    /// `parseOptionalDSOLocal`'s answer.
+    dso_local: bool,
     visibility: Visibility,
     dll_storage_class: DllStorageClass,
     thread_local_mode: ThreadLocalMode,
@@ -7695,7 +7696,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             },
             _ => (Linkage::External, false),
         };
-        let (dso_locality, visibility, dll_storage_class) =
+        let (dso_local, visibility, dll_storage_class) =
             self.parse_optional_preemption_visibility_dll()?;
         let thread_local_mode = if self.eat_keyword(Keyword::ThreadLocal)? {
             if self.eat_punct(PunctKind::LParen)? {
@@ -7734,7 +7735,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 decl_loc,
                 ParsedAliasHeader {
                     linkage,
-                    dso_locality,
+                    dso_local,
                     visibility,
                     dll_storage_class,
                     thread_local_mode,
@@ -7879,7 +7880,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .module
             .global_builder(&name_string, ty)
             .linkage(linkage)
-            .dso_locality(dso_locality)
+            .dso_local(dso_local)
             .visibility(visibility)
             .dll_storage_class(dll_storage_class)
             .thread_local_mode(thread_local_mode)
@@ -7947,7 +7948,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         header: ParsedAliasHeader,
     ) -> ParseResult<()> {
         let linkage = header.linkage;
-        let dso_locality = header.dso_locality;
+        let dso_local = header.dso_local;
         let visibility = header.visibility;
         let dll_storage_class = header.dll_storage_class;
         let thread_local_mode = header.thread_local_mode;
@@ -8072,7 +8073,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .module
                 .alias_builder(&name_string, value_type, target)
                 .linkage(linkage)
-                .dso_locality(dso_locality)
+                .dso_local(dso_local)
                 .visibility(visibility)
                 .dll_storage_class(dll_storage_class)
                 .thread_local_mode(thread_local_mode)
@@ -8113,7 +8114,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .module
                 .ifunc_builder(&name_string, value_type, target)
                 .linkage(linkage)
-                .dso_locality(dso_locality)
+                .dso_local(dso_local)
                 .visibility(visibility)
                 // Upstream applies all three to `GV` in the ifunc branch too —
                 // it simply never *prints* them, because `printIFunc` stops
@@ -10330,13 +10331,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    fn parse_optional_dso_locality(&mut self) -> ParseResult<llvmkit_ir::DsoLocality> {
-        if self.eat_keyword(Keyword::DsoLocal)? {
-            Ok(llvmkit_ir::DsoLocality::Local)
-        } else if self.eat_keyword(Keyword::DsoPreemptable)? {
-            Ok(llvmkit_ir::DsoLocality::Preemptable)
-        } else {
-            Ok(llvmkit_ir::DsoLocality::Default)
+    /// Mirrors `LLParser::parseOptionalDSOLocal`: `dso_local` answers true,
+    /// and `dso_preemptable` or no keyword false. Only `maybeSetDSOLocal`
+    /// reads the answer, and it only ever sets the bit.
+    fn parse_optional_dso_local(&mut self) -> ParseResult<bool> {
+        match self.peek() {
+            Token::Kw(Keyword::DsoLocal) => {
+                self.bump()?;
+                Ok(true)
+            }
+            Token::Kw(Keyword::DsoPreemptable) => {
+                self.bump()?;
+                Ok(false)
+            }
+            _ => Ok(false),
         }
     }
 
@@ -10350,20 +10358,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// The order is load-bearing rather than cosmetic. `AsmWriter.cpp`'s
     /// `printFunction` and `printGlobal` emit these three in the same
     /// sequence, so reading them in any other one makes LLVM's own output
-    /// unparseable — `define dso_local hidden void @f()` is the canonical
-    /// spelling, not an exotic one.
+    /// unparseable — `define dso_local dllexport void @f()` is a spelling it
+    /// prints.
     fn parse_optional_preemption_visibility_dll(
         &mut self,
-    ) -> ParseResult<(llvmkit_ir::DsoLocality, Visibility, DllStorageClass)> {
-        let dso_locality = self.parse_optional_dso_locality()?;
+    ) -> ParseResult<(bool, Visibility, DllStorageClass)> {
+        let dso_local = self.parse_optional_dso_local()?;
         let visibility = self.parse_optional_visibility()?;
         let dll_storage_class = self.parse_optional_dll_storage_class()?;
-        if dso_locality == llvmkit_ir::DsoLocality::Local
-            && dll_storage_class == DllStorageClass::DllImport
-        {
+        if dso_local && dll_storage_class == DllStorageClass::DllImport {
             return Err(self.message("dso_location and DLL-StorageClass mismatch"));
         }
-        Ok((dso_locality, visibility, dll_storage_class))
+        Ok((dso_local, visibility, dll_storage_class))
     }
 
     fn parse_optional_function_unnamed_addr(&mut self) -> ParseResult<UnnamedAddr> {
@@ -11590,7 +11596,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         let linkage_loc = self.loc();
         let linkage = self.parse_optional_function_linkage()?;
-        let (dso_locality, visibility, dll_storage_class) =
+        let (dso_local, visibility, dll_storage_class) =
             self.parse_optional_preemption_visibility_dll()?;
         let calling_conv = self.parse_optional_calling_conv()?;
         let mut attrs = AttributeStorage::new();
@@ -11666,7 +11672,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if linkage != Linkage::External
                     || visibility != Visibility::Default
                     || dll_storage_class != DllStorageClass::Default
-                    || dso_locality != llvmkit_ir::DsoLocality::Default
+                    || dso_local
                     || calling_conv != CallingConv::default()
                     || unnamed_addr != UnnamedAddr::None
                     || address_space != self.module.data_layout().program_addr_space()
@@ -11776,9 +11782,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 loc: decl_loc,
             })?;
         let f = self.module.view(f);
+        // `Fn->setLinkage(Linkage); maybeSetDSOLocal(DSOLocal, *Fn);
+        // Fn->setVisibility(Visibility); Fn->setDLLStorageClass(...)` — the
+        // linkage went in with the function, and `maybeSetDSOLocal` only ever
+        // sets the bit.
+        if dso_local {
+            f.set_dso_local(self.module, true);
+        }
         f.set_visibility(self.module, visibility);
         f.set_dll_storage_class(self.module, dll_storage_class);
-        f.set_dso_locality(self.module, dso_locality);
         f.set_calling_conv(self.module, calling_conv);
         f.set_unnamed_addr(self.module, unnamed_addr);
         f.set_address_space(self.module, address_space);
@@ -11900,7 +11912,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.expect_keyword(Keyword::Define, "'define'")?;
         let linkage_loc = self.loc();
         let linkage = self.parse_optional_function_linkage()?;
-        let (dso_locality, visibility, dll_storage_class) =
+        let (dso_local, visibility, dll_storage_class) =
             self.parse_optional_preemption_visibility_dll()?;
         let calling_conv = self.parse_optional_calling_conv()?;
         let mut attrs = AttributeStorage::new();
@@ -11991,9 +12003,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 loc: decl_loc,
             })?;
         let f = self.module.view(f);
+        // `Fn->setLinkage(Linkage); maybeSetDSOLocal(DSOLocal, *Fn);
+        // Fn->setVisibility(Visibility); Fn->setDLLStorageClass(...)` — the
+        // linkage went in with the function, and `maybeSetDSOLocal` only ever
+        // sets the bit.
+        if dso_local {
+            f.set_dso_local(self.module, true);
+        }
         f.set_visibility(self.module, visibility);
         f.set_dll_storage_class(self.module, dll_storage_class);
-        f.set_dso_locality(self.module, dso_locality);
         f.set_calling_conv(self.module, calling_conv);
         f.set_unnamed_addr(self.module, unnamed_addr);
         f.set_address_space(self.module, address_space);
@@ -12735,11 +12753,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<()> {
         self.bump()?; // eat `ret`
         // `parseRet` compares against the *enclosing function's* return type
-        // and reports at the returned type's own token, in both arms.
+        // and reports at the returned type's own token, in both arms. It reads
+        // a whole type first, `parseType(Ty, /*AllowVoid=*/true)`, and only
+        // then asks `Ty->isVoidTy()`: a `void` token is the start of
+        // `void ()*` as much as of `ret void`.
         let type_loc = self.loc();
+        let ty = self.parse_type(true)?;
         let result_ty = state.func.signature().return_type();
-        if let Token::PrimitiveType(PrimitiveTy::Void) = self.peek() {
-            self.bump()?;
+        if ty.is_void() {
             if !result_ty.is_void() {
                 return Err(self.message_at(
                     type_loc,
@@ -12752,7 +12773,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             })?;
             return Ok(());
         }
-        let ty = self.parse_type(false)?;
         let v = self.parse_value(state, ty)?;
         if result_ty != v.ty() {
             return Err(self.message_at(

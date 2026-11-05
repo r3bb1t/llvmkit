@@ -1,5 +1,5 @@
 //! A faithful subset of FileCheck, shared by the integration tests in this
-//! directory: four directives, and the two pattern forms
+//! directory: five directives, and the two pattern forms
 //! `utils/update_test_checks.py` writes.
 //!
 //! Items do not cross integration-test binaries, so a routine used by more than
@@ -44,6 +44,11 @@ pub enum Check<'a> {
     /// the directives before it, and it, are then matched only in the text up
     /// to the end of that match. It may not define or use a variable.
     Label(&'a str),
+    /// `; CHECK-DAG: <needle>` — a run of them matches in any order, no two
+    /// overlapping, in the text from the previous match on, and the directive
+    /// after the run resumes at the end of the run's last match by position.
+    /// Mirrors `FileCheckString::CheckDag` for a run with no `CHECK-NOT` in it.
+    Dag(&'a str),
 }
 
 impl<'a> Check<'a> {
@@ -53,6 +58,7 @@ impl<'a> Check<'a> {
             Check::Next(_) => "CHECK-NEXT",
             Check::Same(_) => "CHECK-SAME",
             Check::Label(_) => "CHECK-LABEL",
+            Check::Dag(_) => "CHECK-DAG",
         }
     }
 
@@ -61,7 +67,8 @@ impl<'a> Check<'a> {
             Check::Line(pattern)
             | Check::Next(pattern)
             | Check::Same(pattern)
-            | Check::Label(pattern) => pattern,
+            | Check::Label(pattern)
+            | Check::Dag(pattern) => pattern,
         }
     }
 }
@@ -169,6 +176,9 @@ fn check_type<'a>(after: &'a str, prefix: &str, line: &str) -> CheckType<'a> {
     }
     if let Some(pattern) = suffix.strip_prefix("LABEL:") {
         return CheckType::Directive(Check::Label(pattern));
+    }
+    if let Some(pattern) = suffix.strip_prefix("DAG:") {
+        return CheckType::Directive(Check::Dag(pattern));
     }
     let names_a_directive =
         ["NEXT", "SAME", "NOT", "DAG", "LABEL", "EMPTY"]
@@ -426,13 +436,17 @@ fn count_newlines_between(region: &str) -> usize {
 ///   directives before it, and it, only in the text up to that match's end.
 /// * `FileCheck::readCheckFile` rejects a leading `-NEXT` or `-SAME` directive
 ///   and a `-LABEL` that defines or uses a variable.
+/// * `FileCheckString::CheckDag` matches a run of `CHECK-DAG`s in any order,
+///   none overlapping another, and the next directive resumes at the end of
+///   the run's last match by position. A `CHECK-NOT` inside the run is not
+///   read: this subset has no `CHECK-NOT`.
 ///
 /// The byte cursor is load-bearing for `@instructions.win_eh.2`, whose
 /// `CHECK: cleanuppad within none []` appears twice and must match two
 /// different lines.
 ///
-/// **Four directives and two pattern forms are implemented:** `CHECK`,
-/// `CHECK-NEXT`, `CHECK-SAME`, `CHECK-LABEL`, a `{{...}}` block, and a
+/// **Five directives and two pattern forms are implemented:** `CHECK`,
+/// `CHECK-NEXT`, `CHECK-SAME`, `CHECK-LABEL`, `CHECK-DAG`, a `{{...}}` block, and a
 /// `[[NAME:...]]` definition with its `[[NAME]]` use, whose regex may hold only
 /// literal text and `.*`. Everything else FileCheck understands is
 /// *unimplemented here*, and a fixture needing any of it is *unported*, not
@@ -499,6 +513,37 @@ pub fn check_directives(text: &str, checks: &[Check<'_>]) {
             region
         };
         while i != j {
+            if matches!(parsed[i].0, Check::Dag(_)) {
+                // `FileCheckString::CheckDag`: each pattern of the run searches
+                // from the run's start, and a match overlapping an earlier one
+                // of the run searches again from that one's end. The run then
+                // ends at its last match by position.
+                let mut matched: Vec<(usize, usize)> = Vec::new();
+                while i != j && matches!(parsed[i].0, Check::Dag(_)) {
+                    let (check, pieces) = &parsed[i];
+                    let pattern = check.pattern();
+                    let mut from = 0;
+                    let range = loop {
+                        let (start, end) = find_pattern(pieces, &region[from..], &mut variables)
+                            .map(|(start, end)| (from + start, from + end))
+                            .unwrap_or_else(|| {
+                                panic!("CHECK-DAG: {pattern:?} not found in:\n{text}")
+                            });
+                        let overlap = matched.iter().find(|(earlier_start, earlier_end)| {
+                            start < *earlier_end && *earlier_start < end
+                        });
+                        match overlap {
+                            Some((_, earlier_end)) => from = *earlier_end,
+                            None => break (start, end),
+                        }
+                    };
+                    matched.push(range);
+                    i += 1;
+                }
+                let run_end = matched.iter().map(|(_, end)| *end).max().unwrap_or(0);
+                region = &region[run_end..];
+                continue;
+            }
             let (check, pieces) = &parsed[i];
             let pattern = check.pattern();
             let name = check.name();

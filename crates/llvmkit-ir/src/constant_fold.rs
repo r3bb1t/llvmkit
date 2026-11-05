@@ -38,7 +38,7 @@ use super::float_kind::FloatDyn;
 use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::global_alias::GlobalAlias;
 use super::global_ifunc::GlobalIfunc;
-use super::global_value::{DsoLocality, Linkage, is_implicit_dso_local};
+use super::global_value::Linkage;
 use super::global_variable::GlobalVariable;
 use super::instr_types::{BinaryOpcode, CastOpcode, ShuffleMaskElem, UnaryOpcode};
 use super::instruction::{InstructionKindData, InstructionView};
@@ -1394,38 +1394,20 @@ fn linkage_is_interposable(linkage: Linkage) -> bool {
     )
 }
 
-/// Ports `GlobalValue::isDSOLocal`. Upstream keeps a bit that the parser's
-/// `dso_local` sets, and that `setLinkage` and `setVisibility` set whenever
-/// `isImplicitDSOLocal` holds. llvmkit keeps the keyword it was given, so the
-/// implicit half is read here (`docs/divergences.md` D29).
+/// Ports `GlobalValue::isDSOLocal`: the bit `setDSOLocal` sets and clears, and
+/// that `setLinkage` and `setVisibility` set whenever `isImplicitDSOLocal`
+/// holds.
 pub(crate) fn global_is_dso_local<B: ModuleBrand>(
     module: ModuleView<'_, B>,
     id: ValueSlot,
 ) -> bool {
-    let (locality, linkage, visibility) = match &module.context().value_data(id).kind {
-        ValueKindData::GlobalVariable(data) => (
-            data.dso_locality.get(),
-            data.linkage.get(),
-            data.visibility.get(),
-        ),
-        ValueKindData::Function(data) => (
-            *data.dso_locality.borrow(),
-            *data.linkage.borrow(),
-            *data.visibility.borrow(),
-        ),
-        ValueKindData::GlobalAlias(data) => (
-            data.dso_locality.get(),
-            data.linkage.get(),
-            data.visibility.get(),
-        ),
-        ValueKindData::GlobalIfunc(data) => (
-            data.dso_locality.get(),
-            data.linkage.get(),
-            data.visibility.get(),
-        ),
-        _ => return false,
-    };
-    locality == DsoLocality::Local || is_implicit_dso_local(linkage, visibility)
+    match &module.context().value_data(id).kind {
+        ValueKindData::GlobalVariable(data) => data.dso_local.get(),
+        ValueKindData::Function(data) => data.dso_local.get(),
+        ValueKindData::GlobalAlias(data) => data.dso_local.get(),
+        ValueKindData::GlobalIfunc(data) => data.dso_local.get(),
+        _ => false,
+    }
 }
 
 fn linkage_is_weak_for_linker(linkage: Linkage) -> bool {

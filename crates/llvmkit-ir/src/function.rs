@@ -53,7 +53,7 @@ use super::float_kind::FloatKind;
 use super::function_signature::{
     FunctionParamList, FunctionReturn, FunctionSignature, TypedFunctionValue,
 };
-use super::global_value::{DllStorageClass, DsoLocality, Linkage, Visibility};
+use super::global_value::{DllStorageClass, Linkage, Visibility, is_implicit_dso_local};
 use super::int_width::IntWidth;
 use super::intrinsics::{IntrinsicDescriptor, IntrinsicFunctionData, IntrinsicId};
 use super::marker::{Dyn, ReturnMarker};
@@ -84,7 +84,8 @@ pub(super) struct FunctionData {
     pub(super) linkage: RefCell<Linkage>,
     pub(super) visibility: RefCell<Visibility>,
     pub(super) dll_storage_class: RefCell<DllStorageClass>,
-    pub(super) dso_locality: RefCell<DsoLocality>,
+    /// `GlobalValue::IsDSOLocal`. See [`FunctionValue::is_dso_local`].
+    pub(super) dso_local: Cell<bool>,
     pub(super) calling_conv: RefCell<CallingConv>,
     pub(super) unnamed_addr: RefCell<UnnamedAddr>,
     pub(super) address_space: RefCell<AddressSpace>,
@@ -125,7 +126,9 @@ impl FunctionData {
             linkage: RefCell::new(linkage),
             visibility: RefCell::new(Visibility::Default),
             dll_storage_class: RefCell::new(DllStorageClass::Default),
-            dso_locality: RefCell::new(DsoLocality::Default),
+            // The `GlobalValue` constructor's `IsDSOLocal(false)`, then its
+            // `setLinkage(Linkage)`, which sets the bit for a local linkage.
+            dso_local: Cell::new(is_implicit_dso_local(linkage, Visibility::Default)),
             calling_conv: RefCell::new(calling_conv),
             unnamed_addr: RefCell::new(UnnamedAddr::None),
             address_space: RefCell::new(address_space),
@@ -423,13 +426,23 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
         *self.data().linkage.borrow()
     }
 
-    /// Update linkage.
+    /// Update linkage. Mirrors `GlobalValue::setLinkage`: a local linkage
+    /// resets the visibility and the DLL storage class to their defaults, and
+    /// a linkage under which the function is implicitly DSO-local sets
+    /// [`Self::is_dso_local`].
     #[inline]
     pub fn set_linkage(self, _module: &'ctx Module<B, Unverified>, linkage: Linkage)
     where
         C: CanMutate,
     {
+        if linkage.is_local() {
+            *self.data().visibility.borrow_mut() = Visibility::Default;
+            *self.data().dll_storage_class.borrow_mut() = DllStorageClass::Default;
+        }
         *self.data().linkage.borrow_mut() = linkage;
+        if self.is_implicit_dso_local() {
+            self.data().dso_local.set(true);
+        }
     }
 
     #[inline]
@@ -437,12 +450,20 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
         *self.data().visibility.borrow()
     }
 
+    /// Update visibility. Mirrors `GlobalValue::setVisibility`, which sets
+    /// [`Self::is_dso_local`] when the visibility makes the function
+    /// implicitly DSO-local. Its assertion that a local linkage keeps the
+    /// default visibility is not ported as a crash: the visibility is stored
+    /// as given.
     #[inline]
     pub fn set_visibility(self, _module: &'ctx Module<B, Unverified>, visibility: Visibility)
     where
         C: CanMutate,
     {
         *self.data().visibility.borrow_mut() = visibility;
+        if self.is_implicit_dso_local() {
+            self.data().dso_local.set(true);
+        }
     }
 
     #[inline]
@@ -458,17 +479,30 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
         *self.data().dll_storage_class.borrow_mut() = cls;
     }
 
+    /// Whether the function resolves within its own linkage unit. Mirrors
+    /// `GlobalValue::isDSOLocal`: one bit, which `dso_local` and
+    /// [`Self::set_dso_local`] set, and [`Self::set_linkage`] and
+    /// [`Self::set_visibility`] set too when [`Self::is_implicit_dso_local`]
+    /// holds.
     #[inline]
-    pub fn dso_locality(self) -> DsoLocality {
-        *self.data().dso_locality.borrow()
+    pub fn is_dso_local(self) -> bool {
+        self.data().dso_local.get()
     }
 
+    /// Mirrors `GlobalValue::isImplicitDSOLocal`: a local linkage, or a
+    /// visibility other than the default on any linkage but `extern_weak`.
     #[inline]
-    pub fn set_dso_locality(self, _module: &'ctx Module<B, Unverified>, locality: DsoLocality)
+    pub fn is_implicit_dso_local(self) -> bool {
+        is_implicit_dso_local(self.linkage(), self.visibility())
+    }
+
+    /// Mirrors `GlobalValue::setDSOLocal`.
+    #[inline]
+    pub fn set_dso_local(self, _module: &'ctx Module<B, Unverified>, dso_local: bool)
     where
         C: CanMutate,
     {
-        *self.data().dso_locality.borrow_mut() = locality;
+        self.data().dso_local.set(dso_local);
     }
 
     /// Calling convention.
@@ -1681,7 +1715,7 @@ pub struct FunctionBuilder<'ctx, R: ReturnMarker, B: ModuleBrand> {
     linkage: Linkage,
     visibility: Visibility,
     dll_storage_class: DllStorageClass,
-    dso_locality: DsoLocality,
+    dso_local: bool,
     calling_conv: CallingConv,
     unnamed_addr: UnnamedAddr,
     address_space: AddressSpace,
@@ -1724,7 +1758,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
             linkage: Linkage::default(),
             visibility: Visibility::Default,
             dll_storage_class: DllStorageClass::Default,
-            dso_locality: DsoLocality::Default,
+            dso_local: false,
             calling_conv: CallingConv::default(),
             unnamed_addr: UnnamedAddr::None,
             // `Function::Create(Ty, Linkage, N, M)`: with no address space
@@ -1764,9 +1798,12 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
         self
     }
 
+    /// Mark the function `dso_local`, as `setDSOLocal(true)` does. A local
+    /// linkage or a hidden or protected visibility sets the bit anyway
+    /// ([`FunctionValue::is_implicit_dso_local`]).
     #[must_use]
-    pub fn dso_locality(mut self, locality: DsoLocality) -> Self {
-        self.dso_locality = locality;
+    pub fn dso_local(mut self, dso_local: bool) -> Self {
+        self.dso_local = dso_local;
         self
     }
 
@@ -1933,7 +1970,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
             .add_function_checked::<R, _>(&self.name, signature, self.linkage)?;
         *f.data().visibility.borrow_mut() = self.visibility;
         *f.data().dll_storage_class.borrow_mut() = self.dll_storage_class;
-        *f.data().dso_locality.borrow_mut() = self.dso_locality;
+        // The bit `setLinkage` and `setVisibility` leave, then `setDSOLocal`.
+        f.data()
+            .dso_local
+            .set(self.dso_local || is_implicit_dso_local(self.linkage, self.visibility));
         *f.data().calling_conv.borrow_mut() = self.calling_conv;
         *f.data().unnamed_addr.borrow_mut() = self.unnamed_addr;
         *f.data().address_space.borrow_mut() = self.address_space;

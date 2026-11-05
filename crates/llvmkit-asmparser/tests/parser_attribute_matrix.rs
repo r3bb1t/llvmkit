@@ -258,6 +258,13 @@ fn return_attribute_dereferenceable() {
 
 // -- runtime preemption specifiers on global objects -------------------------
 
+/// The preemption specifiers on each global object, printed as
+/// `printDSOLocation` (`lib/IR/AsmWriter.cpp`) writes them: `dso_local` only
+/// where `isImplicitDSOLocal` does not already imply it, so not after a local
+/// linkage, and `dso_preemptable` never, since `LLParser::parseOptionalDSOLocal`
+/// reads it as the absence of the bit. llvmkit-specific; the two specifiers'
+/// upstream fixture is `test/Bitcode/dso_location.ll`, ported in
+/// `parser_module_headers.rs`.
 #[test]
 fn dso_specifiers_on_global_objects() {
     let cases = [
@@ -274,12 +281,12 @@ fn dso_specifiers_on_global_objects() {
         (
             "preemptable global",
             "@g = dso_preemptable global i32 0\n",
-            "dso_preemptable global",
+            "@g = global i32 0",
         ),
         (
             "linkage + dso",
             "@g = internal dso_local global i32 0\n",
-            "internal dso_local global",
+            "@g = internal global i32 0",
         ),
         (
             "dso + unnamed_addr",

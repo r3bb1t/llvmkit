@@ -988,46 +988,6 @@ the test that would fail, and it is left out of
 each of which says so. `crates/llvmkit-ir/tests/constant_folding_analysis.rs::a_zero_load_too_long_to_build_is_not_folded`
 pins the fold's decline, and no test pins the parser's abort.
 
-### D29 — `isDSOLocal` is read from a keyword, and the printer writes that keyword
-
-**Severity:** wrong-output (narrow)
-**Where:** `crates/llvmkit-ir/src/constant_fold.rs` — `global_is_dso_local`;
-`crates/llvmkit-ir/src/asm_writer.rs` — `fmt_function_with_use_lists`, `fmt_global`,
-`fmt_alias`, `fmt_ifunc`.
-
-**LLVM:** a `GlobalValue` keeps one bit. `setLinkage` and `setVisibility` set it
-whenever `isImplicitDSOLocal` holds, and only `setDSOLocal(false)` clears it.
-`LLParser`'s `maybeSetDSOLocal` only ever sets it, so `dso_preemptable` leaves no
-mark. `printDSOLocation` prints `dso_local` only when the bit is set and
-`isImplicitDSOLocal` is false.
-
-**llvmkit:** `DsoLocality` stores the keyword as written, and `global_is_dso_local`
-answers `Local` or `isImplicitDSOLocal` of the current linkage and visibility. That
-agrees on anything the parser can build, and differs in two ways.
-
-- Through the setters: a global made `internal` and then `external` again stays
-  `dso_local` upstream and is not here, and `setDSOLocal(false)` on an `internal`
-  global clears the bit upstream and changes no answer here.
-- In print: `dso_preemptable` is printed, and so are `internal dso_local` and
-  `dso_local hidden`. Upstream prints none of those three (`derived` from
-  `printDSOLocation`). `parser_attribute_matrix.rs` and
-  `parser_module_headers.rs::dso_local_precedes_visibility_and_dll_storage` assert
-  llvmkit's bytes, the second under a doc that calls `dso_local hidden` the spelling
-  `llvm-as` produces.
-
-`rg -n "dso_preempt" docs/divergences.md docs/future-work.md docs/fixture-coverage.md`
-printed nothing before this entry, over `5a8eabb`.
-
-**Why:** found while porting `isInterposable`, which needs only the read. Closing the
-rest moves those tests and every `set_linkage` and `set_visibility`.
-
-**Fix:** store the bit, set it in those setters and the builders, and port
-`printDSOLocation` at the four printer sites.
-
-**Guarded by:** the read, by
-`crates/llvmkit-asmparser/tests/constant_fold_loads.rs::a_preemptible_global_stays_under_semantic_interposition`.
-Nothing guards the rest.
-
 ---
 
 ---

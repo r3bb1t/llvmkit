@@ -139,6 +139,7 @@ fn directives_are_read_from_the_fixture() {
                   ; CHECK-SAME: i32 [[X:%.*]])\n\
                   ; CHECK-NEXT: ret i32 [[X]]\n\
                   ; CHECK: }\n\
+                  ; CHECK-DAG: @g\n\
                   define i32 @f(i32 %x) {\n";
     let checks = read_check_directives(source);
     let names: Vec<(&str, &str)> = checks
@@ -148,6 +149,7 @@ fn directives_are_read_from_the_fixture() {
             Check::Next(pattern) => ("next", pattern.trim()),
             Check::Same(pattern) => ("same", pattern.trim()),
             Check::Label(pattern) => ("label", pattern.trim()),
+            Check::Dag(pattern) => ("dag", pattern.trim()),
         })
         .collect();
     assert_eq!(
@@ -157,6 +159,7 @@ fn directives_are_read_from_the_fixture() {
             ("same", "i32 [[X:%.*]])"),
             ("next", "ret i32 [[X]]"),
             ("line", "}"),
+            ("dag", "@g"),
         ]
     );
 }
@@ -177,9 +180,49 @@ fn patterns<'a>(checks: &[Check<'a>]) -> Vec<&'a str> {
             Check::Line(pattern)
             | Check::Next(pattern)
             | Check::Same(pattern)
-            | Check::Label(pattern) => pattern.trim(),
+            | Check::Label(pattern)
+            | Check::Dag(pattern) => pattern.trim(),
         })
         .collect()
+}
+
+/// `FileCheckString::CheckDag`: a run of `CHECK-DAG`s matches in any order.
+#[test]
+fn a_dag_run_matches_in_any_order() {
+    check_directives(
+        "a\nb\nc\n",
+        &[Check::Line("a"), Check::Dag("c"), Check::Dag("b")],
+    );
+}
+
+/// `CheckDag`'s overlap rule: a match overlapping an earlier one of the run
+/// searches again past it, so two `CHECK-DAG: x` need two `x`s.
+#[test]
+#[should_panic(expected = "CHECK-DAG: \"x\" not found in:")]
+fn a_dag_run_refuses_an_overlap() {
+    check_directives("x\ny\n", &[Check::Dag("x"), Check::Dag("x")]);
+}
+
+/// The end of a `CHECK-DAG` run: `StartPos = MatchRanges.rbegin()->End`, so the
+/// next directive searches after the run's last match by position, whatever
+/// the order the run was written in.
+#[test]
+#[should_panic(expected = "CHECK: \"b\" not found in:")]
+fn a_dag_run_ends_at_its_last_match() {
+    check_directives(
+        "b\na\nc\n",
+        &[Check::Dag("c"), Check::Dag("a"), Check::Line("b")],
+    );
+}
+
+/// The positive control for [`a_dag_run_ends_at_its_last_match`]: the directive
+/// after the run finds what follows it.
+#[test]
+fn the_directive_after_a_dag_run_follows_it() {
+    check_directives(
+        "b\na\nc\nd\n",
+        &[Check::Dag("c"), Check::Dag("a"), Check::Line("d")],
+    );
 }
 
 /// `--check-prefixes`: each named prefix reads its lines, and an unnamed one

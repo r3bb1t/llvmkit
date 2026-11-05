@@ -340,59 +340,6 @@ impl FromStr for DllStorageClass {
     }
 }
 
-/// DSO locality marker. Mirrors `GlobalValue::DSOLocalEquivalent`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum DsoLocality {
-    /// No explicit DSO-locality marker.
-    #[default]
-    Default,
-    /// `dso_local`.
-    Local,
-    /// `dso_preemptable`.
-    Preemptable,
-}
-
-impl DsoLocality {
-    /// Every variant, in declaration order. See
-    /// [`Linkage::VARIANTS`] for why it exists.
-    pub const VARIANTS: [Self; 3] = [Self::Default, Self::Local, Self::Preemptable];
-
-    pub const fn keyword(self) -> Option<&'static str> {
-        match self {
-            Self::Default => None,
-            Self::Local => Some("dso_local"),
-            Self::Preemptable => Some("dso_preemptable"),
-        }
-    }
-}
-
-impl fmt::Display for DsoLocality {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.keyword() {
-            Some(s) => f.write_str(s),
-            None => Ok(()),
-        }
-    }
-}
-
-impl FromStr for DsoLocality {
-    type Err = IrError;
-
-    /// Inverse of [`Display`](fmt::Display) / [`DsoLocality::keyword`] over
-    /// [`VARIANTS`](Self::VARIANTS); `""` resolves to the keyword-less
-    /// [`Default`](Self::Default). Mirrors the `dso_local` /
-    /// `dso_preemptable` keyword block in `LLLexer.cpp`.
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::VARIANTS
-            .into_iter()
-            .find(|locality| locality.keyword().unwrap_or("") == s)
-            .ok_or_else(|| IrError::InvalidKeyword {
-                target: "dso locality",
-                keyword: s.to_string(),
-            })
-    }
-}
-
 /// Thread-local mode. Mirrors `GlobalValue::ThreadLocalMode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ThreadLocalMode {
@@ -544,20 +491,6 @@ mod tests {
         assert_eq!("".parse::<DllStorageClass>(), Ok(DllStorageClass::Default));
     }
 
-    /// llvmkit-specific: Display/FromStr drift lock for [`DsoLocality`].
-    #[test]
-    fn dso_locality_display_and_from_str_round_trip() {
-        for locality in DsoLocality::VARIANTS {
-            match locality {
-                DsoLocality::Default | DsoLocality::Local | DsoLocality::Preemptable => {}
-            }
-            assert_eq!(locality.to_string().parse::<DsoLocality>(), Ok(locality));
-        }
-        // One entry per arm above.
-        assert_eq!(DsoLocality::VARIANTS.len(), 3);
-        assert_eq!("".parse::<DsoLocality>(), Ok(DsoLocality::Default));
-    }
-
     /// llvmkit-specific: Display/FromStr drift lock for [`ThreadLocalMode`].
     /// The parenthesised models round-trip whole, since that is the form
     /// `printThreadLocalModel` prints.
@@ -600,7 +533,6 @@ mod tests {
         );
         assert!("hiddenish".parse::<Visibility>().is_err());
         assert!("dllmaybe".parse::<DllStorageClass>().is_err());
-        assert!("dso_whatever".parse::<DsoLocality>().is_err());
         // The bare model name is not a printed form, so it is not accepted.
         assert!("localdynamic".parse::<ThreadLocalMode>().is_err());
     }

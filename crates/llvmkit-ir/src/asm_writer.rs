@@ -1064,6 +1064,16 @@ fn infer_gep_source_ty(module: &ModuleCore, expr: &ConstantExprData) -> TypeSlot
     expr.result_ty
 }
 
+/// Mirrors `printDSOLocation` (`lib/IR/AsmWriter.cpp`):
+/// `if (GV.isDSOLocal() && !GV.isImplicitDSOLocal()) Out << "dso_local ";`.
+/// So `dso_preemptable` never prints, and neither does `dso_local` on a local
+/// linkage or beside a hidden or protected visibility, which imply it.
+/// Upstream writes the trailing space; `printFunction`'s caller here spaces
+/// its keywords from the front, so each caller places the space itself.
+fn dso_location_keyword(is_dso_local: bool, is_implicit_dso_local: bool) -> Option<&'static str> {
+    (is_dso_local && !is_implicit_dso_local).then_some("dso_local")
+}
+
 /// Mirrors `printAddressSpace` (`lib/IR/AsmWriter.cpp`).
 ///
 /// One branch of the upstream routine is **not** ported: the
@@ -3423,7 +3433,7 @@ fn fmt_function_with_use_lists<B: ModuleBrand, C: Capability>(
     // `printFunction` order: DSO location, then visibility, then DLL storage
     // class. This is the same order `LLParser::parseOptionalLinkage` reads,
     // and the pair has to agree for LLVM's own output to round-trip here.
-    if let Some(s) = func.dso_locality().keyword() {
+    if let Some(s) = dso_location_keyword(func.is_dso_local(), func.is_implicit_dso_local()) {
         write!(f, " {s}")?;
     }
     if let Some(s) = func.visibility().keyword() {
@@ -4249,7 +4259,7 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         f.write_str(" ")?;
     }
 
-    if let Some(s) = g.dso_locality().keyword() {
+    if let Some(s) = dso_location_keyword(g.is_dso_local(), g.is_implicit_dso_local()) {
         f.write_str(s)?;
         f.write_str(" ")?;
     }
@@ -4405,7 +4415,7 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         f.write_str(linkage_kw)?;
         f.write_str(" ")?;
     }
-    if let Some(s) = a.dso_locality().keyword() {
+    if let Some(s) = dso_location_keyword(a.is_dso_local(), a.is_implicit_dso_local()) {
         f.write_str(s)?;
         f.write_str(" ")?;
     }
@@ -4462,7 +4472,7 @@ pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         f.write_str(linkage_kw)?;
         f.write_str(" ")?;
     }
-    if let Some(s) = i.dso_locality().keyword() {
+    if let Some(s) = dso_location_keyword(i.is_dso_local(), i.is_implicit_dso_local()) {
         f.write_str(s)?;
         f.write_str(" ")?;
     }

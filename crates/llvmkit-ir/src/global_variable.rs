@@ -21,7 +21,9 @@ use super::comdat::ComdatRef;
 use super::constant::{Constant, IsConstant};
 use super::derived_types::PointerType;
 use super::error::{IrError, IrResult, ValueCategoryLabel};
-use super::global_value::{DllStorageClass, DsoLocality, Linkage, ThreadLocalMode, Visibility};
+use super::global_value::{
+    DllStorageClass, Linkage, ThreadLocalMode, Visibility, is_implicit_dso_local,
+};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::{IrType, Type, TypeSlot, TypeSlotAccess};
 use super::unnamed_addr::UnnamedAddr;
@@ -125,7 +127,8 @@ pub(super) struct GlobalVariableData {
     pub(super) externally_initialized: Cell<bool>,
     pub(super) initializer: Cell<Option<ValueSlot>>,
     pub(super) linkage: Cell<Linkage>,
-    pub(super) dso_locality: Cell<DsoLocality>,
+    /// `GlobalValue::IsDSOLocal`. See [`GlobalVariable::is_dso_local`].
+    pub(super) dso_local: Cell<bool>,
     pub(super) visibility: Cell<Visibility>,
     pub(super) dll_storage_class: Cell<DllStorageClass>,
     pub(super) thread_local_mode: Cell<ThreadLocalMode>,
@@ -509,27 +512,49 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GlobalVariable<'ctx, B, C> {
         self.data().linkage.get()
     }
 
-    /// DSO locality (`dso_local` / `dso_preemptable`). Mirrors
-    /// `GlobalValue::isDSOLocal`.
-    pub fn dso_locality(self) -> DsoLocality {
-        self.data().dso_locality.get()
+    /// Whether the global resolves within its own linkage unit. Mirrors
+    /// `GlobalValue::isDSOLocal`: one bit, which `dso_local` and
+    /// [`Self::set_dso_local`] set, and [`Self::set_linkage`] and
+    /// [`Self::set_visibility`] set too when [`Self::is_implicit_dso_local`]
+    /// holds.
+    #[inline]
+    pub fn is_dso_local(self) -> bool {
+        self.data().dso_local.get()
     }
 
-    /// Set the DSO locality. Mirrors `GlobalValue::setDSOLocal`.
-    pub fn set_dso_locality(self, _module: &'ctx Module<B, Unverified>, dso: DsoLocality)
+    /// Mirrors `GlobalValue::isImplicitDSOLocal`: a local linkage, or a
+    /// visibility other than the default on any linkage but `extern_weak`.
+    #[inline]
+    pub fn is_implicit_dso_local(self) -> bool {
+        is_implicit_dso_local(self.linkage(), self.visibility())
+    }
+
+    /// Mirrors `GlobalValue::setDSOLocal`.
+    #[inline]
+    pub fn set_dso_local(self, _module: &'ctx Module<B, Unverified>, dso_local: bool)
     where
         C: CanMutate,
     {
-        self.data().dso_locality.set(dso);
+        self.data().dso_local.set(dso_local);
     }
 
-    /// Update the linkage. Mirrors `GlobalValue::setLinkage`.
+    /// Update the linkage. Mirrors `GlobalValue::setLinkage`: a local linkage
+    /// resets the visibility and the DLL storage class to their defaults, and
+    /// a linkage under which the global is implicitly DSO-local sets
+    /// [`Self::is_dso_local`].
     #[inline]
     pub fn set_linkage(self, _module: &'ctx Module<B, Unverified>, linkage: Linkage)
     where
         C: CanMutate,
     {
+        if linkage.is_local() {
+            self.data().visibility.set(Visibility::Default);
+            self.data().dll_storage_class.set(DllStorageClass::Default);
+        }
         self.data().linkage.set(linkage);
+        if self.is_implicit_dso_local() {
+            self.data().dso_local.set(true);
+        }
     }
 
     /// Visibility. Mirrors `GlobalValue::getVisibility`.
@@ -538,13 +563,19 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GlobalVariable<'ctx, B, C> {
         self.data().visibility.get()
     }
 
-    /// Update visibility. Mirrors `GlobalValue::setVisibility`.
+    /// Update visibility. Mirrors `GlobalValue::setVisibility`, which sets
+    /// [`Self::is_dso_local`] when the visibility makes the global implicitly
+    /// DSO-local. Its assertion that a local linkage keeps the default
+    /// visibility is not ported as a crash: the visibility is stored as given.
     #[inline]
     pub fn set_visibility(self, _module: &'ctx Module<B, Unverified>, vis: Visibility)
     where
         C: CanMutate,
     {
         self.data().visibility.set(vis);
+        if self.is_implicit_dso_local() {
+            self.data().dso_local.set(true);
+        }
     }
 
     /// DLL storage class. Mirrors `GlobalValue::getDLLStorageClass`.
@@ -937,7 +968,7 @@ pub struct GlobalBuilder<'ctx, B: ModuleBrand> {
     /// initializer of any capability is accepted, and `build` admits it.
     initializer: Option<Constant<'ctx, B, ReadOnly>>,
     linkage: Linkage,
-    dso_locality: DsoLocality,
+    dso_local: bool,
     visibility: Visibility,
     dll_storage_class: DllStorageClass,
     thread_local_mode: ThreadLocalMode,
@@ -970,7 +1001,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
             externally_initialized: false,
             initializer: None,
             linkage: Linkage::External,
-            dso_locality: DsoLocality::Default,
+            dso_local: false,
             visibility: Visibility::Default,
             dll_storage_class: DllStorageClass::Default,
             thread_local_mode: ThreadLocalMode::NotThreadLocal,
@@ -1006,11 +1037,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
         self
     }
 
-    /// DSO locality (`dso_local` / `dso_preemptable`). Mirrors
-    /// `GlobalValue::setDSOLocal`.
+    /// Mark the global `dso_local`, as `GlobalValue::setDSOLocal(true)` does.
+    /// A local linkage or a hidden or protected visibility sets the bit
+    /// anyway ([`GlobalVariable::is_implicit_dso_local`]).
     #[must_use]
-    pub fn dso_locality(mut self, dso: DsoLocality) -> Self {
-        self.dso_locality = dso;
+    pub fn dso_local(mut self, dso_local: bool) -> Self {
+        self.dso_local = dso_local;
         self
     }
 
@@ -1147,7 +1179,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
             externally_initialized,
             initializer: _,
             linkage,
-            dso_locality,
+            dso_local,
             visibility,
             dll_storage_class,
             thread_local_mode,
@@ -1164,7 +1196,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
             externally_initialized: Cell::new(externally_initialized),
             initializer: Cell::new(initializer),
             linkage: Cell::new(linkage),
-            dso_locality: Cell::new(dso_locality),
+            // The bit the constructor's `setLinkage` and the parser's
+            // `setVisibility` leave, then `maybeSetDSOLocal`.
+            dso_local: Cell::new(dso_local || is_implicit_dso_local(linkage, visibility)),
             visibility: Cell::new(visibility),
             dll_storage_class: Cell::new(dll_storage_class),
             thread_local_mode: Cell::new(thread_local_mode),
