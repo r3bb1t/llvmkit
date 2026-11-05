@@ -29,10 +29,7 @@ use super::constant::{
 };
 use super::constants::{ConstantExprOptions, ConstantFloatValue, ConstantIntValue};
 use super::data_layout::FunctionPtrAlignType;
-use super::derived_types::{
-    ArrayType, FloatType, IntType, PointerType, StructType, TargetExtProperty, TargetExtType,
-    VectorType,
-};
+use super::derived_types::{ArrayType, FloatType, IntType, StructType, VectorType};
 use super::element::ElemDyn;
 use super::float_kind::FloatDyn;
 use super::gep_no_wrap_flags::GepNoWrapFlags;
@@ -708,7 +705,7 @@ pub(crate) fn constant_fold_cast_instruction_trusting_same_module<
     if is_undef(operand) {
         return match opcode {
             CastOpcode::Zext | CastOpcode::Sext | CastOpcode::UiToFp | CastOpcode::SiToFp => {
-                null_constant_for_type(dest_ty)
+                Ok(dest_ty.null_value())
             }
             CastOpcode::Trunc
             | CastOpcode::FpTrunc
@@ -723,7 +720,7 @@ pub(crate) fn constant_fold_cast_instruction_trusting_same_module<
         };
     }
     if Constant::is_null_value(operand) && !matches!(opcode, CastOpcode::AddrSpaceCast) {
-        return null_constant_for_type(dest_ty);
+        return Ok(dest_ty.null_value());
     }
     if let Some(folded) = fold_constant_cast_pair(opcode, operand, dest_ty)? {
         return Ok(Some(folded));
@@ -2175,7 +2172,7 @@ fn fold_undef_int_binary<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     if !is_scalar_int_or_scalable_int_vector_type(lhs.ty()) {
         return Ok(None);
     }
-    let Some(zero_constant) = null_constant_for_type(lhs.ty())? else {
+    let Some(zero_constant) = lhs.ty().null_value() else {
         return Ok(None);
     };
     let Some(all_ones_constant) = all_ones_constant_for_type(lhs.ty())? else {
@@ -2284,7 +2281,7 @@ fn fold_i1_binary<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         | BinaryOpcode::Ashr
         | BinaryOpcode::Udiv
         | BinaryOpcode::Sdiv => Ok(Some(lhs)),
-        BinaryOpcode::Urem | BinaryOpcode::Srem => null_constant_for_type(lhs.ty()),
+        BinaryOpcode::Urem | BinaryOpcode::Srem => Ok(lhs.ty().null_value()),
         BinaryOpcode::Mul
         | BinaryOpcode::And
         | BinaryOpcode::Or
@@ -2655,7 +2652,7 @@ fn fold_vector_bitcast_splat<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         return Ok(None);
     }
     let Some(scalar) = (match pattern {
-        VectorBitcastSplat::Zero => null_constant_for_type(dst_elem_ty)?,
+        VectorBitcastSplat::Zero => dst_elem_ty.null_value(),
         VectorBitcastSplat::AllOnes => all_ones_constant_for_type(dst_elem_ty)?,
     }) else {
         return Ok(None);
@@ -2724,86 +2721,6 @@ fn fold_float_predicate(predicate: FloatPredicate, cmp: ApFloatCmpResult) -> boo
         }
         FloatPredicate::True => true,
     }
-}
-
-/// Mirrors `Constant::getNullValue`. `None` covers upstream's `llvm_unreachable`
-/// for a type with no null constant, a target type with no zero initializer,
-/// which `ConstantTargetNone::get` asserts on, and an unsized struct.
-///
-/// `ConstantAggregateZero` costs upstream nothing, whatever its length.
-/// llvmkit's is one element per lane (`docs/divergences.md` D28), built as the
-/// parser's `zero_initializer_constant` builds it, but a list that cannot be
-/// allocated answers `None` rather than aborting.
-pub(crate) fn null_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    ty: Type<'ctx, B, C>,
-) -> IrResult<Option<Constant<'ctx, B, C>>> {
-    if let Ok(int_ty) = IntType::<IntDyn, B, C>::try_from(ty) {
-        return Ok(Some(int_ty.const_zero().as_constant()));
-    }
-    if let Ok(float_ty) = FloatType::<FloatDyn, B, C>::try_from(ty) {
-        let zero = crate::ApFloat::zero(float_ty.semantics(), ApFloatSign::Positive);
-        return Ok(Some(float_ty.const_ap_float(&zero)?.as_constant()));
-    }
-    if let Ok(ptr_ty) = PointerType::<crate::SpaceDyn, _, _>::try_from(ty) {
-        return Ok(Some(ptr_ty.const_null().as_constant()));
-    }
-    let module = ty.module;
-    if let Some((element_ty, lanes, scalable)) = ty.data().as_vector() {
-        let element_ty = Type::new(element_ty, module);
-        let Some(element) = null_constant_for_type(element_ty)? else {
-            return Ok(None);
-        };
-        let Ok(lane_count) = usize::try_from(lanes.get()) else {
-            return Ok(None);
-        };
-        let vector_ty = vector_type_with_scalability(module, element_ty, lanes, scalable);
-        return vector_ty
-            .const_vector((0..lane_count).map(|_| element))
-            .map(|constant| Some(constant.as_constant()));
-    }
-    if let Ok(array_ty) = ArrayType::<ElemDyn, ArrLenDyn, _, C>::try_from(ty) {
-        let Some(element) = null_constant_for_type(array_ty.element())? else {
-            return Ok(None);
-        };
-        let Ok(length) = usize::try_from(array_ty.len()) else {
-            return Ok(None);
-        };
-        let mut elements = Vec::new();
-        if elements.try_reserve_exact(length).is_err() {
-            return Ok(None);
-        }
-        elements.resize(length, element);
-        return array_ty
-            .const_array::<Constant<'ctx, B, C>, _>(elements)
-            .map(|constant| Some(constant.as_constant()));
-    }
-    if let Ok(struct_ty) = StructType::try_from(ty) {
-        if !ty.is_sized() {
-            return Ok(None);
-        }
-        let mut elements = Vec::with_capacity(struct_ty.field_count());
-        for index in 0..struct_ty.field_count() {
-            let Some(field_ty) = struct_ty.field_type(index) else {
-                return Ok(None);
-            };
-            let Some(field) = null_constant_for_type(field_ty)? else {
-                return Ok(None);
-            };
-            elements.push(field);
-        }
-        return struct_ty
-            .const_struct::<Constant<'ctx, B, C>, _>(elements)
-            .map(|constant| Some(constant.as_constant()));
-    }
-    if ty.is_token() {
-        return Ok(Some(module.token_none()));
-    }
-    if let Ok(target_ty) = TargetExtType::try_from(ty)
-        && target_ty.has_property(TargetExtProperty::HasZeroInit)
-    {
-        return module.target_ext_none(ty).map(Some);
-    }
-    Ok(None)
 }
 
 fn fold_undef_float_binary<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
@@ -3141,6 +3058,13 @@ fn is_not_poison_for_select<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                 )
             })
         }
+        // `!C->containsPoisonElement() && !C->containsConstantExpression()`
+        // for a vector `ConstantAggregateZero`, which holds neither.
+        ValueKindData::Constant(ConstantData::AggregateZero)
+            if constant.ty().data().as_vector().is_some() =>
+        {
+            true
+        }
         _ => false,
     }
 }
@@ -3166,24 +3090,39 @@ pub(crate) fn constant_aggregate_from_elements<'ctx, B: ModuleBrand + 'ctx, C: C
     Ok(None)
 }
 
+/// The elements of an element list, or of a `ConstantAggregateZero`, which
+/// the folds below walk as `getAggregateElement` hands them out. A zero's
+/// elements are its type's per-element null values; one past `u32::MAX`
+/// elements answers `None`, since `getAggregateElement` takes an `unsigned`.
 fn aggregate_elements<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     constant: Constant<'ctx, B, C>,
 ) -> Option<Vec<Constant<'ctx, B, C>>> {
-    let ValueKindData::Constant(ConstantData::Aggregate(elements)) =
-        &constant.as_erased().data().kind
-    else {
-        return None;
-    };
     let module = constant.module;
-    Some(
-        elements
-            .iter()
-            .map(|id| {
-                let data = module.context().value_data(*id);
-                Constant::from_parts(crate::Value::from_parts(*id, module, data.ty))
-            })
-            .collect(),
-    )
+    match &constant.as_erased().data().kind {
+        ValueKindData::Constant(ConstantData::Aggregate(elements)) => Some(
+            elements
+                .iter()
+                .map(|id| {
+                    let data = module.context().value_data(*id);
+                    Constant::from_parts(crate::Value::from_parts(*id, module, data.ty))
+                })
+                .collect(),
+        ),
+        ValueKindData::Constant(ConstantData::AggregateZero) => {
+            let data = constant.ty().data();
+            let count = if let Some((_, length)) = data.as_array() {
+                u32::try_from(length).ok()?
+            } else if let Some((_, lanes, _)) = data.as_vector() {
+                lanes.get()
+            } else {
+                u32::try_from(StructType::try_from(constant.ty()).ok()?.field_count()).ok()?
+            };
+            (0..count)
+                .map(|index| constant.aggregate_element(index))
+                .collect()
+        }
+        _ => None,
+    }
 }
 
 fn constant_int_same_unsigned_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(

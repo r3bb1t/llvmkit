@@ -42,7 +42,10 @@ use std::collections::{HashMap, HashSet};
 
 use super::asm_writer::slot_label;
 use super::cfg::FunctionCfg;
-use super::constant::{Constant, ConstantData, ConstantExprOpcode};
+use super::constant::{
+    Constant, ConstantAggregateKind, ConstantData, ConstantDataKind, ConstantExprOpcode,
+    ConstantKind,
+};
 use super::eh_personalities::{
     classify_eh_personality, color_eh_funclets, first_non_phi_kind, is_funclet_pad_kind,
     is_scoped_eh_personality,
@@ -669,6 +672,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             }
             ConstantData::GlobalValueRef { .. }
             | ConstantData::PointerNull
+            | ConstantData::AggregateZero
             | ConstantData::GepOffset { .. }
             | ConstantData::SymbolDelta { .. }
             | ConstantData::SymbolDeltaPlus { .. }
@@ -6256,16 +6260,25 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 // enum, so the branch is unrepresentable rather than merely
                 // untaken.
                 //
-                // `isa<ConstantArray> || isa<ConstantAggregateZero>` collapses
-                // to one test here: llvmkit spells a `zeroinitializer` as an
-                // aggregate of zeros, so both are `ConstantData::Aggregate`.
+                // Both classes are read off `Constant::kind`: an element list
+                // of array type is a `ConstantArray` or, when its elements are
+                // all simple, a `ConstantDataArray`, which this refuses as
+                // upstream does.
                 LandingPadClauseKind::Filter => self.verifier_check(
                     f,
                     bb,
-                    matches!(
-                        &self.module.context().value_data(clause).kind,
-                        ValueKindData::Constant(ConstantData::Aggregate(_))
-                    ),
+                    Constant::try_from(Value::<B, ReadOnly>::from_parts(
+                        clause,
+                        self.module,
+                        self.value_type(clause),
+                    ))
+                    .is_ok_and(|clause| {
+                        matches!(
+                            clause.kind(),
+                            ConstantKind::Aggregate(ConstantAggregateKind::Array)
+                                | ConstantKind::Data(ConstantDataKind::AggregateZero)
+                        )
+                    }),
                     VerifierRule::EhPadInvalidStructure,
                     "Filter operand is not an array of constants!",
                 )?,

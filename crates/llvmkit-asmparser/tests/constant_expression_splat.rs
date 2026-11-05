@@ -114,34 +114,35 @@ fn an_undef_mask_folds_to_poison_before_this_arm_is_reached() {
 }
 
 /// Inserting at a lane other than 0 makes every shuffled lane `undef`, so the
-/// folder answers a uniform-`undef` vector before this arm is reached.
+/// folder answers before this arm is reached: `ConstantFoldShuffleVectorInstruction`'s
+/// all-zero-mask arm extracts lane 0, which is `undef`, and returns
+/// `ConstantVector::getSplat(MaskEltCount, Elt)`, whose scalable branch answers
+/// an `isa<UndefValue>` value with `UndefValue::get(VTy)`. That prints as the
+/// whole-vector `undef`.
 ///
-/// **This case used to pin a printer bug, and now pins its fix.** llvmkit
-/// represents a scalable splat as `min_len` equal elements — a choice upstream
-/// cannot make, since `ConstantVector::get` needs a fixed count — and relies on
-/// `asm_writer` collapsing a uniform vector back to `splat (…)`. That collapse
-/// was restricted to integer and floating-point elements, mirroring
-/// `AsmWriter.cpp`, so a scalable vector of uniform *pointers* or `undef` fell
-/// through to the element-list form:
+/// **This case has pinned two wrong answers before this one.** llvmkit
+/// represents a scalable splat as `min_len` equal elements, a choice upstream
+/// cannot make, and it kept a list of `undef`s too. First the printer wrote it
+/// as an element list, which LLVM rejects for a scalable type:
 ///
 /// ```text
 /// @g = global <vscale x 4 x ptr> <ptr undef, ptr undef, ptr undef, ptr undef>
 /// ```
 ///
-/// LLVM has no element-list constant for a scalable type and would reject that
-/// text. `asm_writer::prints_as_splat` now lifts the int/fp restriction for
-/// scalable types, where `splat (…)` is the only spelling there is;
-/// `scalable_vector_splat_printing.rs` covers the rule directly, with round
-/// trips through the verifier.
+/// then, once `asm_writer::prints_as_splat` lifted the int/fp restriction for
+/// scalable types, as `splat (ptr undef)`. Upstream builds no list at all, and
+/// now neither does llvmkit: `getSplat`'s canonicalisation runs where the list
+/// is interned. `scalable_vector_splat_printing.rs` keeps the printer rule
+/// covered for a uniform list that is not `undef`.
 #[test]
-fn a_scalable_uniform_undef_vector_prints_as_a_splat() {
+fn a_scalable_uniform_undef_vector_prints_as_undef() {
     let module = parse(
         "@x = global i32 7\n\
          @g = global <vscale x 4 x ptr> shufflevector (<vscale x 4 x ptr> insertelement (<vscale x 4 x ptr> undef, ptr @x, i32 1), <vscale x 4 x ptr> undef, <vscale x 4 x i32> zeroinitializer)",
     );
     let printed = format!("{module}");
     assert!(
-        printed.contains("@g = global <vscale x 4 x ptr> splat (ptr undef)"),
+        printed.contains("@g = global <vscale x 4 x ptr> undef\n"),
         "{printed}"
     );
     assert!(

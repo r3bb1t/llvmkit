@@ -947,69 +947,6 @@ is llvmkit's, because upstream's assert has none a user would see.
 
 **Guarded by:** `crates/llvmkit-asmparser/tests/parser_constants.rs::a_forward_dso_local_equivalent_is_in_the_default_globals_space`.
 
-### D28 — A `zeroinitializer` costs memory in proportion to its length
-
-**Severity:** rejects-valid, on an input large enough; below that, model-gap.
-Every size this entry implies is arithmetic from the code, not a run: no fixture
-that asks for one has been parsed here.
-**Where:** `crates/llvmkit-ir/src/constant.rs` — `ConstantData::Aggregate`,
-`ConstantDataKind::AggregateZero`; `crates/llvmkit-asmparser/src/ll_parser.rs` —
-`zero_initializer_constant`; `crates/llvmkit-ir/src/constant_fold.rs` —
-`null_constant_for_type`.
-
-**LLVM:** a `ConstantAggregateZero` is one object per type, whatever the type's
-length, so `[4294967295 x [0 x i32]] zeroinitializer` costs nothing more than
-`[1 x i32] zeroinitializer`.
-
-**llvmkit:** `ConstantData::Aggregate` is a flat `Box<[ValueSlot]>`, and
-`ConstantDataKind::AggregateZero` classifies such a list without storing anything.
-So `zero_initializer_constant`, the parser's `t_Zero` arm, allocates a `Vec` of the
-array's length with `with_capacity`, pushes one zero element per lane, and hands the
-list to `const_array`.
-
-- `ValueSlot` wraps a `NonZeroUsize`, so the stored list costs 8 bytes per element on
-  a 64-bit target. The parser's temporary `Vec` of handles comes on top of that.
-- One short `.ll` line can ask for more memory than the machine has, and a failed
-  `Vec::with_capacity` aborts the process rather than returning a `ParseError`. So a
-  `.ll` with a large `zeroinitializer` costs that much memory at parse time, or does
-  not parse at all.
-- A large zero-initialised C array is the same shape of IR, so this is reachable from
-  ordinary compiler output, not only from contrived fixtures.
-
-`null_constant_for_type`, the port of `Constant::getNullValue`, builds the same list
-for a load of an aggregate from a uniform constant. It is the same gap with one
-difference: there a list that cannot be allocated declines the fold.
-
-It also reaches `Constant::handleOperandChange`. `ConstantArray::handleOperandChangeImpl`
-and `ConstantStruct::handleOperandChangeImpl` answer `ConstantAggregateZero::get` when
-every new operand is the same null constant, and `UndefValue::get` when every one is the
-same undef (a poison included, since `isa<UndefValue>` holds for it). Both checks come
-before `getImpl` and `replaceOperandsInPlace`. `ConstantVector::handleOperandChangeImpl`
-has no such check and goes straight to `getImpl`, which folds those cases itself.
-llvmkit's `replace_constant_operand` (`crates/llvmkit-ir/src/constants.rs`) interns the
-new list. So an array or struct whose operands all become null is treated as updated in
-place where upstream returns a replacement, and an all-undef one keeps an element list
-where upstream returns an `undef` of the type. Only the order of users on the operands'
-use lists can differ. Text reaches this only when a forward reference resolves to a null
-or undef constant. The parser resolves a forward reference inside a constant only to a
-global or a `blockaddress`, which is neither, so nothing reaches it today (derived from
-the parser's placeholder resolution, not run).
-
-The fixtures that ask for one, what each would cost, and what the fix touches are in
-`docs/future-work.md`, under "`zeroinitializer` is stored one slot per element".
-
-**Why:** llvmkit has no storage for an aggregate with no element list but the
-`Undef` and `Poison` markers.
-
-**Fix:** a storage variant with no elements; see that section.
-
-**Guarded by:** nothing yet.
-`test/Transforms/InstSimplify/ConstProp/loads.ll::test_array_of_zero_size_array` is
-the test that would fail, and it is left out of
-`crates/llvmkit-asmparser/tests/constant_fold_loads.rs` and of that fixture's copy,
-each of which says so. `crates/llvmkit-ir/tests/constant_folding_analysis.rs::a_zero_load_too_long_to_build_is_not_folded`
-pins the fold's decline, and no test pins the parser's abort.
-
 ### D30 — A name or string that is not valid UTF-8 is refused
 
 **Severity:** rejects-valid
@@ -2017,21 +1954,6 @@ crates/llvmkit-ir/src/dce.rs (is_trivially_dead, lines 48-75; cited 49-79 is min
 <details><summary>Verification evidence</summary>
 
 Read `C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-ir/src/constant_folding.rs:1600-1919`: `symbolically_evaluate_gep`'s doc comment enumerates the same four deferrals, and the body confirms them — early `return Ok(None)` on `in_range.is_some()` (1657), on a non-`Pointer` base type (1662), and on `is_null_or_inttoptr_nonzero_base(ptr)` (1706); the inbounds-inference site (1710-1711) is a bare comment with no code, and `build_canonical_i8_gep` still runs at 1718, so that path folds with weaker flags rather than declining. Caller at 2099-2116 falls back to `constant_fold_get_element_ptr` when the symbolic path returns `None`. Read upstream `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/Analysis/ConstantFolding.cpp:843-991`: `CastGEPIndices` (845-878) called at 890-892; `InRange->sextOrTrunc(BitWidth)` at 911-913 and the per-level `.subtract(Offset)`/`intersectWith` at 934-938; the `(Ptr->isNullValue() || BaseIntVal != 0) && !DL.mustNotIntroduceIntToPtr(...)` → `insertBits` → `getIntToPtr` block at 953-971; the `getPointerDereferenceableBytes` inbounds inference at 973-980. All four exist as described. Grepped the whole `crates/` tree for `cast_gep_indices`/`CastGEPIndices` — only two hits, both prose in the doc comment; no implementation. Same for a dereferenceable-bytes query — the only hit is the doc comment at 1640. Falsifying the recorded blockers: `grep "fn insert_bits"` hit `crates/llvmkit-ir/src/ap_int.rs:354` (read 345-365 — a working bit-copy loop, with an upstream-ported test at `tests/ap_int_upstream_bits.rs:406`). Read `orig_cpp/.../llvm/include/llvm/IR/DataLayout.h:450-452,479-482` for `mustNotIntroduceIntToPtr`'s definition, then read `crates/llvmkit-ir/src/data_layout.rs:510-527`, which carries `has_unstable_representation(addr_space)` and `has_external_state(addr_space)` — both components — each documented as mirroring its upstream counterpart. Read `crates/llvmkit-ir/src/constant.rs:130-171` for `ConstantExprInRange`: no range arithmetic beyond accessors, confirming the `in_range` blocker. `git log -- crates/llvmkit-ir/src/constant_folding.rs` shows the most recent touch is b9e5c97 (LLParser parity W2.1-2.2); nothing since has revisited this path, and the file is unmodified in the current working tree.
-
-</details>
-
-### 50. `possibly_demanded_elements_in_mask` answers exactly for a `zeroinitializer` mask
-
-*analysis / VectorUtils* — crates/llvmkit-ir/src/vector_utils.rs (`possibly_demanded_elements_in_mask`, whose doc comment records the reason)
-
-- **LLVM:** `llvm::possiblyDemandedEltsInMask` reaches its per-element loop only through `dyn_cast<ConstantVector>`. A `zeroinitializer` mask is a `ConstantAggregateZero`, not a `ConstantVector`, so the cast fails and upstream returns "every lane demanded" for a mask that demands none.
-- **llvmkit:** llvmkit stores `ConstantVector` and `ConstantAggregateZero` as one element list, so the loop runs for a `zeroinitializer` mask and the function returns the exact all-zero `ApInt`.
-- **Why:** Recorded at the call site: "Stronger than upstream, in a sound direction … Over-approximating fewer lanes is always safe for this query; the divergence can only make a caller more precise." It falls out of llvmkit's constant representation rather than being sought.
-- **Fix:** No fix wanted for correctness — but the port is no longer faithful, so any upstream fixture asserting the weak answer will diverge. Either gate the element loop on the constant actually being a spelled-out `ConstantVector` (restoring bug-for-bug parity and losing precision), or keep it and add an `UPSTREAM.md` row plus a test naming the divergence so a future parity sweep does not silently "fix" it back.
-
-<details><summary>Verification evidence</summary>
-
-CONFIRMED — real, accurate, and still present in the committed tree. Upstream (C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/Analysis/VectorUtils.cpp, `llvm::possiblyDemandedEltsInMask`) reads verbatim: APInt DemandedElts = APInt::getAllOnes(VWidth); if (auto *CV = dyn_cast<ConstantVector>(Mask)) for (unsigned i = 0; i < VWidth; i++) if (CV->getAggregateElement(i)->isNullValue()) DemandedElts.clearBit(i); return DemandedElts; The element loop is indeed gated on `dyn_cast<ConstantVector>` alone. That an all-zero i1 mask is not a `ConstantVector` is confirmed twice in llvm/lib/IR/Constants.cpp: `Constant::getNullValue` returns `ConstantAggregateZero::get(Ty)` for `FixedVectorTyID`, and `ConstantVector::getImpl` computes `isZero` over the element list and returns `ConstantAggregateZero::get(T)` before ever reaching `VectorConstants.getOrCreate`. So the dyn_cast fails and upstream returns all-ones for a mask that demands no lane. Scope refinement (does not contradict the claim, which already says "both spellings"): the collapse in `getImpl` means the written-out form `<4 x i1> <i1 0, i1 0, i1 0, i1 0>` is *also* a ConstantAggregateZero upstream, so the divergence covers every fully-zero mask, not only the literal `zeroinitializer` keyword. It does not leak wider than that — `ConstantDataSequential::isElementTypeCompatible` admits only i8/i16/i32/i64 and half/bfloat/float/double, so i1 never becomes a `ConstantDataVector`, and a mixed mask such as `<i1 0, i1 1>` stays a genuine `ConstantVector` where both implementations agree. All-undef/all-poison masks also fail upstream's dyn_cast, but llvmkit's `aggregate_element` hands back an undef/poison element whose `is_null_value()` is false, so those lanes stay demanded and the two agree there too. llvmkit side, C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-ir/src/vector_utils.rs:641-665: the gate is `if let ValueKindData::Constant(_) = &mask.data().kind` — any constant, not a ConstantVector-specific cast — then the loop clears each lane where `constant.aggregate_element(lane).is_some_and(Constant::is_null_value)`. The "one element list" premise checks out rather than being taken on trust. `ConstantData` (crates/llvmkit-ir/src/constant.rs:272-299) has no `ConstantAggregateZero`-equivalent variant; `Aggregate(Box<[ValueSlot]>)` covers "ConstantArray, ConstantStruct, or ConstantVector". `Constant::aggregate_element` (constant.rs:786-814) serves the `Aggregate` arm by handing the stored element back, and its own doc records the collapse ("ConstantAggregateZero and ConstantDataSequential both become an ordinary element list at construction"). The construction side confirms it: the parser's `zero_initializer_constant` (crates/llvmkit-asmparser/src/ll_parser.rs:7831-7844) materialises a fixed-vector `zeroinitializer` by pushing `len` zero elements into `t.const_vector(elements)`. So the loop runs for a zeroinitializer mask and returns the exact all-zero ApInt where upstream returns all-ones. Still present: `git status --porcelain crates/llvmkit-ir/src/vector_utils.rs` is empty (file clean, not among the working-tree modifications), last touched by commit 857ff39. Cited line numbers are exact: 634-640 is the "Stronger than upstream, in a sound direction" paragraph, 641 is the `pub fn` line. The soundness argument also holds — demanding fewer lanes is the conservative direction for this over-approximation, so the divergence can only make a caller more precise, never wrong.
 
 </details>
 

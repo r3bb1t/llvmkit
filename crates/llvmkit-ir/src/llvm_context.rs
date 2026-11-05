@@ -113,6 +113,8 @@ pub(crate) struct Context {
     undef_constants: RefCell<HashMap<TypeSlot, ValueSlot>>,
     poison_constants: RefCell<HashMap<TypeSlot, ValueSlot>>,
     aggregate_constants: RefCell<AggregateConstantMap>,
+    /// `LLVMContextImpl::CAZConstants`: one `ConstantAggregateZero` per type.
+    aggregate_zero_constants: RefCell<HashMap<TypeSlot, ValueSlot>>,
     expr_constants: RefCell<HashMap<ConstantExprData, ValueSlot>>,
     block_address_constants: RefCell<HashMap<(TypeSlot, ValueSlot, ValueSlot), ValueSlot>>,
     dso_local_equivalent_constants: RefCell<HashMap<(TypeSlot, ValueSlot), ValueSlot>>,
@@ -228,6 +230,7 @@ impl Context {
             undef_constants: RefCell::new(HashMap::new()),
             poison_constants: RefCell::new(HashMap::new()),
             aggregate_constants: RefCell::new(HashMap::new()),
+            aggregate_zero_constants: RefCell::new(HashMap::new()),
             expr_constants: RefCell::new(HashMap::new()),
             block_address_constants: RefCell::new(HashMap::new()),
             dso_local_equivalent_constants: RefCell::new(HashMap::new()),
@@ -1165,6 +1168,23 @@ impl Context {
         });
         self.register_constant_operand_uses(id);
         self.aggregate_constants.borrow_mut().insert(key, id);
+        id
+    }
+
+    /// `ConstantAggregateZero::get(Ty)`: the one zero of an array, struct or
+    /// vector type, keyed by the type alone, so its length costs nothing.
+    pub(crate) fn intern_constant_aggregate_zero(&self, ty: TypeSlot) -> ValueSlot {
+        if let Some(&id) = self.aggregate_zero_constants.borrow().get(&ty) {
+            return id;
+        }
+        let id = self.push_value(ValueData {
+            ty,
+            name: core::cell::RefCell::new(None),
+            debug_loc: None,
+            kind: ValueKindData::Constant(ConstantData::AggregateZero),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        });
+        self.aggregate_zero_constants.borrow_mut().insert(ty, id);
         id
     }
 

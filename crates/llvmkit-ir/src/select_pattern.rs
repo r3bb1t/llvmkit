@@ -1224,8 +1224,8 @@ fn is_known_non_nan<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         ValueKindData::Constant(ConstantData::Float(_)) => {
             float_constant(value).is_some_and(|constant| !constant.is_nan())
         }
-        // Upstream's `ConstantDataVector` arm, plus its `ConstantAggregateZero`
-        // arm: llvmkit stores both as an aggregate of element constants.
+        // Upstream's `ConstantDataVector` arm, which llvmkit stores as an
+        // aggregate of element constants.
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
             // Upstream reads a `ConstantDataVector`, which has at least one
             // element. An llvmkit vector constant has at least one too: its
@@ -1241,6 +1241,8 @@ fn is_known_non_nan<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                     .is_some_and(|constant| !constant.is_nan())
             })
         }
+        // `if (isa<ConstantAggregateZero>(V)) return true;`
+        ValueKindData::Constant(ConstantData::AggregateZero) => true,
         _ => false,
     }
 }

@@ -8653,103 +8653,38 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .map_err(|e| self.builder_err_at(loc, "splat constant", e))
     }
 
-    /// Mirrors `Constant::getNullValue`, which `convertValIDToValue`'s
-    /// `t_Zero` arm and `parseConstantValue`'s `t_Null` arm both end in.
-    ///
-    /// llvmkit has no `ConstantAggregateZero`, so the three arms upstream
-    /// routes through it build the zero element-wise instead; every other arm
-    /// is one upstream `case`. The `_` catch-all stands in for upstream's
-    /// `llvm_unreachable` default, which llvmkit reports rather than traps.
+    /// The tail `convertValIDToValue`'s `t_Zero` arm and
+    /// `parseConstantValue`'s `t_Null` arm share: the `t_Zero` arm's
+    /// target-type guard, then `Constant::getNullValue`, which is
+    /// [`Type::null_value`].
     fn zero_initializer_constant(
         &self,
         loc: Span,
         ty: Type<'ctx, B>,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
-        match ty.into_type_enum() {
-            AnyTypeEnum::Int(t) => Ok(t.const_zero().as_constant()),
-            AnyTypeEnum::Pointer(t) => Ok(t.const_null().as_constant()),
-            AnyTypeEnum::Float(t) => Ok(t.const_from_bits(0).as_constant()),
-            AnyTypeEnum::Array(t) => {
-                let len = usize::try_from(t.len()).map_err(|_| ParseError::Expected {
-                    expected: "array zeroinitializer length fits in usize".into(),
-                    loc,
-                })?;
-                let element = t.element();
-                let mut elements = Vec::with_capacity(len);
-                for _ in 0..len {
-                    elements.push(self.zero_initializer_constant(loc, element)?);
-                }
-                t.const_array(elements)
-                    .map(|c| c.as_constant())
-                    .map_err(|e| self.builder_err_at(loc, "array zeroinitializer", e))
-            }
-            AnyTypeEnum::Vector(t) => {
-                let len = usize::try_from(t.min_len().get()).map_err(|_| ParseError::Expected {
-                    expected: "vector zeroinitializer length fits in usize".into(),
-                    loc,
-                })?;
-                let element = t.element();
-                let mut elements = Vec::with_capacity(len);
-                for _ in 0..len {
-                    elements.push(self.zero_initializer_constant(loc, element)?);
-                }
-                t.const_vector(elements)
-                    .map(|c| c.as_constant())
-                    .map_err(|e| self.builder_err_at(loc, "vector zeroinitializer", e))
-            }
-            AnyTypeEnum::Struct(t) => {
-                if t.is_opaque() {
-                    return Err(ParseError::Message {
-                        message: "invalid type for null constant".into(),
-                        loc,
-                    });
-                }
-                let mut elements = Vec::with_capacity(t.field_count());
-                for idx in 0..t.field_count() {
-                    let field_ty = t.field_type(idx).ok_or_else(|| {
-                        self.expected_at(loc, "struct field type for zeroinitializer")
-                    })?;
-                    elements.push(self.zero_initializer_constant(loc, field_ty)?);
-                }
-                t.const_struct(elements)
-                    .map(|c| c.as_constant())
-                    .map_err(|e| self.builder_err_at(loc, "struct zeroinitializer", e))
-            }
-            // `case Type::TokenTyID: return ConstantTokenNone::get(...)`. A
-            // token type is first-class, is neither a label nor a
-            // `TargetExtType`, and so passes both of `convertValIDToValue`'s
-            // `t_Zero` guards on the way here; the constant it builds is the
-            // one the `token none` spelling builds.
-            AnyTypeEnum::Token(_) => Ok(self.module.token_none()),
-            // `if (auto *TETy = dyn_cast<TargetExtType>(Ty)) if
-            //  (!TETy->hasProperty(TargetExtType::HasZeroInit)) return
-            //  error(ID.Loc, "invalid type for null constant");`
-            //
-            // `Module::target_ext_none` answers with upstream's complete
-            // sentence already, so it goes into `ParseError::Message`, which
-            // adds nothing — `Expected` prefixed it with `expected `.
-            AnyTypeEnum::TargetExt(_) => self.module.target_ext_none(ty).map_err(|e| match e {
-                IrError::InvalidOperation { message } => ParseError::Message {
-                    message: message.into(),
-                    loc,
-                },
-                other => self.builder_err_at(loc, "target extension none", other),
-            }),
-            // `default: llvm_unreachable("Cannot create a null constant of
-            // that type!")`. The repo bans a runtime panic in a production
-            // path, so the arm rejects instead — and it carries the message of
-            // the guard that *should* have stopped the type earlier, because
-            // that is the only text upstream associates with `t_Zero` at all.
-            //
-            // What reaches it is what upstream traps on: `metadata`, `x86_amx`
-            // and `exnref` pass `convertValIDToValue`'s first-class/label
-            // guard and have no `Constant::getNullValue` case. `label` reaches
-            // it from neither path — the guard runs on both now. Probed at
-            // this commit with `target/release/examples/parse_file.exe` on
-            // `@g = global <T> zeroinitializer` and
-            // `%v = freeze <T> zeroinitializer` for each of the four.
-            _ => Err(self.message_at(loc, "invalid type for null constant")),
+        // `if (auto *TETy = dyn_cast<TargetExtType>(Ty)) if
+        //  (!TETy->hasProperty(TargetExtType::HasZeroInit)) return
+        //  error(ID.Loc, "invalid type for null constant");`
+        if let AnyTypeEnum::TargetExt(target_ty) = ty.into_type_enum()
+            && !target_ty.has_property(llvmkit_ir::TargetExtProperty::HasZeroInit)
+        {
+            return Err(self.message_at(loc, "invalid type for null constant"));
         }
+        // `V = Constant::getNullValue(Ty);`, whose `default:
+        // llvm_unreachable("Cannot create a null constant of that type!")` is
+        // `None`. The repo bans a runtime panic in a production path, so that
+        // rejects instead — with the message of the guard that *should* have
+        // stopped the type earlier, because that is the only text upstream
+        // associates with `t_Zero` at all.
+        //
+        // What reaches it is what upstream traps on: `metadata`, `x86_amx`
+        // and `exnref` pass `convertValIDToValue`'s first-class/label guard
+        // and have no `Constant::getNullValue` case. `label` reaches it from
+        // neither path — the guard runs on both. An opaque struct is stopped
+        // by that guard on the `t_Zero` path; on the `t_Null` path, which has
+        // no guard, it is the `ConstantAggregateZero` upstream builds.
+        ty.null_value()
+            .ok_or_else(|| self.message_at(loc, "invalid type for null constant"))
     }
 
     /// Every element of an array or vector constant must have element 0's

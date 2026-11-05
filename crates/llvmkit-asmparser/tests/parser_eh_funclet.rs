@@ -102,6 +102,50 @@ fn landingpad_round_trips() {
     assert_eq!(first, second, "print/re-parse is not idempotent");
 }
 
+/// Pins `Verifier::visitLandingPadInst`'s filter check,
+/// `Check(isa<ConstantArray>(Clause) || isa<ConstantAggregateZero>(Clause),
+/// "Filter operand is not an array of constants!", &LPI)`. A `[1 x ptr] [ptr
+/// @x]` filter is a `ConstantArray` and `[2 x i32] zeroinitializer` a
+/// `ConstantAggregateZero`, so both verify; `[1 x i8] [i8 1]` is a
+/// `ConstantDataArray`, which neither `isa` admits. Regression: the check read
+/// llvmkit's storage, an element list for all three, and passed the third.
+/// llvmkit-specific (D11): no upstream test reaches the check.
+#[test]
+fn a_filter_clause_is_a_constant_array_or_an_aggregate_zero() {
+    let source = |filter: &str| {
+        format!(
+            r#"@x = external global i8
+declare i32 @personality(...)
+define void @f() personality ptr @personality {{
+entry:
+  invoke void @f() to label %done unwind label %lpad
+done:
+  ret void
+lpad:
+  %e = landingpad {{ ptr, i32 }} filter {filter}
+  resume {{ ptr, i32 }} %e
+}}
+"#
+        )
+    };
+    for accepted in ["[1 x ptr] [ptr @x]", "[2 x i32] zeroinitializer"] {
+        let printed = parse_verify_and_print(&source(accepted));
+        assert!(printed.contains(&format!("filter {accepted}")), "{printed}");
+    }
+    let module = Module::dynamic("filter");
+    let _ = Parser::new(source("[1 x i8] [i8 1]").as_bytes(), &module)
+        .expect("parse constructor")
+        .parse_module()
+        .expect("`parseLandingPad` asks only that a filter have array type");
+    match module.verify_borrowed() {
+        Err(llvmkit_ir::IrError::VerifierFailure { message, .. }) => assert!(
+            message.contains("Filter operand is not an array of constants!"),
+            "{message}"
+        ),
+        other => panic!("expected a verifier failure, got {other:?}"),
+    }
+}
+
 /// llvmkit-specific subset: `resume { ptr, i32 } %e` accepted via
 /// `LLParser::parseResume`.
 #[test]

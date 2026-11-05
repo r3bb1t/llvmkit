@@ -16,7 +16,7 @@ use crate::assumptions::{
 use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored};
 use crate::capability::{Capability, ReadOnly};
 use crate::cmp_predicate::IntPredicate;
-use crate::constant::{ConstantData, ConstantExprData, ConstantExprOpcode};
+use crate::constant::{Constant, ConstantData, ConstantExprData, ConstantExprOpcode};
 use crate::constant_range::{
     ConstantRange, OverflowResult, PreferredRangeType, constant_ranges_from_metadata,
 };
@@ -607,8 +607,12 @@ fn leaf_constant_known_bits(constant: &ConstantData, width: u32) -> Option<Known
     Some(match constant {
         // `match(V, m_APInt(C))` -> `KnownBits::makeConstant(*C)`.
         ConstantData::Int(words) => KnownBits::from_ap_int(ApInt::from_words(width, words)),
-        // `isa<ConstantPointerNull>(V)` -> `Known.setAllZero()`.
-        ConstantData::PointerNull => KnownBits::from_ap_int(ApInt::zero(width)),
+        // `isa<ConstantPointerNull>(V) || isa<ConstantAggregateZero>(V)` ->
+        // `Known.setAllZero()`. A vector zero has already matched `m_APInt`
+        // through its splat upstream, with the same answer.
+        ConstantData::PointerNull | ConstantData::AggregateZero => {
+            KnownBits::from_ap_int(ApInt::zero(width))
+        }
         // `isa<UndefValue>(V)` -> `Known.resetAll(); return;`. `PoisonValue`
         // derives from `UndefValue`, so it lands on the same arm.
         ConstantData::Undef | ConstantData::Poison => KnownBits::unknown(width),
@@ -644,6 +648,7 @@ fn compute_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         // than a silent `unknown`.
         ConstantData::Int(_)
         | ConstantData::PointerNull
+        | ConstantData::AggregateZero
         | ConstantData::Undef
         | ConstantData::Poison
         | ConstantData::Float(_)
@@ -2693,6 +2698,14 @@ fn zero_int_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             }
             Some(all_null)
         }
+        // A `ConstantAggregateZero` matches through its splat, the element
+        // type's null value, and is a null value.
+        ValueKindData::Constant(ConstantData::AggregateZero) => zero_int_constant(
+            Constant::try_from(value)
+                .ok()?
+                .splat_value(false)?
+                .as_erased(),
+        ),
         ValueKindData::Constant(ConstantData::Poison) => Some(false),
         _ => None,
     }
@@ -3534,6 +3547,14 @@ fn splat_or_scalar_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             }
             splat
         }
+        // `getSplatValue` of a `ConstantAggregateZero`: the element type's
+        // null value.
+        ValueKindData::Constant(ConstantData::AggregateZero) => splat_or_scalar_constant(
+            Constant::try_from(value)
+                .ok()?
+                .splat_value(true)?
+                .as_erased(),
+        ),
         _ => None,
     }
 }
@@ -6380,6 +6401,16 @@ fn constant_is_well_defined<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                     _ => {}
                 }
             }
+            Some(true)
+        }
+        // The same arm for a vector `ConstantAggregateZero`, which holds no
+        // `undef`, `poison` or constant expression.
+        ConstantData::AggregateZero
+            if matches!(
+                value.ty().kind(),
+                TypeKind::FixedVector | TypeKind::ScalableVector
+            ) =>
+        {
             Some(true)
         }
         // A constant expression falls through to the operator tests upstream;

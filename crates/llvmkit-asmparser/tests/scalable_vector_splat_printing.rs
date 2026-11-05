@@ -65,17 +65,22 @@ fn a_scalable_pointer_splat_prints_as_a_splat() {
     );
 }
 
-/// A scalable vector of uniform `undef` — the other excluded category, and the
-/// exact shape `docs/future-work.md` recorded as printing invalid IR.
+/// A scalable splat of `undef` — the other category `is_int_or_fp_splat_value`
+/// excludes, and the exact shape `docs/future-work.md` recorded as printing
+/// invalid IR — is no list at all: `LLParser`'s `t_ConstantSplat` arm builds it
+/// with `ConstantVector::getSplat`, whose scalable branch answers an
+/// `isa<UndefValue>` value with `UndefValue::get(VTy)`, the whole-vector
+/// `undef`. llvmkit kept a list of `undef`s and printed it `splat (ptr undef)`
+/// until `getSplat`'s canonicalisation moved to where a list is interned.
 #[test]
-fn a_scalable_undef_splat_prints_as_a_splat() {
+fn a_scalable_undef_splat_is_the_whole_vector_undef() {
     let printed = round_trip(
         "define <vscale x 4 x ptr> @f() {\n  \
            ret <vscale x 4 x ptr> splat (ptr undef)\n\
          }\n",
     );
     assert!(
-        printed.contains("ret <vscale x 4 x ptr> splat (ptr undef)"),
+        printed.contains("ret <vscale x 4 x ptr> undef\n"),
         "{printed}"
     );
     assert!(!printed.contains("ptr undef, ptr undef"), "{printed}");

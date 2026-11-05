@@ -27,8 +27,7 @@ use super::constant_fold::{
     constant_fold_insert_value_instruction_trusting_same_module,
     constant_fold_select_instruction_trusting_same_module,
     constant_fold_shuffle_vector_instruction_trusting_same_module, constant_fold_unary_instruction,
-    constant_from_id, null_constant_for_type, shufflevector_mask_from_constant,
-    vector_type_with_scalability,
+    constant_from_id, shufflevector_mask_from_constant, vector_type_with_scalability,
 };
 use super::constants::{
     ConstantExprOptions, ConstantFloatValue, ConstantIntValue, GepTypeCursor, global_value_type,
@@ -187,21 +186,22 @@ pub fn flush_fp_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         return flush_denormal_float(fp.ty(), &apf, mode.for_side(side));
     }
 
-    if is_undef(operand) || is_poison(operand) {
+    // `if (isa<ConstantAggregateZero, UndefValue>(Operand)) return Operand;`
+    if matches!(
+        operand.kind(),
+        ConstantKind::Data(ConstantDataKind::AggregateZero | ConstantDataKind::Undef(_))
+    ) {
         return Ok(Some(operand));
     }
 
     // Mirrors the `ConstantVector`/`ConstantDataVector` arms of upstream
     // `FlushFPConstant` (`ConstantFolding.cpp`): flush every lane of a fixed
-    // FP vector and rebuild the vector constant. A whole-vector `undef`
-    // (upstream's `UndefValue` arm) is already handled above. llvmkit has no
-    // distinct `ConstantAggregateZero` representation — zero vectors are
-    // ordinary `Aggregate`s — so upstream's all-zero fast path falls out of
-    // this loop for free (0.0 is never denormal), and likewise upstream's
-    // splat fast path is just a performance shortcut this loop reaches the
-    // same answer without. Scalable vectors have no compile-time lane list to
-    // walk and fall through to the decline below, matching upstream's
-    // decline for a non-splat scalable operand.
+    // FP vector and rebuild the vector constant. A whole-vector zero or
+    // `undef` is already handled above. Upstream's splat fast path is a
+    // performance shortcut this loop reaches the same answer without.
+    // Scalable vectors have no compile-time lane list to walk and fall through
+    // to the decline below, matching upstream's decline for a non-splat
+    // scalable operand.
     if matches!(operand.ty().data(), TypeData::FixedVector { .. })
         && let ValueKindData::Constant(ConstantData::Aggregate(elements)) =
             &operand.as_erased().data().kind
@@ -774,7 +774,7 @@ fn fold_reinterpret_load_as_integer<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     };
     if res.is_null_value() && !matches!(load_ty.data(), TypeData::X86Amx) {
         // Materializing a zero can be done trivially without a bitcast.
-        return null_constant_for_type(load_ty);
+        return Ok(load_ty.null_value());
     }
     let cast_ty = if is_pointer {
         int_ptr_type(load_ty, dl)?
@@ -790,7 +790,7 @@ fn fold_reinterpret_load_as_integer<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     // For vector of pointer, we needed to first convert to a vector of
     // integer, then do vector inttoptr.
     if res.is_null_value() && !matches!(load_ty.data(), TypeData::X86Amx) {
-        return null_constant_for_type(load_ty);
+        return Ok(load_ty.null_value());
     }
     // Be careful not to replace a load of an addrspace value with an inttoptr
     // here.
@@ -886,7 +886,7 @@ pub(crate) fn constant_fold_load_from_uniform_value_trusting_same_module<
         return Ok(None);
     }
     if constant.is_null_value() && !matches!(ty.data(), TypeData::X86Amx) {
-        return null_constant_for_type(ty);
+        return Ok(ty.null_value());
     }
     if constant.is_all_ones_value() && (ty.is_int_or_int_vector() || ty.is_float_or_float_vector())
     {
@@ -1227,7 +1227,10 @@ pub fn constant_fold_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             if !changed {
                 return Ok(constant);
             }
-            let id = module.context().intern_constant_aggregate(
+            // `return ConstantVector::get(Ops);`, which canonicalises the
+            // folded list as every constructor does.
+            let id = crate::constants::intern_element_list(
+                module.module(),
                 constant.ty().slot_trusting_same_module(),
                 folded_ids.into_boxed_slice(),
             );
@@ -3083,20 +3086,27 @@ fn load_through_bitcast_opcode<B: ModuleBrand, C: Capability>(
     }
 }
 
+/// The closing step of `ConstantFoldLoadThroughBitcast`'s loop: the element
+/// the simulated load drills down to, read through `getAggregateElement`, so
+/// a `ConstantAggregateZero` answers its element's null value.
+///
+/// A scalable vector answers `None`, where upstream asks `getAggregateElement`
+/// too. Only a `ConstantAggregateZero` answers that upstream, and one reaches
+/// this step only when `ConstantFoldLoadFromUniformValue` refused it because
+/// its size is not a whole number of bytes, so its element's is not either,
+/// which the vector check refuses (derived from the two checks, not run).
 fn aggregate_first_element<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     constant: Constant<'ctx, B, C>,
     dl: &DataLayout,
 ) -> Option<Constant<'ctx, B, C>> {
-    let ValueKindData::Constant(ConstantData::Aggregate(elements)) =
-        &constant.as_erased().data().kind
-    else {
-        return None;
-    };
     let module = constant.module;
     match constant.ty().data() {
+        // Struct types might have leading zero-length elements like [0 x i32],
+        // which are certainly not what we are looking for, so skip them.
         TypeData::Struct(_) => {
-            for id in elements.iter().copied() {
-                let element = constant_from_id(module, id)?;
+            let mut index = 0_u32;
+            loop {
+                let element = constant.aggregate_element(index)?;
                 if dl
                     .type_size_in_bits(erase_type(element.ty()))
                     .known_min_value()
@@ -3104,16 +3114,18 @@ fn aggregate_first_element<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                 {
                     return Some(element);
                 }
+                index = index.checked_add(1)?;
             }
-            None
         }
-        TypeData::Array { .. } => constant_from_id(module, elements.first().copied()?),
+        TypeData::Array { .. } => constant.aggregate_element(0),
+        // For non-byte-sized vector elements, the first element is not
+        // necessarily located at the vector base address.
         TypeData::FixedVector { elem, .. } => {
             let elem_ty = Type::new(*elem, module);
             if !dl.type_size_equals_store_size(erase_type(elem_ty)) {
                 return None;
             }
-            constant_from_id(module, elements.first().copied()?)
+            constant.aggregate_element(0)
         }
         _ => None,
     }
@@ -3275,7 +3287,7 @@ fn merge_vector_lanes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     // Handle: bitcast (<4 x i32> <i32 0, i32 1, i32 2, i32 3> to <2 x i64>)
     let is_little_endian = dl.is_little_endian();
     let (Some(zero), Ok(dst_int_ty)) = (
-        null_constant_for_type(dst_elt_ty)?,
+        dst_elt_ty.null_value(),
         IntType::<IntDyn, B, C>::try_from(dst_elt_ty),
     ) else {
         return Ok(None);
@@ -3299,7 +3311,7 @@ fn merge_vector_lanes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             let src = constant.aggregate_element(src_elt);
             src_elt += 1;
             let src = match src {
-                Some(src) if is_undef_or_poison(src) => null_constant_for_type(src_elt_ty)?,
+                Some(src) if is_undef_or_poison(src) => src_elt_ty.null_value(),
                 Some(src) if matches!(src.kind(), ConstantKind::Data(ConstantDataKind::Int(_))) => {
                     Some(src)
                 }
@@ -3654,8 +3666,11 @@ fn is_guaranteed_not_to_be_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capab
         ValueKindData::Constant(ConstantData::Expr(_) | ConstantData::ForwardRefPlaceholder) => {
             false
         }
+        // A `ConstantAggregateZero` answers as the element list of nulls it
+        // stands for answers in the arm above.
         ValueKindData::Constant(
-            ConstantData::Int(_)
+            ConstantData::AggregateZero
+            | ConstantData::Int(_)
             | ConstantData::Float(_)
             | ConstantData::GlobalValueRef { .. }
             | ConstantData::PointerNull

@@ -28,9 +28,6 @@
 //!   [`is_vector_intrinsic_with_struct_return_overload_at_field`],
 //!   [`interleave_intrinsic_factor`], [`deinterleave_intrinsic_factor`].
 //!
-//! [`possibly_demanded_elements_in_mask`] is **stronger** than upstream's, in
-//! a sound direction, and says so at its site.
-//!
 //! **The mask transforms are narrower than upstream's, permanently.** Upstream
 //! reads mask elements as raw `int`s, so the same functions serve both the IR
 //! alphabet `{lane, poison}` and the wider one SelectionDAG and the X86 backend
@@ -101,7 +98,7 @@
 
 use crate::ap_int::ApInt;
 use crate::capability::Capability;
-use crate::constant::{Constant, ConstantData};
+use crate::constant::{Constant, ConstantAggregateKind, ConstantData, ConstantKind};
 use crate::instr_types::BinaryOpcode;
 use crate::instr_types::ShuffleMaskElem;
 use crate::instruction::InstructionKindData;
@@ -657,13 +654,10 @@ fn constant_mask_lanes_satisfy<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 /// `None` covers upstream's assert: the mask is not a fixed-width vector, so
 /// there is no lane count to answer at.
 ///
-/// **Stronger than upstream, in a sound direction.** Upstream reaches the
-/// element loop only through `dyn_cast<ConstantVector>`, which a
-/// `zeroinitializer` is not — it is a `ConstantAggregateZero` — so upstream
-/// answers "every lane demanded" for an all-zero mask that demands none.
-/// llvmkit stores both spellings as one element list, so the loop runs and the
-/// answer is the exact zero. Over-approximating fewer lanes is always safe for
-/// this query; the divergence can only make a caller more precise.
+/// Upstream reaches the element loop only through `dyn_cast<ConstantVector>`,
+/// which a `zeroinitializer` is not — it is a `ConstantAggregateZero`, and so
+/// is a list of zeros — so an all-zero mask answers "every lane demanded",
+/// though it demands none. That is upstream's answer, and this one.
 pub fn possibly_demanded_elements_in_mask<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     mask: Value<'ctx, B, C>,
 ) -> Option<ApInt> {
@@ -674,16 +668,22 @@ pub fn possibly_demanded_elements_in_mask<'ctx, B: ModuleBrand + 'ctx, C: Capabi
     let mut demanded = ApInt::all_ones(lanes.get());
     if let ValueKindData::Constant(_) = &mask.data().kind {
         let constant = Constant::from_parts(mask);
-        for lane in 0..lanes.get() {
-            // Upstream dereferences `getAggregateElement` without a null
-            // check, which cannot fail for the `ConstantVector` its `dyn_cast`
-            // admitted. An absent element here leaves the lane demanded, which
-            // is the over-approximating direction.
-            if constant
-                .aggregate_element(lane)
-                .is_some_and(Constant::is_null_value)
-            {
-                demanded.clear_bit(lane);
+        // `if (auto *CV = dyn_cast<ConstantVector>(Mask))`.
+        if matches!(
+            constant.kind(),
+            ConstantKind::Aggregate(ConstantAggregateKind::Vector)
+        ) {
+            for lane in 0..lanes.get() {
+                // Upstream dereferences `getAggregateElement` without a null
+                // check, which cannot fail for the `ConstantVector` its
+                // `dyn_cast` admitted. An absent element here leaves the lane
+                // demanded, which is the over-approximating direction.
+                if constant
+                    .aggregate_element(lane)
+                    .is_some_and(Constant::is_null_value)
+                {
+                    demanded.clear_bit(lane);
+                }
             }
         }
     }

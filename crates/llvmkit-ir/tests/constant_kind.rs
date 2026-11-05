@@ -1,11 +1,13 @@
 //! `Constant::kind`: which of upstream's constant classes a constant is.
 //!
-//! llvmkit stores every element list — `zeroinitializer` included — in one
-//! form, so the class of an array, struct or vector constant is recovered by
-//! replaying the canonicalisation upstream applies when it builds one
-//! (`ConstantArray::getImpl`, `ConstantStruct::get`, `ConstantVector::getImpl`,
-//! `ConstantVector::getSplat`). The upstream ports come first; the rule
-//! anchors after them pin the branches no upstream test isolates.
+//! An array, struct or vector constant is canonicalised when it is built, as
+//! upstream canonicalises it (`ConstantArray::getImpl`, `ConstantStruct::get`,
+//! `ConstantVector::getImpl`, `ConstantVector::getSplat`): a list of zeros is
+//! stored as the `ConstantAggregateZero`, an all-`undef` or all-`poison` list as
+//! that marker. What stays a list is one storage form for upstream's
+//! `ConstantDataSequential` and `ConstantAggregate`, which `kind` tells apart.
+//! The upstream ports come first; the rule anchors after them pin the branches
+//! no upstream test isolates.
 
 use llvmkit_ir::{
     ApFloat, ApFloatSign, ArrayType, Constant, ConstantAggregateKind, ConstantDataKind,

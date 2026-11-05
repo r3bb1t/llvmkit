@@ -2,13 +2,8 @@
 //! pipeline: parse the fixture, set the layout each `RUN` line's `-data-layout`
 //! sets, run `InstSimplifyPass` over every function, and compare the printed
 //! module with the fixture's own `CHECK`, `LE` and `BE` lines.
-//!
-//! **One fixture is left out, and nothing else.**
 //! `tests/fixtures/upstream/Transforms/InstSimplify/ConstProp/loads.ll` is
-//! upstream's file but for `@g9` and `@test_array_of_zero_size_array`:
-//! `[4294967295 x [0 x i32]] zeroinitializer` costs one `ValueSlot` per element
-//! here (`docs/divergences.md` D28), so parsing it is not attempted. The copy
-//! says so in its header too.
+//! upstream's file, byte for byte.
 //!
 //! The file also holds the other fixtures that drive the same routines, and the
 //! layouts none of them reaches.
@@ -97,9 +92,10 @@ fn check_every_run_line(source: &str) {
     }
 }
 
-/// Ports `test/Transforms/InstSimplify/ConstProp/loads.ll` but for
-/// `test_array_of_zero_size_array`, on both of its `RUN` lines: `e-` with
-/// `CHECK,LE`, and `E-` with `CHECK,BE`.
+/// Ports `test/Transforms/InstSimplify/ConstProp/loads.ll` whole, on both of its
+/// `RUN` lines: `e-` with `CHECK,LE`, and `E-` with `CHECK,BE`.
+/// `test_array_of_zero_size_array` is among them: its
+/// `[4294967295 x [0 x i32]] zeroinitializer` is one `ConstantAggregateZero`.
 #[test]
 fn loads_ll_passes_on_both_run_lines() {
     assert_eq!(run_lines(LOADS).len(), 2);

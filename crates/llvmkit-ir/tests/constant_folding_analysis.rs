@@ -1744,8 +1744,9 @@ fn a_load_past_the_known_minimum_of_a_scalable_constant_is_not_poison() -> Resul
 /// assertion per type class no fixture loads from a uniform constant: an array,
 /// a struct with a nested array, a token and a target type. Upstream's
 /// `llvm_unreachable` for a type with no null constant, the assert in
-/// `ConstantTargetNone::get` and the `isX86_AMXTy` guard each answer `None`, and
-/// so does a struct with no body.
+/// `ConstantTargetNone::get` and the `isX86_AMXTy` guard each answer `None`. A
+/// struct with no body is the `ConstantAggregateZero` `getNullValue` builds for
+/// any `StructTyID`.
 #[test]
 fn a_uniform_zero_loads_as_the_null_of_any_type() -> Result<(), IrError> {
     let m = module_new!("analysis-uniform-null")?;
@@ -1780,24 +1781,29 @@ fn a_uniform_zero_loads_as_the_null_of_any_type() -> Result<(), IrError> {
     let no_zero = m.target_ext_type("other", Vec::<Type<'_, _>>::new(), [])?;
     assert_eq!(load(no_zero.as_type())?, None);
     assert_eq!(load(m.x86_amx_type())?, None);
-    assert_eq!(load(m.opaque_struct("opaque")?.as_type())?, None);
+    assert_eq!(
+        load(m.opaque_struct("opaque")?.as_type())?.as_deref(),
+        Some("%opaque zeroinitializer")
+    );
     Ok(())
 }
 
 /// **No upstream counterpart**: a `ConstantAggregateZero` of any length costs
-/// upstream nothing, and llvmkit's is one element per lane
-/// (`docs/divergences.md` D28). A list that cannot be allocated declines the
-/// fold rather than aborting. `a_uniform_zero_loads_as_the_null_of_any_type` is
-/// the positive control.
+/// upstream nothing, and costs llvmkit nothing either, so a uniform zero loads
+/// as the zero of an array too long to list. It used to be one element per
+/// lane here, and this fold declined rather than abort on the allocation.
+/// `a_uniform_zero_loads_as_the_null_of_any_type` covers the short types.
 #[test]
-fn a_zero_load_too_long_to_build_is_not_folded() -> Result<(), IrError> {
+fn a_zero_load_too_long_to_list_still_folds() -> Result<(), IrError> {
     let m = module_new!("analysis-uniform-null-length")?;
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let too_long = ArrayType::of(m.i8_type(), u64::MAX);
     let zero = m.i32_type().const_zero().as_constant();
     assert_eq!(
-        constant_fold_load_from_uniform_value(zero, too_long.as_type(), &dl)?,
-        None
+        constant_fold_load_from_uniform_value(zero, too_long.as_type(), &dl)?
+            .map(|folded| folded.to_string())
+            .as_deref(),
+        Some("[18446744073709551615 x i8] zeroinitializer")
     );
     Ok(())
 }

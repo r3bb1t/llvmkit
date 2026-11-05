@@ -29,8 +29,9 @@ use super::block_params::BlockParamsDyn;
 use super::block_state::BlockTerminationState;
 use super::capability::{CanMutate, Capability, CapabilityOf, Mutable, ReadOnly};
 use super::constant::{
-    Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode,
-    ForwardRefValue, IntoConstantValue, IsConstant,
+    CanonicalAggregate, Constant, ConstantData, ConstantExprData, ConstantExprFlags,
+    ConstantExprOpcode, ForwardRefValue, IntoConstantValue, IsConstant, Undefined,
+    canonical_aggregate,
 };
 use super::constant_fold::{
     constant_fold_binary_instruction_trusting_same_module,
@@ -43,8 +44,8 @@ use super::constant_fold::{
 };
 use super::data_layout::DataLayout;
 use super::derived_types::{
-    ArrayType, FloatType, IntType, PointerType, StructType, TargetExtProperty, TargetExtType,
-    VectorType,
+    AnyTypeEnum, ArrayType, FloatType, IntType, PointerType, StructType, TargetExtProperty,
+    TargetExtType, VectorType,
 };
 use super::element::VecElem;
 use super::error::{IrError, IrResult, TypeKindLabel};
@@ -1786,6 +1787,70 @@ impl<'ctx, B: ModuleBrand + 'ctx, Cap: Capability> Type<'ctx, B, Cap> {
     pub fn poison(self) -> PoisonValue<'ctx, B, Cap> {
         intern_poison(self)
     }
+
+    /// The all-zero constant of this type, or `None` for a type that has
+    /// none. Ports `Constant::getNullValue`, case by case.
+    ///
+    /// An array, a struct (an opaque one included: `ConstantAggregateZero::get`
+    /// asserts only `Ty->isStructTy()`) or a vector answers its one
+    /// `ConstantAggregateZero`, which keeps no elements, so a long array costs
+    /// what a short one does.
+    ///
+    /// `None` stands for two of upstream's failures: the `default` arm's
+    /// `llvm_unreachable("Cannot create a null constant of that type!")` —
+    /// `void`, `label`, `metadata`, `x86_amx`, `exnref` and a function type —
+    /// and the assert in `ConstantTargetNone::get` on a target type without
+    /// `HasZeroInit`.
+    pub fn null_value(self) -> Option<Constant<'ctx, B, Cap>> {
+        let module = self.module;
+        let slot = self.slot_trusting_same_module();
+        match AnyTypeEnum::from(self) {
+            // `case Type::IntegerTyID: return ConstantInt::get(Ty, 0);`
+            AnyTypeEnum::Int(int_ty) => Some(int_ty.const_zero().as_constant()),
+            // The seven floating-point cases: `ConstantFP::get(Ty->getContext(),
+            // APFloat::getZero(Ty->getFltSemantics()))`. `+0.0` is the all-zero
+            // bit pattern at every semantics, `ppc_fp128`'s pair of doubles
+            // included.
+            AnyTypeEnum::Float(float_ty) => Some(float_ty.const_from_bits(0).as_constant()),
+            // `case Type::PointerTyID: return
+            // ConstantPointerNull::get(cast<PointerType>(Ty));`
+            AnyTypeEnum::Pointer(pointer_ty) => Some(pointer_ty.const_null().as_constant()),
+            // `case Type::StructTyID: case Type::ArrayTyID: case
+            // Type::FixedVectorTyID: case Type::ScalableVectorTyID: return
+            // ConstantAggregateZero::get(Ty);`
+            AnyTypeEnum::Struct(_) | AnyTypeEnum::Array(_) | AnyTypeEnum::Vector(_) => {
+                let id = module
+                    .module()
+                    .context()
+                    .intern_constant_aggregate_zero(slot);
+                Some(constant_handle(id, module, slot))
+            }
+            // `case Type::TokenTyID: return
+            // ConstantTokenNone::get(Ty->getContext());`
+            AnyTypeEnum::Token(_) => Some(module.token_none()),
+            // `case Type::TargetExtTyID: return
+            // ConstantTargetNone::get(cast<TargetExtType>(Ty));`, which asserts
+            // `Ty->hasProperty(TargetExtType::HasZeroInit)`.
+            AnyTypeEnum::TargetExt(target_ty) => {
+                if !target_ty.has_property(TargetExtProperty::HasZeroInit) {
+                    return None;
+                }
+                let id = module
+                    .module()
+                    .context()
+                    .intern_constant_target_ext_none(slot);
+                Some(constant_handle(id, module, slot))
+            }
+            // `default: // Function, Label, or Opaque type?
+            // llvm_unreachable("Cannot create a null constant of that type!");`
+            AnyTypeEnum::Void(_)
+            | AnyTypeEnum::Label(_)
+            | AnyTypeEnum::Metadata(_)
+            | AnyTypeEnum::X86Amx(_)
+            | AnyTypeEnum::WasmExnRef(_)
+            | AnyTypeEnum::Function(_) => None,
+        }
+    }
 }
 
 fn is_int_constant_with_type(module: &ModuleCore, id: ValueSlot, ty: TypeSlot) -> bool {
@@ -1921,14 +1986,13 @@ pub(crate) fn valid_shufflevector_mask_constant(
     lhs_scalable: bool,
 ) -> bool {
     // `if (isa<UndefValue>(Mask) || isa<ConstantAggregateZero>(Mask)) return true;`
-    match &module.context().value_data(mask).kind {
-        ValueKindData::Constant(ConstantData::Undef | ConstantData::Poison) => return true,
-        ValueKindData::Constant(ConstantData::Aggregate(_))
-            if constant_id_is_null_value(module, mask) =>
-        {
-            return true;
-        }
-        _ => {}
+    if matches!(
+        &module.context().value_data(mask).kind,
+        ValueKindData::Constant(
+            ConstantData::Undef | ConstantData::Poison | ConstantData::AggregateZero
+        )
+    ) {
+        return true;
     }
 
     // NOTE: Through vector ConstantInt we have the potential to support more
@@ -1975,36 +2039,35 @@ fn constant_id_is_undef_or_poison(module: &ModuleCore, id: ValueSlot) -> bool {
 /// Upstream's arms: a `ConstantInt` that is zero; a `ConstantFP` for which
 /// `isExactlyValue(+0.0)` holds — a bitwise comparison with `+0.0` at the
 /// constant's semantics, whose pattern is all zeros at every float kind; and
-/// a `ConstantAggregateZero`, `ConstantPointerNull`, `ConstantTokenNone` or
-/// `ConstantTargetNone`. An element list is a `ConstantAggregateZero`
-/// exactly when every element is null, because that is the list the
-/// canonicalisations in `ConstantArray::getImpl`, `ConstantStruct::get` and
-/// `ConstantVector::getImpl` turn into one (see `Constant::kind`).
+/// `isa<ConstantAggregateZero>(this) || isa<ConstantPointerNull>(this) ||
+/// isa<ConstantTokenNone>(this) || isa<ConstantTargetNone>(this)`. An element
+/// list is none of these: `intern_aggregate` stores a list of nulls as the
+/// `ConstantAggregateZero` its constructor builds, and the one all-null list
+/// that is stored, the `ConstantStruct` an in-place operand change leaves, is
+/// not null upstream either.
 pub(crate) fn constant_id_is_null_value(module: &ModuleCore, id: ValueSlot) -> bool {
     match &module.context().value_data(id).kind {
         // `ConstantInt::isZero`, over every word of the width.
         ValueKindData::Constant(ConstantData::Int(words)) => words.iter().all(|word| *word == 0),
         ValueKindData::Constant(ConstantData::Float(bits)) => *bits == 0,
         ValueKindData::Constant(
-            ConstantData::PointerNull | ConstantData::TokenNone | ConstantData::TargetExtNone,
+            ConstantData::AggregateZero
+            | ConstantData::PointerNull
+            | ConstantData::TokenNone
+            | ConstantData::TargetExtNone,
         ) => true,
-        ValueKindData::Constant(ConstantData::Aggregate(elements)) => elements
-            .iter()
-            .all(|element| constant_id_is_null_value(module, *element)),
         _ => false,
     }
 }
 
+/// `Idx->getSplatValue()` for a vector-typed constant index: the one value
+/// every lane holds, a `ConstantAggregateZero`'s element null included.
+/// Delegates to [`Constant::splat_value`], the port of
+/// `Constant::getSplatValue`, at its `AllowPoison = false` default.
 fn vector_splat_value(module: &ModuleCore, vector: ValueSlot) -> Option<ValueSlot> {
-    let ValueKindData::Constant(ConstantData::Aggregate(elements)) =
-        &module.context().value_data(vector).kind
-    else {
-        return None;
-    };
-    let (&first, rest) = elements.split_first()?;
-    rest.iter()
-        .all(|element| *element == first)
-        .then_some(first)
+    let module_ref = ModuleRef::<DynBrand, ReadOnly>::new(module);
+    let vector = constant_handle(vector, module_ref, module.context().value_data(vector).ty);
+    Some(vector.splat_value(false)?.slot_trusting_same_module())
 }
 
 /// Retire a forward-reference placeholder in favour of the value that turned
@@ -2306,14 +2369,13 @@ fn constant_with_replaced_operand(
             if !elements.contains(&from_id) {
                 return Ok(None);
             }
-            let elements = elements
-                .iter()
-                .map(|id| if *id == from_id { replacement_id } else { *id })
-                .collect::<Vec<_>>()
-                .into_boxed_slice();
-            Ok(Some(
-                module.context().intern_constant_aggregate(ty, elements),
-            ))
+            Ok(Some(aggregate_with_replaced_operand(
+                module,
+                ty,
+                elements,
+                from_id,
+                replacement_id,
+            )))
         }
         ConstantData::Expr(expr) => {
             if !expr.operands.contains(&from_id) {
@@ -2389,6 +2451,7 @@ fn constant_with_replaced_operand(
         | ConstantData::GlobalValueRef { .. }
         | ConstantData::PointerNull
         | ConstantData::ForwardRefPlaceholder
+        | ConstantData::AggregateZero
         | ConstantData::GepOffset { .. }
         | ConstantData::SymbolDelta { .. }
         | ConstantData::SymbolDeltaPlus { .. }
@@ -2400,6 +2463,58 @@ fn constant_with_replaced_operand(
         | ConstantData::Undef
         | ConstantData::Poison => Ok(None),
     }
+}
+
+/// The `handleOperandChangeImpl` of `ConstantArray`, `ConstantStruct` and
+/// `ConstantVector`, for an element list of type `ty` that holds `from_id`:
+/// the constant the new operand list is, before
+/// [`replace_constant_operand`] decides whether it replaces the old one or
+/// takes its place (`replaceOperandsInPlace`).
+///
+/// The array and struct routines first ask whether every new operand is the
+/// replacement (`AllSame`), and answer a null one with
+/// `ConstantAggregateZero::get(getType())` and an `undef` one — a `poison`
+/// too, since `isa<UndefValue>` holds for it — with `UndefValue::get(getType())`.
+/// The array and vector routines then ask `getImpl`; the struct routine does
+/// not, so a struct of nulls that are not all the replacement is updated in
+/// place and stays a `ConstantStruct`.
+fn aggregate_with_replaced_operand(
+    module: &ModuleCore,
+    ty: TypeSlot,
+    elements: &[ValueSlot],
+    from_id: ValueSlot,
+    replacement_id: ValueSlot,
+) -> ValueSlot {
+    let context = module.context();
+    // Fill values with the modified operands of the constant array. Also,
+    // compute whether this turns into an all-zeros array.
+    let values = elements
+        .iter()
+        .map(|id| if *id == from_id { replacement_id } else { *id })
+        .collect::<Box<[_]>>();
+    let type_data = context.type_data(ty);
+    if matches!(type_data, TypeData::Array { .. } | TypeData::Struct(_)) {
+        // Keep track of whether all the values in the array are "ToC".
+        let all_same = values.iter().all(|value| *value == replacement_id);
+        // `if (AllSame && ToC->isNullValue()) return
+        // ConstantAggregateZero::get(getType());`
+        if all_same && constant_id_is_null_value(module, replacement_id) {
+            return context.intern_constant_aggregate_zero(ty);
+        }
+        // `if (AllSame && isa<UndefValue>(ToC)) return
+        // UndefValue::get(getType());`
+        if all_same && constant_id_is_undef_or_poison(module, replacement_id) {
+            return context.intern_constant_undef(ty);
+        }
+    }
+    if matches!(type_data, TypeData::Struct(_)) {
+        // Update to the new value.
+        return context.intern_constant_aggregate(ty, values);
+    }
+    // Check for any other type of constant-folding: `if (Constant *C =
+    // getImpl(getType(), Values)) return C;` — `ConstantVector`'s asks
+    // `getImpl(Values)`. Then update to the new value.
+    intern_element_list(module, ty, values)
 }
 
 pub(crate) fn advance_gep_index_type(
@@ -2560,12 +2675,11 @@ fn type_at_gep_index(module: &ModuleCore, current: TypeSlot, index: ValueSlot) -
 /// `i32`, never a scalable vector, and in range — with a vector index read
 /// through `getSplatValue`, so all lanes must agree.
 ///
-/// The other arms of `Constant::getSplatValue` cannot be reached from here.
-/// A poison lane makes the splat poison, which is not a `ConstantInt` either
-/// way; a `zeroinitializer` is spelled as an all-zero element list, which the
-/// lane comparison already handles; and the constant-*expression* splat form
-/// only survives construction for a *scalable* vector, which this rejects
-/// before asking.
+/// `vector_splat_value` is `Constant::getSplatValue`'s port, so its
+/// `ConstantAggregateZero` arm reads a `zeroinitializer` index as field 0, and
+/// a poison splat is a poison element, which is no `ConstantInt`. The
+/// constant-*expression* splat form only survives construction for a
+/// *scalable* vector, which this rejects before asking.
 fn struct_gep_field_index(
     module: &ModuleCore,
     struct_ty: TypeSlot,
@@ -3139,17 +3253,49 @@ fn intern_poison<'ctx, B: ModuleBrand + 'ctx, Cap: Capability>(
     PoisonValue::from_parts(constant_handle(id, module, slot))
 }
 
+/// The door every element list a constructor builds passes through:
+/// `ConstantArray::get`, `ConstantStruct::get` and `ConstantVector::get`
+/// (`const_array`, `const_struct`, `const_vector`) and the index splat of
+/// `ConstantVector::getSplat`.
 pub(super) fn intern_aggregate<'ctx, B: ModuleBrand + 'ctx, Cap: Capability>(
     ty: Type<'ctx, B, Cap>,
     ids: Box<[ValueSlot]>,
 ) -> ConstantAggregate<'ctx, B, Cap> {
     let module = ty.module;
     let slot = ty.slot_trusting_same_module();
-    let id = module
-        .module()
-        .context()
-        .intern_constant_aggregate(slot, ids);
+    let id = intern_element_list(module.module(), slot, ids);
     ConstantAggregate::from_parts(constant_handle(id, module, slot))
+}
+
+/// The element list `elements` of type `ty`, as upstream's constructor for
+/// `ty` answers it: the uniqued zero, `undef` or `poison` its canonicalisation
+/// names ([`canonical_aggregate`]), and otherwise the list, uniqued — the
+/// `getOrCreate` that follows `getImpl`.
+pub(crate) fn intern_element_list(
+    module: &ModuleCore,
+    ty: TypeSlot,
+    elements: Box<[ValueSlot]>,
+) -> ValueSlot {
+    let context = module.context();
+    let module_ref = ModuleRef::<DynBrand, ReadOnly>::new(module);
+    match canonical_aggregate(module_ref, context.type_data(ty), &elements) {
+        Some(canonical) => intern_canonical_aggregate(module, ty, canonical),
+        None => context.intern_constant_aggregate(ty, elements),
+    }
+}
+
+/// The uniqued constant `canonical` names, at type `ty`.
+fn intern_canonical_aggregate(
+    module: &ModuleCore,
+    ty: TypeSlot,
+    canonical: CanonicalAggregate,
+) -> ValueSlot {
+    let context = module.context();
+    match canonical {
+        CanonicalAggregate::Zero => context.intern_constant_aggregate_zero(ty),
+        CanonicalAggregate::Undefined(Undefined::Undef) => context.intern_constant_undef(ty),
+        CanonicalAggregate::Undefined(Undefined::Poison) => context.intern_constant_poison(ty),
+    }
 }
 
 /// `GV->getType()`: a global value as a pointer, in its address space. Every

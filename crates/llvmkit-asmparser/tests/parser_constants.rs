@@ -982,6 +982,64 @@ fn zeroinitializer_of_an_unzeroable_type_is_an_invalid_null_constant() {
     }
 }
 
+/// `parseConstantValue`'s `case ValID::t_Null: C = Constant::getNullValue(Ty);`
+/// runs none of `convertValIDToValue`'s `t_Zero` guards, and
+/// `Constant::getNullValue` answers every `StructTyID`, an opaque one included,
+/// with `ConstantAggregateZero::get(Ty)`. So `null` at an opaque struct type is
+/// that zero, while `zeroinitializer` at it is refused by the first-class guard
+/// that [`zeroinitializer_of_an_unzeroable_type_is_an_invalid_null_constant`]
+/// pins. Regression: llvmkit's `getNullValue` refused an opaque struct on both
+/// paths. llvmkit-specific (D11): no upstream test asks `parseConstantValue`
+/// for `null` at a struct type.
+#[test]
+fn null_at_an_opaque_struct_is_its_aggregate_zero() {
+    let module = module_new!("parser_constants_null_opaque").expect("fresh module");
+    let opaque = module.opaque_struct("s").expect("a fresh name").as_type();
+    let zero = parser::parse_constant_value(b"null", &module, opaque)
+        .expect("`null` at a struct type is its zero");
+    assert_eq!(format!("{}", zero.as_erased()), "%s zeroinitializer");
+    let err = parser::parse_constant_value(b"zeroinitializer", &module, opaque)
+        .expect_err("the `t_Zero` guard refuses an opaque struct");
+    assert!(
+        matches!(&err, ParseError::Message { message, .. } if message == "invalid type for null constant"),
+        "{err:?}"
+    );
+}
+
+/// `convertValIDToValue`'s `t_Zero` arm asks `dyn_cast<TargetExtType>(Ty)` of
+/// the type it is given, not of its elements, and `Constant::getNullValue`
+/// answers an array with `ConstantAggregateZero::get` without looking inside.
+/// So an array of a target type that has no `HasZeroInit` has a
+/// `zeroinitializer`, while that target type alone does not
+/// ([`target_ext_zeroinitializer_requires_zero_init_property`]). Its element
+/// is where upstream's `ConstantTargetNone::get` would assert, and llvmkit
+/// answers no element there. Regression: the parser built a zero element by
+/// element and refused the array at its first element. llvmkit-specific (D11):
+/// no upstream test writes such a `zeroinitializer`.
+#[test]
+fn an_array_of_an_unzeroable_target_type_has_a_zeroinitializer() {
+    let module = module_new!("parser_constants_target_array_zero").expect("fresh module");
+    let image_ty = module
+        .target_ext_type(
+            "spirv.Image",
+            Vec::<llvmkit_ir::Type<'_, _>>::new(),
+            Vec::<u32>::new(),
+        )
+        .expect("valid target type")
+        .as_type();
+    let array_ty = module
+        .array_type(image_ty, 2)
+        .expect("a target type is an array element")
+        .as_type();
+    let zero = parser::parse_constant_value(b"zeroinitializer", &module, array_ty)
+        .expect("the `t_Zero` guards ask only the array type");
+    assert_eq!(
+        format!("{}", zero.as_erased()),
+        "[2 x target(\"spirv.Image\")] zeroinitializer"
+    );
+    assert_eq!(zero.aggregate_element(0), None);
+}
+
 /// Direct port of `LLParser::parseValID`'s `ptrauth` branch: the five-operand
 /// shape accepted by upstream.
 #[test]

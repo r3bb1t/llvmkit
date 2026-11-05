@@ -2,10 +2,6 @@
 ; RUN: opt < %s -data-layout="e-p:64:64:64-p1:16:16:16-p2:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64-ni:2" -passes=instsimplify -S | FileCheck %s --check-prefixes=CHECK,LE
 ; RUN: opt < %s -data-layout="E-p:64:64:64-p1:16:16:16-p2:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64-ni:2" -passes=instsimplify -S | FileCheck %s --check-prefixes=CHECK,BE
 
-; llvmkit: upstream's file, verbatim, but for one thing. `@g9` and
-; `@test_array_of_zero_size_array` are left out, because `[4294967295 x [0 x i32]]
-; zeroinitializer` costs one `ValueSlot` per element (`docs/divergences.md` D28).
-
 ; {{ 0xDEADBEEF, 0xBA }, 0xCAFEBABE}
 @g1 = constant {{i32,i8},i32} {{i32,i8} { i32 -559038737, i8 186 }, i32 -889275714 }
 @g2 = constant double 1.0
@@ -288,6 +284,16 @@ define i64 @test_leading_zero_size_elems_big() {
 ; CHECK-NEXT:    ret i64 123
 ;
   %v = load i64, ptr @g8
+  ret i64 %v
+}
+
+@g9 = constant [4294967295 x [0 x i32]] zeroinitializer
+
+define i64 @test_array_of_zero_size_array() {
+; CHECK-LABEL: @test_array_of_zero_size_array(
+; CHECK-NEXT:    ret i64 poison
+;
+  %v = load i64, ptr @g9
   ret i64 %v
 }
 

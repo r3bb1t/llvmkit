@@ -1879,61 +1879,6 @@ already carry uses that the move must not disturb. No upstream test that
 llvmkit ports needs it yet; it wants its own port, test-first, rather than a
 rider on the bundle copy.
 
-## `zeroinitializer` is stored one slot per element (found 2026-10-30, type-constructor final review)
-
-A `ConstantAggregateZero` is one object per type upstream: `ConstantAggregateZero::get`
-keys `CAZConstants` by the type, and `getElementValue` answers from the type, so its
-size does not depend on the array's length. llvmkit has no such storage.
-`ConstantData::Aggregate` is a flat `Box<[ValueSlot]>`, and
-`ConstantDataKind::AggregateZero` classifies such a list without storing anything.
-`zero_initializer_constant`, the parser's `t_Zero` arm, loops over the array's length
-and builds the list.
-
-`ValueSlot` wraps a `NonZeroUsize`, so the stored list costs 8 bytes per element on a
-64-bit target, and the parser's temporary `Vec` of handles comes on top of it. That
-`Vec` is allocated with `with_capacity` before anything else happens, so one short line
-of a `.ll` file can ask for more memory than the machine has. A failed allocation
-aborts the process: it is not a `ParseError`. A large zero-initialised C array is the
-same shape of IR, so this is reachable from ordinary compiler output, not only from
-contrived fixtures.
-
-These figures are arithmetic from the code. None of the fixtures has been run here.
-
-| upstream fixture | what it asks for | llvmkit's stored list |
-|---|---|---|
-| `test/Transforms/GlobalOpt/long-compilation-global-sra.ll` | `[67108864 x i8] zeroinitializer` | 512 MiB |
-| `test/Transforms/GlobalOpt/ctor-memset.ll` | `[100000000 x i32] zeroinitializer` | 800 MB |
-| `test/CodeGen/X86/big-array-init.ll` | `[1073741823 x i32] zeroinitializer` | 8 GiB |
-| `test/Transforms/InstCombine/memchr-8.ll` | `[4294967295 x i8] zeroinitializer` | 32 GiB |
-| `test/Transforms/InstSimplify/ConstProp/loads.ll` (`test_array_of_zero_size_array`) | `[4294967295 x [0 x i32]] zeroinitializer` | 32 GiB |
-
-The fixture directories the parser corpus draws on never ask for one, which is why
-nothing failed: `rg -uuu -n "\[[0-9]{8,} x [a-z0-9]+\][^\"]* zeroinitializer"
-test/Assembler test/Verifier` prints nothing in the tree vendored at `llvmorg-22.1.4`
-(the repo commit does not pin that tree).
-
-**Fix:** a storage variant with no elements, the shape `ConstantData::Undef` and
-`ConstantData::Poison` already have, so that a large `poison` aggregate is one slot
-today and a large zero is not. `zero_initializer_constant` and
-`constant_fold.rs::null_constant_for_type` build it directly. The all-null
-canonicalisations of `ConstantArray::getImpl`, `ConstantStruct::get` and
-`ConstantVector::getImpl` build it too, so `Constant::kind` reads the class rather
-than deducing it from a list. `Constant::aggregate_element` answers from the type, as
-`getElementValue` does. Each match on `ConstantData::Aggregate` needs the new arm;
-`rg -n "ConstantData::Aggregate" crates` lists them.
-
-That also closes `docs/divergences.md` D28, ports `test_array_of_zero_size_array`, and
-removes what forces entry 50, where `possibly_demanded_elements_in_mask` answers
-exactly because a zero mask is a list llvmkit can walk.
-
-**Neighbour, same shape, smaller cost:** the parser's `Keyword::C` arm builds `c"..."`
-as a list of one `i8` constant per byte, so string data costs 8 bytes a character where
-`ConstantDataArray` stores the raw bytes. The section below is the same storage gap
-seen from its API.
-
-**Guarded by:** nothing yet. Porting `test_array_of_zero_size_array` is the test that
-would have failed.
-
 ## `ConstantDataSequential` has no raw-data surface (found 2026-10-10, capability plan Task 6.1)
 
 `unittests/IR/ConstantsTest.cpp`'s `BuildConstantDataArrays` and
@@ -1948,36 +1893,9 @@ half. Closing it means a `getRawDataValues` / `getRaw` pair on the
 `ConstantDataKind::Sequential` constants, after which the two tests take their
 second assertion back.
 
-## Storage-level `isa<UndefValue>` / `isa<PoisonValue>` reads outside `Constant` (found 2026-10-10, capability plan Task 6.1 review)
-
-Upstream canonicalises an all-`undef` or all-`poison` element list to one
-`UndefValue` / `PoisonValue` when it builds it (`ConstantArray::getImpl`,
-`ConstantStruct::get`, `ConstantVector::getImpl`). llvmkit keeps the list, so
-a routine that ports `isa<UndefValue>(C)` by matching `ConstantData::Undef` /
-`ConstantData::Poison` on the storage answers `false` for such a list where
-upstream answers `true`. `constant.rs`'s `is_undef`, `is_poison` and
-`is_undef_or_poison` now answer through `Constant::kind`, and the review that
-moved them found the folders' whole-value `isa<PoisonValue>` reads wrong
-(`constant_kind.rs::a_whole_value_fold_sees_an_all_poison_list_as_poison`).
-The other storage-level matches are unaudited. `rg -n
-"ConstantData::(Undef|Poison)\b" crates/llvmkit-ir/src` lists them; outside
-`constant.rs`, the interning in `llvm_context.rs` and the printer's `undef` /
-`poison` arms in `asm_writer.rs`, they sit in `constant_fold.rs`
-(`is_not_poison_for_select`), `constant_folding.rs`
-(`is_guaranteed_not_to_be_undef_or_poison`),
-`constants.rs` (`constant_with_replaced_operand`,
-`valid_shufflevector_mask_constant`), `known_fp_class.rs`
-(`constant_fp_class`), `pointer_analysis.rs` (`is_bytewise_value`),
-`value_tracking.rs` (`compute_constant_known_bits`,
-`constant_is_well_defined`, `leaf_constant_known_bits`,
-`splat_or_scalar_constant`, `zero_int_constant`), `vector_utils.rs`
-(`constant_mask_lanes_satisfy`, `is_splat_value_at_depth`) and `verifier.rs`
-(`verify_constant_tree`, `verify_must_tail_call`). One is checked:
-`constants.rs::constant_id_is_undef_or_poison` reads only the scalar lanes of
-a shuffle mask, where storage and class agree. Some matches are exhaustive
-arms or element reads rather than `isa` ports. Each needs reading against the
-upstream routine it ports, and a test where its answer is wrong, before it
-moves to `Constant::kind`.
+The same storage gap costs memory: the parser's `Keyword::C` arm builds `c"..."`
+as a list of one `i8` constant per byte, so string data costs one `ValueSlot` a
+character where `ConstantDataArray` stores the raw bytes.
 
 ## Ergonomics backlog (from the core audit)
 

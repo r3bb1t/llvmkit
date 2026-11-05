@@ -822,6 +822,9 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         ConstantData::Undef => f.write_str("undef"),
         ConstantData::Poison => f.write_str("poison"),
         ConstantData::Aggregate(elems) => fmt_aggregate_constant(f, host, elems),
+        // `if (isa<ConstantAggregateZero>(CV) || isa<ConstantTargetNone>(CV))
+        // { Out << "zeroinitializer"; return; }`
+        ConstantData::AggregateZero => f.write_str("zeroinitializer"),
         ConstantData::BlockAddress { function, block } => {
             let module = host.module.module();
             let fval = Value::<B, ReadOnly>::from_parts(
@@ -1554,16 +1557,11 @@ fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 ) -> fmt::Result {
     let module = host.module();
     let ty = host.ty();
-    // `isa<ConstantAggregateZero>(CV)`, asked before the `ConstantDataArray`
-    // string arm as `writeConstantInternal` asks it. An element list is one
-    // exactly when every element is null, the empty list included — the
-    // canonicalisation `Constant::kind` replays.
-    if elem_ids
-        .iter()
-        .all(|id| crate::constants::constant_id_is_null_value(module.core_ref(), *id))
-    {
-        return f.write_str("zeroinitializer");
-    }
+    // No element list is a `ConstantAggregateZero`: `intern_aggregate` stores
+    // a list of nulls as one, which `fmt_constant` prints as `zeroinitializer`
+    // before reaching here. The one all-null list it keeps, the
+    // `ConstantStruct` an in-place operand change leaves, prints its elements
+    // upstream too.
     if let Some(bytes) = collect_byte_string(module.core_ref(), ty, elem_ids) {
         f.write_str("c\"")?;
         print_escaped_string(f, &bytes)?;
