@@ -2766,6 +2766,54 @@ items below are the deferred / known-remaining points.
   top of this file, which records the fourteen defects it found and the
   `APIntTest.cpp` families deliberately not ported. This entry sat open for
   five days after its own successor closed it.
+
+## Three routines the load and global ports reach and llvmkit has not got (found 2026-10-31, type-constructor final fix wave)
+
+Each was found porting `isInterposable` and the load-from-constant routines, and is
+left to the next plan's Task 19. None changes an answer llvmkit gives today: each
+is a routine with no llvmkit caller to answer differently. The routines that do
+answer differently are in `docs/divergences.md`, D31 and D32. Before this
+section,
+`git grep -n -i -E "mayBeDerefined|may_be_derefined|simplifyRelativeLoad|simplify_relative_load|load\.relative|simplifyLoadInst|AllowInvariantGroup|invariant.group-load|simplifyBinaryIntrinsic" ae636cd -- docs`
+printed nothing (exit 1).
+
+- **`simplifyLoadInst`'s non-constant arm.** `llvm::simplifyLoadInst`
+  (`lib/Analysis/InstructionSimplify.cpp`) folds a load whose pointer is a
+  `Constant` through `ConstantFoldLoadFromConstPtr`, and otherwise looks through
+  `getUnderlyingObject` for a constant global with a definitive initializer,
+  tries `ConstantFoldLoadFromUniformValue`, then strips the pointer with
+  `stripAndAccumulateConstantOffsets(..., AllowInvariantGroup = true)` and folds
+  from the global at the offset. llvmkit has the constant arm only: a load folds
+  when its pointer operand is a constant, through
+  `constant_folding.rs::constant_fold_load_from_const_ptr_trusting_same_module`,
+  and `pointer_analysis.rs::strip_and_accumulate_constant_offsets` has no
+  `AllowInvariantGroup` parameter because nothing passes it. So `InstSimplifyPass`
+  keeps a load through `llvm.launder.invariant.group` or a non-constant
+  `getelementptr` of a constant global. **The first tests that would show it:**
+  `test/Transforms/InstSimplify/invariant.group-load.ll`, and the
+  `load_gep_const_zero_array` and `load_i8_multi_gep_const_zero_array` functions
+  of `test/Transforms/InstSimplify/load.ll`, which stay unported for this.
+- **`simplifyRelativeLoad`.** Upstream's `simplifyBinaryIntrinsic` answers
+  `llvm.load.relative(Ptr, Offset)` on two constants through
+  `simplifyRelativeLoad`, which reads `IsConstantOffsetFromGlobal` and
+  `ConstantFoldLoadFromConstPtr` to turn a relative table entry back into the
+  pointer it encodes. llvmkit has no `simplifyBinaryIntrinsic`, so no intrinsic
+  call is simplified at all; the routine has no caller to sit under, and the call
+  is kept. **The first tests that would show it:**
+  `test/Transforms/InstSimplify/load-relative.ll` and `load-relative-32.ll`.
+- **`GlobalValue::mayBeDerefined`** (`include/llvm/IR/GlobalValue.h`), with
+  `isDefinitionExact` and `Function::hasExactDefinition` over it: `weak_odr`,
+  `linkonce_odr` and `available_externally` may be derefined, and every other
+  linkage is when `isInterposable()` holds or the function is a `nobuiltin`
+  definition (`isNobuiltinFnDef`). llvmkit has none of the three. Its readers
+  upstream are interprocedural (`GlobalsModRef.cpp`, `ValueLatticeUtils.cpp`,
+  `IPO/FunctionAttrs.cpp`), which llvmkit has not got either. **The first test
+  that would show it:** none upstream isolates the predicate (`rg -n
+  "mayBeDerefined|isDefinitionExact|hasExactDefinition"
+  orig_cpp/llvm-project-llvmorg-22.1.4/llvm/unittests` prints nothing); a port
+  lands with a test of each linkage arm, then the first
+  `test/Transforms/FunctionAttrs` fixture that turns on an inexact definition.
+
 ## Tests — two CHECK oracles in one crate, and the ordered one cannot express CHECK-NEXT (found 2026-08-20, fix round 3)
 
 `crates/llvmkit-asmparser/tests` carries two substitutes for FileCheck.

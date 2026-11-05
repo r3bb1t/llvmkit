@@ -988,6 +988,144 @@ the test that would fail, and it is left out of
 each of which says so. `crates/llvmkit-ir/tests/constant_folding_analysis.rs::a_zero_load_too_long_to_build_is_not_folded`
 pins the fold's decline, and no test pins the parser's abort.
 
+### D30 — A name or string that is not valid UTF-8 is refused
+
+**Severity:** rejects-valid
+**Where:** `crates/llvmkit-asmparser/src/ll_parser.rs`, at each `std::str::from_utf8`
+(`rg -n "from_utf8" crates/llvmkit-asmparser/src/ll_parser.rs`): `parse_string_constant`;
+`current_str_payload` and its callers (`rg -n "current_str_payload\(" crates/llvmkit-asmparser/src/ll_parser.rs`);
+`current_label_str`; `parse_comdat_definition`, `parse_global_or_function` and
+`parse_optional_function_suffix`; `parse_named_metadata`; `parse_named_metadata_attachment`
+and `skip_trailing_metadata`; `parse_addr_space_paren`; `parse_specialized_metadata_body`.
+Gap **G9** in `docs/fixture-coverage.md`.
+
+**LLVM:** a quoted name, a string constant, a quoted label and an escaped metadata name keep
+whatever bytes `UnEscapeLexed` makes of them (`LLLexer::LexVar`, `LexQuote`, `LexDollar`,
+`LexExclaim`); only a NUL in a name is refused. `LLParser` holds them in `std::string`, and
+`printLLVMNameWithoutPrefix` and `printEscapedString` print the bytes back escaped.
+
+**llvmkit:** the parser decodes each such token with `std::str::from_utf8`, and the IR
+holds names and strings as `String`, so a byte sequence that is not UTF-8 is refused. Probed
+with `target/release/examples/parse_file.exe` on 2026-11-05, over `ae636cd` plus the change
+later committed as `f2fcd22`, which touches none of these routines:
+
+| input | llvmkit answers |
+|---|---|
+| `@"\FF" = global i32 0` | `expected global identifier`, at the name |
+| `$"\FF" = comdat any` | `expected valid UTF-8 comdat name` |
+| `@g = global i32 0, section "\FF"` | `expected UTF-8 string constant`, at the string |
+| a block labelled `"\FF":` | `expected basic-block label` |
+
+The rest is read, not run. Every other `parse_string_constant` caller refuses with
+`expected UTF-8 string constant`: metadata strings, `partition`, `gc`, `source_filename`,
+the target triple and data layout, `module asm`, string attributes, operand-bundle tags,
+inline asm, `syncscope`. `current_str_payload` answers a non-UTF-8 `@` or `%` name as
+absent, so each caller reports its own `expected ...`. A named-metadata name refuses with
+`expected valid UTF-8 metadata name`, and an attachment name with `expected valid UTF-8
+metadata attachment name`. Two sites refuse what upstream refuses too, in other words: a
+symbolic address space (upstream `invalid symbolic addrspace '...'`) and a specialized
+metadata field name (upstream `invalid field '...'`). Three answer as upstream does, since
+no non-UTF-8 name matches there either: `parse_optional_code_model`, `parse_named_metadata`'s
+`DIExpression` / `DIArgList` lookup, and `parse_md_node_after_bang`'s `metadata type`.
+
+Before this entry, over `ae636cd`, `rg -n -i "utf"` over `docs/divergences.md`,
+`docs/future-work.md` and `docs/fixture-coverage.md` found only G9's row and its two fixture
+rows, and `non-UTF`, `byte string` and `arbitrary bytes` found nothing more.
+
+**Why:** names and strings are `String` through the IR, the printer and the public API; a
+byte string is a model change across all three, which needs its own plan.
+
+**Fix:** hold names and string payloads as bytes from the lexer through the IR, and print
+them as `printLLVMNameWithoutPrefix` and `printEscapedString` do.
+
+**Guarded by:** nothing. `test/Assembler/difile-escaped-chars.ll` and `named-metadata.ll`
+are the fixtures it blocks (`docs/fixture-coverage.md`, G9).
+
+### D31 — `computeKnownBits` knows nothing of an alias
+
+**Severity:** model-gap
+**Where:** `crates/llvmkit-ir/src/value_tracking.rs` — `compute_known_bits_inner`, its
+`ValueKindData::GlobalAlias` arm.
+
+**LLVM:** `computeKnownBits`, below its depth cutoff: "A weak GlobalAlias is totally
+unknown. A non-weak GlobalAlias has the bits of its aliasee." —
+`if (!GA->isInterposable()) computeKnownBits(GA->getAliasee(), Known, Q, Depth + 1); return;`.
+
+**llvmkit:** the arm answers `KnownBits::unknown` for every alias, interposable or not.
+`GlobalValue::isInterposable` is ported (`constant_fold.rs::global_is_interposable`, in
+`ae636cd`), so the arm has what it needs. Read, not run.
+
+**Why:** found porting `isInterposable`, whose readers upstream this is one of; left to the
+next plan's Task 19. Before this entry, `rg -n -i "computeKnownBits.*alias|alias arm" docs`
+printed nothing.
+
+**Fix:** port the arm in upstream's position: after the depth cutoff, before the operator walk.
+
+**Guarded by:** nothing. The first test that would show it: a known-bits query on
+`ptrtoint (ptr @a to i64)` with `@a = alias i8, inttoptr (i64 4096 to ptr)`, whose low 12
+bits upstream answers zero (`derived`), and the `g1` function of
+`test/Transforms/InstCombine/constant-fold-alias.ll`, which reads an alias's alignment.
+
+### D32 — `ConstantFoldBinaryOpOperands` has no `SymbolicallyEvaluateBinop`
+
+**Severity:** model-gap
+**Where:** `crates/llvmkit-ir/src/constant_folding.rs` —
+`constant_fold_binary_op_operands_trusting_same_module` (its `let _ = dl`).
+
+**LLVM:** `ConstantFoldBinaryOpOperands` (`lib/Analysis/ConstantFolding.cpp`) first asks
+`SymbolicallyEvaluateBinop` when either operand is a `ConstantExpr`: an `and` whose known
+bits already decide it answers one operand or a constant, and `(&GV+C1) - (&GV+C2)` answers
+`C1-C2` through two `IsConstantOffsetFromGlobal` calls. Then `ConstantExpr::get` for a
+desirable binary operator, and only then `ConstantFoldBinaryInstruction`.
+
+**llvmkit:** `ConstantFoldBinaryInstruction` first, then `constant_expr` for a supported
+opcode, with no symbolic step and the data layout unused. So the order is not upstream's, and
+neither fold happens. Read, not run.
+
+**Why:** `IsConstantOffsetFromGlobal` was ported whole in `ae636cd`, but its two callers in
+folding were not: this routine and `simplifyRelativeLoad` (`docs/future-work.md`). Left to the
+next plan's Task 19. Before this entry,
+`rg -n "SymbolicallyEvaluateBinop|symbolically_evaluate_binop" docs` printed nothing.
+
+**Fix:** port `ConstantFoldBinaryOpOperands` arm for arm, with `SymbolicallyEvaluateBinop`.
+
+**Guarded by:** nothing. The first tests that would show it:
+`ptrtoaddr_sub_consts_offset` and `ptrtoaddr_sub_consts_offset_addrsize` in
+`test/Transforms/InstSimplify/ptrtoaddr.ll`, which answer `42`, and which
+`crates/llvmkit-asmparser/tests/constant_fold_loads.rs::a_cast_of_a_constant_expression_folds_as_ptrtoaddr_ll_does`
+leaves out, its doc says why; then the `f2` function of
+`test/Transforms/InstCombine/constant-fold-alias.ll`, the `and` arm.
+
+### D33 — A forward-named personality, aliasee or resolver joins its target's use list last
+
+**Severity:** wrong-output (narrow)
+**Where:** `crates/llvmkit-asmparser/src/ll_parser.rs` — `parse_personality_fn`'s
+`ParsedPersonalityFn::ForwardName` and `resolve_deferred_personality_fns`;
+`parse_alias_or_ifunc`'s `forward_target` and `resolve_deferred_alias_targets`.
+
+**LLVM:** a name not yet defined is read through `getGlobalVal`, which makes a placeholder
+(`createGlobalFwdRef`), and the field is set over it at once; defining the name RAUWs the
+placeholder, which prepends its uses, reversed, to the definition's list.
+`predictValueUseListOrder`'s `GetsReversed` is written for that reversal.
+
+**llvmkit:** a forward-named personality, aliasee or ifunc resolver is not set over a
+placeholder. The parser keeps the name, sets a null or nothing, and sets the field at end of
+module, so the use joins its target's list after every use made by then, in the order the
+deferrals resolve. A count agrees; the order does not, so a `uselistorder` on the target
+names its uses in another order than upstream's (`derived`: for `@a1` and `@a2`, aliases of
+an `@f` defined after both, `@f`'s list reads `[a2, a1]` here and `[a1, a2]` upstream). A
+global's initializer and an instruction operand do go through a placeholder.
+
+**Why:** the deferrals predate use-list order (see `docs/future-work.md`, "Parser — deferred
+alias/ifunc targets"). Found in `f2fcd22`, porting `parseFunctionHeader`'s setter order,
+whose personality arm defers. Before this entry, `rg -n -i "deferred_personality|personality.*forward|forward.*personality" docs`
+printed nothing.
+
+**Fix:** set each field over `getGlobalVal`'s placeholder, as an initializer already is, and
+let the placeholder's RAUW put the use in place.
+
+**Guarded by:** nothing.
+
 ---
 
 ---
@@ -1291,6 +1429,17 @@ hypothesis until one does)
   functions, but not aliases; and `visit_global_ifunc` ports the `!dbg` /
   `!prof` checks, the linkage check and the four resolver checks, but not the
   `visitMDNode` call. A module that fails only one of these verifies.
+- **The aliasee walk includes the interposable-alias check.** `visitAliaseeSubExpr`,
+  which `visitGlobalAlias` runs on each aliasee, checks `Check(!GA2->isInterposable(),
+  "Alias cannot point to an interposable alias", &GA)` when the aliasee is itself an
+  alias, beside "Alias must point to a definition" and "Aliases cannot form a cycle".
+  So `@test3_c = alias i32, ptr @test3_b` over `@test3_b = weak alias i32, ptr @test3_a`
+  verifies here (read, not run). The predicate is ported
+  (`constant_fold.rs::global_is_interposable`, behind `GlobalValue::is_interposable`, in
+  `ae636cd`), so the check waits only on the walk. Named 2026-11-05: before then,
+  `rg -n -i "interposable alias" docs` printed nothing. The first test that would show it
+  is `test/Verifier/alias.ll`, whose `CHECK: Alias cannot point to an interposable alias`
+  names `@test3_c`.
 - **Found:** 2026-10-04, porting `Verifier::visitGlobalIFunc`'s resolver and
   attachment checks (capability-typestate Task 4, fix round 2), whose first
   statement is `visitGlobalValue(GI)`.
