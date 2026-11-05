@@ -8653,10 +8653,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .map_err(|e| self.builder_err_at(loc, "splat constant", e))
     }
 
-    /// The tail `convertValIDToValue`'s `t_Zero` arm and
-    /// `parseConstantValue`'s `t_Null` arm share: the `t_Zero` arm's
-    /// target-type guard, then `Constant::getNullValue`, which is
-    /// [`Type::null_value`].
+    /// The tail of `convertValIDToValue`'s `t_Zero` arm — its target-type
+    /// guard, then `Constant::getNullValue`, which is [`Type::null_value`] —
+    /// and of `parseConstantValue`'s `t_Null` arm, which is
+    /// `C = Constant::getNullValue(Ty);` with no guard. On that path the guard
+    /// stands for the assert in `ConstantTargetNone::get`, and answers what
+    /// `null_value`'s `None` would: the same message at the same token.
     fn zero_initializer_constant(
         &self,
         loc: Span,

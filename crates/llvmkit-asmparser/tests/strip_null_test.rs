@@ -243,6 +243,49 @@ define <8 x i1> @ceil_shift4_v8i16(<8 x i16> %arg0) {
     }
 }
 
+/// The idiom's three constants are matched by three matchers that disagree
+/// about a `poison` lane. The shift is `m_APInt(C1)`, whose
+/// `getSplatValue(AllowPoison)` forbids one, so `lshr %x, <i32 4, i32 poison>`
+/// declines. The mask is `m_LowBitMask(C2)`, an `api_pred_ty`, whose splat
+/// allows one, and the zero is `m_Zero()`, whose `cst_pred_ty<is_zero_int>`
+/// skips one, so a `poison` lane in either still strips. Regression: one
+/// matcher allowed `poison` everywhere. llvmkit-specific (D11): the
+/// `ceil-shift.ll` fixtures write splats only.
+#[test]
+fn each_matcher_in_the_idiom_answers_a_poison_lane_as_upstream_does() {
+    let idiom = |shift: &str, mask: &str, zero: &str| {
+        format!(
+            r"
+define <2 x i1> @ceil_shift4_poison(<2 x i32> %arg0) {{
+  %quot = lshr <2 x i32> %arg0, {shift}
+  %rem = and <2 x i32> %arg0, {mask}
+  %has_rem = icmp ne <2 x i32> %rem, {zero}
+  %zext_has_rem = zext <2 x i1> %has_rem to <2 x i32>
+  %quot_or_rem = or <2 x i32> %quot, %zext_has_rem
+  %res = icmp eq <2 x i32> %quot_or_rem, zeroinitializer
+  ret <2 x i1> %res
+}}
+"
+        )
+    };
+    let splat_shift = "splat (i32 4)";
+    let splat_mask = "splat (i32 15)";
+    let splat_zero = "zeroinitializer";
+    strips_to_the_parameter(&idiom(splat_shift, splat_mask, splat_zero), "quot_or_rem");
+    does_not_strip(
+        &idiom("<i32 4, i32 poison>", splat_mask, splat_zero),
+        "quot_or_rem",
+    );
+    strips_to_the_parameter(
+        &idiom(splat_shift, "<i32 15, i32 poison>", splat_zero),
+        "quot_or_rem",
+    );
+    strips_to_the_parameter(
+        &idiom(splat_shift, splat_mask, "<i32 0, i32 poison>"),
+        "quot_or_rem",
+    );
+}
+
 /// Ports the `; negative tests` section — `ceil_shift_not_mask_1`,
 /// `ceil_shift_not_mask_2` and `ceil_shift_not_add_or` — plus `ceil_shift0`,
 /// which upstream folds for an unrelated reason.

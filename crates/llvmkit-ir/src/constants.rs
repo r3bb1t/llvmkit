@@ -1798,9 +1798,11 @@ impl<'ctx, B: ModuleBrand + 'ctx, Cap: Capability> Type<'ctx, B, Cap> {
     ///
     /// `None` stands for two of upstream's failures: the `default` arm's
     /// `llvm_unreachable("Cannot create a null constant of that type!")` —
-    /// `void`, `label`, `metadata`, `x86_amx`, `exnref` and a function type —
-    /// and the assert in `ConstantTargetNone::get` on a target type without
-    /// `HasZeroInit`.
+    /// `void`, `label`, `metadata`, `x86_amx` and a function type — and the
+    /// assert in `ConstantTargetNone::get` on a target type without
+    /// `HasZeroInit`. `exnref` answers `None` too: it is llvmkit's own type,
+    /// with no upstream `TypeID` to have a case (`docs/divergences.md` entry
+    /// 103).
     pub fn null_value(self) -> Option<Constant<'ctx, B, Cap>> {
         let module = self.module;
         let slot = self.slot_trusting_same_module();
@@ -1847,8 +1849,10 @@ impl<'ctx, B: ModuleBrand + 'ctx, Cap: Capability> Type<'ctx, B, Cap> {
             | AnyTypeEnum::Label(_)
             | AnyTypeEnum::Metadata(_)
             | AnyTypeEnum::X86Amx(_)
-            | AnyTypeEnum::WasmExnRef(_)
             | AnyTypeEnum::Function(_) => None,
+            // llvmkit's own `exnref`, which no upstream `TypeID` names
+            // (`docs/divergences.md` entry 103), has no null value either.
+            AnyTypeEnum::WasmExnRef(_) => None,
         }
     }
 }

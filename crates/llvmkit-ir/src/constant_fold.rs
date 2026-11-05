@@ -25,7 +25,7 @@ use super::capability::Capability;
 use super::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
 use super::constant::{
     Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprInRange,
-    ConstantExprOpcode, is_poison, is_undef, is_undef_or_poison,
+    ConstantExprOpcode, aggregate_element_count, is_poison, is_undef, is_undef_or_poison,
 };
 use super::constants::{ConstantExprOptions, ConstantFloatValue, ConstantIntValue};
 use super::data_layout::FunctionPtrAlignType;
@@ -3092,8 +3092,15 @@ pub(crate) fn constant_aggregate_from_elements<'ctx, B: ModuleBrand + 'ctx, C: C
 
 /// The elements of an element list, or of a `ConstantAggregateZero`, which
 /// the folds below walk as `getAggregateElement` hands them out. A zero's
-/// elements are its type's per-element null values; one past `u32::MAX`
-/// elements answers `None`, since `getAggregateElement` takes an `unsigned`.
+/// elements are its type's per-element null values, counted as upstream
+/// counts them, in `unsigned` (`aggregate_element_count`).
+///
+/// An array of 2^32 elements or more declines. Upstream's walking folds count
+/// such an array in `unsigned` too (`ConstantFoldInsertValueInstruction`'s
+/// `NumElts` is `cast<ArrayType>(...)->getNumElements()` converted), so they
+/// walk fewer elements than the type has and build a list `ConstantArray::get`
+/// asserts on. Declining is the hardening of that assert, not upstream's
+/// answer.
 fn aggregate_elements<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     constant: Constant<'ctx, B, C>,
 ) -> Option<Vec<Constant<'ctx, B, C>>> {
@@ -3110,13 +3117,12 @@ fn aggregate_elements<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         ),
         ValueKindData::Constant(ConstantData::AggregateZero) => {
             let data = constant.ty().data();
-            let count = if let Some((_, length)) = data.as_array() {
-                u32::try_from(length).ok()?
-            } else if let Some((_, lanes, _)) = data.as_vector() {
-                lanes.get()
-            } else {
-                u32::try_from(StructType::try_from(constant.ty()).ok()?.field_count()).ok()?
-            };
+            let count = aggregate_element_count(data)?;
+            if let Some((_, length)) = data.as_array()
+                && u64::from(count) != length
+            {
+                return None;
+            }
             (0..count)
                 .map(|index| constant.aggregate_element(index))
                 .collect()

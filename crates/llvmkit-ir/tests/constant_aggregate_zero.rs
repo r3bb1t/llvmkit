@@ -54,20 +54,59 @@ fn a_zero_aggregate_is_one_constant() {
         ConstantKind::Data(ConstantDataKind::AggregateZero)
     ));
     assert!(zero.is_null_value());
+    // `getAggregateElement`'s bound is `getElementCount()`, an `unsigned`: the
+    // 2^40 length keeps its low 32 bits, which are 0, so upstream has no
+    // element 7 to give. `an_element_count_keeps_its_low_32_bits` pins a
+    // length whose narrowed count still covers it.
+    assert_eq!(zero.aggregate_element(7), None);
+    assert_eq!(zero.to_string(), "[1099511627776 x i8] zeroinitializer");
+}
+
+/// Pins the `unsigned` counts `Constant::getAggregateElement` bounds an index
+/// with: `ConstantAggregateZero::getElementCount()` (an `ElementCount`,
+/// `FixedOrScalableQuantity<ElementCount, unsigned>`) and
+/// `UndefValue::getNumElements()`, which returns `unsigned`. Each converts the
+/// `uint64_t` `ArrayType::getNumElements()`, keeping its low 32 bits, so
+/// `[4294967304 x i8]` (2^32 + 8) has elements 0 to 7 and no element 8, and
+/// `[1099511627776 x i8]` (2^40) has none. llvmkit-specific (D11): no upstream
+/// test isolates the narrowing.
+#[test]
+fn an_element_count_keeps_its_low_32_bits() {
+    let m = Module::dynamic("narrowing");
+    let i8_ty = m.i8_type();
+    let past = ArrayType::of(i8_ty, (1 << 32) + 8).as_type();
+    let none_left = ArrayType::of(i8_ty, 1 << 40).as_type();
+
+    let zero = zero_of(past);
     assert_eq!(
         zero.aggregate_element(7),
-        Some(m.i8_type().const_zero().as_constant())
+        Some(i8_ty.const_zero().as_constant())
     );
-    assert_eq!(zero.to_string(), "[1099511627776 x i8] zeroinitializer");
+    assert_eq!(zero.aggregate_element(8), None);
+
+    let undef_element = i8_ty.as_type().undef().as_constant();
+    assert_eq!(
+        past.undef().as_constant().aggregate_element(7),
+        Some(undef_element)
+    );
+    assert_eq!(past.undef().as_constant().aggregate_element(8), None);
+    assert_eq!(
+        past.poison().as_constant().aggregate_element(7),
+        Some(i8_ty.as_type().poison().as_constant())
+    );
+    assert_eq!(none_left.undef().as_constant().aggregate_element(0), None);
+    assert_eq!(zero_of(none_left).aggregate_element(0), None);
 }
 
 /// Pins the canonicalisation in `ConstantArray::getImpl` — `if
 /// (C->isNullValue() && rangeOnlyContains(V.begin(), V.end(), C)) return
-/// ConstantAggregateZero::get(Ty);` — and its two siblings, the `isZero` arms of
-/// `ConstantStruct::get` and `ConstantVector::getImpl`: a list of zeros is the
-/// one `ConstantAggregateZero` of its type, so it has the id `null_value`
-/// answers. An empty array is `getImpl`'s first arm. llvmkit-specific (D11):
-/// no upstream test isolates these arms.
+/// ConstantAggregateZero::get(Ty);` — and its siblings: the `isZero` arms of
+/// `ConstantStruct::get` and `ConstantVector::getImpl`, and, for the scalable
+/// vector, `ConstantVector::getSplat`'s scalable `if (V->isNullValue()) return
+/// ConstantAggregateZero::get(VTy);`. A list of zeros is the one
+/// `ConstantAggregateZero` of its type, so it has the id `null_value` answers.
+/// An empty array is `getImpl`'s first arm. llvmkit-specific (D11): no
+/// upstream test isolates these arms.
 #[test]
 fn two_spellings_of_zero_are_one_constant() -> IrResult<()> {
     let m = Module::dynamic("zero");
@@ -171,9 +210,11 @@ fn an_all_poison_list_is_the_poison_marker() -> IrResult<()> {
 /// only that `Ty->isStructTy()`), an array, a fixed and a scalable vector,
 /// `ConstantTokenNone` and `ConstantTargetNone`. `None` stands for the
 /// `llvm_unreachable` of the `default` arm — `void`, `label`, `metadata`,
-/// `x86_amx`, `exnref` and a function type — and for the assert in
-/// `ConstantTargetNone::get` on a target type without `HasZeroInit`.
-/// llvmkit-specific (D11): no upstream test isolates these arms.
+/// `x86_amx` and a function type — and for the assert in
+/// `ConstantTargetNone::get` on a target type without `HasZeroInit`. `exnref`
+/// is llvmkit's own type, with no upstream `TypeID` (`docs/divergences.md`
+/// entry 103), and has no null value either. llvmkit-specific (D11): no
+/// upstream test isolates these arms.
 #[test]
 fn a_null_value_is_the_null_of_its_type() -> IrResult<()> {
     let m = Module::dynamic("null-value");
@@ -249,9 +290,9 @@ fn a_null_value_is_the_null_of_its_type() -> IrResult<()> {
 /// CAZ->getElementValue(Elt) : nullptr`. `getElementValue` is the element
 /// type's null value for an array or a vector and the field's for a struct.
 /// The arm sits above the `isa<ScalableVectorType>` bail-out, so a scalable
-/// zero answers below its known minimum, where a scalable `undef` answers
-/// nothing. An opaque struct has no elements. llvmkit-specific (D11): no
-/// upstream test isolates the arm.
+/// zero answers below its known minimum, where a scalable `undef` and a
+/// scalable splat of a non-zero value answer nothing. An opaque struct has no
+/// elements. llvmkit-specific (D11): no upstream test isolates the arm.
 #[test]
 fn a_zero_aggregate_answers_each_element_from_its_type() -> IrResult<()> {
     let m = Module::dynamic("zero-elements");
@@ -281,6 +322,23 @@ fn a_zero_aggregate_answers_each_element_from_its_type() -> IrResult<()> {
     );
     assert_eq!(zero_of(scalable).aggregate_element(2), None);
     assert_eq!(scalable.undef().as_constant().aggregate_element(1), None);
+    // A scalable splat that is no zero is the `shufflevector` expression
+    // `ConstantVector::getSplat` builds, which no `dyn_cast` arm admits: it
+    // reaches the bail-out, though llvmkit keeps its lanes as a list.
+    let one = VectorType::scalable_of(i8_ty, lanes::<2>())
+        .const_vector([i8_ty.const_int(1_i8); 2])?
+        .as_constant();
+    assert!(matches!(one.kind(), ConstantKind::Expr(_)));
+    assert_eq!(one.aggregate_element(0), None);
+    // The positive control: the same lanes at a fixed width are a
+    // `ConstantDataVector`, whose element is there.
+    let fixed_one = VectorType::of(i8_ty, lanes::<2>())
+        .const_vector([i8_ty.const_int(1_i8); 2])?
+        .as_constant();
+    assert_eq!(
+        fixed_one.aggregate_element(0),
+        Some(i8_ty.const_int(1_i8).as_constant())
+    );
 
     assert_eq!(
         zero_of(m.opaque_struct("opaque")?.as_type()).aggregate_element(0),

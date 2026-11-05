@@ -6,6 +6,7 @@
 //! availability.
 
 use core::num::NonZeroU32;
+use std::collections::HashMap;
 
 use super::ap_float::{ApFloat, ApFloatSemantics, ApFloatSign};
 use super::ap_int::Signedness;
@@ -56,6 +57,7 @@ use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeSlotAccess, 
 use super::type_components::lanes;
 use super::type_size::TypeSize;
 use super::value::{IsValue, Value, ValueKindData, ValueSlot, ValueSlotAccess};
+use super::value_tracking::{ValueTrackingQuery, is_known_not_undef_or_poison};
 use super::vec_len::LenDyn;
 use super::{ApInt, Dyn, FunctionValue, IrError, IrResult};
 use crate::Branded;
@@ -1189,59 +1191,104 @@ where
 }
 
 /// Fold a constant using DataLayout-aware analysis rules.
+///
+/// Ports `llvm::ConstantFoldConstant`, which hands `ConstantFoldConstantImpl`
+/// a fresh `FoldedOps` map.
 pub fn constant_fold_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     constant: Constant<'ctx, B, C>,
     dl: &DataLayout,
     tli: Option<&TargetLibraryInfo>,
 ) -> IrResult<Constant<'ctx, B, C>> {
-    let module = constant.module;
-    match &constant.as_erased().data().kind {
-        ValueKindData::Constant(ConstantData::Expr(expr)) => {
-            let Some(operands) =
-                folded_constants_from_ids(module, expr.operands.iter().copied(), dl, tli)?
-            else {
-                return Ok(constant);
-            };
-            if let Some(folded) =
-                constant_fold_constant_expr_operands(constant, expr, &operands, dl, tli)?
-            {
-                Ok(folded)
-            } else {
-                Ok(constant)
-            }
-        }
-        ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-            let mut changed = false;
-            let mut folded_ids = Vec::with_capacity(elements.len());
-            for id in elements.iter().copied() {
-                let Some(element) = constant_from_id(module, id) else {
-                    return Ok(constant);
-                };
-                let folded = constant_fold_constant(element, dl, tli)?;
-                // Internal: `folded` was folded from this aggregate's own
-                // element, in its module.
-                let folded_id = folded.slot_trusting_same_module();
-                changed |= folded_id != id;
-                folded_ids.push(folded_id);
-            }
-            if !changed {
-                return Ok(constant);
-            }
-            // `return ConstantVector::get(Ops);`, which canonicalises the
-            // folded list as every constructor does.
-            let id = crate::constants::intern_element_list(
-                module.module(),
-                constant.ty().slot_trusting_same_module(),
-                folded_ids.into_boxed_slice(),
-            );
-            Ok(Constant::from_parts(Value::from_parts(
-                id,
-                module,
-                constant.ty().slot_trusting_same_module(),
-            )))
-        }
-        _ => Ok(constant),
+    let mut folded_ops = HashMap::new();
+    constant_fold_constant_impl(constant, dl, tli, &mut folded_ops)
+}
+
+/// `isa<ConstantVector>(C) || isa<ConstantExpr>(C)`: the constants
+/// `ConstantFoldConstantImpl` folds, and the operands it recurses into.
+fn is_constant_vector_or_expr<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+) -> bool {
+    matches!(
+        constant.kind(),
+        ConstantKind::Aggregate(ConstantAggregateKind::Vector) | ConstantKind::Expr(_)
+    )
+}
+
+/// Ports `ConstantFoldConstantImpl` (`ConstantFolding.cpp`). `folded_ops` is
+/// upstream's `FoldedOps`, keyed by the operand's slot as upstream keys it by
+/// pointer.
+///
+/// Two of llvmkit's spellings answer `isa<ConstantExpr>` without being a
+/// stored expression. A scalable list is the `shufflevector` splat
+/// `ConstantVector::getSplat` builds; its element stands in for the operand,
+/// and the list is rebuilt through `intern_element_list`, as
+/// `getWithOperands` rebuilds the splat and `getSplat` canonicalises it. The
+/// compact `GepOffset`, `SymbolDelta` and `SymbolDeltaPlus` forms keep their
+/// operands, which are globals, so they are returned as they are: folding the
+/// expression each prints as gives that expression back (derived from
+/// `SymbolicallyEvaluateGEP`'s canonical `i8` form and
+/// `SymbolicallyEvaluateBinop`'s refusal of two distinct globals, not run).
+fn constant_fold_constant_impl<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+    dl: &DataLayout,
+    tli: Option<&TargetLibraryInfo>,
+    folded_ops: &mut HashMap<ValueSlot, Constant<'ctx, B, C>>,
+) -> IrResult<Constant<'ctx, B, C>> {
+    // `if (!isa<ConstantVector>(C) && !isa<ConstantExpr>(C)) return
+    // const_cast<Constant *>(C);`
+    if !is_constant_vector_or_expr(constant) {
+        return Ok(constant);
     }
+    let module = constant.module;
+    let data = &constant.as_erased().data().kind;
+    let operand_ids: &[ValueSlot] = match data {
+        ValueKindData::Constant(ConstantData::Expr(expr)) => &expr.operands,
+        ValueKindData::Constant(ConstantData::Aggregate(elements)) => elements,
+        _ => return Ok(constant),
+    };
+
+    let mut ops = Vec::with_capacity(operand_ids.len());
+    for &id in operand_ids {
+        let Some(old) = constant_from_id(module, id) else {
+            return Ok(constant);
+        };
+        // Recursively fold the ConstantExpr's operands. If we have already
+        // folded a ConstantExpr, we don't have to process it again.
+        let new = if is_constant_vector_or_expr(old) {
+            if let Some(&folded) = folded_ops.get(&id) {
+                folded
+            } else {
+                let folded = constant_fold_constant_impl(old, dl, tli, folded_ops)?;
+                folded_ops.insert(id, folded);
+                folded
+            }
+        } else {
+            old
+        };
+        ops.push(new);
+    }
+
+    // `if (auto *CE = dyn_cast<ConstantExpr>(C)) { if (Constant *Res =
+    // ConstantFoldInstOperandsImpl(CE, CE->getOpcode(), Ops, DL, TLI,
+    // /*AllowNonDeterministic=*/true)) return Res; return
+    // const_cast<Constant *>(C); }`
+    if let ValueKindData::Constant(ConstantData::Expr(expr)) = data {
+        return Ok(
+            constant_fold_constant_expr_operands(constant, expr, &ops, dl, tli)?
+                .unwrap_or(constant),
+        );
+    }
+
+    // `assert(isa<ConstantVector>(C)); return ConstantVector::get(Ops);`
+    let ty = constant.ty().slot_trusting_same_module();
+    // Internal: every operand was folded from this vector's own element, in
+    // its module.
+    let ids = ops
+        .iter()
+        .map(|op| op.slot_trusting_same_module())
+        .collect::<Box<[_]>>();
+    let id = crate::constants::intern_element_list(module.module(), ty, ids);
+    Ok(Constant::from_parts(Value::from_parts(id, module, ty)))
 }
 
 /// Fold an instruction with caller-provided constant operands.
@@ -1437,14 +1484,15 @@ where
                 dl,
             )
         }
-        // Mirrors `ConstantFoldInstOperandsImpl`'s Freeze arm in
-        // `llvm/lib/Analysis/ConstantFolding.cpp`: only forward operands proven
-        // not to be undef or poison.
+        // `case Instruction::Freeze: return
+        // isGuaranteedNotToBeUndefOrPoison(Ops[0]) ? Ops[0] : nullptr;` — the
+        // one routine, at its defaults: no assumption cache, no context
+        // instruction, no dominator tree.
         InstructionKindData::Freeze(_) => {
             let [operand] = operands else {
                 return Ok(None);
             };
-            if is_guaranteed_not_to_be_undef_or_poison(*operand) {
+            if is_known_not_undef_or_poison(operand.as_erased(), &ValueTrackingQuery::new(dl))? {
                 Ok(Some(*operand))
             } else {
                 Ok(None)
@@ -2883,26 +2931,6 @@ fn gep_index_for_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }
 }
 
-fn folded_constants_from_ids<'ctx, B, C: Capability, I>(
-    module: ModuleRef<'ctx, B, C>,
-    ids: I,
-    dl: &DataLayout,
-    tli: Option<&TargetLibraryInfo>,
-) -> IrResult<Option<Vec<Constant<'ctx, B, C>>>>
-where
-    B: ModuleBrand + 'ctx,
-    I: IntoIterator<Item = ValueSlot>,
-{
-    let mut folded = Vec::new();
-    for id in ids {
-        let Some(constant) = constant_from_id(module, id) else {
-            return Ok(None);
-        };
-        folded.push(constant_fold_constant(constant, dl, tli)?);
-    }
-    Ok(Some(folded))
-}
-
 fn constant_fold_constant_expr_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     original: Constant<'ctx, B, C>,
     expr: &ConstantExprData,
@@ -3088,13 +3116,9 @@ fn load_through_bitcast_opcode<B: ModuleBrand, C: Capability>(
 
 /// The closing step of `ConstantFoldLoadThroughBitcast`'s loop: the element
 /// the simulated load drills down to, read through `getAggregateElement`, so
-/// a `ConstantAggregateZero` answers its element's null value.
-///
-/// A scalable vector answers `None`, where upstream asks `getAggregateElement`
-/// too. Only a `ConstantAggregateZero` answers that upstream, and one reaches
-/// this step only when `ConstantFoldLoadFromUniformValue` refused it because
-/// its size is not a whole number of bytes, so its element's is not either,
-/// which the vector check refuses (derived from the two checks, not run).
+/// a `ConstantAggregateZero` answers its element's null value. `dyn_cast<
+/// VectorType>` admits a scalable vector, and `getAggregateElement` answers a
+/// scalable zero and nothing else scalable.
 fn aggregate_first_element<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     constant: Constant<'ctx, B, C>,
     dl: &DataLayout,
@@ -3120,7 +3144,7 @@ fn aggregate_first_element<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         TypeData::Array { .. } => constant.aggregate_element(0),
         // For non-byte-sized vector elements, the first element is not
         // necessarily located at the vector base address.
-        TypeData::FixedVector { elem, .. } => {
+        TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
             let elem_ty = Type::new(*elem, module);
             if !dl.type_size_equals_store_size(erase_type(elem_ty)) {
                 return None;
@@ -3635,67 +3659,4 @@ fn denormal_mode_for_instruction<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     };
     let function = FunctionValue::<Dyn, B, C>::from_parts_unchecked(function_id, module);
     function.denormal_mode(float_ty.semantics())
-}
-
-fn is_guaranteed_not_to_be_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    constant: Constant<'ctx, B, C>,
-) -> bool {
-    let module = constant.module;
-    match &constant.as_erased().data().kind {
-        ValueKindData::Constant(ConstantData::Undef | ConstantData::Poison) => false,
-        ValueKindData::Constant(ConstantData::Aggregate(elements)) => elements
-            .iter()
-            .copied()
-            .all(|id| constant_id_guaranteed_not_to_be_undef_or_poison(module, id)),
-        ValueKindData::Constant(ConstantData::PtrAuth {
-            pointer,
-            key,
-            discriminator,
-            addr_discriminator,
-            deactivation_symbol,
-        }) => [
-            *pointer,
-            *key,
-            *discriminator,
-            *addr_discriminator,
-            *deactivation_symbol,
-        ]
-        .iter()
-        .copied()
-        .all(|id| constant_id_guaranteed_not_to_be_undef_or_poison(module, id)),
-        ValueKindData::Constant(ConstantData::Expr(_) | ConstantData::ForwardRefPlaceholder) => {
-            false
-        }
-        // A `ConstantAggregateZero` answers as the element list of nulls it
-        // stands for answers in the arm above.
-        ValueKindData::Constant(
-            ConstantData::AggregateZero
-            | ConstantData::Int(_)
-            | ConstantData::Float(_)
-            | ConstantData::GlobalValueRef { .. }
-            | ConstantData::PointerNull
-            | ConstantData::GepOffset { .. }
-            | ConstantData::SymbolDelta { .. }
-            | ConstantData::SymbolDeltaPlus { .. }
-            | ConstantData::BlockAddress { .. }
-            | ConstantData::DsoLocalEquivalent { .. }
-            | ConstantData::NoCfi { .. }
-            | ConstantData::TokenNone
-            | ConstantData::TargetExtNone,
-        ) => true,
-        _ => false,
-    }
-}
-
-fn constant_id_guaranteed_not_to_be_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    module: ModuleRef<'ctx, B, C>,
-    id: ValueSlot,
-) -> bool {
-    let data = module.context().value_data(id);
-    let ValueKindData::Constant(_) = &data.kind else {
-        return false;
-    };
-    is_guaranteed_not_to_be_undef_or_poison(Constant::from_parts(Value::from_parts(
-        id, module, data.ty,
-    )))
 }

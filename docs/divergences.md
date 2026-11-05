@@ -1085,6 +1085,78 @@ let the placeholder's RAUW put the use in place.
 
 **Guarded by:** nothing.
 
+### D34 — An operand change that makes a `ConstantDataSequential` is taken as in place
+
+**Severity:** wrong-output, latent: no input reaches it today (derived, see below).
+**Where:** `crates/llvmkit-ir/src/constants.rs` — `aggregate_with_replaced_operand` and
+`replace_constant_operand`.
+
+**LLVM:** `ConstantArray::handleOperandChangeImpl` and `ConstantVector::handleOperandChangeImpl`
+ask `getImpl` before `replaceOperandsInPlace`. When every new operand is a `ConstantInt` or a
+`ConstantFP` of a compatible type, `getImpl` answers a `ConstantDataArray` or
+`ConstantDataVector` from `getSequenceIfElementsMatch`. That is a different object, so
+`handleOperandChange` runs `replaceAllUsesWith` and `destroyConstant`. A
+`ConstantDataSequential` has no operands and no use list (`Value::hasUseList`).
+
+**llvmkit:** a `ConstantDataSequential` is the same stored list as a `ConstantArray` or
+`ConstantVector`, told apart by `Constant::kind`. So `getImpl`'s answer is a freshly interned
+list whose operands are the old ones with `From` replaced, and `replace_constant_operand`'s
+in-place test takes it as `replaceOperandsInPlace`'s update: the new list's edges take the old
+ones' places on its elements' lists, and its users keep their order instead of being moved by
+`replaceAllUsesWith`.
+
+**Why unobservable today (derived from the code, not run):** only an element's or a user's
+place on a use list differs. The elements are `ConstantInt`s or `ConstantFP`s, which are
+`ConstantData` and have no use list a `uselistorder` line can name, and the list itself is
+`ConstantData` by class (`Constant::is_constant_data`), so its own users have none to print
+either. Reaching the case at all needs a forward reference inside an array or vector resolved
+to a `ConstantInt` or `ConstantFP`; the parser resolves one inside a constant only to a global
+or a `blockaddress`, so only `ForwardRefValue::replace_all_uses_with` called by hand reaches it.
+
+**Fix:** Task 5 of the crash-proofing plan stores a `ConstantDataSequential` as bytes. That
+answer then has no operands, so the in-place test's operand-count comparison sends it down the
+replacement path, as it already sends a `ConstantAggregateZero` or an `undef`.
+
+**Guarded by:** nothing yet. Found in Task 1 of the crash-proofing plan
+(`task-1-report.md`, Concern 4), porting the `AllSame` arms.
+
+### D35 — `isGuaranteedNotToBeUndefOrPoison` does not walk a constant expression
+
+**Severity:** model-gap
+**Where:** `crates/llvmkit-ir/src/value_tracking.rs` — `is_guaranteed_not_to_be_undef_or_poison`,
+whose operator arms are reached through `instruction_kind`, and `can_create_undef_or_poison_kind`,
+which answers `false` for anything that is not an instruction.
+
+**LLVM:** after the constant arm, `if (auto *Opr = dyn_cast<Operator>(V))` admits a
+`ConstantExpr` as well as an instruction. `canCreateUndefOrPoison(Opr, Kind, true)` reads a
+constant expression's opcode and flags, and when it cannot create either, every operand is
+checked in turn. So `sub (i64 ptrtoint (ptr @a to i64), i64 ptrtoint (ptr @b to i64))` is
+guaranteed: `sub` without `nuw`/`nsw` and the two casts create nothing, and `@a`, `@b` are
+`GlobalVariable`s (derived from those arms, not run).
+
+**llvmkit:** a scalar constant expression falls through the constant arm, is stripped, and then
+reaches `instruction_kind`, which answers `None`, so the routine answers `false`. A vector one
+answers only through the arm's splat test. `is_known_not_undef_or_poison` and its siblings say
+`false` where upstream says `true`, and since `constant_folding.rs`'s `freeze` arm calls this
+routine (it kept a copy of its own until Task 1's fix round), `freeze` of such an expression
+does not fold. The copy answered `true` for llvmkit's compact `SymbolDelta` and `SymbolDeltaPlus`
+forms, which upstream's walk also proves; it answered `true` for `blockaddress`,
+`dso_local_equivalent`, `no_cfi` and a `getelementptr inbounds` lane too, which upstream does
+not.
+
+**Why:** llvmkit's port of `canCreateUndefOrPoison` was written for instructions. Before this
+entry, `rg -n -i "canCreateUndefOrPoison|isGuaranteedNotToBeUndefOrPoison|is_known_not_undef|operator tests|operator walk" docs/divergences.md docs/future-work.md`
+printed only `future-work.md`'s history of the tranche that ported the routine and D31's
+unrelated "operator walk".
+
+**Fix:** port `canCreateUndefOrPoison`'s arms for the opcodes a llvmkit `ConstantExpr` has
+(`add`, `sub` and `xor` with their no-wrap flags, `getelementptr` with its flags, the casts,
+`shufflevector`, `insertelement`, `extractelement`), read the compact forms as the expressions
+they print as, and let the operator walk take a constant expression.
+
+**Guarded by:** nothing. The first test that would show it: `freeze i64 sub (i64 ptrtoint (ptr
+@a to i64), i64 ptrtoint (ptr @b to i64))` folds upstream.
+
 ---
 
 ---

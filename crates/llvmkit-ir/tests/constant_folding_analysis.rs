@@ -780,6 +780,65 @@ fn freeze_folds_only_non_undef_non_poison_constants() -> Result<(), IrError> {
     Ok(())
 }
 
+/// Pins the constant arm of `isGuaranteedNotToBeUndefOrPoison`, which
+/// `ConstantFoldInstOperandsImpl`'s `case Instruction::Freeze:` asks with its
+/// defaults. Among aggregates only a vector is analysed (`if
+/// (C->getType()->isVectorTy())`): one folds when it holds no `undef`
+/// (`containsUndefElement`), no `poison` and no constant expression
+/// (`containsConstantExpression`), and a zero holds none. A struct or an array
+/// of integers is no vector, falls through every later arm, and does not fold.
+/// Regression: the folder kept its own copy of the routine, which walked
+/// arrays and structs and counted a `getelementptr` lane as well defined.
+/// llvmkit-specific (D11): no upstream fixture freezes these constants.
+#[test]
+fn freeze_folds_a_vector_constant_but_no_other_aggregate() -> Result<(), IrError> {
+    let m = module_new!("analysis-freeze-aggregates")?;
+    let dl = DataLayout::default();
+    let i32_ty = m.i32_type();
+    let ptr_ty = m.ptr_type_in::<0>();
+    let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
+    let fn_ty = m.function_type_no_parameters(m.void_type())?;
+    let f = m.add_function_dyn("freeze_aggregates", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let one = i32_ty.const_int(1_i32).as_constant();
+    let two = i32_ty.const_int(2_i32).as_constant();
+    let undef = i32_ty.as_type().undef().as_constant();
+    let pair = VectorType::of(i32_ty, lanes::<2>());
+    let folds = |operand: Constant<'_, _>| -> Result<bool, IrError> {
+        let frozen = b.freeze(operand, "frozen")?;
+        Ok(constant_fold_instruction(&b.view(frozen).as_view(), &dl, None)? == Some(operand))
+    };
+
+    assert!(folds(pair.const_vector([one, two])?.as_constant())?);
+    assert!(folds(pair.as_type().null_value().expect("a zero vector"))?);
+    assert!(!folds(pair.const_vector([undef, one])?.as_constant())?);
+    let global = m.view(g).as_global_constant_ptr();
+    let offset = m.view(g).ptr_offset(4);
+    assert!(!folds(
+        VectorType::of(ptr_ty, lanes::<2>())
+            .const_vector([global, offset])?
+            .as_constant()
+    )?);
+    assert!(folds(
+        VectorType::of(ptr_ty, lanes::<2>())
+            .const_vector([global, global])?
+            .as_constant()
+    )?);
+
+    let record = m
+        .struct_type([i32_ty.as_type(), i32_ty.as_type()])?
+        .const_struct([one, two])?
+        .as_constant();
+    assert!(!folds(record)?);
+    let array = ArrayType::of(i32_ty, 2)
+        .const_array([one, two])?
+        .as_constant();
+    assert!(!folds(array)?);
+    b.ret_void()?;
+    Ok(())
+}
+
 /// llvmkit-specific subset of
 /// `llvm/lib/Analysis/ConstantFolding.cpp::IsConstantOffsetFromGlobal`,
 /// `ConstantFoldLoadFromConstPtr`, and `ConstantFoldLoadThroughBitcast`:
@@ -1491,6 +1550,60 @@ fn gep_i32_index_canonicalizes_to_i8_offset() -> Result<(), IrError> {
     Ok(())
 }
 
+/// Pins `ConstantFoldConstantImpl`'s opening `if (!isa<ConstantVector>(C) &&
+/// !isa<ConstantExpr>(C)) return const_cast<Constant *>(C);`, and the
+/// `ConstantVector::get(Ops)` it ends with. The `getelementptr i32` that
+/// `gep_i32_index_canonicalizes_to_i8_offset` folds is left alone inside an
+/// array and inside a struct, because neither is a `ConstantVector`, and is
+/// folded inside a vector, which is. Regression: every element list was
+/// folded. llvmkit-specific (D11): no upstream test isolates the gate.
+#[test]
+fn only_a_vector_or_an_expression_is_folded_as_a_constant() -> Result<(), IrError> {
+    let m = module_new!("analysis-fold-constant-gate")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i32_ty = m.i32_type();
+    let ptr_ty = m.ptr_type_in::<0>();
+    let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
+    let gep = m.constant_expr_with_options(
+        ptr_ty.as_type(),
+        ConstantExprOpcode::GetElementPtr,
+        [
+            m.view(g).as_global_constant_ptr().as_erased(),
+            m.i64_type().const_int(4_i64).as_constant().as_erased(),
+        ],
+        [],
+        [],
+        ConstantExprOptions::new()
+            .source_ty(i32_ty.as_type())
+            .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS)),
+    )?;
+    let canonical = m.view(g).ptr_offset(16).to_string();
+    assert_eq!(
+        constant_fold_constant(gep, &dl, None)?.to_string(),
+        canonical
+    );
+
+    let array = ArrayType::of(ptr_ty, 1).const_array([gep])?.as_constant();
+    assert_eq!(constant_fold_constant(array, &dl, None)?, array);
+    let pair = m.struct_type([ptr_ty.as_type()])?;
+    let record = pair.const_struct([gep])?.as_constant();
+    assert_eq!(constant_fold_constant(record, &dl, None)?, record);
+
+    let vector = VectorType::of(ptr_ty, lanes::<1>())
+        .const_vector([gep])?
+        .as_constant();
+    let folded = constant_fold_constant(vector, &dl, None)?;
+    assert_ne!(folded, vector);
+    assert_eq!(
+        folded
+            .aggregate_element(0)
+            .expect("a one-lane vector")
+            .to_string(),
+        canonical
+    );
+    Ok(())
+}
+
 /// Mirrors `SymbolicallyEvaluateGEP`'s "if this is a GEP of a GEP, fold it
 /// all into a single GEP" merge in `SymbolicallyEvaluateGEP`: two
 /// nested inbounds GEPs (`ptr @g, i64 1` twice, over `i32`) collapse to one
@@ -1805,6 +1918,51 @@ fn a_zero_load_too_long_to_list_still_folds() -> Result<(), IrError> {
             .as_deref(),
         Some("[18446744073709551615 x i8] zeroinitializer")
     );
+    Ok(())
+}
+
+/// Pins `ConstantFoldLoadThroughBitcast`'s closing step at a scalable vector:
+/// `if (auto *VT = dyn_cast<VectorType>(SrcTy)) if
+/// (!DL.typeSizeEqualsStoreSize(VT->getElementType())) return nullptr; C =
+/// C->getAggregateElement(0u);`, which `dyn_cast<VectorType>` lets a scalable
+/// vector reach. A load of `x86_amx` gets there from a scalable zero, because
+/// `ConstantFoldLoadFromUniformValue` refuses a null source for that type
+/// (`!Ty->isX86_AMXTy()`), and the scalable and fixed sizes are not equal.
+/// `getAggregateElement` answers a scalable `ConstantAggregateZero`, so the
+/// drill reaches `i8192 0`, whose 8192 bits `CastInst::castIsValid` lets
+/// bitcast to `x86_amx`; `FoldBitCast` has no fold for it and answers the
+/// expression. A scalable splat of a non-zero value is the `shufflevector`
+/// expression, whose `getAggregateElement` is `nullptr`, so its drill stops.
+/// The fixed `<1 x i8192>` zero is the contrast: its size equals the load's, so
+/// the step before, `if (SrcSize == DestSize && ...)`, casts it as it is and the
+/// loop never drills. llvmkit-specific (D11): no upstream fixture loads
+/// `x86_amx` from a constant.
+#[test]
+fn a_scalable_zero_drills_to_its_element_for_an_x86_amx_load() -> Result<(), IrError> {
+    let m = module_new!("analysis-amx-scalable-zero")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let wide = m.custom_width_int_type(8192)?;
+    let amx = m.x86_amx_type();
+    let drill = |source: Constant<'_, _>| -> Result<Option<String>, IrError> {
+        Ok(constant_fold_load_through_bitcast(source, amx, &dl)?.map(|c| c.to_string()))
+    };
+
+    let scalable = VectorType::scalable_of(wide, lanes::<1>()).as_type();
+    let fixed = VectorType::of(wide, lanes::<1>()).as_type();
+    assert_eq!(
+        drill(scalable.null_value().expect("a vector has a null value"))?.as_deref(),
+        Some("x86_amx bitcast (i8192 0 to x86_amx)")
+    );
+    assert_eq!(
+        drill(fixed.null_value().expect("a vector has a null value"))?.as_deref(),
+        Some("x86_amx bitcast (<1 x i8192> zeroinitializer to x86_amx)")
+    );
+
+    let one = wide.const_int_arbitrary_precision(&[1])?.as_constant();
+    let scalable_one = VectorType::scalable_of(wide, lanes::<1>())
+        .const_vector([one])?
+        .as_constant();
+    assert_eq!(drill(scalable_one)?, None);
     Ok(())
 }
 

@@ -16,7 +16,10 @@ use crate::assumptions::{
 use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored};
 use crate::capability::{Capability, ReadOnly};
 use crate::cmp_predicate::IntPredicate;
-use crate::constant::{Constant, ConstantData, ConstantExprData, ConstantExprOpcode};
+use crate::constant::{
+    Constant, ConstantData, ConstantDataKind, ConstantExprData, ConstantExprOpcode, ConstantKind,
+    Undefined, is_poison,
+};
 use crate::constant_range::{
     ConstantRange, OverflowResult, PreferredRangeType, constant_ranges_from_metadata,
 };
@@ -2681,34 +2684,110 @@ pub fn is_sign_bit_check(predicate: IntPredicate, rhs: &ApInt) -> Option<bool> {
 fn zero_int_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
 ) -> Option<bool> {
-    match &value.data().kind {
-        ValueKindData::Constant(ConstantData::Int(_)) => {
-            argument_constant(Some(value))?.is_zero().then_some(true)
-        }
-        // A vector constant matches when every lane is a zero or a poison
-        // standing in for one; it is a null value only if no lane is poison.
-        ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-            let mut all_null = true;
-            for element in elements.iter() {
-                match zero_int_constant(value_from_slot(value, *element)) {
-                    Some(true) => {}
-                    Some(false) => all_null = false,
-                    None => return None,
-                }
-            }
-            Some(all_null)
-        }
-        // A `ConstantAggregateZero` matches through its splat, the element
-        // type's null value, and is a null value.
-        ValueKindData::Constant(ConstantData::AggregateZero) => zero_int_constant(
-            Constant::try_from(value)
-                .ok()?
-                .splat_value(false)?
-                .as_erased(),
-        ),
-        ValueKindData::Constant(ConstantData::Poison) => Some(false),
-        _ => None,
+    constant_int_predicate_matches(value, ApInt::is_zero)
+        .then(|| Constant::try_from(value).is_ok_and(Constant::is_null_value))
+}
+
+/// Ports `cstval_pred_ty<Predicate, ConstantInt, /*AllowPoison=*/true>`'s
+/// `match_impl` — `cst_pred_ty`, the matcher under `m_ZeroInt`, `m_AllOnes`
+/// and their siblings — for `predicate` as the `isValue` test.
+///
+/// A `ConstantInt` answers its predicate. A vector constant answers through
+/// its strict `getSplatValue()` when that is a `ConstantInt`, and otherwise,
+/// when it is fixed-width, lane by lane: a `poison` lane is skipped, any other
+/// lane must be a `ConstantInt` that satisfies the predicate, and at least one
+/// lane must be one. Anything else, an array included, does not match: the
+/// matcher looks through vectors only.
+fn constant_int_predicate_matches<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    predicate: fn(&ApInt) -> bool,
+) -> bool {
+    // `if (const auto *CV = dyn_cast<ConstantVal>(V)) return
+    // this->isValue(CV->getValue());`
+    if let Some(constant) = argument_constant(Some(value)) {
+        return predicate(&constant);
     }
+    // `if (const auto *VTy = dyn_cast<VectorType>(V->getType())) { if (const
+    // auto *C = dyn_cast<Constant>(V)) {`
+    let Some((_, lanes, scalable)) = value.ty().data().as_vector() else {
+        return false;
+    };
+    let Ok(constant) = Constant::try_from(value) else {
+        return false;
+    };
+    // `if (const auto *CV = dyn_cast_or_null<ConstantVal>(C->getSplatValue()))
+    // return this->isValue(CV->getValue());`
+    if let Some(splat) = constant
+        .splat_value(false)
+        .and_then(|splat| argument_constant(Some(splat.as_erased())))
+    {
+        return predicate(&splat);
+    }
+    // Number of elements of a scalable vector unknown at compile time.
+    if scalable {
+        return false;
+    }
+    // Non-splat vector constant: check each element for a match.
+    let mut has_non_poison_elements = false;
+    for lane in 0..lanes.get() {
+        let Some(element) = constant.aggregate_element(lane) else {
+            return false;
+        };
+        if is_poison(element) {
+            continue;
+        }
+        match argument_constant(Some(element.as_erased())) {
+            Some(element) if predicate(&element) => {}
+            _ => return false,
+        }
+        has_non_poison_elements = true;
+    }
+    has_non_poison_elements
+}
+
+/// Ports `ap_match<APInt>::match`, the matcher under `m_APInt` (`allow_poison`
+/// `false`) and `m_APIntAllowPoison` (`true`): a `ConstantInt`'s value, or a
+/// vector constant's whose `getSplatValue(AllowPoison)` is a `ConstantInt`.
+fn ap_int_match<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    allow_poison: bool,
+) -> Option<ApInt> {
+    if let Some(constant) = argument_constant(Some(value)) {
+        return Some(constant);
+    }
+    if !value.ty().is_vector() {
+        return None;
+    }
+    let splat = Constant::try_from(value).ok()?.splat_value(allow_poison)?;
+    argument_constant(Some(splat.as_erased()))
+}
+
+/// Ports `api_pred_ty<Predicate>::match`, the matcher under `m_LowBitMask`
+/// and its siblings: a `ConstantInt` that satisfies `predicate`, or a vector
+/// constant whose `getSplatValue(/*AllowPoison=*/true)` is one.
+fn ap_int_predicate_match<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    predicate: fn(&ApInt) -> bool,
+) -> Option<ApInt> {
+    if let Some(constant) = argument_constant(Some(value))
+        && predicate(&constant)
+    {
+        return Some(constant);
+    }
+    if !value.ty().is_vector() {
+        return None;
+    }
+    let splat = Constant::try_from(value).ok()?.splat_value(true)?;
+    let splat = argument_constant(Some(splat.as_erased()))?;
+    predicate(&splat).then_some(splat)
+}
+
+/// Ports `is_zero::match`, the matcher under `m_Zero()`: a constant that is
+/// null, or that `cst_pred_ty<is_zero_int>` matches.
+fn matches_zero<'ctx, B: ModuleBrand + 'ctx, C: Capability>(value: Value<'ctx, B, C>) -> bool {
+    Constant::try_from(value).is_ok_and(|constant| {
+        constant.is_null_value() || constant_int_predicate_matches(value, ApInt::is_zero)
+    })
 }
 
 /// Whether the negating `sub` must carry `nsw`.
@@ -3271,22 +3350,12 @@ fn binary_operands_of<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 /// Whether `value` matches upstream's `m_AllOnes()`.
 ///
 /// Ports `cst_pred_ty<is_all_ones>`, which accepts a scalar `-1` *and* a
-/// vector constant whose every lane is one — the form a vector `not` takes.
+/// vector constant whose every lane is one or `poison`, at least one lane
+/// being one — the form a vector `not` takes.
 fn is_all_ones_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
 ) -> bool {
-    match &value.data().kind {
-        ValueKindData::Constant(ConstantData::Int(_)) => {
-            argument_constant(Some(value)).is_some_and(|constant| constant.is_all_ones())
-        }
-        ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-            !elements.is_empty()
-                && elements
-                    .iter()
-                    .all(|element| is_all_ones_constant(value_from_slot(value, *element)))
-        }
-        _ => false,
-    }
+    constant_int_predicate_matches(value, ApInt::is_all_ones)
 }
 
 /// `m_Not(V)`: `xor V, -1`, matched commutatively.
@@ -3481,9 +3550,9 @@ fn null_test_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     shifted: Value<'ctx, B, C>,
     flag: Value<'ctx, B, C>,
 ) -> Option<Value<'ctx, B, C>> {
-    // m_LShr(m_Value(X), m_APInt(C1))
+    // m_LShr(m_Value(X), m_APInt(C1)), whose splat forbids poison.
     let (base, shift_amount) = binary_operands_of(shifted, BinaryOpcode::Lshr)?;
-    let shift_amount = splat_or_scalar_constant(shift_amount)?;
+    let shift_amount = ap_int_match(shift_amount, false)?;
 
     // m_ZExt(m_SpecificICmp(ICMP_NE, .., m_Zero()))
     let compare = zext_source(flag)?;
@@ -3495,19 +3564,16 @@ fn null_test_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }
     let masked = value_from_slot(compare, compare_data.lhs.get());
     let zero = value_from_slot(compare, compare_data.rhs.get());
-    if !splat_or_scalar_constant(zero).is_some_and(|constant| constant.is_zero()) {
+    if !matches_zero(zero) {
         return None;
     }
 
-    // m_And(m_Deferred(X), m_LowBitMask(C2))
+    // m_And(m_Deferred(X), m_LowBitMask(C2)), whose splat allows poison.
     let (masked_base, mask) = binary_operands_of(masked, BinaryOpcode::And)?;
     if masked_base != base {
         return None;
     }
-    let mask = splat_or_scalar_constant(mask)?;
-    if !mask.is_mask() {
-        return None;
-    }
+    let mask = ap_int_predicate_match(mask, ApInt::is_mask)?;
 
     // `C2->popcount() == C1->getZExtValue()`. Upstream's `getZExtValue`
     // asserts the shift fits in 64 bits; comparing at the shift's own width
@@ -3515,48 +3581,6 @@ fn null_test_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     // never exceeds a bit width.
     let popcount = ApInt::from_words(shift_amount.bit_width(), &[u64::from(mask.popcount())]);
     shift_amount.eq_ap_int(&popcount).then_some(base)
-}
-
-/// The constant `value` carries, matching upstream's `m_APInt`: a scalar
-/// integer constant, or a vector whose lanes all carry the same one.
-///
-/// Upstream reaches the vector case through `getSplatValue(AllowPoison=true)`,
-/// so a poison lane is skipped rather than treated as a disagreement — it can
-/// be read as whatever the other lanes hold.
-fn splat_or_scalar_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    value: Value<'ctx, B, C>,
-) -> Option<ApInt> {
-    match &value.data().kind {
-        ValueKindData::Constant(ConstantData::Int(_)) => argument_constant(Some(value)),
-        ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-            let mut splat: Option<ApInt> = None;
-            for element in elements.iter() {
-                let element = value_from_slot(value, *element);
-                if matches!(
-                    element.data().kind,
-                    ValueKindData::Constant(ConstantData::Poison)
-                ) {
-                    continue;
-                }
-                let element = splat_or_scalar_constant(element)?;
-                match &splat {
-                    Some(seen) if !seen.eq_ap_int(&element) => return None,
-                    Some(_) => {}
-                    None => splat = Some(element),
-                }
-            }
-            splat
-        }
-        // `getSplatValue` of a `ConstantAggregateZero`: the element type's
-        // null value.
-        ValueKindData::Constant(ConstantData::AggregateZero) => splat_or_scalar_constant(
-            Constant::try_from(value)
-                .ok()?
-                .splat_value(true)?
-                .as_erased(),
-        ),
-        _ => None,
-    }
 }
 
 /// The source of a `zext`, matching upstream's `m_ZExt`.
@@ -6365,60 +6389,116 @@ fn is_well_defined_attribute(attribute: &AttributeStored) -> bool {
     )
 }
 
-/// The `dyn_cast<Constant>` arm. `None` means the constant fell through to the
-/// operator tests, exactly as upstream's `ConstantExpr` case does.
+/// The `if (auto *C = dyn_cast<Constant>(V))` arm of
+/// `isGuaranteedNotToBeUndefOrPoison`, in its order. `None` falls through to
+/// the rest of the routine, as upstream's arm does for a constant it does not
+/// answer: an aggregate that is no vector, a vector constant expression that
+/// is no splat of a `ConstantInt` or `ConstantFP`, and every other constant
+/// expression.
 fn constant_is_well_defined<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
     constant: &ConstantData,
     kind: UndefPoisonKind,
 ) -> Option<bool> {
-    match constant {
-        ConstantData::Poison => Some(!kind.includes_poison()),
-        ConstantData::Undef => Some(!kind.includes_undef()),
-        ConstantData::Int(_)
-        | ConstantData::Float(_)
-        | ConstantData::PointerNull
-        | ConstantData::GlobalValueRef { .. } => Some(true),
-        // Upstream's vector arm: an element that is undef or poison of the
-        // asked-about kind disqualifies the whole vector, and a constant
-        // expression inside one is not analysed.
-        ConstantData::Aggregate(elements)
-            if matches!(
-                value.ty().kind(),
-                TypeKind::FixedVector | TypeKind::ScalableVector
-            ) =>
-        {
-            for element in elements.iter() {
-                let element = value_from_slot(value, *element);
-                match &element.data().kind {
-                    ValueKindData::Constant(ConstantData::Undef) if kind.includes_undef() => {
-                        return Some(false);
-                    }
-                    ValueKindData::Constant(ConstantData::Poison) if kind.includes_poison() => {
-                        return Some(false);
-                    }
-                    ValueKindData::Constant(ConstantData::Expr(_)) => return Some(false),
-                    _ => {}
-                }
-            }
-            Some(true)
+    let handle = Constant::try_from(value).ok()?;
+    match handle.kind() {
+        // `if (isa<PoisonValue>(C)) return !includesPoison(Kind);`
+        ConstantKind::Data(ConstantDataKind::Undef(Undefined::Poison)) => {
+            return Some(!kind.includes_poison());
         }
-        // The same arm for a vector `ConstantAggregateZero`, which holds no
-        // `undef`, `poison` or constant expression.
-        ConstantData::AggregateZero
-            if matches!(
-                value.ty().kind(),
-                TypeKind::FixedVector | TypeKind::ScalableVector
-            ) =>
-        {
-            Some(true)
+        // `if (isa<UndefValue>(C)) return !includesUndef(Kind);`
+        ConstantKind::Data(ConstantDataKind::Undef(Undefined::Undef)) => {
+            return Some(!kind.includes_undef());
         }
-        // A constant expression falls through to the operator tests upstream;
-        // llvmkit models those in a separate arm that the operator walk below
-        // does not reach, so the honest answer is "not proven".
-        ConstantData::Expr(_) => Some(false),
-        _ => None,
+        _ => {}
     }
+    // `if (isa<ConstantInt>(C) || isa<GlobalVariable>(C) || isa<ConstantFP>(C)
+    // || isa<ConstantPointerNull>(C) || isa<Function>(C)) return true;` — a
+    // `GlobalValueRef` wraps a global variable or a function only
+    // (`docs/divergences.md` D3); an alias or ifunc is its own slot.
+    if matches!(
+        constant,
+        ConstantData::Int(_)
+            | ConstantData::GlobalValueRef { .. }
+            | ConstantData::Float(_)
+            | ConstantData::PointerNull
+    ) {
+        return Some(true);
+    }
+    // `if (C->getType()->isVectorTy()) {`
+    if !value.ty().is_vector() {
+        return None;
+    }
+    if matches!(handle.kind(), ConstantKind::Expr(_)) {
+        // Scalable vectors can use a ConstantExpr to build a splat.
+        let splat = handle.splat_value(false)?;
+        return matches!(
+            splat.kind(),
+            ConstantKind::Data(ConstantDataKind::Int(_) | ConstantDataKind::Float(_))
+        )
+        .then_some(true);
+    }
+    if kind.includes_undef()
+        && contains_undefined_element(handle, |element| {
+            matches!(
+                element.kind(),
+                ConstantKind::Data(ConstantDataKind::Undef(Undefined::Undef))
+            )
+        })
+    {
+        return Some(false);
+    }
+    if kind.includes_poison() && contains_undefined_element(handle, is_poison) {
+        return Some(false);
+    }
+    Some(!contains_constant_expression(handle))
+}
+
+/// Ports the static `containsUndefinedElement(C, HasFn)` (`Constants.cpp`),
+/// under `Constant::containsUndefElement` and `containsPoisonElement`: a
+/// vector that `has` itself, or a fixed-width one with a lane `has` holds
+/// for. A `ConstantAggregateZero` and a scalable vector have no such lane.
+fn contains_undefined_element<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+    has: impl Fn(Constant<'ctx, B, C>) -> bool,
+) -> bool {
+    let Some((_, lanes, scalable)) = constant.ty().data().as_vector() else {
+        return false;
+    };
+    if has(constant) {
+        return true;
+    }
+    if matches!(
+        constant.kind(),
+        ConstantKind::Data(ConstantDataKind::AggregateZero)
+    ) {
+        return false;
+    }
+    if scalable {
+        return false;
+    }
+    (0..lanes.get()).any(|lane| constant.aggregate_element(lane).is_some_and(&has))
+}
+
+/// Ports `Constant::containsConstantExpression`: a fixed-width vector with a
+/// constant-expression lane.
+fn contains_constant_expression<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+) -> bool {
+    if matches!(
+        constant.kind(),
+        ConstantKind::Data(ConstantDataKind::Int(_) | ConstantDataKind::Float(_))
+    ) {
+        return false;
+    }
+    let TypeData::FixedVector { n, .. } = constant.ty().data() else {
+        return false;
+    };
+    (0..n.get()).any(|lane| {
+        constant
+            .aggregate_element(lane)
+            .is_some_and(|element| matches!(element.kind(), ConstantKind::Expr(_)))
+    })
 }
 
 fn type_bit_width<'ctx, B: ModuleBrand + 'ctx, C: Capability>(

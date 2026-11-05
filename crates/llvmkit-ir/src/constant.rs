@@ -788,6 +788,49 @@ pub(crate) fn canonical_aggregate<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }
 }
 
+/// An aggregate type's element count as upstream counts it, in `unsigned`:
+/// `ConstantAggregateZero::getElementCount().getKnownMinValue()`, and
+/// `UndefValue::getNumElements()`, which `PoisonValue` shares.
+///
+/// An array's length is the `uint64_t` `ArrayType::getNumElements` returns,
+/// and both routines convert it to `unsigned` (`ElementCount` is
+/// `FixedOrScalableQuantity<ElementCount, unsigned>`), which keeps its low 32
+/// bits: `[4294967304 x i8]` counts 8 elements and `[1099511627776 x i8]` none.
+/// A vector counts its (known minimum) lanes and a struct its fields, none for
+/// an opaque one. `None` for a type that is no array, struct or vector.
+pub(crate) fn aggregate_element_count(ty: &TypeData) -> Option<u32> {
+    if let Some((_, length)) = ty.as_array() {
+        let [b0, b1, b2, b3, ..] = length.to_le_bytes();
+        return Some(u32::from_le_bytes([b0, b1, b2, b3]));
+    }
+    if let Some((_, lanes, _)) = ty.as_vector() {
+        return Some(lanes.get());
+    }
+    let body = ty.as_struct()?.body.borrow();
+    Some(body.as_ref().map_or(0, |body| {
+        // `getStructNumElements` is `unsigned` too.
+        let [b0, b1, b2, b3, ..] = body.elements.len().to_le_bytes();
+        u32::from_le_bytes([b0, b1, b2, b3])
+    }))
+}
+
+/// The type of element `index` of an aggregate type: the element type of an
+/// array or a vector (`getSequentialElement`), the field type of a struct
+/// (`getStructElementType(Idx)`). `None` past a struct's fields.
+fn aggregate_element_type_slot(ty: &TypeData, index: u32) -> Option<TypeSlot> {
+    if let Some((element, _)) = ty.as_array() {
+        return Some(element);
+    }
+    if let Some((element, _, _)) = ty.as_vector() {
+        return Some(element);
+    }
+    let body = ty.as_struct()?.body.borrow();
+    body.as_ref()?
+        .elements
+        .get(usize::try_from(index).ok()?)
+        .copied()
+}
+
 /// The canonicalisations of `ConstantArray::getImpl`, in its order. Its last
 /// arm, `getSequenceIfElementsMatch<ConstantDataArray>`, answers a list —
 /// a `ConstantDataArray` is one here too — so it is [`Constant::kind`]'s.
@@ -1364,20 +1407,31 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Constant<'ctx, B, C> {
     /// element list, or the scalable-vector bail-out upstream marks `FIXME`.
     ///
     /// Upstream reaches the answer through seven `dyn_cast` arms and a
-    /// scalable-vector bail-out. `ConstantDataSequential` is an ordinary
-    /// element list here, so it arrives at the stored-element-list arm. The
-    /// vector-typed `ConstantInt` and `ConstantFP` splat forms have no llvmkit
-    /// representation at all, so those two arms are unreachable rather than
-    /// missing.
+    /// scalable-vector bail-out, taken here in its order.
+    /// `ConstantDataSequential` is an ordinary element list here, so it
+    /// arrives at the stored-element-list arm, which it may: a
+    /// `ConstantDataSequential` is never scalable. A *scalable* list is no
+    /// `ConstantAggregate`: it stands for the `shufflevector` splat expression
+    /// `ConstantVector::getSplat` builds, which no `dyn_cast` admits, so it
+    /// reaches the bail-out. The vector-typed `ConstantInt` and `ConstantFP`
+    /// splat forms have no llvmkit representation at all, so those two arms
+    /// are unreachable rather than missing.
+    ///
+    /// The bounds are upstream's `unsigned` counts, so past 2^32 elements an
+    /// array answers as its length's low 32 bits say: `[4294967304 x i8]` has
+    /// elements 0 to 7, and `[1099511627776 x i8]` none.
     pub fn aggregate_element(self, index: u32) -> Option<Constant<'ctx, B, C>> {
         let value = self.as_erased();
         let ValueKindData::Constant(constant) = &value.data().kind else {
             return None;
         };
+        let data = self.ty().data();
+        let scalable = matches!(data, TypeData::ScalableVector { .. });
         match constant {
-            // `dyn_cast<ConstantAggregate>`: the element is stored, so it is
-            // handed back rather than rebuilt.
-            ConstantData::Aggregate(elements) => {
+            // `if (const auto *CC = dyn_cast<ConstantAggregate>(this)) return
+            // Elt < CC->getNumOperands() ? CC->getOperand(Elt) : nullptr;`
+            // The element is stored, so it is handed back rather than rebuilt.
+            ConstantData::Aggregate(elements) if !scalable => {
                 let slot = *elements.get(usize::try_from(index).ok()?)?;
                 let module = self.module;
                 Some(Constant::from_parts(Value::from_parts(
@@ -1386,77 +1440,49 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Constant<'ctx, B, C> {
                     module.value_data(slot).ty,
                 )))
             }
-            // `dyn_cast<ConstantAggregateZero>`, which sits above the
-            // `isa<ScalableVectorType>` bail-out.
-            ConstantData::AggregateZero => self.aggregate_zero_element(index),
-            // `dyn_cast<PoisonValue>` and `dyn_cast<UndefValue>`, which answer
-            // the same marker one type down. Upstream's
-            // `isa<ScalableVectorType>` bail-out sits *above* these two, so a
-            // scalable `undef` answers nothing — that ordering is what
-            // [`Self::aggregate_element_type`] reproduces.
-            ConstantData::Undef => Some(self.aggregate_element_type(index)?.undef().as_constant()),
-            ConstantData::Poison => {
-                Some(self.aggregate_element_type(index)?.poison().as_constant())
+            // `if (const auto *CAZ = dyn_cast<ConstantAggregateZero>(this))
+            // return Elt < CAZ->getElementCount().getKnownMinValue() ?
+            // CAZ->getElementValue(Elt) : nullptr;` — above the bail-out, so a
+            // scalable zero answers. `getElementValue` is the element type's
+            // null value for an array or a vector (`getSequentialElement`) and
+            // the field's for a struct (`getStructElement`). A type with no
+            // null value answers `None`, where upstream's
+            // `ConstantTargetNone::get` asserts.
+            ConstantData::AggregateZero => {
+                if index >= aggregate_element_count(data)? {
+                    return None;
+                }
+                Type::new(aggregate_element_type_slot(data, index)?, self.module).null_value()
             }
+            // `// FIXME: getNumElements() will fail for non-fixed vector types.
+            // if (isa<ScalableVectorType>(getType())) return nullptr;`
+            _ if scalable => None,
+            // `if (const auto *PV = dyn_cast<PoisonValue>(this)) return Elt <
+            // PV->getNumElements() ? PV->getElementValue(Elt) : nullptr;`
+            ConstantData::Poison => {
+                Some(self.undefined_element_type(index)?.poison().as_constant())
+            }
+            // The same for `dyn_cast<UndefValue>`.
+            ConstantData::Undef => Some(self.undefined_element_type(index)?.undef().as_constant()),
             _ => None,
         }
     }
 
-    /// Element `index` of this `ConstantAggregateZero`, as
-    /// [`Self::aggregate_element`]'s arm for it answers:
-    /// `Elt < CAZ->getElementCount().getKnownMinValue() ?
-    /// CAZ->getElementValue(Elt) : nullptr`.
-    ///
-    /// Ports `ConstantAggregateZero::getElementCount` — an array's length, a
-    /// vector's (known minimum) lane count, a struct's field count — and
-    /// `getElementValue(unsigned)`: `getSequentialElement`, the element type's
-    /// null value, for an array or a vector, and `getStructElement(Idx)`, the
-    /// field's, for a struct. An opaque struct has no fields. A field type with
-    /// no null value answers `None`, where upstream's `ConstantTargetNone::get`
-    /// asserts.
-    fn aggregate_zero_element(self, index: u32) -> Option<Constant<'ctx, B, C>> {
-        let data = self.ty().data();
-        let element = if let Some((element, length)) = data.as_array() {
-            if u64::from(index) >= length {
-                return None;
-            }
-            element
-        } else if let Some((element, lanes, _)) = data.as_vector() {
-            if index >= lanes.get() {
-                return None;
-            }
-            element
-        } else {
-            let body = data.as_struct()?.body.borrow();
-            *body.as_ref()?.elements.get(usize::try_from(index).ok()?)?
-        };
-        Type::new(element, self.module).null_value()
-    }
-
     /// The element type [`Self::aggregate_element`] hands an `undef` or
-    /// `poison` marker back at, or `None` when `index` is past the end.
-    ///
-    /// Ports the `getNumElements` / `getElementValue` pair that
-    /// `UndefValue` and `PoisonValue` share, plus the `isa<ScalableVectorType>`
-    /// bail-out that guards them.
-    fn aggregate_element_type(self, index: u32) -> Option<Type<'ctx, B, C>> {
-        let module = self.module;
+    /// `poison` marker back at, or `None` when `index` is past the end:
+    /// `Elt < UV->getNumElements()` (an `unsigned`, [`aggregate_element_count`])
+    /// and the type `UndefValue::getElementValue(Elt)` builds its marker at.
+    /// The caller has taken the scalable bail-out already, as upstream's
+    /// `getNumElements` needs.
+    fn undefined_element_type(self, index: u32) -> Option<Type<'ctx, B, C>> {
         let data = self.ty().data();
-        let slot = if let Some((element, lanes, scalable)) = data.as_vector() {
-            if scalable || index >= lanes.get() {
-                return None;
-            }
-            element
-        } else if let Some((element, lanes)) = data.as_array() {
-            if u64::from(index) >= lanes {
-                return None;
-            }
-            element
-        } else {
-            let body = data.as_struct()?.body.borrow();
-            *body.as_ref()?.elements.get(usize::try_from(index).ok()?)?
-        };
-        Some(Type::new(slot, module))
+        if index >= aggregate_element_count(data)? {
+            return None;
+        }
+        Some(Type::new(
+            aggregate_element_type_slot(data, index)?,
+            self.module,
+        ))
     }
 
     /// Widen to the erased [`Value`] handle, at the same capability.
