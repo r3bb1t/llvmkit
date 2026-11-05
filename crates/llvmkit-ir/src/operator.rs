@@ -6,11 +6,15 @@
 //! `FPMathOperator`, `GEPOperator`, `BitCastOperator`, ...). This module
 //! ships thin views for [`OverflowingBinaryOperator`] (`nuw`/`nsw` on
 //! `add`/`sub`/`mul`/`shl`) and [`PossiblyExactOperator`] (`exact` on
-//! `udiv`/`sdiv`/`lshr`/`ashr`). The remaining operator classes land as
-//! their consumers do.
+//! `udiv`/`sdiv`/`lshr`/`ashr`), and `FPMathOperator`'s `classof` with its
+//! type predicate [`is_supported_floating_point_type`]. The remaining operator
+//! classes land as their consumers do.
 
 use crate::capability::Capability;
 use crate::derived_types::AnyTypeEnum;
+use crate::fmf::FastMathFlags;
+use crate::instr_types::CastOpcode;
+use crate::instruction::InstructionKindData;
 use crate::instructions::{
     AddInst, AshrInst, LshrInst, MulInst, SdivInst, ShlInst, SubInst, UdivInst,
 };
@@ -68,6 +72,99 @@ pub fn is_supported_floating_point_type<'ctx, B: ModuleBrand + 'ctx, C: Capabili
     ty: Type<'ctx, B, C>,
 ) -> bool {
     ty.is_float_or_float_vector() || is_composed_of_homogeneous_floating_point_types(ty)
+}
+
+/// The fast-math flags of an instruction that is an `FPMathOperator`, or
+/// `None` for one that is not: `dyn_cast<FPMathOperator>(I)` followed by
+/// `getFastMathFlags()`.
+///
+/// Ports `FPMathOperator::classof`'s `switch`, in its order. `fneg`, the five
+/// floating-point binary operators, `fptrunc`, `fpext` and `fcmp` always are
+/// one. A `phi`, a `select` and a `call` are one when `ty`, the instruction's
+/// result type, passes [`is_supported_floating_point_type`]. Every other
+/// opcode is not. `classof` admits only an `Instruction`, so a constant
+/// expression is never one, and this takes an instruction's payload.
+///
+/// Upstream reads the flags out of `SubclassOptionalData`, which each
+/// `FPMathOperator` keeps its flags in. llvmkit keeps them in the payloads
+/// that can carry them, which are exactly the opcodes `classof` admits.
+pub(crate) fn fp_math_operator_flags<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    instruction: &InstructionKindData,
+    ty: Type<'ctx, B, C>,
+) -> Option<FastMathFlags> {
+    match instruction {
+        // `case Instruction::FNeg:`
+        InstructionKindData::Fneg(data) => Some(data.fmf),
+        // `case Instruction::FAdd: case Instruction::FSub: case
+        // Instruction::FMul: case Instruction::FDiv: case Instruction::FRem:`
+        InstructionKindData::Fadd(data)
+        | InstructionKindData::Fsub(data)
+        | InstructionKindData::Fmul(data)
+        | InstructionKindData::Fdiv(data)
+        | InstructionKindData::Frem(data) => Some(data.fmf),
+        // `case Instruction::FPTrunc: case Instruction::FPExt:`
+        InstructionKindData::Cast(data)
+            if matches!(data.kind, CastOpcode::FpTrunc | CastOpcode::FpExt) =>
+        {
+            Some(data.fmf.get())
+        }
+        // `case Instruction::FCmp: return true;`
+        InstructionKindData::Fcmp(data) => Some(data.fmf),
+        // `case Instruction::PHI: case Instruction::Select: case
+        // Instruction::Call: return isSupportedFloatingPointType(V->getType());`
+        InstructionKindData::Phi(data) => {
+            is_supported_floating_point_type(ty).then(|| data.fmf.get())
+        }
+        InstructionKindData::Select(data) => {
+            is_supported_floating_point_type(ty).then(|| data.fmf.get())
+        }
+        InstructionKindData::Call(data) => is_supported_floating_point_type(ty).then_some(data.fmf),
+        // `default: return false;` — matched exhaustively, so a new opcode has
+        // to be classified rather than defaulted.
+        InstructionKindData::Add(_)
+        | InstructionKindData::Sub(_)
+        | InstructionKindData::Mul(_)
+        | InstructionKindData::Udiv(_)
+        | InstructionKindData::Sdiv(_)
+        | InstructionKindData::Urem(_)
+        | InstructionKindData::Srem(_)
+        | InstructionKindData::Shl(_)
+        | InstructionKindData::Lshr(_)
+        | InstructionKindData::Ashr(_)
+        | InstructionKindData::And(_)
+        | InstructionKindData::Or(_)
+        | InstructionKindData::Xor(_)
+        | InstructionKindData::Cast(_)
+        | InstructionKindData::Alloca(_)
+        | InstructionKindData::Load(_)
+        | InstructionKindData::Store(_)
+        | InstructionKindData::Gep(_)
+        | InstructionKindData::Icmp(_)
+        | InstructionKindData::Freeze(_)
+        | InstructionKindData::VaArg(_)
+        | InstructionKindData::ExtractValue(_)
+        | InstructionKindData::InsertValue(_)
+        | InstructionKindData::ExtractElement(_)
+        | InstructionKindData::InsertElement(_)
+        | InstructionKindData::ShuffleVector(_)
+        | InstructionKindData::Fence(_)
+        | InstructionKindData::AtomicCmpXchg(_)
+        | InstructionKindData::AtomicRmw(_)
+        | InstructionKindData::Switch(_)
+        | InstructionKindData::IndirectBr(_)
+        | InstructionKindData::Invoke(_)
+        | InstructionKindData::CallBr(_)
+        | InstructionKindData::LandingPad(_)
+        | InstructionKindData::Resume(_)
+        | InstructionKindData::CleanupPad(_)
+        | InstructionKindData::CatchPad(_)
+        | InstructionKindData::CatchReturn(_)
+        | InstructionKindData::CleanupReturn(_)
+        | InstructionKindData::CatchSwitch(_)
+        | InstructionKindData::Ret(_)
+        | InstructionKindData::Br(_)
+        | InstructionKindData::Unreachable(_) => None,
+    }
 }
 
 /// Common interface for the binary operators that carry `nuw`/`nsw`

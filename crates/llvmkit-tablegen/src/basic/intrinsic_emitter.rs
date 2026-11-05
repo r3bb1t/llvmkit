@@ -874,6 +874,11 @@ pub(crate) fn semantic_ids(intrinsics: &[IntrinsicOut]) -> GenResult<Vec<(String
         ("AMDGCN_UNREACHABLE", "amdgcn_unreachable"),
         // `Verifier::visitIntrinsicCall`'s `case Intrinsic::callbr_landingpad:`.
         ("CALLBR_LANDINGPAD", "callbr_landingpad"),
+        // The second case of `canCreateUndefOrPoison`'s intrinsic `switch`
+        // (`ValueTracking.cpp`); its first case, `ctlz` / `cttz` / `abs`, is
+        // listed above.
+        ("SSHL_SAT", "sshl_sat"),
+        ("USHL_SAT", "ushl_sat"),
         // `IntrinsicInst::mayLowerToFunctionCall`'s `switch`
         // (`lib/IR/IntrinsicInst.cpp`), in its own order, plus
         // `objc_claimAutoreleasedReturnValue` — which that `switch` does *not*

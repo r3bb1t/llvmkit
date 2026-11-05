@@ -2486,6 +2486,72 @@ pub(crate) fn call_site_has_fn_attr<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }
 }
 
+/// Whether a call site's return has the attribute `kind`, on itself or on the
+/// function it calls. The one port of `CallBase::hasRetAttr(Attribute::AttrKind)`
+/// (`IR/InstrTypes.h`), whose body is `hasRetAttrImpl`:
+///
+/// ```text
+/// if (Attrs.hasRetAttr(Kind)) return true;
+/// if (const Function *F = getCalledFunction())
+///   return F->getAttributes().hasRetAttr(Kind);
+/// return false;
+/// ```
+///
+/// `getCalledFunction` is [`called_function`]: a call through a function of
+/// another signature does not read that function's attributes. `callee` is the
+/// call's called operand as stored, `function_type` its `getFunctionType()`,
+/// and `attrs` the call site's stored attributes, all of `module`.
+pub(crate) fn call_site_has_ret_attr<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
+    callee: ValueSlot,
+    function_type: crate::r#type::TypeSlot,
+    attrs: &CallAttributeData,
+    kind: AttrKind,
+) -> bool {
+    // `if (Attrs.hasRetAttr(Kind)) return true;`
+    if attrs.return_attrs.has_kind(AttrIndex::Return, kind) {
+        return true;
+    }
+    // `if (const Function *F = getCalledFunction())
+    //    return F->getAttributes().hasRetAttr(Kind);
+    //  return false;`
+    called_function(module, callee, function_type).is_some_and(|function| {
+        function
+            .data()
+            .attributes
+            .borrow()
+            .has_kind(AttrIndex::Return, kind)
+    })
+}
+
+/// The function a call site calls directly, or `None`. A port of
+/// `CallBase::getCalledFunction` (`IR/InstrTypes.h`):
+///
+/// ```text
+/// if (auto *F = dyn_cast_or_null<Function>(getCalledOperand()))
+///   if (F->getValueType() == getFunctionType())
+///     return F;
+/// return nullptr;
+/// ```
+///
+/// A call whose own function type is not the callee's does not call it
+/// directly. Types are uniqued, so the comparison is of slots. `callee` is the
+/// call's called operand as stored and `function_type` its
+/// `getFunctionType()`, both of `module`. The sites that still spell
+/// `getCalledFunction` as the bare `dyn_cast` are `docs/divergences.md` D134.
+pub(crate) fn called_function<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
+    callee: ValueSlot,
+    function_type: crate::r#type::TypeSlot,
+) -> Option<FunctionValue<'ctx, Dyn, B, C>> {
+    match &module.value_data(callee).kind {
+        ValueKindData::Function(function) if function.signature == function_type => Some(
+            FunctionValue::<Dyn, B, C>::from_parts_unchecked(callee, module),
+        ),
+        _ => None,
+    }
+}
+
 impl Default for CallAttributeData {
     fn default() -> Self {
         Self::new(

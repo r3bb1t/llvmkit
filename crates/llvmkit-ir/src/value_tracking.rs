@@ -27,17 +27,20 @@ use crate::constant_range::{
 use crate::constants::{GepTypeCursor, constant_id_is_null_value};
 use crate::data_layout::DataLayout;
 use crate::dominator_tree::{DominatorTree, DominatorTreeAnalysis};
+use crate::fmf::FastMathFlags;
 use crate::function::FunctionValue;
 use crate::instr_types::{
-    AddFlags, AllocaInstData, AshrFlags, BinaryOpData, BinaryOpcode, BranchKind, CastOpData,
-    CastOpcode, CmpInstData, ExtractElementInstData, GepInstData, InsertElementInstData, LshrFlags,
-    PhiData, SdivFlags, ShlFlags, ShuffleMaskElem, ShuffleVectorInstData, SubFlags, UdivFlags,
+    AddFlags, AllocaInstData, AshrFlags, BinaryOpData, BinaryOpcode, BranchKind, CallAttributeData,
+    CallAttributesSlot, CallInstData, CastOpData, CastOpcode, CmpInstData, ExtractElementInstData,
+    GepInstData, InsertElementInstData, LshrFlags, PhiData, SdivFlags, ShlFlags, ShuffleMaskElem,
+    ShuffleVectorInstData, SubFlags, UdivFlags, call_site_has_fn_attr, call_site_has_ret_attr,
 };
 use crate::instruction::{InstructionData, InstructionKindData, InstructionView};
-use crate::intrinsics::{IntrinsicSemantic, semantic_for_callee};
-use crate::marker::ReturnMarker;
+use crate::intrinsics::{IntrinsicId, IntrinsicSemantic, semantic_for_callee};
+use crate::marker::{Dyn, ReturnMarker};
 use crate::metadata::MetadataAttachmentKind;
 use crate::module::{ModuleBrand, ModuleRef};
+use crate::operator::fp_math_operator_flags;
 use crate::pass_context::FunctionView;
 use crate::pointer_analysis::strip_pointer_casts_same_representation;
 use crate::speculation::program_undefined_for_value;
@@ -50,6 +53,7 @@ use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use crate::vector_utils::splat_value;
 use crate::{ApInt, IrError, IrResult, KnownBits, ShiftAmountKnowledge};
 use core::cell::{Cell, RefCell};
+use core::cmp::Ordering;
 use core::marker::PhantomData;
 use core::ops::Not;
 use std::collections::{HashMap, HashSet};
@@ -4948,8 +4952,13 @@ impl UndefPoisonKind {
 /// carry. Ports `llvm::canCreatePoison`.
 ///
 /// `consider_flags_and_metadata` mirrors upstream's parameter: with it set, an
-/// operator carrying a poison-generating annotation (`nsw`, `nuw`, `exact`,
-/// `inbounds`, `nneg`, `disjoint`) answers true on that basis alone.
+/// operator carrying a poison-generating annotation answers true on that basis
+/// alone. The annotations are `Operator::hasPoisonGeneratingAnnotations`'s:
+/// the flags (`nuw` and `nsw` of `add`, `sub`, `mul`, `shl` and `trunc`;
+/// `exact`; `disjoint`; a `getelementptr`'s no-wrap flags and `inrange`;
+/// `nneg` of `zext` and `uitofp`; `samesign`; and `nnan` or `ninf` of an
+/// `FPMathOperator`), and of an instruction its `range`, `align` or `nonnull`
+/// return attribute and its `!range`, `!nonnull` or `!align` metadata.
 pub fn can_create_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
     consider_flags_and_metadata: bool,
@@ -4983,8 +4992,9 @@ pub fn can_create_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 /// and are read as that expression.
 #[derive(Clone, Copy)]
 enum OperatorRef<'ctx> {
-    /// An instruction.
-    Instruction(&'ctx InstructionKindData),
+    /// An instruction: its payload, and beside it the metadata
+    /// `Instruction::hasPoisonGeneratingMetadata` reads.
+    Instruction(&'ctx InstructionData),
     /// A constant expression stored with its operands.
     Expression(&'ctx ConstantExprData),
     /// [`ConstantData::GepOffset`] at a nonzero offset, which prints as
@@ -5010,7 +5020,7 @@ fn operator_ref<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 ) -> Option<OperatorRef<'ctx>> {
     let constant = match &value.data().kind {
         ValueKindData::Instruction(instruction) => {
-            return Some(OperatorRef::Instruction(&instruction.kind));
+            return Some(OperatorRef::Instruction(instruction));
         }
         ValueKindData::Constant(constant) => constant,
         _ => return None,
@@ -5081,14 +5091,14 @@ fn can_create_undef_or_poison_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 
     if consider_flags_and_metadata
         && kind.includes_poison()
-        && has_poison_generating_annotations(operator)
+        && has_poison_generating_annotations(value, operator)
     {
         return true;
     }
 
     match operator {
         OperatorRef::Instruction(instruction) => {
-            instruction_can_create_undef_or_poison(value, instruction, kind)
+            instruction_can_create_undef_or_poison(value, &instruction.kind, kind)
         }
         OperatorRef::Expression(expression) => {
             expression_can_create_undef_or_poison(value, expression, kind)
@@ -5104,14 +5114,18 @@ fn can_create_undef_or_poison_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }
 }
 
-/// The `canCreateUndefOrPoison` switch over an instruction's opcode.
+/// The `canCreateUndefOrPoison` switch over an instruction's opcode, its arms
+/// in the switch's order. The annotations test before the switch is
+/// [`can_create_undef_or_poison_kind`]'s.
 fn instruction_can_create_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
     instruction: &InstructionKindData,
     kind: UndefPoisonKind,
 ) -> bool {
     match instruction {
-        // Shifts are poison when the amount is out of range.
+        // `case Instruction::Shl: case Instruction::AShr: case
+        // Instruction::LShr: return includesPoison(Kind) &&
+        // !shiftAmountKnownInRange(Op->getOperand(1));`
         InstructionKindData::Shl(data)
         | InstructionKindData::Ashr(data)
         | InstructionKindData::Lshr(data) => {
@@ -5119,35 +5133,40 @@ fn instruction_can_create_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capabi
                 && !shift_amount_known_in_range(value_from_slot(value, data.rhs.get()))
         }
 
-        // fptosi/fptoui yield poison when the value does not fit the
-        // destination type.
+        // `case Instruction::FPToSI: case Instruction::FPToUI:` — "fptosi/ui
+        // yields poison if the resulting value does not fit in the destination
+        // type." `return true;`
         InstructionKindData::Cast(data)
             if matches!(data.kind, CastOpcode::FpToSi | CastOpcode::FpToUi) =>
         {
             true
         }
 
-        // addrspacecast can create poison; every other cast cannot. Upstream
-        // reaches the latter through the `isa<CastInst>` test in `default`.
-        InstructionKindData::Cast(data) => data.kind == CastOpcode::AddrSpaceCast,
-
-        // Upstream returns true unless the call is annotated `noundef` on its
-        // return, or `nocreateundeforpoison` on the callee. llvmkit does not
-        // model `nocreateundeforpoison`, so only the `noundef` half is
-        // consulted; the effect is that some calls answer true where upstream
-        // would answer false — conservative in the safe direction.
-        call @ (InstructionKindData::Call(_)
-        | InstructionKindData::Invoke(_)
-        | InstructionKindData::CallBr(_)) => !call_returns_noundef(value, call),
-
-        // Out-of-range lane indices give poison.
-        InstructionKindData::ExtractElement(data) => {
-            kind.includes_poison()
-                && !lane_index_known_in_range(
-                    Some(value_from_slot(value, data.vector.get())),
-                    Some(value_from_slot(value, data.index.get())),
-                )
+        // `case Instruction::Call:` — the intrinsic `switch`, then
+        // `[[fallthrough]];` into the `CallBase` arm below it.
+        InstructionKindData::Call(data) => {
+            if intrinsic_cannot_create_undef_or_poison(value, data, kind) {
+                return false;
+            }
+            call_base_can_create_undef_or_poison(CallBaseParts::new(
+                value,
+                data.callee.get(),
+                data.fn_ty,
+                data.attrs.get(),
+            ))
         }
+        // `case Instruction::CallBr: case Instruction::Invoke:`
+        InstructionKindData::CallBr(data) => call_base_can_create_undef_or_poison(
+            CallBaseParts::new(value, data.callee.get(), data.fn_ty, data.attrs.get()),
+        ),
+        InstructionKindData::Invoke(data) => call_base_can_create_undef_or_poison(
+            CallBaseParts::new(value, data.callee.get(), data.fn_ty, data.attrs.get()),
+        ),
+
+        // `case Instruction::InsertElement: case Instruction::ExtractElement:`
+        // — "If index exceeds the length of the vector, it returns poison";
+        // the index is operand 2 of an `insertelement`, 1 of an
+        // `extractelement`.
         InstructionKindData::InsertElement(data) => {
             kind.includes_poison()
                 && !lane_index_known_in_range(
@@ -5155,13 +5174,22 @@ fn instruction_can_create_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capabi
                     Some(value_from_slot(value, data.index.get())),
                 )
         }
+        InstructionKindData::ExtractElement(data) => {
+            kind.includes_poison()
+                && !lane_index_known_in_range(
+                    Some(value_from_slot(value, data.vector.get())),
+                    Some(value_from_slot(value, data.index.get())),
+                )
+        }
 
-        // A poison mask element creates poison.
+        // `case Instruction::ShuffleVector: return includesPoison(Kind) &&
+        // is_contained(Mask, PoisonMaskElem);`
         InstructionKindData::ShuffleVector(data) => {
             kind.includes_poison() && data.mask.contains(&ShuffleMaskElem::Poison)
         }
 
-        // These never create undef or poison of their own.
+        // `case Instruction::FNeg:` … `case Instruction::GetElementPtr:
+        // return false;`
         InstructionKindData::Fneg(_)
         | InstructionKindData::Phi(_)
         | InstructionKindData::Select(_)
@@ -5172,11 +5200,142 @@ fn instruction_can_create_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capabi
         | InstructionKindData::Fcmp(_)
         | InstructionKindData::Gep(_) => false,
 
-        // Upstream's `default`: a binary operator cannot create undef or
-        // poison on its own (its flags are handled above); anything else is
-        // conservatively assumed to.
+        // `case Instruction::AddrSpaceCast: return true;`
+        InstructionKindData::Cast(data) if data.kind == CastOpcode::AddrSpaceCast => true,
+
+        // `default:` — `if (isa<CastInst>(Op) || (CE && CE->isCast())) return
+        // false;`
+        InstructionKindData::Cast(_) => false,
+        // `else if (Instruction::isBinaryOp(Opcode)) return false;` — "Be
+        // conservative and return true."
         other => !is_binary_operator_kind(other),
     }
+}
+
+/// `case Instruction::Call:`'s `if (auto *II = dyn_cast<IntrinsicInst>(Op))
+/// switch (II->getIntrinsicID())`: whether one of its cases returns `false`.
+/// A case that `break`s, an intrinsic with no case, and a call that is no
+/// intrinsic call fall through to the `CallBase` arm, which this answers
+/// `false` for.
+///
+/// `IntrinsicInst::classof` asks that the called operand be a `Function` and
+/// `isIntrinsic()`, and `getIntrinsicID()` is that function's `IntID`
+/// ([`FunctionValue::intrinsic_id`]).
+///
+/// The `ctlz` / `cttz` / `abs` case reads `cast<ConstantInt>(
+/// II->getArgOperand(1))`, which asserts that the operand is a `ConstantInt`
+/// (the verifier requires an `immarg`). llvmkit takes no runtime panic: an
+/// operand that is none, or a call with no such operand, is read as no null
+/// value, so the case `break`s and the `CallBase` arm answers. That is the
+/// answer that claims less.
+fn intrinsic_cannot_create_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    call: &CallInstData,
+    kind: UndefPoisonKind,
+) -> bool {
+    let Ok(function) =
+        FunctionValue::<Dyn, B, C>::try_from(value_from_slot(anchor, call.callee.get()))
+    else {
+        return false;
+    };
+    if !function.is_intrinsic() {
+        return false;
+    }
+    let argument = |index: usize| {
+        call.args
+            .get(index)
+            .map(|slot| value_from_slot(anchor, slot.get()))
+    };
+    match function.intrinsic_id() {
+        // "TODO: Add more intrinsics." `case Intrinsic::ctlz: case
+        // Intrinsic::cttz: case Intrinsic::abs: if
+        // (cast<ConstantInt>(II->getArgOperand(1))->isNullValue()) return
+        // false; break;`
+        Some(IntrinsicId::CTLZ | IntrinsicId::CTTZ | IntrinsicId::ABS) => {
+            argument_constant(argument(1)).is_some_and(|operand| operand.is_zero())
+        }
+        // `case Intrinsic::sshl_sat: case Intrinsic::ushl_sat: if
+        // (!includesPoison(Kind) || shiftAmountKnownInRange(
+        // II->getArgOperand(1))) return false; break;`
+        Some(IntrinsicId::SSHL_SAT | IntrinsicId::USHL_SAT) => {
+            !kind.includes_poison() || argument(1).is_some_and(shift_amount_known_in_range)
+        }
+        _ => false,
+    }
+}
+
+/// `case Instruction::CallBr: case Instruction::Invoke:`, which the `Call`
+/// arm falls through into: `!CB->hasRetAttr(Attribute::NoUndef) &&
+/// !CB->hasFnAttr(Attribute::NoCreateUndefOrPoison)`. Both read the called
+/// function's attributes as well as the call site's.
+fn call_base_can_create_undef_or_poison<B: ModuleBrand, C: Capability>(
+    call: CallBaseParts<'_, B, C>,
+) -> bool {
+    !call.has_ret_attr(AttrKind::NoUndef) && !call.has_fn_attr(AttrKind::NoCreateUndefOrPoison)
+}
+
+/// What the attribute queries of a `CallBase` read: the called operand as
+/// stored, the call's function type, and the call site's attribute list, with
+/// the module they are all of.
+struct CallBaseParts<'ctx, B: ModuleBrand, C: Capability> {
+    module: ModuleRef<'ctx, B, C>,
+    callee: ValueSlot,
+    function_type: TypeSlot,
+    attributes: &'ctx CallAttributeData,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> CallBaseParts<'ctx, B, C> {
+    /// The parts of a call whose payload stores `callee`, `function_type` and
+    /// `attributes`. `anchor` is any value of the call's module.
+    fn new(
+        anchor: Value<'ctx, B, C>,
+        callee: ValueSlot,
+        function_type: TypeSlot,
+        attributes: CallAttributesSlot,
+    ) -> Self {
+        Self {
+            module: anchor.module,
+            callee,
+            function_type,
+            attributes: anchor.module.call_attributes(attributes),
+        }
+    }
+
+    /// `CB->hasRetAttr(Kind)`: [`call_site_has_ret_attr`].
+    fn has_ret_attr(&self, kind: AttrKind) -> bool {
+        call_site_has_ret_attr(
+            self.module,
+            self.callee,
+            self.function_type,
+            self.attributes,
+            kind,
+        )
+    }
+
+    /// `CB->hasFnAttr(Kind)`: [`call_site_has_fn_attr`].
+    fn has_fn_attr(&self, kind: AttrKind) -> bool {
+        call_site_has_fn_attr(self.module, self.callee, self.attributes, kind)
+    }
+}
+
+/// `dyn_cast<CallBase>(I)`: the parts of a `call`, `invoke` or `callbr`, or
+/// `None` for any other instruction. `anchor` is any value of `kind`'s module.
+fn call_base_parts<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    kind: &InstructionKindData,
+) -> Option<CallBaseParts<'ctx, B, C>> {
+    let (callee, function_type, attributes) = match kind {
+        InstructionKindData::Call(data) => (data.callee.get(), data.fn_ty, data.attrs.get()),
+        InstructionKindData::Invoke(data) => (data.callee.get(), data.fn_ty, data.attrs.get()),
+        InstructionKindData::CallBr(data) => (data.callee.get(), data.fn_ty, data.attrs.get()),
+        _ => return None,
+    };
+    Some(CallBaseParts::new(
+        anchor,
+        callee,
+        function_type,
+        attributes,
+    ))
 }
 
 /// The `canCreateUndefOrPoison` switch over a constant expression's opcode,
@@ -5245,13 +5404,52 @@ fn expression_shuffle_mask<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 }
 
 /// Ports `Operator::hasPoisonGeneratingAnnotations` (`Operator.cpp`):
-/// `hasPoisonGeneratingFlags()`, then, of an instruction, its
-/// poison-generating return attributes and metadata. A compact expression has
-/// the flags of the expression it prints as.
-fn has_poison_generating_annotations(operator: OperatorRef<'_>) -> bool {
+///
+/// ```text
+/// if (hasPoisonGeneratingFlags())
+///   return true;
+/// auto *I = dyn_cast<Instruction>(this);
+/// return I && (I->hasPoisonGeneratingReturnAttributes() ||
+///              I->hasPoisonGeneratingMetadata());
+/// ```
+///
+/// `anchor` is the operator's own value: an instruction's result type is what
+/// `FPMathOperator::classof` reads, and its module what an attribute query
+/// reads.
+fn has_poison_generating_annotations<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    operator: OperatorRef<'ctx>,
+) -> bool {
+    if has_poison_generating_flags(anchor, operator) {
+        return true;
+    }
     match operator {
         OperatorRef::Instruction(instruction) => {
-            instruction_has_poison_generating_annotations(instruction)
+            instruction_has_poison_generating_return_attributes(anchor, &instruction.kind)
+                || instruction_has_poison_generating_metadata(instruction)
+        }
+        // `dyn_cast<Instruction>` is null for a constant expression.
+        OperatorRef::Expression(_)
+        | OperatorRef::GlobalOffset { .. }
+        | OperatorRef::SymbolDelta { .. }
+        | OperatorRef::SymbolDeltaPlus { .. }
+        | OperatorRef::ScalableSplat { .. } => false,
+    }
+}
+
+/// Ports `Operator::hasPoisonGeneratingFlags` (`Operator.cpp`). Its one
+/// `switch` over the opcode is split by storage:
+/// [`instruction_has_poison_generating_flags`] holds an instruction's arms and
+/// [`expression_has_poison_generating_flags`] a stored expression's, each in
+/// the switch's order, and a compact expression has the flags of the
+/// expression it prints as.
+fn has_poison_generating_flags<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    operator: OperatorRef<'ctx>,
+) -> bool {
+    match operator {
+        OperatorRef::Instruction(instruction) => {
+            instruction_has_poison_generating_flags(anchor, &instruction.kind)
         }
         OperatorRef::Expression(expression) => expression_has_poison_generating_flags(expression),
         // `getelementptr inbounds`: `GEP->getNoWrapFlags() !=
@@ -5266,8 +5464,7 @@ fn has_poison_generating_annotations(operator: OperatorRef<'_>) -> bool {
 }
 
 /// `Operator::hasPoisonGeneratingFlags` of a constant expression, its arms in
-/// the switch's order. `hasPoisonGeneratingAnnotations` adds nothing to it:
-/// it reads return attributes and metadata only of an `Instruction`.
+/// the switch's order.
 fn expression_has_poison_generating_flags(expression: &ConstantExprData) -> bool {
     match expression.opcode {
         // `case Instruction::Add: case Instruction::Sub:` (and `Mul` and
@@ -5302,38 +5499,152 @@ fn expression_has_poison_generating_flags(expression: &ConstantExprData) -> bool
     }
 }
 
-/// Ports `Operator::hasPoisonGeneratingAnnotations` of an instruction, for the
-/// flags llvmkit models. The metadata half (`!range`, `!nonnull`, `!align`) is
-/// not consulted because those attach to loads and calls, whose arms already
-/// answer conservatively.
-fn instruction_has_poison_generating_annotations(kind: &InstructionKindData) -> bool {
+/// `Operator::hasPoisonGeneratingFlags` of an instruction, its arms in the
+/// switch's order. `anchor` is the instruction's own value, whose result type
+/// the `default:` arm's `FPMathOperator::classof` reads.
+fn instruction_has_poison_generating_flags<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    kind: &InstructionKindData,
+) -> bool {
     match kind {
+        // `case Instruction::Add: case Instruction::Sub: case Instruction::Mul:
+        // case Instruction::Shl:` — `OBO->hasNoUnsignedWrap() ||
+        // OBO->hasNoSignedWrap()`.
         InstructionKindData::Add(data)
         | InstructionKindData::Sub(data)
         | InstructionKindData::Mul(data)
-        | InstructionKindData::Shl(data) => data.no_signed_wrap || data.no_unsigned_wrap,
+        | InstructionKindData::Shl(data) => data.no_unsigned_wrap || data.no_signed_wrap,
+        // `case Instruction::Trunc:` — `if (auto *TI = dyn_cast<TruncInst>(this))
+        // return TI->hasNoUnsignedWrap() || TI->hasNoSignedWrap();`, which an
+        // instruction always is.
+        InstructionKindData::Cast(data) if data.kind == CastOpcode::Trunc => {
+            data.nuw.get() || data.nsw.get()
+        }
+        // `case Instruction::UDiv: case Instruction::SDiv: case
+        // Instruction::AShr: case Instruction::LShr:` — `isExact()`.
         InstructionKindData::Udiv(data)
         | InstructionKindData::Sdiv(data)
-        | InstructionKindData::Lshr(data)
-        | InstructionKindData::Ashr(data) => data.is_exact,
+        | InstructionKindData::Ashr(data)
+        | InstructionKindData::Lshr(data) => data.is_exact,
+        // `case Instruction::Or:` — `isDisjoint()`.
         InstructionKindData::Or(data) => data.disjoint,
+        // `case Instruction::GetElementPtr:` — `GEP->getNoWrapFlags() !=
+        // GEPNoWrapFlags::none() || GEP->getInRange() != std::nullopt`.
+        // "inrange exists on constexpr only": `GEPOperator::getInRange` of an
+        // instruction is `std::nullopt`.
         InstructionKindData::Gep(data) => !data.flags.is_empty(),
-        InstructionKindData::Cast(data) => data.nneg.get() || data.nuw.get(),
-        _ => false,
+        // `case Instruction::UIToFP: case Instruction::ZExt:` — `if (auto *NNI =
+        // dyn_cast<PossiblyNonNegInst>(this)) return NNI->hasNonNeg();`, which
+        // an instruction of either opcode always is.
+        InstructionKindData::Cast(data)
+            if matches!(data.kind, CastOpcode::UiToFp | CastOpcode::Zext) =>
+        {
+            data.nneg.get()
+        }
+        // `case Instruction::ICmp:` — `cast<ICmpInst>(this)->hasSameSign()`.
+        InstructionKindData::Icmp(data) => data.samesign,
+        // `default:` — `if (const auto *FP = dyn_cast<FPMathOperator>(this))
+        // return FP->hasNoNaNs() || FP->hasNoInfs(); return false;`
+        other => fp_math_operator_flags(other, anchor.ty()).is_some_and(|flags| {
+            flags.contains(FastMathFlags::NO_NANS) || flags.contains(FastMathFlags::NO_INFS)
+        }),
     }
 }
 
-/// Ports `shiftAmountKnownInRange`: a constant shift amount strictly below the
-/// bit width. A non-constant amount answers false.
+/// Ports `Instruction::hasPoisonGeneratingReturnAttributes`
+/// (`Instruction.cpp`):
+///
+/// ```text
+/// if (const auto *CB = dyn_cast<CallBase>(this)) {
+///   AttributeSet RetAttrs = CB->getAttributes().getRetAttrs();
+///   return RetAttrs.hasAttribute(Attribute::Range) ||
+///          RetAttrs.hasAttribute(Attribute::Alignment) ||
+///          RetAttrs.hasAttribute(Attribute::NonNull);
+/// }
+/// return false;
+/// ```
+///
+/// It reads the call site's own list only, and not the called function's, as
+/// `CallBase::hasRetAttr` would.
+fn instruction_has_poison_generating_return_attributes<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+>(
+    anchor: Value<'ctx, B, C>,
+    kind: &InstructionKindData,
+) -> bool {
+    let Some(call) = call_base_parts(anchor, kind) else {
+        return false;
+    };
+    let return_attributes = call.attributes.return_attrs();
+    [AttrKind::Range, AttrKind::Alignment, AttrKind::NonNull]
+        .into_iter()
+        .any(|kind| return_attributes.has_kind(AttrIndex::Return, kind))
+}
+
+/// Ports `Instruction::hasPoisonGeneratingMetadata` (`Instruction.cpp`):
+/// `any_of(Metadata::PoisonGeneratingIDs, [this](unsigned ID) { return
+/// hasMetadata(ID); })`, whose kinds are `MD_range`, `MD_nonnull` and
+/// `MD_align`, in that order (`Metadata.h`).
+fn instruction_has_poison_generating_metadata(instruction: &InstructionData) -> bool {
+    let metadata = instruction.metadata.borrow();
+    [
+        MetadataAttachmentKind::Range,
+        MetadataAttachmentKind::NonNull,
+        MetadataAttachmentKind::Align,
+    ]
+    .iter()
+    .any(|kind| metadata.get(kind).is_some())
+}
+
+/// Ports `shiftAmountKnownInRange` (`ValueTracking.cpp`): "Shifts return poison
+/// if shiftwidth is larger than the bitwidth."
+///
+/// ```text
+/// auto *C = dyn_cast<Constant>(ShiftAmount);
+/// if (!C) return false;
+/// if (auto *FVTy = dyn_cast<FixedVectorType>(C->getType())) {
+///   for (unsigned i = 0; i < NumElts; ++i)
+///     ShiftAmounts.push_back(C->getAggregateElement(i));
+/// } else if (isa<ScalableVectorType>(C->getType()))
+///   return false; // Can't tell, just return false to be safe
+/// else
+///   ShiftAmounts.push_back(C);
+/// return all_of(ShiftAmounts, [](const Constant *C) {
+///   auto *CI = dyn_cast_or_null<ConstantInt>(C);
+///   return CI && CI->getValue().ult(C->getType()->getIntegerBitWidth());
+/// });
+/// ```
+///
+/// Upstream collects a fixed vector's lanes into a list before it tests them.
+/// The test reads nothing but the lane, so here each lane is tested as it is
+/// read, in the same order, and no list as long as the vector is ever built.
+/// `all_of` stops at the first lane that fails, as `Iterator::all` does.
 fn shift_amount_known_in_range<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     shift_amount: Value<'ctx, B, C>,
 ) -> bool {
-    let data_layout = shift_amount.module().data_layout();
-    let Some(width) = value_bit_width(shift_amount, &data_layout) else {
+    let Ok(constant) = Constant::try_from(shift_amount) else {
         return false;
     };
-    argument_constant(Some(shift_amount))
-        .is_some_and(|amount| amount.limited_value(u64::from(width)) < u64::from(width))
+    // The lambda: `dyn_cast_or_null<ConstantInt>(C)`, then `ult` against the
+    // `ConstantInt`'s own width.
+    let in_range = |lane: Option<Constant<'ctx, B, C>>| {
+        lane.is_some_and(|lane| match lane.kind() {
+            ConstantKind::Data(ConstantDataKind::Int(int)) => {
+                let amount = int.ap_int();
+                amount.unsigned_cmp_u64(u64::from(amount.bit_width())) == Ordering::Less
+            }
+            _ => false,
+        })
+    };
+    match constant.ty().data() {
+        TypeData::FixedVector { n, .. } => {
+            (0..n.get()).all(|index| in_range(constant.aggregate_element(index)))
+        }
+        TypeData::ScalableVector { .. } => false,
+        _ => in_range(Some(constant)),
+    }
 }
 
 /// Ports the `InsertElement` / `ExtractElement` arm's bounds test, the negation
@@ -5352,50 +5663,26 @@ fn lane_index_known_in_range<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         .is_some_and(|idx| idx.limited_value(u64::from(lanes.get())) < u64::from(lanes.get()))
 }
 
-/// True when the call/invoke/callbr's return carries `noundef`.
-fn call_returns_noundef<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    anchor: Value<'ctx, B, C>,
-    kind: &InstructionKindData,
-) -> bool {
-    call_return_attrs(anchor, kind).is_some_and(|stored| {
-        stored
-            .iter()
-            .any(|attr| matches!(attr, AttributeStored::Enum(AttrKind::NoUndef)))
-    })
-}
-
 /// True when the call/invoke/callbr's return carries `noundef`,
-/// `dereferenceable` or `dereferenceable_or_null`.
+/// `dereferenceable` or `dereferenceable_or_null`, on the call site or on the
+/// function it calls.
 ///
 /// Ports the `dyn_cast<CallBase>` arm of `isGuaranteedNotToBeUndefOrPoison`,
-/// which accepts all three because the two dereferenceability attributes imply
-/// `noundef`. [`call_returns_noundef`] is the narrower `canCreateUndefOrPoison`
-/// test, which reads only the first.
+/// `CB->hasRetAttr(Attribute::NoUndef) ||
+/// CB->hasRetAttr(Attribute::Dereferenceable) ||
+/// CB->hasRetAttr(Attribute::DereferenceableOrNull)`, which accepts all three
+/// because the two dereferenceability attributes imply `noundef`. Each
+/// `hasRetAttr` is [`call_site_has_ret_attr`], the routine
+/// `canCreateUndefOrPoison`'s `CallBase` arm asks of `noundef` alone.
 fn call_return_is_well_defined<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     anchor: Value<'ctx, B, C>,
     kind: &InstructionKindData,
 ) -> bool {
-    call_return_attrs(anchor, kind)
-        .is_some_and(|stored| stored.iter().any(is_well_defined_attribute))
-}
-
-/// The return-position attributes of a call/invoke/callbr. `anchor` is any
-/// value of `kind`'s module, whose context holds the interned attribute list.
-fn call_return_attrs<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    anchor: Value<'ctx, B, C>,
-    kind: &InstructionKindData,
-) -> Option<&'ctx [AttributeStored]> {
-    let attrs = match kind {
-        InstructionKindData::Call(data) => data.attrs.get(),
-        InstructionKindData::Invoke(data) => data.attrs.get(),
-        InstructionKindData::CallBr(data) => data.attrs.get(),
-        _ => return None,
-    };
-    anchor
-        .module
-        .call_attributes(attrs)
-        .return_attrs()
-        .get(AttrIndex::Return)
+    call_base_parts(anchor, kind).is_some_and(|call| {
+        call.has_ret_attr(AttrKind::NoUndef)
+            || call.has_ret_attr(AttrKind::Dereferenceable)
+            || call.has_ret_attr(AttrKind::DereferenceableOrNull)
+    })
 }
 
 /// Ports `llvm::propagatesPoison(const Use &)`: does poison in the
@@ -6405,13 +6692,17 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx, C: C
     // after it run for every value the arms before it leave.
     if let Some(operator) = operator_ref(value) {
         // A freeze can never be undef or poison.
-        if let OperatorRef::Instruction(InstructionKindData::Freeze(_)) = operator {
+        if let OperatorRef::Instruction(InstructionData {
+            kind: InstructionKindData::Freeze(_),
+            ..
+        }) = operator
+        {
             return Ok(true);
         }
         // Nor can a call whose return is annotated `noundef`, `dereferenceable`
         // or `dereferenceable_or_null` — the latter two imply the first.
         if let OperatorRef::Instruction(instruction) = operator
-            && call_return_is_well_defined(value, instruction)
+            && call_return_is_well_defined(value, &instruction.kind)
         {
             return Ok(true);
         }
@@ -6458,7 +6749,11 @@ fn operator_is_well_defined_by_its_operands<'a, 'ctx, B: ModuleBrand + 'ctx, C: 
     if can_create_undef_or_poison_kind(value, kind, true) {
         return Ok(false);
     }
-    if let OperatorRef::Instruction(InstructionKindData::Phi(data)) = operator {
+    if let OperatorRef::Instruction(InstructionData {
+        kind: InstructionKindData::Phi(data),
+        ..
+    }) = operator
+    {
         // Upstream evaluates each incoming value at its edge's terminator;
         // llvmkit has no per-edge context, so the incoming value is evaluated
         // where it stands. That can only weaken the answer.
@@ -6480,7 +6775,10 @@ fn operator_is_well_defined_by_its_operands<'a, 'ctx, B: ModuleBrand + 'ctx, C: 
     }
     // `isa<ShuffleVectorInst>(Opr) ? getSplatValue(Opr) : nullptr` — an
     // instruction only; a `shufflevector` expression takes the operand walk.
-    if let OperatorRef::Instruction(InstructionKindData::ShuffleVector(_)) = operator
+    if let OperatorRef::Instruction(InstructionData {
+        kind: InstructionKindData::ShuffleVector(_),
+        ..
+    }) = operator
         && let Some(splat) = splat_value(value)
     {
         // For a splat, only the value being splatted has to be checked.
@@ -6524,6 +6822,7 @@ enum UnstoredExpression {
 fn operator_operands(operator: OperatorRef<'_>) -> Vec<OperatorOperand> {
     match operator {
         OperatorRef::Instruction(instruction) => instruction
+            .kind
             .operand_ids()
             .into_iter()
             .map(OperatorOperand::Stored)

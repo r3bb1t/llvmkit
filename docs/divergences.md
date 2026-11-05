@@ -2675,7 +2675,13 @@ is a function": `crates/llvmkit-ir/src/verifier.rs` (the
   `isSafeToSpeculativelyExecute`'s `Call` arm against its port.
 - **Fix:** one crate port of `getCalledFunction` (callee is a function *and*
   its signature slot equals the call's `fn_ty`), called from all four sites,
-  with a mismatched-signature fixture per consequence.
+  with a mismatched-signature fixture per consequence. The port exists since
+  Task 1b of the crash-proofing plan: `crates/llvmkit-ir/src/instr_types.rs`'s
+  `called_function`, which `call_site_has_ret_attr` (the port of
+  `CallBase::hasRetAttr`) calls, pinned by
+  `crates/llvmkit-asmparser/tests/speculation.rs::can_create_poison_reads_every_annotation_and_arm`'s
+  `call i64 @h(i32 %x)` row. The four sites above do not call it yet, and this
+  entry stays open for them.
 
 ### 136. A renamed function keeps its intrinsic identity only when its signature matches the name
 

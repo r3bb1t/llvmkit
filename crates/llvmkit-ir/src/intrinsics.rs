@@ -356,6 +356,11 @@ impl IntrinsicId {
     pub(crate) const CALLBR_LANDINGPAD: Self =
         checked_intrinsic_id(generated::SEMANTIC_CALLBR_LANDINGPAD);
 
+    /// `Intrinsic::sshl_sat` and `Intrinsic::ushl_sat`, the second case of
+    /// `canCreateUndefOrPoison`'s intrinsic `switch` (`ValueTracking.cpp`).
+    pub(crate) const SSHL_SAT: Self = checked_intrinsic_id(generated::SEMANTIC_SSHL_SAT);
+    pub(crate) const USHL_SAT: Self = checked_intrinsic_id(generated::SEMANTIC_USHL_SAT);
+
     /// The ObjC ARC intrinsics named by `IntrinsicInst::mayLowerToFunctionCall`
     /// and `Verifier::verifyAttachedCallBundle`. Crate-internal: they exist to
     /// spell those two routines, not as a public intrinsic catalogue.

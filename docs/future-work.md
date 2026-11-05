@@ -1395,10 +1395,14 @@ sequenced:
    answer: `programUndefinedIfUndefOrPoison` and the dominating branch-condition
    walk that follows it (both CFG reachability, tranche 6), the `@llvm.assume`
    arm (tranche 8), and `stripPointerCastsSameRepresentation` before the
-   allocated-object test (tranche 5). One arm is a deliberate llvmkit
+   allocated-object test (tranche 5). One arm was a deliberate llvmkit
    refinement, marked at its site: a shift whose amount known bits prove in
    range is not poison, where upstream's `shiftAmountKnownInRange` demands a
-   literal constant.
+   literal constant. (Since deleted as an invention inside a port, as
+   `is_guaranteed_not_to_be_undef_or_poison`'s doc comment records. Task 1b of
+   the crash-proofing plan then found the port of `shiftAmountKnownInRange`
+   itself reading only a scalar `ConstantInt`, where upstream reads each lane of
+   a fixed vector through `getAggregateElement`; it now does.)
 
    Two upstream fixtures did **not** port, and each gap was recorded rather
    than papered over; one has since closed:
@@ -1421,6 +1425,18 @@ sequenced:
    `propagatesPoison`, `programUndefinedIfPoison`, `mustTriggerUB`,
    `isGuaranteedNotToBeUndef`, in `speculation.rs`. It extended the existing
    `is_guaranteed_not_to_be_poison` seed and needed no new types, as predicted.
+   **Correction (Task 1b of the crash-proofing plan):** `canCreateUndefOrPoison`
+   was not 1:1 on its instruction side. Its annotations test read no
+   `samesign`, no `trunc nsw`, no `nnan` / `ninf`, no poison-generating return
+   attribute and no poison-generating metadata, so it claimed "cannot create
+   poison" where upstream does not; its `Call` arm lacked the intrinsic
+   `switch` and `nocreateundeforpoison`, and read `noundef` off the call site
+   only, where `CallBase::hasRetAttr` also reads the called function; and
+   `shiftAmountKnownInRange` read no vector lanes. Task 1b's commit ports
+   each of these, pinned by
+   `crates/llvmkit-asmparser/tests/speculation.rs::can_create_poison_or_undef`
+   (upstream's `TEST(ValueTracking, canCreatePoisonOrUndef)`) and
+   `can_create_poison_reads_every_annotation_and_arm`.
 3. ~~**`ConstantRange` to completion**, then the families it gates.~~
    **DONE 2026-08-02** — all five slices. `ConstantRange` went from 13 of 83
    public methods to 90 llvmkit methods covering all but `castOp`,
@@ -2297,8 +2313,22 @@ deliberately deferred; each cites its upstream anchor.
   if wrong), so the current DCE stays conservative-but-safe. `Value::has_uses`
   also counts debug-record uses upstream ignores (upstream salvages debug info
   instead). (Unordered atomic loads are now removed.)
-- **InstSimplify freeze folds** -- no InstSimplify test covers a `freeze`
-  fold yet. (The unreachable-block skip that used to be named here is closed:
+- **InstSimplify freeze folds** -- `simplifyFreezeInst`
+  (`InstructionSimplify.cpp`) is not ported. `InstSimplifyPass` reaches a
+  `freeze` only through `constant_fold_instruction`, which returns `None` as
+  soon as an operand is not a constant, so a `freeze` of an instruction or an
+  argument never folds there; `instsimplify` folds one whenever
+  `isGuaranteedNotToBeUndefOrPoison(Op0, Q.AC, Q.CxtI, Q.DT)` holds. The gap
+  only keeps a `freeze` upstream drops. Until the pass asks it, the routine is
+  pinned at the question `simplifyFreezeInst` asks:
+  `crates/llvmkit-asmparser/tests/speculation.rs::inst_simplify_freeze_of_a_compare_is_the_compare_unless_it_can_create_poison`
+  ports `test/Transforms/InstSimplify/freeze.ll`'s `@icmp`, `@icmp_noopt`,
+  `@fcmp` and `@fcmp_noopt` there, and
+  `crates/llvmkit-asmparser/tests/constant_fold_freeze.rs` ports its
+  constant-expression functions at `ConstantFoldInstOperands`'s
+  `case Instruction::Freeze:`, which the pass does reach. (An earlier wording
+  here, "no InstSimplify test covers a `freeze` fold yet", predated both.)
+  (The unreachable-block skip that used to be named here is closed:
   the pass declares `DominatorTreeAnalysis` and carries `runImpl`'s
   `if (!SQ.DT->isReachableFromEntry(&BB)) continue;`, pinned by
   `crates/llvmkit-ir/tests/scalar_cleanup_passes.rs::instsimplify_leaves_unreachable_blocks_alone`.

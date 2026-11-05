@@ -12,15 +12,21 @@
 //! - `TEST_F(ValueTrackingTest, isGuaranteedNotToBePoison_phi)`
 //! - `TEST_F(ValueTrackingTest, isGuaranteedNotToBeUndefOrPoison)`
 //! - `TEST_F(ValueTrackingTest, isGuaranteedNotToBeUndefOrPoison_splat)`
+//! - `TEST(ValueTracking, canCreatePoisonOrUndef)`
+//!
+//! and from `llvm/test/Transforms/InstSimplify/freeze.ll`, the functions
+//! `@icmp`, `@icmp_noopt`, `@fcmp` and `@fcmp_noopt`, each asked the question
+//! `simplifyFreezeInst` asks.
 //!
 //! A test with no upstream counterpart says so in its own doc comment.
 
 use llvmkit_asmparser::parser;
 use llvmkit_ir::{
     Capability, DominatorTree, Dyn, DynBrand, InstructionView, IrBuilder, Module, NoFolder,
-    Unpositioned, Unverified, User, Value, ValueTrackingQuery, VectorType, can_create_poison,
-    can_create_undef_or_poison, is_guaranteed_to_transfer_execution_to_successor,
-    is_known_not_poison, is_known_not_undef_or_poison, lanes, program_undefined_if_poison,
+    TerminatorKind, Unpositioned, Unverified, User, Value, ValueTrackingQuery, VectorType,
+    can_create_poison, can_create_undef_or_poison,
+    is_guaranteed_to_transfer_execution_to_successor, is_known_not_poison,
+    is_known_not_undef_or_poison, lanes, program_undefined_if_poison,
     program_undefined_if_undef_or_poison,
 };
 
@@ -910,4 +916,544 @@ exit:
         !well_defined(x0, &query),
         "a `br` reaches the cast only through the poison-only arm"
     );
+}
+
+/// `TEST(ValueTracking, canCreatePoisonOrUndef)` from
+/// `llvm/unittests/Analysis/ValueTrackingTest.cpp`.
+///
+/// The assembly head and tail, the rows of `(can create poison?, can create
+/// undef?, IR instruction)` and the two `EXPECT_EQ`s are upstream's, verbatim
+/// and in upstream's order. The rows are joined into one function body the way
+/// upstream's loop joins them, each instruction unnamed, and the entry block is
+/// walked up to its `ret`, the `Index`-th instruction checked against the
+/// `Index`-th row. `canCreatePoison` and `canCreateUndefOrPoison` are called
+/// as upstream calls them, with the default `ConsiderFlagsAndMetadata = true`.
+/// `EXPECT_EQ` does not stop at a failure, so every mismatch is collected and
+/// the test fails once, naming them all, with upstream's messages.
+///
+/// One assertion is llvmkit's: the walk must reach as many instructions as
+/// there are rows. Upstream needs no such check, because its parser keeps each
+/// row as one instruction; here it guards against a row the parser folds or
+/// drops, which would otherwise shift every later row onto the wrong answer.
+#[test]
+fn can_create_poison_or_undef() {
+    let asm_head = concat!(
+        "@s = external dso_local global i32, align 1\n",
+        "declare i32 @g(i32)\n",
+        "declare {i32, i1} @llvm.sadd.with.overflow.i32(i32 %a, i32 %b)\n",
+        "declare {i32, i1} @llvm.ssub.with.overflow.i32(i32 %a, i32 %b)\n",
+        "declare {i32, i1} @llvm.smul.with.overflow.i32(i32 %a, i32 %b)\n",
+        "declare {i32, i1} @llvm.uadd.with.overflow.i32(i32 %a, i32 %b)\n",
+        "declare {i32, i1} @llvm.usub.with.overflow.i32(i32 %a, i32 %b)\n",
+        "declare {i32, i1} @llvm.umul.with.overflow.i32(i32 %a, i32 %b)\n",
+        "define void @f(i32 %x, i32 %y, float %fx, float %fy, i1 %cond, ",
+        "<4 x i32> %vx, <4 x i32> %vx2, <vscale x 4 x i32> %svx, ptr %p) {\n",
+    );
+    let asm_tail = "  ret void\n}";
+    // (can create poison?, can create undef?, IR instruction)
+    let data: &[((bool, bool), &str)] = &[
+        ((false, false), "add i32 %x, %y"),
+        ((true, false), "add nsw nuw i32 %x, %y"),
+        ((true, false), "shl i32 %x, %y"),
+        ((true, false), "shl <4 x i32> %vx, %vx2"),
+        ((true, false), "shl nsw i32 %x, %y"),
+        (
+            (true, false),
+            "shl nsw <4 x i32> %vx, <i32 0, i32 1, i32 2, i32 3>",
+        ),
+        ((false, false), "shl i32 %x, 31"),
+        ((true, false), "shl i32 %x, 32"),
+        (
+            (false, false),
+            "shl <4 x i32> %vx, <i32 0, i32 1, i32 2, i32 3>",
+        ),
+        (
+            (true, false),
+            "shl <4 x i32> %vx, <i32 0, i32 1, i32 2, i32 32>",
+        ),
+        ((true, false), "ashr i32 %x, %y"),
+        ((true, false), "ashr exact i32 %x, %y"),
+        ((false, false), "ashr i32 %x, 31"),
+        ((true, false), "ashr exact i32 %x, 31"),
+        (
+            (false, false),
+            "ashr <4 x i32> %vx, <i32 0, i32 1, i32 2, i32 3>",
+        ),
+        (
+            (true, false),
+            "ashr <4 x i32> %vx, <i32 0, i32 1, i32 2, i32 32>",
+        ),
+        (
+            (true, false),
+            "ashr exact <4 x i32> %vx, <i32 0, i32 1, i32 2, i32 3>",
+        ),
+        ((true, false), "lshr i32 %x, %y"),
+        ((true, false), "lshr exact i32 %x, 31"),
+        ((false, false), "udiv i32 %x, %y"),
+        ((true, false), "udiv exact i32 %x, %y"),
+        ((false, false), "getelementptr i8, ptr %p, i32 %x"),
+        ((true, false), "getelementptr inbounds i8, ptr %p, i32 %x"),
+        ((true, false), "fneg nnan float %fx"),
+        ((false, false), "fneg float %fx"),
+        ((false, false), "fadd float %fx, %fy"),
+        ((true, false), "fadd nnan float %fx, %fy"),
+        ((false, false), "urem i32 %x, %y"),
+        ((true, false), "fptoui float %fx to i32"),
+        ((true, false), "fptosi float %fx to i32"),
+        ((false, false), "bitcast float %fx to i32"),
+        ((false, false), "select i1 %cond, i32 %x, i32 %y"),
+        ((true, false), "select nnan i1 %cond, float %fx, float %fy"),
+        ((true, false), "extractelement <4 x i32> %vx, i32 %x"),
+        ((false, false), "extractelement <4 x i32> %vx, i32 3"),
+        (
+            (true, false),
+            "extractelement <vscale x 4 x i32> %svx, i32 4",
+        ),
+        ((true, false), "insertelement <4 x i32> %vx, i32 %x, i32 %y"),
+        ((false, false), "insertelement <4 x i32> %vx, i32 %x, i32 3"),
+        (
+            (true, false),
+            "insertelement <vscale x 4 x i32> %svx, i32 %x, i32 4",
+        ),
+        ((false, false), "freeze i32 %x"),
+        (
+            (false, false),
+            concat!(
+                "shufflevector <4 x i32> %vx, <4 x i32> %vx2, ",
+                "<4 x i32> <i32 0, i32 1, i32 2, i32 3>"
+            ),
+        ),
+        (
+            (true, false),
+            concat!(
+                "shufflevector <4 x i32> %vx, <4 x i32> %vx2, ",
+                "<4 x i32> <i32 0, i32 1, i32 2, i32 poison>"
+            ),
+        ),
+        (
+            (true, false),
+            concat!(
+                "shufflevector <vscale x 4 x i32> %svx, ",
+                "<vscale x 4 x i32> %svx, <vscale x 4 x i32> poison"
+            ),
+        ),
+        ((true, false), "call i32 @g(i32 %x)"),
+        ((false, false), "call noundef i32 @g(i32 %x)"),
+        ((true, false), "fcmp nnan oeq float %fx, %fy"),
+        ((false, false), "fcmp oeq float %fx, %fy"),
+        ((true, false), "ashr i32 %x, ptrtoint (ptr @s to i32)"),
+        (
+            (false, false),
+            "call {i32, i1} @llvm.sadd.with.overflow.i32(i32 %x, i32 %y)",
+        ),
+        (
+            (false, false),
+            "call {i32, i1} @llvm.ssub.with.overflow.i32(i32 %x, i32 %y)",
+        ),
+        (
+            (false, false),
+            "call {i32, i1} @llvm.smul.with.overflow.i32(i32 %x, i32 %y)",
+        ),
+        (
+            (false, false),
+            "call {i32, i1} @llvm.uadd.with.overflow.i32(i32 %x, i32 %y)",
+        ),
+        (
+            (false, false),
+            "call {i32, i1} @llvm.usub.with.overflow.i32(i32 %x, i32 %y)",
+        ),
+        (
+            (false, false),
+            "call {i32, i1} @llvm.umul.with.overflow.i32(i32 %x, i32 %y)",
+        ),
+    ];
+
+    let mut assembly_str = String::from(asm_head);
+    for (_, instruction) in data {
+        assembly_str.push_str(instruction);
+        assembly_str.push('\n');
+    }
+    assembly_str.push_str(asm_tail);
+
+    let module = parse(&assembly_str);
+    let function = module.function_dyn("f").expect("Bad assembly?");
+    let block = module
+        .view(function)
+        .basic_blocks()
+        .next()
+        .expect("Bad assembly?");
+
+    let mut mismatches = Vec::new();
+    let mut index = 0;
+    for instruction in block.instructions() {
+        if matches!(instruction.terminator_kind(), Some(TerminatorKind::Ret(_))) {
+            break;
+        }
+        let ((poison, undef), written) = data[index];
+        let operator = instruction.to_erased();
+        if can_create_poison(operator, true) != poison {
+            mismatches.push(format!(
+                "Incorrect answer of canCreatePoison at instruction {index} = {written}"
+            ));
+        }
+        if can_create_undef_or_poison(operator, true) != (undef || poison) {
+            mismatches.push(format!(
+                "Incorrect answer of canCreateUndef at instruction {index} = {written}"
+            ));
+        }
+        index += 1;
+    }
+    assert_eq!(index, data.len(), "each row is one instruction of @f");
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}
+
+/// `canCreatePoison` and `canCreateUndefOrPoison` of the instructions whose
+/// annotations, intrinsic cases and shift amounts
+/// `TEST(ValueTracking, canCreatePoisonOrUndef)` has no row for.
+///
+/// **No upstream counterpart.** The rows are in that test's shape, `(can
+/// create poison?, can create undef?, IR)`, each named `%rN` here so that a row
+/// the parser folds fails by name. The oracles are the arms each row reaches:
+///
+/// - `Operator::hasPoisonGeneratingFlags` (`Operator.cpp`): `trunc`'s `nuw` and
+///   `nsw`; `nneg` of `zext` and `uitofp`; `disjoint`; a `getelementptr`'s
+///   `nuw` and `nusw`; `samesign`; and, in its `default:` arm, `nnan` or `ninf`
+///   of an `FPMathOperator`, which `fpext`, `fptrunc`, `fsub`, and a `select`,
+///   a `call` and a `phi` of floating-point type are, while `nsz` is no
+///   poison-generating flag. The two `phi`s open the block the rows are in.
+/// - `Instruction::hasPoisonGeneratingReturnAttributes` (`Instruction.cpp`):
+///   `range`, `align` or `nonnull` on the call site's own return, and not
+///   `dereferenceable`, nor a `range` that only the declaration carries.
+/// - `Instruction::hasPoisonGeneratingMetadata`: `!range`, `!nonnull` and
+///   `!align` (`Metadata::PoisonGeneratingIDs`), and not `!noundef`.
+/// - `canCreateUndefOrPoison`'s intrinsic `switch`: `ctlz`, `cttz` and `abs`
+///   with a null second operand cannot create poison; `sshl.sat` and
+///   `ushl.sat` cannot when the shift amount is in range.
+/// - Its `CallBase` arm, `!CB->hasRetAttr(Attribute::NoUndef)`, which reads the
+///   declaration's `noundef` when `getCalledFunction()` names the callee, and
+///   not when the call's function type is another.
+/// - `shiftAmountKnownInRange` over a fixed vector's lanes, each read by
+///   `getAggregateElement`: a zero vector and a splat are in range, a `poison`
+///   lane is no `ConstantInt`, and a scalable vector cannot be told.
+///
+/// For each kind of annotation the rows carry, at least one row that the
+/// annotation alone makes poison is asked again with `ConsiderFlagsAndMetadata`
+/// off, where it answers as its opcode does.
+#[test]
+fn can_create_poison_reads_every_annotation_and_arm() {
+    let rows: &[((bool, bool), &str)] = &[
+        ((true, false), "trunc nuw i32 %x to i8"),
+        ((true, false), "trunc nsw i32 %x to i8"),
+        ((false, false), "trunc i32 %x to i8"),
+        ((true, false), "zext nneg i8 %b to i32"),
+        ((true, false), "uitofp nneg i32 %x to float"),
+        ((false, false), "uitofp i32 %x to float"),
+        ((true, false), "or disjoint i32 %x, %y"),
+        ((true, false), "getelementptr nuw i8, ptr %p, i32 %x"),
+        ((true, false), "getelementptr nusw i8, ptr %p, i32 %x"),
+        ((true, false), "icmp samesign ult i32 %x, %y"),
+        ((false, false), "icmp ult i32 %x, %y"),
+        ((true, false), "fpext nnan float %fx to double"),
+        ((true, false), "fptrunc ninf double %d to float"),
+        ((false, false), "fpext float %fx to double"),
+        ((true, false), "fsub ninf float %fx, %fy"),
+        ((false, false), "fsub nsz float %fx, %fy"),
+        ((true, false), "select ninf i1 %cond, float %fx, float %fy"),
+        ((true, false), "call nnan noundef float @fp(float %fx)"),
+        ((false, false), "call nsz noundef float @fp(float %fx)"),
+        (
+            (true, false),
+            "call noundef range(i32 0, 10) i32 @g(i32 %x)",
+        ),
+        ((true, false), "call noundef nonnull ptr @gp()"),
+        ((true, false), "call noundef align 8 ptr @gp()"),
+        ((false, false), "call noundef dereferenceable(4) ptr @gp()"),
+        ((false, false), "call noundef i32 @gr(i32 %x)"),
+        ((true, false), "call noundef i32 @g(i32 %x), !range !0"),
+        ((true, false), "call noundef ptr @gp(), !nonnull !1"),
+        ((true, false), "call noundef ptr @gp(), !align !2"),
+        ((false, false), "call noundef ptr @gp(), !noundef !1"),
+        ((false, false), "call i32 @llvm.ctlz.i32(i32 %x, i1 false)"),
+        ((true, false), "call i32 @llvm.ctlz.i32(i32 %x, i1 true)"),
+        ((false, false), "call i32 @llvm.cttz.i32(i32 %x, i1 false)"),
+        ((false, false), "call i32 @llvm.abs.i32(i32 %x, i1 false)"),
+        ((true, false), "call i32 @llvm.abs.i32(i32 %x, i1 true)"),
+        (
+            (false, false),
+            "call i32 @llvm.sshl.sat.i32(i32 %x, i32 31)",
+        ),
+        ((true, false), "call i32 @llvm.sshl.sat.i32(i32 %x, i32 32)"),
+        ((true, false), "call i32 @llvm.ushl.sat.i32(i32 %x, i32 %y)"),
+        (
+            (false, false),
+            "call i32 @llvm.ushl.sat.i32(i32 %x, i32 31)",
+        ),
+        ((false, false), "call i32 @h(i32 %x)"),
+        ((true, false), "call i64 @h(i32 %x)"),
+        ((false, false), "shl <4 x i32> %vx, zeroinitializer"),
+        ((false, false), "shl <4 x i32> %vx, splat (i32 1)"),
+        (
+            (true, false),
+            "shl <4 x i32> %vx, <i32 0, i32 poison, i32 2, i32 3>",
+        ),
+        ((true, false), "shl <vscale x 4 x i32> %svx, splat (i32 1)"),
+    ];
+    let mut source = String::from(concat!(
+        "declare i32 @g(i32)\n",
+        "declare noundef i32 @h(i32)\n",
+        "declare range(i32 0, 10) i32 @gr(i32)\n",
+        "declare ptr @gp()\n",
+        "declare float @fp(float)\n",
+        "declare i32 @llvm.ctlz.i32(i32, i1)\n",
+        "declare i32 @llvm.cttz.i32(i32, i1)\n",
+        "declare i32 @llvm.abs.i32(i32, i1)\n",
+        "declare i32 @llvm.sshl.sat.i32(i32, i32)\n",
+        "declare i32 @llvm.ushl.sat.i32(i32, i32)\n",
+        "\n",
+        "define void @f(i32 %x, i32 %y, i8 %b, float %fx, float %fy, double %d, i1 %cond, ",
+        "<4 x i32> %vx, <vscale x 4 x i32> %svx, ptr %p) {\n",
+        "entry:\n",
+        "  br label %body\n",
+        "\n",
+        "body:\n",
+        "  %phi.nnan = phi nnan float [ %fx, %entry ]\n",
+        "  %phi.plain = phi float [ %fx, %entry ]\n",
+    ));
+    for (index, (_, instruction)) in rows.iter().enumerate() {
+        source.push_str(&format!("  %r{index} = {instruction}\n"));
+    }
+    source.push_str("  ret void\n}\n\n!0 = !{i32 0, i32 10}\n!1 = !{}\n!2 = !{i64 8}\n");
+    let module = parse(&source);
+
+    let mut mismatches = Vec::new();
+    for (index, ((poison, undef), written)) in rows.iter().enumerate() {
+        let instruction = named_value(&module, &format!("r{index}"));
+        if can_create_poison(instruction, true) != *poison {
+            mismatches.push(format!("canCreatePoison of row {index}: {written}"));
+        }
+        if can_create_undef_or_poison(instruction, true) != (*undef || *poison) {
+            mismatches.push(format!("canCreateUndefOrPoison of row {index}: {written}"));
+        }
+    }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+
+    // A `phi` of floating-point type is an `FPMathOperator` through the same
+    // `classof` arm as a `select` and a `call`, so `nnan` makes it poison-
+    // generating; without the flag, the switch's `case Instruction::PHI:`
+    // answers that it creates nothing.
+    let phi_nnan = named_value(&module, "phi.nnan");
+    assert!(can_create_poison(phi_nnan, true), "phi nnan float");
+    assert!(can_create_undef_or_poison(phi_nnan, true), "phi nnan float");
+    assert!(
+        !can_create_poison(phi_nnan, false),
+        "phi nnan float, no flags"
+    );
+    let phi_plain = named_value(&module, "phi.plain");
+    assert!(!can_create_poison(phi_plain, true), "phi float");
+    assert!(!can_create_undef_or_poison(phi_plain, true), "phi float");
+
+    // `ConsiderFlagsAndMetadata` gates the annotations: without it, each of
+    // these answers as its opcode does. A cast, an `or`, a `getelementptr`, an
+    // `icmp` and a `select` cannot create poison, and neither can a `call
+    // noundef`, because the `CallBase` arm answers `false` once
+    // `hasRetAttr(NoUndef)` holds.
+    for index in [1, 3, 6, 7, 9, 11, 16, 17, 19, 24] {
+        let instruction = named_value(&module, &format!("r{index}"));
+        assert!(
+            !can_create_poison(instruction, false),
+            "row {index} without its annotations: {}",
+            rows[index].1
+        );
+    }
+}
+
+/// The two `CallBase` arms that read `CallBase::hasRetAttr`, which looks at the
+/// called function's attributes when the call site has none, and the intrinsic
+/// `switch`'s `!includesPoison(Kind)` test.
+///
+/// **No upstream counterpart.** The oracles are
+/// `isGuaranteedNotToBeUndefOrPoison`'s `CB->hasRetAttr(Attribute::NoUndef)`
+/// arm, with `hasRetAttrImpl`'s `if (const Function *F = getCalledFunction())`
+/// fallback (`InstrTypes.h`), and `canCreateUndefOrPoison`'s `case
+/// Intrinsic::ushl_sat: if (!includesPoison(Kind) || ...) return false;`. A call
+/// of `@h`, declared `noundef`, is well defined; one of `@g`, declared without
+/// it, is the control. A `ushl.sat` over `noundef` operands by an amount that
+/// may be out of range can be poison, but it cannot create `undef`, so it is
+/// known not `undef` and not known not poison.
+#[test]
+fn a_call_reads_its_callee_s_noundef_and_a_saturating_shift_creates_no_undef() {
+    let module = parse(
+        r"
+declare noundef i32 @h(i32)
+declare i32 @g(i32)
+declare i32 @llvm.ushl.sat.i32(i32, i32)
+
+define void @f(i32 noundef %x, i32 noundef %y) {
+  %declared = call i32 @h(i32 %x)
+  %undeclared = call i32 @g(i32 %x)
+  %shifted = call i32 @llvm.ushl.sat.i32(i32 %x, i32 %y)
+  ret void
+}
+",
+    );
+    let data_layout = module.data_layout();
+    let query = ValueTrackingQuery::<DynBrand>::new(&data_layout);
+    assert!(well_defined(named_value(&module, "declared"), &query));
+    assert!(!well_defined(named_value(&module, "undeclared"), &query));
+
+    let shifted = named_value(&module, "shifted");
+    assert!(
+        llvmkit_ir::is_known_not_undef(shifted, &query).expect("query succeeds"),
+        "a saturating shift cannot create undef, and its operands are noundef"
+    );
+    assert!(!not_poison(shifted, &query));
+}
+
+/// The instruction named `%name` in the function `@function`.
+fn instruction_in<'m>(
+    module: &'m Module<DynBrand, Unverified>,
+    function: &str,
+    name: &str,
+) -> InstructionView<'m, DynBrand> {
+    let function = module
+        .function_dyn(function)
+        .unwrap_or_else(|| panic!("fixture defines @{function}"));
+    module
+        .view(function)
+        .basic_blocks()
+        .flat_map(|block| block.instructions())
+        .find(|instruction| instruction.name().as_deref() == Some(name))
+        .unwrap_or_else(|| panic!("fixture defines %{name}"))
+}
+
+/// The question `simplifyFreezeInst` (`InstructionSimplify.cpp`) asks of the
+/// `freeze` named `%freeze` in `@function`:
+/// `isGuaranteedNotToBeUndefOrPoison(Op0, Q.AC, Q.CxtI, Q.DT)`, with the
+/// `freeze` as the context instruction and the function's dominator tree. A
+/// yes is the answer under which `instsimplify` replaces the `freeze` by its
+/// operand.
+fn freeze_simplifies_to_its_operand(
+    module: &Module<DynBrand, Unverified>,
+    function: &str,
+    freeze: &str,
+) -> bool {
+    let id = module
+        .function_dyn(function)
+        .unwrap_or_else(|| panic!("fixture defines @{function}"));
+    let dominator_tree = DominatorTree::new(module.view(id));
+    let data_layout = module.data_layout();
+    let freeze = instruction_in(module, function, freeze);
+    let operand = freeze.operand(0).expect("a freeze has an operand");
+    let query = ValueTrackingQuery::<DynBrand>::new(&data_layout)
+        .with_dominator_tree(&dominator_tree)
+        .with_context_instruction(&freeze);
+    is_known_not_undef_or_poison(operand, &query).expect("query succeeds")
+}
+
+/// Ports `@icmp`, `@icmp_noopt`, `@fcmp` and `@fcmp_noopt` from
+/// `llvm/test/Transforms/InstSimplify/freeze.ll`, IR unchanged. Each is asked
+/// the question `simplifyFreezeInst` asks of its frozen compare
+/// ([`freeze_simplifies_to_its_operand`]). A `CHECK` block that returns the
+/// compare expects yes, and one that keeps the `freeze` expects no.
+///
+/// They are asked at the routine because `InstSimplifyPass` does not ask it:
+/// the pass reaches a `freeze` only through `constant_fold_instruction`, whose
+/// `case Instruction::Freeze:` takes a constant operand, so a `freeze` of an
+/// instruction never folds there (`docs/future-work.md`, "InstSimplify freeze
+/// folds").
+///
+/// `@fcmp_noopt` keeps its `freeze` because `nnan` is a poison-generating
+/// flag: `Operator::hasPoisonGeneratingFlags`'s `default:` arm asks the
+/// `FPMathOperator` for `hasNoNaNs() || hasNoInfs()`, so
+/// `canCreateUndefOrPoison` answers yes before it reaches the operands.
+/// `@icmp_noopt` keeps its `freeze` for the other reason: its operands are
+/// arguments that carry no `noundef`.
+#[test]
+fn inst_simplify_freeze_of_a_compare_is_the_compare_unless_it_can_create_poison() {
+    let module = parse(
+        r"
+define i1 @icmp(i32 %a, i32 %b) {
+  %a.fr = freeze i32 %a
+  %b.fr = freeze i32 %b
+  %c = icmp eq i32 %a.fr, %b.fr
+  %c.fr = freeze i1 %c
+  ret i1 %c.fr
+}
+
+define i1 @icmp_noopt(i32 %a, i32 %b) {
+  %c = icmp eq i32 %a, %b
+  %c.fr = freeze i1 %c
+  ret i1 %c.fr
+}
+
+define i1 @fcmp(float %x, float %y) {
+  %fx = freeze float %x
+  %fy = freeze float %y
+  %c = fcmp oeq float %fx, %fy
+  %fc = freeze i1 %c
+  ret i1 %fc
+}
+
+define i1 @fcmp_noopt(float %x, float %y) {
+  %fx = freeze float %x
+  %fy = freeze float %y
+  %c = fcmp nnan oeq float %fx, %fy
+  %fc = freeze i1 %c
+  ret i1 %fc
+}
+",
+    );
+    assert!(freeze_simplifies_to_its_operand(&module, "icmp", "c.fr"));
+    assert!(!freeze_simplifies_to_its_operand(
+        &module,
+        "icmp_noopt",
+        "c.fr"
+    ));
+    assert!(freeze_simplifies_to_its_operand(&module, "fcmp", "fc"));
+    assert!(!freeze_simplifies_to_its_operand(
+        &module,
+        "fcmp_noopt",
+        "fc"
+    ));
+}
+
+/// A `freeze` of an `icmp samesign` over well-defined operands is not its
+/// operand, because `samesign` can make the compare poison.
+///
+/// **No upstream counterpart.** `test/Transforms/InstSimplify/freeze.ll` has no
+/// `samesign` compare. `@icmp_samesign` is that file's `@icmp` with the flag
+/// added and nothing else changed, asked the same question
+/// ([`freeze_simplifies_to_its_operand`]). The oracle is
+/// `Operator::hasPoisonGeneratingFlags`'s `case Instruction::ICmp: return
+/// cast<ICmpInst>(this)->hasSameSign();` (`Operator.cpp`), which makes
+/// `canCreateUndefOrPoison` answer yes before it reaches the operands. `@icmp`,
+/// unchanged, is the positive control: the same compare without the flag is
+/// well defined.
+#[test]
+fn a_freeze_of_a_samesign_compare_is_not_its_operand() {
+    let module = parse(
+        r"
+define i1 @icmp(i32 %a, i32 %b) {
+  %a.fr = freeze i32 %a
+  %b.fr = freeze i32 %b
+  %c = icmp eq i32 %a.fr, %b.fr
+  %c.fr = freeze i1 %c
+  ret i1 %c.fr
+}
+
+define i1 @icmp_samesign(i32 %a, i32 %b) {
+  %a.fr = freeze i32 %a
+  %b.fr = freeze i32 %b
+  %c = icmp samesign eq i32 %a.fr, %b.fr
+  %c.fr = freeze i1 %c
+  ret i1 %c.fr
+}
+",
+    );
+    assert!(freeze_simplifies_to_its_operand(&module, "icmp", "c.fr"));
+    assert!(!freeze_simplifies_to_its_operand(
+        &module,
+        "icmp_samesign",
+        "c.fr"
+    ));
 }
