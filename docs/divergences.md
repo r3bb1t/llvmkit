@@ -177,6 +177,13 @@ paths that replace a single operand without knowing its index
 Blocked behind D1: the index is only meaningful once the two operand lists
 are one.
 
+**Guarded by:** nothing that can see it. The `parser_use_list.rs` round trips
+assert that print, re-parse, print gives the same text, and the printer prints
+two orders of this kind alike, so they pass whichever order the parse built.
+`verify-uselistorder`'s own check compares each value's use list, `(user,
+operand number)` by `(user, operand number)`, which needs a view of a use list
+with operand numbers: the index this fix adds.
+
 ### D4a — Call-family operand order puts the callee first
 
 **Severity:** model-gap (latent, feeds D4)
@@ -972,6 +979,21 @@ list to `const_array`.
 `null_constant_for_type`, the port of `Constant::getNullValue`, builds the same list
 for a load of an aggregate from a uniform constant. It is the same gap with one
 difference: there a list that cannot be allocated declines the fold.
+
+It also reaches `Constant::handleOperandChange`. `ConstantArray::handleOperandChangeImpl`
+and `ConstantStruct::handleOperandChangeImpl` answer `ConstantAggregateZero::get` when
+every new operand is the same null constant, and `UndefValue::get` when every one is the
+same undef (a poison included, since `isa<UndefValue>` holds for it). Both checks come
+before `getImpl` and `replaceOperandsInPlace`. `ConstantVector::handleOperandChangeImpl`
+has no such check and goes straight to `getImpl`, which folds those cases itself.
+llvmkit's `replace_constant_operand` (`crates/llvmkit-ir/src/constants.rs`) interns the
+new list. So an array or struct whose operands all become null is treated as updated in
+place where upstream returns a replacement, and an all-undef one keeps an element list
+where upstream returns an `undef` of the type. Only the order of users on the operands'
+use lists can differ. Text reaches this only when a forward reference resolves to a null
+or undef constant. The parser resolves a forward reference inside a constant only to a
+global or a `blockaddress`, which is neither, so nothing reaches it today (derived from
+the parser's placeholder resolution, not run).
 
 The fixtures that ask for one, what each would cost, and what the fix touches are in
 `docs/future-work.md`, under "`zeroinitializer` is stored one slot per element".
