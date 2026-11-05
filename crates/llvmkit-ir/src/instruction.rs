@@ -1322,12 +1322,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         let self_id = self.id;
         // Snapshot the user list under a borrow so we can release it
         // before mutating each user's operand slots.
-        let user_edges: Vec<ValueUse> = module
-            .context()
-            .value_data(self_id)
-            .use_list
-            .borrow()
-            .clone();
+        let user_edges: Vec<ValueUse> = module.context().use_list_of(self_id).borrow().clone();
         // For each user, rewrite the storage slot whose edge points at `self_id`
         // so it points at `new_id`. Instruction operands use the exhaustive
         // operand-walker; debug records are outside the operand hierarchy and
@@ -1359,14 +1354,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         // time round and `Use::set`s it, which prepends to the new list, so
         // the moved run lands reversed — the reversal
         // `AsmWriter::predictValueUseListOrder` names `GetsReversed`.
-        {
-            let mut self_uses = module.context().value_data(self_id).use_list.borrow_mut();
-            self_uses.clear();
-        }
-        module
-            .context()
-            .value_data(new_id)
-            .prepend_moved_uses(&user_edges);
+        module.context().use_list_of(self_id).borrow_mut().clear();
+        // A `ptr @g` replacement is the global: the moved edges join its list.
+        module.context().prepend_moved_uses(new_id, &user_edges);
         Ok(())
     }
 
@@ -1843,14 +1833,10 @@ fn deregister_operand_uses(inst_id: ValueSlot, kind: &InstructionKindData, modul
         *occurrences.entry(op_id).or_insert(0) += 1;
     }
     for (op_id, n) in occurrences {
-        let mut ul = module.context().value_data(op_id).use_list.borrow_mut();
         for _ in 0..n {
-            if let Some(pos) = ul
-                .iter()
-                .position(|edge| *edge == ValueUse::Instruction(inst_id))
-            {
-                ul.remove(pos);
-            }
+            module
+                .context()
+                .remove_use(op_id, ValueUse::Instruction(inst_id));
         }
     }
     deregister_debug_record_uses(inst_id, module);
@@ -1863,13 +1849,13 @@ fn register_debug_record_uses(
     module: &ModuleCore,
 ) {
     record.for_each_value(|value_id| {
-        module
-            .context()
-            .value_data(value_id)
-            .add_use(ValueUse::DebugRecord {
+        module.context().add_use(
+            value_id,
+            ValueUse::DebugRecord {
                 inst: inst_id,
                 record: record_index,
-            });
+            },
+        );
     });
 }
 
@@ -1908,7 +1894,7 @@ pub(super) fn absorb_debug_records(module: &ModuleCore, from: ValueSlot, into: V
         // `#dbg_assign` whose value is its address); each visit rewrites the
         // next edge still carrying the old key.
         record.for_each_value(|value_id| {
-            let mut uses = context.value_data(value_id).use_list.borrow_mut();
+            let mut uses = context.use_list_of(value_id).borrow_mut();
             if let Some(edge) = uses.iter_mut().find(|edge| **edge == old_edge) {
                 *edge = new_edge;
             }
@@ -1928,10 +1914,7 @@ fn deregister_debug_record_uses(inst_id: ValueSlot, module: &ModuleCore) {
                 inst: inst_id,
                 record: record_index,
             };
-            let mut uses = module.context().value_data(value_id).use_list.borrow_mut();
-            if let Some(pos) = uses.iter().position(|candidate| *candidate == edge) {
-                uses.remove(pos);
-            }
+            module.context().remove_use(value_id, edge);
         });
     }
 }
@@ -2580,10 +2563,7 @@ pub(crate) fn push_instruction(
         .context()
         .push_value(build_instruction_value(ty, parent, kind, name));
     for operand in operand_ids {
-        module
-            .context()
-            .value_data(operand)
-            .add_use(ValueUse::Instruction(id));
+        module.context().add_use(operand, ValueUse::Instruction(id));
     }
     id
 }

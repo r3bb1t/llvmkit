@@ -147,36 +147,18 @@ pub(super) struct ValueData {
     /// in multiple slots (e.g. `add %x, %x`).
     ///
     /// **Order is newest-first**, mirroring upstream exactly — see
-    /// [`ValueData::add_use`]. The order is observable: it is what a
+    /// `Context::add_use`. The order is observable: it is what a
     /// `uselistorder` index vector permutes and what
     /// `AsmWriter::predictValueUseListOrder` states its shuffle in terms of.
+    ///
+    /// Every edge is added, removed and moved through `Context`'s use-list
+    /// doors (`add_use`, `remove_use`, `prepend_moved_uses`, `use_list_of`),
+    /// which read a `GlobalValueRef` wrapper through to its global — so a
+    /// wrapper's own list stays empty (`docs/divergences.md` D3).
     pub(super) use_list: RefCell<Vec<ValueUse>>,
 }
 
 impl ValueData {
-    /// Register `edge` as a new use of this value.
-    ///
-    /// Mirrors `Value::addUse` (`Value.h`), which forwards to
-    /// `Use::addToList` (`Use.h`): upstream threads its use list through the
-    /// uses themselves and a new one becomes the **head**, so the list reads
-    /// newest-first. llvmkit stores the same sequence rather than appending,
-    /// because the sequence is contractual — `LLParser::sortUseListOrder`
-    /// keys each use by its position in it, and
-    /// `AsmWriter::predictValueUseListOrder` emits a shuffle against it.
-    pub(super) fn add_use(&self, edge: ValueUse) {
-        self.use_list.borrow_mut().insert(0, edge);
-    }
-
-    /// Move `edges` — a head-first snapshot of another value's use list —
-    /// onto the head of this one's.
-    ///
-    /// Mirrors the drain loop in `Value::replaceAllUsesWith`
-    /// (`lib/IR/Value.cpp`), which repeatedly takes the *head* of the old
-    /// list and `Use::set`s it, prepending each in turn to the new list. The
-    /// net effect reverses the moved run — which is exactly the reversal
-    /// `AsmWriter::predictValueUseListOrder` compensates for with its
-    /// `GetsReversed` flag, so reproducing it here is what makes a
-    /// forward-referenced value's printed shuffle match upstream's.
     /// The use list as upstream's `Value::uses()` reads it: the edges that
     /// correspond to a `Use`, in use-list order, named by their *user*.
     ///
@@ -190,17 +172,6 @@ impl ValueData {
             .iter()
             .filter_map(|edge| edge.user())
             .collect()
-    }
-
-    pub(super) fn prepend_moved_uses(&self, edges: &[ValueUse]) {
-        if edges.is_empty() {
-            return;
-        }
-        let mut list = self.use_list.borrow_mut();
-        let mut merged = Vec::with_capacity(edges.len() + list.len());
-        merged.extend(edges.iter().rev().copied());
-        merged.append(&mut list);
-        *list = merged;
     }
 }
 
@@ -254,6 +225,21 @@ impl ValueUse {
     pub(super) fn is_operand_use(self) -> bool {
         self.user().is_some()
     }
+
+    /// `Use::getOperandNo`, where llvmkit's edge can answer it. A
+    /// [`Self::GlobalField`] edge names its cell, and each cell is one fixed
+    /// operand of its owner. An instruction or constant edge records only the
+    /// user (`docs/divergences.md` D4), and a metadata or debug-record edge
+    /// is no `Use` at all, so those answer [`None`].
+    pub(super) fn operand_number(self) -> Option<u32> {
+        match self {
+            ValueUse::GlobalField { field, .. } => Some(field.operand_number()),
+            ValueUse::Instruction(_)
+            | ValueUse::Constant(_)
+            | ValueUse::Metadata(_)
+            | ValueUse::DebugRecord { .. } => None,
+        }
+    }
 }
 
 /// Why a `uselistorder` index vector could not be applied to a value's use
@@ -283,6 +269,24 @@ pub(super) enum GlobalFieldKind {
     PersonalityFn,
     PrefixData,
     PrologueData,
+}
+
+impl GlobalFieldKind {
+    /// The operand index the field is upstream. A global variable's
+    /// initializer, an alias's aliasee and an ifunc's resolver are each
+    /// `Op<0>`; a function's hung-off operands are personality, prefix and
+    /// prologue, `setHungoffOperand<0..2>` in `Function::setPersonalityFn`,
+    /// `setPrefixData` and `setPrologueData` (`lib/IR/Function.cpp`).
+    pub(super) fn operand_number(self) -> u32 {
+        match self {
+            GlobalFieldKind::Initializer
+            | GlobalFieldKind::Aliasee
+            | GlobalFieldKind::IfuncResolver
+            | GlobalFieldKind::PersonalityFn => 0,
+            GlobalFieldKind::PrefixData => 1,
+            GlobalFieldKind::PrologueData => 2,
+        }
+    }
 }
 
 /// Discriminator over the closed value-category set.
@@ -406,6 +410,14 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
     #[inline]
     pub(super) fn data(self) -> &'ctx ValueData {
         self.module.value_data(self.id)
+    }
+
+    /// This value's use list. An interned `ptr @g` wrapper reads the list of
+    /// the global it names, since upstream's `GlobalValue` *is* that constant
+    /// and has one list (`docs/divergences.md` D3).
+    #[inline]
+    fn use_list(self) -> &'ctx RefCell<Vec<ValueUse>> {
+        self.module.context().use_list_of(self.id)
     }
 
     /// Owning module reference.
@@ -805,8 +817,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
     + 'ctx {
         let module = self.module;
         let snapshot: Vec<ValueSlot> = self
-            .data()
-            .use_list
+            .use_list()
             .borrow()
             .iter()
             .filter_map(|edge| match edge {
@@ -827,7 +838,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
     /// common "is this dead?" check.
     #[inline]
     pub fn has_uses(self) -> bool {
-        !self.data().use_list.borrow().is_empty()
+        !self.use_list().borrow().is_empty()
     }
 
     /// `true` when exactly one use references this value. Mirrors
@@ -835,13 +846,13 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
     /// `m_one_use`) to avoid duplicating a shared sub-expression.
     #[inline]
     pub fn has_one_use(self) -> bool {
-        self.data().use_list.borrow().len() == 1
+        self.use_list().borrow().len() == 1
     }
 
     /// Number of currently-registered structural uses. Mirrors `Value::getNumUses`.
     #[inline]
     pub fn num_uses(self) -> usize {
-        self.data().use_list.borrow().len()
+        self.use_list().borrow().len()
     }
 
     /// `true` when this value keeps a use list at all. Mirrors
@@ -894,7 +905,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
             let data = module.value_data(slot);
             Value::from_parts(slot, module, data.ty)
         };
-        let mut uses = self.data().use_list.borrow_mut();
+        let mut uses = self.use_list().borrow_mut();
         let positions: Vec<usize> = uses
             .iter()
             .enumerate()
@@ -937,7 +948,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
         if !self.has_use_list() {
             return Ok(());
         }
-        let mut uses = self.data().use_list.borrow_mut();
+        let mut uses = self.use_list().borrow_mut();
         // Only the edges upstream models as `Use`s take part, and the ones
         // that do not keep their slots — see [`ValueUse::is_operand_use`].
         let positions: Vec<usize> = uses

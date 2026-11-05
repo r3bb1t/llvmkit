@@ -1194,8 +1194,7 @@ where
         // Register phi as a user of the incoming value.
         self.module
             .context()
-            .value_data(val_id)
-            .add_use(ValueUse::Instruction(phi_id));
+            .add_use(val_id, ValueUse::Instruction(phi_id));
         Ok(())
     }
 
@@ -1229,10 +1228,7 @@ where
         };
         let id = self.module.context().push_value(value);
         for op in operand_ids {
-            self.module
-                .context()
-                .value_data(op)
-                .add_use(ValueUse::Instruction(id));
+            self.module.context().add_use(op, ValueUse::Instruction(id));
         }
         let label_ty = self
             .module
@@ -10480,10 +10476,7 @@ where
         };
         let id = self.module.context().push_value(value);
         for op in operand_ids {
-            self.module
-                .context()
-                .value_data(op)
-                .add_use(ValueUse::Instruction(id));
+            self.module.context().add_use(op, ValueUse::Instruction(id));
         }
         // Unlike `append_instruction`, placement ignores the builder's
         // insert cursor: phis always land at the block's phi head.

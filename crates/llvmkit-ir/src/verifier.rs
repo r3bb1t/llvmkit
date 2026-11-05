@@ -1372,7 +1372,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     fn function_address_is_taken(&self, f: FunctionValue<'ctx, Dyn, B, ReadOnly>) -> bool {
         let value = f.as_erased();
         let signature = f.signature();
-        let edges: Vec<ValueUse> = value.data().use_list.borrow().iter().copied().collect();
+        let context = self.module.context();
+        // An operand cell may hold the interned `ptr @f` wrapper while its edge
+        // sits on the function's own list (`docs/divergences.md` D3), so "this
+        // operand is the function" reads the cell through the wrapper.
+        let names_function = |operand: ValueSlot| {
+            context.use_edge_target(operand) == value.slot_trusting_same_module()
+        };
+        let edges: Vec<ValueUse> = context
+            .use_list_of(value.slot_trusting_same_module())
+            .borrow()
+            .iter()
+            .copied()
+            .collect();
         for edge in edges {
             // `IgnoreCallbackUses` is false at this call site, so the
             // `AbstractCallSite` arm never runs.
@@ -1404,9 +1416,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             }
             // `if (!Call->isCallee(&U) || (!IgnoreCastedDirectCall &&
             //      Call->getFunctionType() != getFunctionType()))`
-            if call.callee == value.slot_trusting_same_module()
-                && call.fn_ty == signature.slot_trusting_same_module()
-            {
+            if names_function(call.callee) && call.fn_ty == signature.slot_trusting_same_module() {
                 continue;
             }
             // `if (IgnoreARCAttachedCall &&
@@ -1414,9 +1424,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             //                                  U.getOperandNo())) continue;`
             if call.operand_bundles.iter().any(|bundle| {
                 bundle.tag() == &OperandBundleTag::ClangArcAttachedCall
-                    && bundle
-                        .inputs()
-                        .any(|input| input == value.slot_trusting_same_module())
+                    && bundle.inputs().any(names_function)
             }) {
                 continue;
             }
@@ -7487,8 +7495,7 @@ mod tests {
         let id = m.context().push_value(v);
         for op in operand_ids {
             m.context()
-                .value_data(op)
-                .add_use(crate::value::ValueUse::Instruction(id));
+                .add_use(op, crate::value::ValueUse::Instruction(id));
         }
         let bb_data = match &m.context().value_data(bb_id).kind {
             ValueKindData::BasicBlock(b) => b,

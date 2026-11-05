@@ -203,9 +203,10 @@ fn intrinsic_declaration_by_name_leaves_its_arguments_unnamed() -> Result<(), Ir
 
 /// Mirrors `Verifier::visitFunction`'s address-taken guard: an
 /// `llvm.`-prefixed function may only be named as the direct callee operand of
-/// a call, and any other use — here a global's initializer, the shape of
-/// `test/Verifier/intrinsic-addr-taken.ll`'s `@g1 = global ptr @llvm.umax.i32`
-/// — is `Invalid user of intrinsic instruction!`.
+/// a call, and any other use — here a call argument, and a global's
+/// initializer, the shape of `test/Verifier/intrinsic-addr-taken.ll`'s
+/// `@g1 = global ptr @llvm.umax.i32` — is `Invalid user of intrinsic
+/// instruction!`.
 ///
 /// The assertion used to read `intrinsic can only be used as callee`, which is
 /// `LLParser::validateEndOfModule`'s wording for the *parser's* leftover
@@ -213,16 +214,37 @@ fn intrinsic_declaration_by_name_leaves_its_arguments_unnamed() -> Result<(), Ir
 /// words differently, so the test agreed with the code and neither agreed with
 /// LLVM. The text below is `Verifier.cpp`'s own `Check` literal.
 ///
-/// Until Task 5 of the type-constructor plan this test pinned the
-/// call-argument form, `call void @sink(ptr @llvm.bswap.i32)`, by building
-/// `void (i32 (i32))` — a function type `FunctionType::FunctionType` asserts
-/// against — and handing it the function's own value. Built validly, with a
-/// `ptr` parameter and `as_global_constant_ptr`, that call verifies clean: the
-/// instruction's edge lands on the interned wrapper, not on the function
-/// (`docs/divergences.md` D3, its instruction-operand paragraph). Restore the
-/// call form when D3 closes.
+/// The call-argument form comes first, `call void @sink(ptr @llvm.bswap.i32)`:
+/// the call is a user of the intrinsic and the use is not its callee. It
+/// verified clean while an instruction operand's edge sat on the interned
+/// `ptr @f` wrapper rather than on the function (`docs/divergences.md` D3), so
+/// for a while this test pinned only the initializer form, which it keeps as
+/// its second half.
 #[test]
 fn intrinsic_declaration_used_as_non_callee_operand_is_rejected() -> Result<(), IrError> {
+    let m = module_new!("intrinsic-noncallee-call")?;
+    let intrinsic = m.get_or_insert_intrinsic_declaration_by_name("llvm.bswap.i32")?;
+    let void_ty = m.void_type();
+    let sink_ty = m.function_type(void_ty.as_type(), [m.ptr_type_in::<0>().as_type()])?;
+    let sink = m.add_function_dyn("sink", sink_ty, Linkage::External)?;
+    let no_params: [llvmkit_ir::Type<'_, _>; 0] = [];
+    let user_ty = m.function_type(void_ty.as_type(), no_params)?;
+    let user = m.add_function_dyn("user", user_ty, Linkage::External)?;
+    let entry = m.view(user).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let argument = m.view(intrinsic).as_global_constant_ptr().as_erased();
+    b.call_dyn::<Dyn, _, _, _, _>(m.view(sink), [argument], "")?;
+    b.ret_void()?;
+
+    let err = m
+        .verify_borrowed()
+        .expect_err("an intrinsic passed as a call argument is rejected");
+    assert!(
+        err.to_string()
+            .contains("Invalid user of intrinsic instruction!"),
+        "{err}"
+    );
+
     let m = module_new!("intrinsic-noncallee-use")?;
     let intrinsic = m.get_or_insert_intrinsic_declaration_by_name("llvm.bswap.i32")?;
     m.add_global("g1", m.view(intrinsic).as_global_constant_ptr())?;

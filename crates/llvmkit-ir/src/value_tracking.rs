@@ -6488,8 +6488,7 @@ mod tests {
         let id = core.context().push_value(value);
         for op in operand_ids {
             core.context()
-                .value_data(op)
-                .add_use(crate::value::ValueUse::Instruction(id));
+                .add_use(op, crate::value::ValueUse::Instruction(id));
         }
         let ValueKindData::BasicBlock(bb_data) = &core.context().value_data(bb_id).kind else {
             panic!("fabricate_instruction: bb_id is not a basic block");

@@ -1773,16 +1773,10 @@ fn phi_remove_incoming<'ctx, B: ModuleBrand + 'ctx, C: CanMutate>(
         incoming.swap_remove(slot).0.get()
     };
     // Deregister one phi-use of the removed value.
-    {
-        let core = module.module();
-        let mut uses = core.context().value_data(removed).use_list.borrow_mut();
-        if let Some(pos) = uses
-            .iter()
-            .position(|edge| *edge == ValueUse::Instruction(phi_id))
-        {
-            uses.remove(pos);
-        }
-    }
+    module
+        .module()
+        .context()
+        .remove_use(removed, ValueUse::Instruction(phi_id));
     let ty = module.module().context().value_data(removed).ty;
     Ok(Value::from_parts(removed, module, ty))
 }
@@ -2030,8 +2024,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
             // Register the phi as a user of the incoming value.
             module
                 .context()
-                .value_data(value_id)
-                .add_use(ValueUse::Instruction(self.id));
+                .add_use(value_id, ValueUse::Instruction(self.id));
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
@@ -2280,8 +2273,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
                 .push((core::cell::Cell::new(value_id), block_id));
             module
                 .context()
-                .value_data(value_id)
-                .add_use(ValueUse::Instruction(self.id));
+                .add_use(value_id, ValueUse::Instruction(self.id));
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
@@ -2498,8 +2490,7 @@ impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, A, B> {
                 .push((core::cell::Cell::new(value_id), block_id));
             module
                 .context()
-                .value_data(value_id)
-                .add_use(ValueUse::Instruction(self.id));
+                .add_use(value_id, ValueUse::Instruction(self.id));
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
@@ -3302,19 +3293,12 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> AtomicRmwInst<'ctx, B, C> {
         if old_id == value_id {
             return Ok(());
         }
-        {
-            let mut old_uses = module.context().value_data(old_id).use_list.borrow_mut();
-            if let Some(pos) = old_uses
-                .iter()
-                .position(|edge| *edge == ValueUse::Instruction(self.id))
-            {
-                old_uses.remove(pos);
-            }
-        }
         module
             .context()
-            .value_data(value_id)
-            .add_use(ValueUse::Instruction(self.id));
+            .remove_use(old_id, ValueUse::Instruction(self.id));
+        module
+            .context()
+            .add_use(value_id, ValueUse::Instruction(self.id));
         Ok(())
     }
     pub fn align(self) -> Option<Align> {
@@ -3582,15 +3566,11 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
             .borrow_mut()
             .push((core::cell::Cell::new(v_id), target_id));
         let context = self.module.module().context();
-        context
-            .value_data(v_id)
-            .add_use(ValueUse::Instruction(self.id));
+        context.add_use(v_id, ValueUse::Instruction(self.id));
         // `SwitchInst::addCase` grows the operand list by *two* — the case
         // value and its destination — so the block gets an edge as well.
         // Registered after the value, matching `[…, CaseVal, CaseDest]`.
-        context
-            .value_data(target_id)
-            .add_use(ValueUse::Instruction(self.id));
+        context.add_use(target_id, ValueUse::Instruction(self.id));
         self
     }
 }
@@ -3772,8 +3752,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, TermOpen, B> {
         self.module
             .module()
             .context()
-            .value_data(target_id)
-            .add_use(ValueUse::Instruction(self.id));
+            .add_use(target_id, ValueUse::Instruction(self.id));
         Ok(self)
     }
     /// Consume the open `indirectbr` and return its [`TermClosed`] view.
@@ -4513,8 +4492,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
             .push((LandingPadClauseKind::Catch, core::cell::Cell::new(v_id)));
         module
             .context()
-            .value_data(v_id)
-            .add_use(ValueUse::Instruction(self.id));
+            .add_use(v_id, ValueUse::Instruction(self.id));
         Ok(self)
     }
     /// Append a `filter <ty> <val>` clause.
@@ -4531,8 +4509,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
             .push((LandingPadClauseKind::Filter, core::cell::Cell::new(v_id)));
         module
             .context()
-            .value_data(v_id)
-            .add_use(ValueUse::Instruction(self.id));
+            .add_use(v_id, ValueUse::Instruction(self.id));
         Ok(self)
     }
     /// Consume the open landingpad and return its [`TermClosed`] view.
@@ -4847,8 +4824,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, TermOpen, B> {
         self.module
             .module()
             .context()
-            .value_data(handler_id)
-            .add_use(ValueUse::Instruction(self.id));
+            .add_use(handler_id, ValueUse::Instruction(self.id));
         Ok(self)
     }
     #[inline]

@@ -349,9 +349,10 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
     /// and `convertValIDToValue` wraps whatever `getGlobalVal` returns —
     /// including the forward-reference placeholder — in a `NoCFIValue`, which
     /// re-interns itself through `handleOperandChange` when the placeholder is
-    /// RAUW'd. llvmkit's `ConstantData::NoCfi` deliberately does not register
-    /// an operand use (`docs/divergences.md` D2/D3), so nothing would rewrite
-    /// it; the wrapper is built at end of module instead. The *reference*
+    /// RAUW'd. llvmkit's `ConstantData::NoCfi` registers its operand use, but
+    /// the constant rewrite RAUW runs (`constant_with_replaced_operand` in
+    /// `llvmkit-ir`) has no `NoCfi` arm, so nothing would re-intern it; the
+    /// wrapper is built at end of module instead. The *reference*
     /// still goes into `forward_ref_globals` / `forward_ref_global_ids`
     /// exactly as `getGlobalVal` does, so an undefined referent is reported by
     /// upstream's own `ForwardRefVals` sweep, in its position and with its
@@ -11823,17 +11824,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .map_err(|e| self.builder_err("function comdat", e))?;
         }
         f.set_align(self.module, suffix.align);
-        if let Some(gc) = suffix.gc {
-            f.set_gc(self.module, gc);
-        }
-        if let Some(prefix_data) = suffix.prefix_data {
-            f.set_prefix_data(self.module, prefix_data)
-                .map_err(|e| self.builder_err("function prefix", e))?;
-        }
-        if let Some(prologue_data) = suffix.prologue_data {
-            f.set_prologue_data(self.module, prologue_data)
-                .map_err(|e| self.builder_err("function prologue", e))?;
-        }
+        // `Fn->setPersonalityFn(PersonalityFn); if (!GC.empty()) Fn->setGC(GC);
+        // Fn->setPrefixData(Prefix); Fn->setPrologueData(Prologue);` — in that
+        // order, because each setter that names a value adds a use at the head
+        // of its list, and a `uselistorder` names those uses by position.
         if let Some(personality_fn) = suffix.personality_fn {
             match personality_fn {
                 ParsedPersonalityFn::Resolved(personality_fn) => {
@@ -11849,6 +11843,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     });
                 }
             }
+        }
+        if let Some(gc) = suffix.gc {
+            f.set_gc(self.module, gc);
+        }
+        if let Some(prefix_data) = suffix.prefix_data {
+            f.set_prefix_data(self.module, prefix_data)
+                .map_err(|e| self.builder_err("function prefix", e))?;
+        }
+        if let Some(prologue_data) = suffix.prologue_data {
+            f.set_prologue_data(self.module, prologue_data)
+                .map_err(|e| self.builder_err("function prologue", e))?;
         }
         // `if (FwdFn) { FwdFn->replaceAllUsesWith(Fn); FwdFn->eraseFromParent(); }`
         // — the last statement of `parseFunctionHeader`'s common tail, after
@@ -12036,17 +12041,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .map_err(|e| self.builder_err("function comdat", e))?;
         }
         f.set_align(self.module, suffix.align);
-        if let Some(gc) = suffix.gc {
-            f.set_gc(self.module, gc);
-        }
-        if let Some(prefix_data) = suffix.prefix_data {
-            f.set_prefix_data(self.module, prefix_data)
-                .map_err(|e| self.builder_err("function prefix", e))?;
-        }
-        if let Some(prologue_data) = suffix.prologue_data {
-            f.set_prologue_data(self.module, prologue_data)
-                .map_err(|e| self.builder_err("function prologue", e))?;
-        }
+        // Upstream's setter order, as in the `declare` tail: personality,
+        // `gc`, prefix, prologue. Each value-naming setter adds a use at the
+        // head of its list, and a `uselistorder` names those uses by position.
         if let Some(personality_fn) = suffix.personality_fn {
             match personality_fn {
                 ParsedPersonalityFn::Resolved(personality_fn) => {
@@ -12062,6 +12059,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     });
                 }
             }
+        }
+        if let Some(gc) = suffix.gc {
+            f.set_gc(self.module, gc);
+        }
+        if let Some(prefix_data) = suffix.prefix_data {
+            f.set_prefix_data(self.module, prefix_data)
+                .map_err(|e| self.builder_err("function prefix", e))?;
+        }
+        if let Some(prologue_data) = suffix.prologue_data {
+            f.set_prologue_data(self.module, prologue_data)
+                .map_err(|e| self.builder_err("function prologue", e))?;
         }
         // `if (FwdFn) { FwdFn->replaceAllUsesWith(Fn); FwdFn->eraseFromParent(); }`
         // — the last statement of `parseFunctionHeader`'s common tail, so a
@@ -15179,8 +15187,23 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     // ── S3.3: EH/funclet opcodes ──────────────────────────────────────────
 
+    /// `isa<Constant>(V)`. Upstream's `GlobalValue` is a `Constant`; llvmkit
+    /// gives a global variable, alias and ifunc value categories of their own
+    /// (`docs/divergences.md` D3), so the question spans those as well. A
+    /// function in value position is already its `ptr @f` constant.
+    fn is_constant_operand(value: llvmkit_ir::Value<'ctx, B>) -> bool {
+        llvmkit_ir::Constant::try_from(value).is_ok()
+            || matches!(
+                value.category(),
+                llvmkit_ir::ValueCategory::Function
+                    | llvmkit_ir::ValueCategory::GlobalVariable
+                    | llvmkit_ir::ValueCategory::GlobalAlias
+                    | llvmkit_ir::ValueCategory::GlobalIfunc
+            )
+    }
+
     /// `landingpad <type> [cleanup] [catch/filter ...]`.
-    /// Non-terminator. Mirrors `LLParser::parseLandingPad` (LLParser.cpp ~7820).
+    /// Non-terminator. Mirrors `LLParser::parseLandingPad`.
     ///
     /// Upstream: `test/Assembler/landingpad.ll`.
     fn parse_landingpad(
@@ -15209,7 +15232,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                             self.message_at(clause_loc, "'catch' clause has an invalid type")
                         );
                     }
-                    if llvmkit_ir::Constant::try_from(clause_v).is_err() {
+                    if !Self::is_constant_operand(clause_v) {
                         return Err(
                             self.message_at(clause_loc, "clause argument must be a constant")
                         );
@@ -15228,7 +15251,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                             self.message_at(clause_loc, "'filter' clause has an invalid type")
                         );
                     }
-                    if llvmkit_ir::Constant::try_from(filter_v).is_err() {
+                    if !Self::is_constant_operand(filter_v) {
                         return Err(
                             self.message_at(clause_loc, "clause argument must be a constant")
                         );

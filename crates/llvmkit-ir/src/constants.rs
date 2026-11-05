@@ -2055,23 +2055,23 @@ fn is_constant_value(module: &ModuleCore, id: ValueSlot) -> bool {
     )
 }
 
-/// Point every recorded use of `from_id` at `replacement_id`.
+/// Point every recorded use of `from_id` at `replacement_id`. Mirrors
+/// `Value::doRAUW` (`lib/IR/Value.cpp`): a constant user goes through
+/// `Constant::handleOperandChange`, every other `Use` is `set` to the
+/// replacement, which puts it at the head of the replacement's list.
 ///
 /// Category-agnostic: `replacement_id` may name any value. Uniqued constant
 /// users are *re-interned* rather than mutated in place, so a rewritten
 /// constant keeps its structural identity — which is why replacing a value a
-/// constant embeds requires the replacement to be a constant too.
+/// constant embeds requires the replacement to be a constant too. See
+/// [`replace_constant_operand`] for how a re-interned constant keeps the place
+/// upstream's mutated one keeps.
 fn replace_value_uses_with(
     module: &ModuleCore,
     from_id: ValueSlot,
     replacement_id: ValueSlot,
 ) -> IrResult<()> {
-    let user_edges = module
-        .context()
-        .value_data(from_id)
-        .use_list
-        .borrow()
-        .clone();
+    let user_edges = module.context().use_list_of(from_id).borrow().clone();
     let mut direct_users = Vec::new();
     for edge in user_edges.iter().copied() {
         match edge {
@@ -2088,12 +2088,13 @@ fn replace_value_uses_with(
                         message: "a value embedded in a constant can only be replaced by a constant",
                     });
                 }
-                if let Some(rewritten_id) =
-                    constant_with_replaced_operand(module, user_id, from_id, replacement_id)?
-                    && rewritten_id != user_id
-                {
-                    replace_value_uses_with(module, user_id, rewritten_id)?;
-                }
+                replace_constant_operand(
+                    module,
+                    user_id,
+                    from_id,
+                    replacement_id,
+                    ReplacedOperand::Set,
+                )?;
             }
             ValueUse::Metadata(id) => {
                 module.rewrite_metadata_value(id, from_id, replacement_id);
@@ -2111,18 +2112,181 @@ fn replace_value_uses_with(
             }
         }
     }
-    module
-        .context()
-        .value_data(from_id)
-        .use_list
-        .borrow_mut()
-        .clear();
+    module.context().use_list_of(from_id).borrow_mut().clear();
     // Reversed, per `Value::replaceAllUsesWith` — see
-    // `ValueData::prepend_moved_uses`.
+    // `Context::prepend_moved_uses`. A `ptr @g` replacement is the global, so
+    // the moved edges join the global's own list (`docs/divergences.md` D3).
     module
         .context()
-        .value_data(replacement_id)
-        .prepend_moved_uses(&direct_users);
+        .prepend_moved_uses(replacement_id, &direct_users);
+    Ok(())
+}
+
+/// How the operand a constant is rewritten for was replaced, which decides
+/// where the rewritten constant's edge on the replacement belongs.
+#[derive(Clone, Copy)]
+enum ReplacedOperand {
+    /// `Use::set(To)` on the way through `Value::doRAUW`: the edge moves to
+    /// the head of the replacement's list, and the one on `From` goes with
+    /// `From`'s list.
+    Set,
+    /// The operand was itself a constant updated in place, so its users, this
+    /// constant among them, kept their places on its list, which
+    /// [`move_users_in_place`] has already moved to the replacement.
+    InPlace,
+}
+
+/// `Constant::handleOperandChange(From, To)` for the constant `user_id`.
+///
+/// Upstream's `handleOperandChangeImpl` answers one of two ways. A fold, or a
+/// constant already uniqued under the new operands, comes back as the
+/// replacement, and `handleOperandChange` runs `replaceAllUsesWith` and
+/// `destroyConstant`, which drops the old constant's uses of its operands.
+/// Otherwise `ConstantUniqueMap::replaceOperandsInPlace` updates the constant
+/// where it stands: on each operand's list its `Use` keeps its place, and its
+/// users keep theirs.
+///
+/// llvmkit does not mutate an interned constant, so the in-place case is a
+/// freshly interned constant over the same operands with `From` replaced,
+/// which takes the old one's place: [`take_constant_place`] puts it where the
+/// old one's edges were, and [`move_users_in_place`] hands it the old one's
+/// users in their order. Anything else is upstream's other answer.
+fn replace_constant_operand(
+    module: &ModuleCore,
+    user_id: ValueSlot,
+    from_id: ValueSlot,
+    replacement_id: ValueSlot,
+    replaced: ReplacedOperand,
+) -> IrResult<()> {
+    let fresh_from = module.context().value_count();
+    let Some(rewritten_id) =
+        constant_with_replaced_operand(module, user_id, from_id, replacement_id)?
+    else {
+        return Ok(());
+    };
+    if rewritten_id == user_id {
+        return Ok(());
+    }
+    let old_operands = constant_operands(module, user_id);
+    let new_operands = constant_operands(module, rewritten_id);
+    let in_place = rewritten_id.arena_index() >= fresh_from
+        && old_operands.len() == new_operands.len()
+        && old_operands
+            .iter()
+            .zip(&new_operands)
+            .all(|(old, new)| old == new || (*old == from_id && *new == replacement_id));
+    if in_place {
+        take_constant_place(
+            module,
+            user_id,
+            rewritten_id,
+            &old_operands,
+            from_id,
+            replacement_id,
+            replaced,
+        );
+        return move_users_in_place(module, user_id, rewritten_id);
+    }
+    // `replaceAllUsesWith(Replacement); destroyConstant();`
+    replace_value_uses_with(module, user_id, rewritten_id)?;
+    for operand in old_operands {
+        // An operand updated in place left its list to its replacement.
+        let holder = match replaced {
+            ReplacedOperand::InPlace if operand == from_id => replacement_id,
+            ReplacedOperand::InPlace | ReplacedOperand::Set => operand,
+        };
+        module
+            .context()
+            .remove_use(holder, ValueUse::Constant(user_id));
+    }
+    Ok(())
+}
+
+/// A constant's operands, in `User::operands` order.
+fn constant_operands(module: &ModuleCore, constant: ValueSlot) -> Vec<ValueSlot> {
+    let mut operands = Vec::new();
+    if let ValueKindData::Constant(data) = &module.context().value_data(constant).kind {
+        data.for_each_operand(|operand| operands.push(operand));
+    }
+    operands
+}
+
+/// Put `new_id`, interned a moment ago, where `old_id`'s edges were on its
+/// operands' lists, and drop the edges interning added at their heads — the
+/// place a `Use` updated by `replaceOperandsInPlace` keeps. An operand that
+/// was `From` under [`ReplacedOperand::Set`] is the exception: `setOperand`
+/// is a `Use::set`, so the new edge stays at the head of the replacement's
+/// list.
+fn take_constant_place(
+    module: &ModuleCore,
+    old_id: ValueSlot,
+    new_id: ValueSlot,
+    old_operands: &[ValueSlot],
+    from_id: ValueSlot,
+    replacement_id: ValueSlot,
+    replaced: ReplacedOperand,
+) {
+    let context = module.context();
+    for operand in old_operands.iter().copied() {
+        let holder = match replaced {
+            ReplacedOperand::Set if operand == from_id => continue,
+            // `From`'s list, this constant's edge on it included, is now its
+            // replacement's.
+            ReplacedOperand::InPlace if operand == from_id => replacement_id,
+            ReplacedOperand::Set | ReplacedOperand::InPlace => operand,
+        };
+        let mut uses = context.use_list_of(holder).borrow_mut();
+        let new_edge = ValueUse::Constant(new_id);
+        if let Some(fresh) = uses.iter().position(|edge| *edge == new_edge) {
+            uses.remove(fresh);
+        }
+        if let Some(old) = uses
+            .iter_mut()
+            .find(|edge| **edge == ValueUse::Constant(old_id))
+        {
+            *old = new_edge;
+        }
+    }
+}
+
+/// Hand `old_id`'s users to `new_id` in their order, rewriting each to name
+/// `new_id`. The users of a constant upstream updated in place still hold the
+/// same object, so their `Use`s never move; a constant user is itself
+/// re-interned, under [`ReplacedOperand::InPlace`].
+fn move_users_in_place(module: &ModuleCore, old_id: ValueSlot, new_id: ValueSlot) -> IrResult<()> {
+    let context = module.context();
+    let moved = core::mem::take(&mut *context.use_list_of(old_id).borrow_mut());
+    {
+        let mut list = context.use_list_of(new_id).borrow_mut();
+        let mut merged = moved.clone();
+        merged.append(&mut list);
+        *list = merged;
+    }
+    for edge in moved {
+        match edge {
+            ValueUse::Instruction(user_id) => {
+                if let ValueKindData::Instruction(inst) = &context.value_data(user_id).kind {
+                    rewrite_operand_cells(&inst.kind, old_id, new_id);
+                }
+            }
+            ValueUse::Constant(user_id) => {
+                replace_constant_operand(
+                    module,
+                    user_id,
+                    old_id,
+                    new_id,
+                    ReplacedOperand::InPlace,
+                )?;
+            }
+            ValueUse::Metadata(id) => module.rewrite_metadata_value(id, old_id, new_id),
+            ValueUse::DebugRecord { inst, record } => {
+                rewrite_debug_record_value(module, inst, record, old_id, new_id);
+            }
+            ValueUse::GlobalField { owner, field } => {
+                context.rewrite_global_field_cell(owner, field, old_id, new_id);
+            }
+        }
+    }
     Ok(())
 }
 

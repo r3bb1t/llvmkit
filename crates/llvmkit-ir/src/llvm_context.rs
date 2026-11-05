@@ -712,6 +712,12 @@ impl Context {
         }
     }
 
+    /// How many values the arena holds. A slot whose index is at least this
+    /// count was pushed after the count was read.
+    pub(crate) fn value_count(&self) -> usize {
+        self.values.count()
+    }
+
     /// Push a fresh value to the arena and return its id.
     pub(crate) fn push_value(&self, data: ValueData) -> ValueSlot {
         let idx = self.values.push(data);
@@ -748,7 +754,7 @@ impl Context {
             return;
         };
         data.for_each_operand(|operand| {
-            self.value_data(operand).add_use(ValueUse::Constant(user));
+            self.add_use(operand, ValueUse::Constant(user));
         });
     }
 
@@ -757,8 +763,8 @@ impl Context {
     /// llvmkit gives a global object its *value* type and interns a separate
     /// pointer-typed [`ConstantData::GlobalValueRef`] to stand for `@name`
     /// where a constant is wanted. Upstream has no such node: a `GlobalValue`
-    /// **is** a pointer-typed `Constant`, so a field naming one is a `Use` of
-    /// the global itself.
+    /// **is** a pointer-typed `Constant`, so a field or operand naming one is
+    /// a `Use` of the global itself.
     ///
     /// Registering on the wrapper instead would not merely relabel the edge,
     /// it would lose count — the wrapper is *interned*, so three aliases of
@@ -770,6 +776,64 @@ impl Context {
             ValueKindData::Constant(ConstantData::GlobalValueRef { value: global }) => *global,
             _ => value,
         }
+    }
+
+    // ---- Use lists ----
+    //
+    // The doors every edge goes through. Each reads its value through
+    // [`Self::use_edge_target`], so a `GlobalValueRef` wrapper never holds an
+    // edge of its own: an operand cell may hold the wrapper, but the edge it
+    // stands for is on the global's one list, as upstream's `Use` is on the
+    // `GlobalValue`'s.
+
+    /// The use list of `value`, read through the wrapper. Mirrors
+    /// `Value::UseList` (`Value.h`).
+    pub(crate) fn use_list_of(&self, value: ValueSlot) -> &RefCell<Vec<ValueUse>> {
+        &self.value_data(self.use_edge_target(value)).use_list
+    }
+
+    /// Register `edge` as a new use of `value`.
+    ///
+    /// Mirrors `Value::addUse` (`Value.h`), which forwards to
+    /// `Use::addToList` (`Use.h`): upstream threads its use list through the
+    /// uses themselves and a new one becomes the **head**, so the list reads
+    /// newest-first. llvmkit stores the same sequence rather than appending,
+    /// because the sequence is contractual — `LLParser::sortUseListOrder`
+    /// keys each use by its position in it, and
+    /// `AsmWriter::predictValueUseListOrder` emits a shuffle against it.
+    pub(crate) fn add_use(&self, value: ValueSlot, edge: ValueUse) {
+        self.use_list_of(value).borrow_mut().insert(0, edge);
+    }
+
+    /// Drop the first `edge` from `value`'s use list, if it is there.
+    /// Mirrors `Use::removeFromList` (`Use.h`); an operand that names a value
+    /// twice holds two equal edges, and each removal takes one.
+    pub(crate) fn remove_use(&self, value: ValueSlot, edge: ValueUse) {
+        let mut uses = self.use_list_of(value).borrow_mut();
+        if let Some(position) = uses.iter().position(|candidate| *candidate == edge) {
+            uses.remove(position);
+        }
+    }
+
+    /// Move `edges` — a head-first snapshot of another value's use list —
+    /// onto the head of `value`'s.
+    ///
+    /// Mirrors the drain loop in `Value::replaceAllUsesWith`
+    /// (`lib/IR/Value.cpp`), which repeatedly takes the *head* of the old
+    /// list and `Use::set`s it, prepending each in turn to the new list. The
+    /// net effect reverses the moved run — which is exactly the reversal
+    /// `AsmWriter::predictValueUseListOrder` compensates for with its
+    /// `GetsReversed` flag, so reproducing it here is what makes a
+    /// forward-referenced value's printed shuffle match upstream's.
+    pub(crate) fn prepend_moved_uses(&self, value: ValueSlot, edges: &[ValueUse]) {
+        if edges.is_empty() {
+            return;
+        }
+        let mut list = self.use_list_of(value).borrow_mut();
+        let mut merged = Vec::with_capacity(edges.len() + list.len());
+        merged.extend(edges.iter().rev().copied());
+        merged.append(&mut list);
+        *list = merged;
     }
 
     /// Move a global object's single-slot field edge from `old` to `new`.
@@ -792,14 +856,10 @@ impl Context {
         }
         let edge = ValueUse::GlobalField { owner, field };
         if let Some(old) = old {
-            let data = self.value_data(old);
-            let mut uses = data.use_list.borrow_mut();
-            if let Some(position) = uses.iter().position(|use_| *use_ == edge) {
-                uses.remove(position);
-            }
+            self.remove_use(old, edge);
         }
         if let Some(new) = new {
-            self.value_data(new).add_use(edge);
+            self.add_use(new, edge);
         }
     }
 
@@ -1031,6 +1091,7 @@ impl Context {
             kind: ValueKindData::Constant(ConstantData::GepOffset { base_id, off }),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
+        self.register_constant_operand_uses(id);
         self.gep_offset_constants.borrow_mut().insert(key, id);
         id
     }
@@ -1052,6 +1113,7 @@ impl Context {
             kind: ValueKindData::Constant(ConstantData::SymbolDelta { hi_id, lo_id }),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
+        self.register_constant_operand_uses(id);
         self.symbol_delta_constants.borrow_mut().insert(key, id);
         id
     }
@@ -1078,6 +1140,7 @@ impl Context {
             }),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
+        self.register_constant_operand_uses(id);
         self.symbol_delta_plus_constants
             .borrow_mut()
             .insert(key, id);
@@ -1162,6 +1225,7 @@ impl Context {
             kind: ValueKindData::Constant(ConstantData::DsoLocalEquivalent { function }),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
+        self.register_constant_operand_uses(id);
         self.dso_local_equivalent_constants
             .borrow_mut()
             .insert(key, id);
@@ -1180,6 +1244,7 @@ impl Context {
             kind: ValueKindData::Constant(ConstantData::NoCfi { function }),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
+        self.register_constant_operand_uses(id);
         self.no_cfi_constants.borrow_mut().insert(key, id);
         id
     }

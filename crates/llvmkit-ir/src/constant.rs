@@ -452,23 +452,26 @@ impl ConstantData {
                 f(*function);
                 f(*block);
             }
-            // The rest name no operand llvmkit can hand back. Note the ones
-            // that *should*: `GlobalValueRef`, `DsoLocalEquivalent`, `NoCfi`,
-            // `GepOffset` and the `SymbolDelta` pair all wrap a global, and
-            // upstream counts each as a use of it. Yielding them here would
-            // register the edge against llvmkit's *interned* wrapper rather
-            // than the global, which loses count rather than fixing it —
-            // see `docs/divergences.md` (D2/D3).
+            // `DSOLocalEquivalent` and `NoCFIValue` each hold their global as
+            // `Op<0>` (`Constants.cpp`).
+            Self::DsoLocalEquivalent { function } | Self::NoCfi { function } => f(*function),
+            // llvmkit's compact spellings of a `getelementptr` on a global and
+            // of `sub` / `add` over two `ptrtoint`s. Upstream's `getelementptr`
+            // is a user of its global; in the `sub`, each global's user is the
+            // `ptrtoint` naming it, which the compact form stands in for.
+            Self::GepOffset { base_id, .. } => f(*base_id),
+            Self::SymbolDelta { hi_id, lo_id } | Self::SymbolDeltaPlus { hi_id, lo_id, .. } => {
+                f(*hi_id);
+                f(*lo_id);
+            }
+            // `GlobalValueRef` *is* its global (`docs/divergences.md` D3): it
+            // is no user of it, so it yields nothing. The rest have no
+            // operands upstream.
             Self::Int(_)
             | Self::Float(_)
             | Self::GlobalValueRef { .. }
             | Self::PointerNull
             | Self::ForwardRefPlaceholder
-            | Self::GepOffset { .. }
-            | Self::SymbolDelta { .. }
-            | Self::SymbolDeltaPlus { .. }
-            | Self::DsoLocalEquivalent { .. }
-            | Self::NoCfi { .. }
             | Self::TokenNone
             | Self::TargetExtNone
             | Self::Undef

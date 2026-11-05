@@ -95,33 +95,6 @@ site that assumes `operand(i)` is first-class. Upstream's true order is
 `br` = `[cond, else, then]`, `switch` = `[cond, default, (val, dest)*]`,
 `invoke` = `[args…, normal, unwind, callee]`.
 
-### D2 — Constants wrapping a global register no operand use
-
-**Severity:** model-gap
-**Where:** `crates/llvmkit-ir/src/constant.rs` — `ConstantData::for_each_operand`
-
-**LLVM:** `DSOLocalEquivalent`, `NoCFIValue` and every `ConstantExpr` naming a
-global hold it as a `Use`.
-
-**llvmkit:** `for_each_operand` yields operands for `Expr`, `Aggregate`,
-`PtrAuth` and — since W12 — `BlockAddress`, whose `[Function, BasicBlock]`
-operands are what let a block be used from outside its own function.
-`GlobalValueRef`, `DsoLocalEquivalent`, `NoCfi`, `GepOffset`, `SymbolDelta`
-and `SymbolDeltaPlus` still yield nothing.
-
-**Why not fixed with the rest:** all six wrap a *global*, and yielding them
-would register the edge against llvmkit's interned wrapper rather than the
-global — see D3. That loses count instead of fixing it, so the two have to be
-closed together.
-
-**What it costs elsewhere:** upstream's `kw_no_cfi` arm can wrap a
-forward-reference placeholder immediately, because `NoCFIValue` is a real
-`User` and `handleOperandChange` re-interns it when the placeholder is RAUW'd.
-llvmkit's `NoCfi` is not, so nothing would rewrite it — the parser keeps a
-`pending_no_cfi` list and builds the wrapper after the `ForwardRefVals` sweep
-instead. Same messages, same positions, one extra end-of-module step; it goes
-away when D2/D3 close.
-
 ### D3 — `GlobalValueRef` is an interned wrapper LLVM does not have
 
 **Severity:** model-gap
@@ -135,24 +108,25 @@ three uses.
 **llvmkit:** a global object carries its *value* type, and a separate
 **interned** `ConstantData::GlobalValueRef` stands for `@g` where a constant
 is wanted. Because it is interned, every reference shares one node, so edges
-registered against the wrapper collapse to a single use.
+registered against the wrapper would collapse to a single use.
 
-**Partly fixed (W12):** `use_edge_target` unwraps the wrapper for
-`ValueUse::GlobalField` edges — alias, ifunc resolver, initializer,
-personality, prefix, prologue — so those now count per-reference as upstream
-does, and `rewrite_global_field_cell` re-interns the wrapper on RAUW.
+**The use list is fixed.** Every edge is added, removed and moved through
+`Context`'s use-list doors in `llvm_context.rs` (`add_use`, `remove_use`,
+`prepend_moved_uses`, `use_list_of`), which read the wrapper through
+`use_edge_target` to its global, and `Value`'s use-list queries read the same
+way. So a global has one list, as upstream's has: a global field, an
+instruction operand, a constant-expression operand, a metadata node and a
+debug record all land on it, and a wrapper's own list stays empty.
+`uselistorder ptr @f` covers a function's calls, `ptr @f` operands,
+initializers and constant expressions
+(`crates/llvmkit-asmparser/tests/parser_use_list.rs::a_function_called_and_named_by_constants_orders_every_use`),
+and the Verifier's port of `F.hasAddressTaken` (`function_address_is_taken`)
+sees a call that passes an intrinsic as an argument
+(`crates/llvmkit-ir/tests/verifier_basic.rs::intrinsic_declaration_used_as_non_callee_operand_is_rejected`).
+A cell may still hold the wrapper, so a reader asking "is this operand that
+global" compares through `use_edge_target`.
 
-**Still open:** the same unwrap is *not* applied to constant-expression
-operands. `@a` referenced from `getelementptr (… ptr @a …)` still records the
-use against the wrapper, so `@a`'s count is one regardless of how many
-expressions name it. Closing it needs `constant_with_replaced_operand` to
-match wrapper-held operands too, which is why it was not done with the
-global-field half. A function named by an instruction records its use the same
-way: the parser hands it over as the wrapper, because a function's own value has
-its signature for a type, and a forward reference to one always resolved to the
-wrapper.
-
-**Also open — the handles' narrowing does not read through the wrapper.**
+**Still open — the handles' narrowing does not read through the wrapper.**
 Upstream's `dyn_cast<GlobalVariable>(LI->getPointerOperand())` on
 `load i32, ptr @g` answers `@g`. llvmkit's `GlobalVariable::try_from` of that
 operand — the interned wrapper — answers
@@ -164,30 +138,13 @@ the `GlobalValueRef` arms in `constant_fold.rs` and `constant_folding.rs`);
 the public `TryFrom<Value>` impls of `GlobalVariable`, `GlobalAlias`,
 `GlobalIfunc` and `FunctionValue` match only the global's own kind. Fix: those
 impls unwrap a `GlobalValueRef` whose referent is their kind, as D3 says the
-wrapper *is* the global.
-
-**Also open — instruction operands, and with them an intrinsic's
-address-taken guard (accepts-invalid).** An instruction operand built from
-`FunctionValue::as_global_constant_ptr` records its edge against the wrapper
-too, so the function's own use list never sees the instruction. The
-Verifier's port of `F.hasAddressTaken` (`function_address_is_taken`, behind
-`Verifier::visitFunction`'s `Invalid user of intrinsic instruction!` check)
-walks that list, so a builder-made `call void @sink(ptr @llvm.bswap.i32)`
-verifies clean where upstream rejects it — the call is a user of the
-intrinsic and the use is not its callee (derived from `Verifier::visitFunction`
-and `Function::hasAddressTaken`; llvmkit's half observed). Text cannot spell
-the call — the parser refuses `ptr @f` as a call argument (gap **G20** in
-`docs/fixture-coverage.md`) — so only the builder reaches it. The
-global-initializer form, `@g1 = global ptr @llvm.bswap.i32`, is refused, its
-edge unwrapped as above. Found at Task 5 of the type-constructor plan
-(2026-10-29, over `ad8261a`): `crates/llvmkit-ir/tests/verifier_basic.rs::intrinsic_declaration_used_as_non_callee_operand_is_rejected`
-had passed only by building `void (i32 (i32))`, a function type
-`FunctionType::FunctionType` asserts against, and handing it the function's
-own value; rewritten with a `ptr` parameter and `as_global_constant_ptr`, the
-call form verified clean, and the test now pins the initializer form. Fix:
-unwrap the wrapper where an instruction operand's edge is registered, as
-`use_edge_target` does for global fields, then restore the call form in that
-test.
+wrapper *is* the global. The same narrowing, the other way round, refused a
+parse: `Constant::try_from` of a global variable fails, so the parser's
+`landingpad` clause check, its port of `isa<Constant>`, refused `catch ptr @g`
+as `clause argument must be a constant`. That check now asks about a global's
+own value category too
+(`crates/llvmkit-asmparser/tests/parser_use_list.rs::a_directive_on_an_invoked_function_parses`);
+`Constant::try_from` itself still matches only a `Constant` kind.
 
 ### D4 — Two uses by the same user are indistinguishable
 
@@ -199,9 +156,13 @@ test.
 user on `Use::getOperandNo()`.
 
 **llvmkit:** `ValueUse::Instruction(user)` records only the user, so
-`add i32 %x, %x` produces two identical edges. The tie-break has no
-counterpart; the comparator treats them as equal and the stable sort leaves
-their relative order alone.
+`add i32 %x, %x` produces two identical edges, and `ValueUse::Constant` is the
+same. For those the tie-break has no counterpart; the comparator treats them
+as equal and the stable sort leaves their relative order alone. A
+`ValueUse::GlobalField` edge names its cell, so `ValueUse::operand_number`
+answers for it and the tie-break between one function's personality, prefix
+and prologue is upstream's
+(`crates/llvmkit-asmparser/tests/parser_use_list.rs::function_operand_uses_survive_a_reversal_round_trip`).
 
 **Consequence:** for a value referenced twice by one user, the emitted
 `uselistorder` shuffle may differ from upstream's. Both are self-consistent —

@@ -567,11 +567,17 @@ fn predict_value_use_list_order(
     // `for (const Use &U : V->uses()) if (OM.lookup(U.getUser()))`. Only the
     // edges upstream models as `Use`s take part — see
     // `ValueUse::is_operand_use`.
-    let mut list: Vec<(ValueSlot, usize)> = Vec::new();
-    for user in m.context().value_data(value).operand_users() {
-        if om.lookup(user) != 0 {
+    let mut list: Vec<PredictedUse> = Vec::new();
+    for edge in m.context().use_list_of(value).borrow().iter() {
+        if let Some(user) = edge.user()
+            && om.lookup(user) != 0
+        {
             let position = list.len();
-            list.push((user, position));
+            list.push(PredictedUse {
+                user,
+                operand: edge.operand_number(),
+                position,
+            });
         }
     }
     if list.len() < 2 {
@@ -580,7 +586,7 @@ fn predict_value_use_list_order(
 
     // "When referencing a value before its declaration, a temporary value is
     // created, which will later be RAUWed with the actual value. This reverses
-    // the use list." — the reversal `ValueData::prepend_moved_uses` reproduces.
+    // the use list." — the reversal `Context::prepend_moved_uses` reproduces.
     let gets_reversed = !matches!(
         m.context().value_data(value).kind,
         ValueKindData::BasicBlock(_)
@@ -590,42 +596,58 @@ fn predict_value_use_list_order(
         _ => id,
     };
 
-    // `llvm::sort` under upstream's comparator. The operand-number tie-break
-    // for two uses by the *same* user has no llvmkit counterpart — its use
-    // list holds one indistinguishable edge per reference — so those compare
-    // equal and a stable sort leaves them where they are. Recorded in
-    // `docs/future-work.md`.
+    // `llvm::sort` under upstream's comparator, as a strict "`L` before `R`".
+    let before = |left: &PredictedUse, right: &PredictedUse| {
+        let left_id = om.lookup(left.user);
+        let right_id = om.lookup(right.user);
+        if left_id < right_id {
+            return gets_reversed && right_id <= id;
+        }
+        if right_id < left_id {
+            return !(gets_reversed && left_id <= id);
+        }
+        // "LID and RID are equal, so we have different operands of the same
+        // user." Upstream orders them by `getOperandNo`. Only a global-field
+        // edge can answer it here; two instruction or constant edges of one
+        // user are indistinguishable (`docs/divergences.md` D4), so neither
+        // goes first and the stable sort leaves them where they are.
+        let (Some(left_operand), Some(right_operand)) = (left.operand, right.operand) else {
+            return false;
+        };
+        if gets_reversed && left_id <= id {
+            return left_operand < right_operand;
+        }
+        left_operand > right_operand
+    };
     list.sort_by(|left, right| {
-        let left_id = om.lookup(left.0);
-        let right_id = om.lookup(right.0);
-        let left_first = if left_id < right_id {
-            gets_reversed && right_id <= id
-        } else if right_id < left_id {
-            !(gets_reversed && left_id <= id)
+        if before(left, right) {
+            core::cmp::Ordering::Less
+        } else if before(right, left) {
+            core::cmp::Ordering::Greater
         } else {
-            false
-        };
-        let right_first = if right_id < left_id {
-            gets_reversed && left_id <= id
-        } else if left_id < right_id {
-            !(gets_reversed && right_id <= id)
-        } else {
-            false
-        };
-        match (left_first, right_first) {
-            (true, false) => core::cmp::Ordering::Less,
-            (false, true) => core::cmp::Ordering::Greater,
-            _ => core::cmp::Ordering::Equal,
+            core::cmp::Ordering::Equal
         }
     });
 
     // `if (llvm::is_sorted(List, llvm::less_second())) return {};`
-    if list.windows(2).all(|pair| pair[0].1 <= pair[1].1) {
+    if list
+        .windows(2)
+        .all(|pair| pair[0].position <= pair[1].position)
+    {
         return Vec::new();
     }
     list.into_iter()
-        .map(|(_, position)| u32::try_from(position).unwrap_or(u32::MAX))
+        .map(|entry| u32::try_from(entry.position).unwrap_or(u32::MAX))
         .collect()
+}
+
+/// One entry of `predictValueUseListOrder`'s `List`: upstream's
+/// `std::pair<const Use *, unsigned>`, the `Use` read as its user and, where
+/// llvmkit's edge can answer it, its `getOperandNo`.
+struct PredictedUse {
+    user: ValueSlot,
+    operand: Option<u32>,
+    position: usize,
 }
 
 /// `BasicBlock::getParent` on a slot.
@@ -709,11 +731,21 @@ fn fmt_use_list_order(
         fmt_operand_ref(f, block.to_erased(), Some(&parent_slots))?;
     } else {
         f.write_str(" ")?;
-        fmt_operand(
-            f,
-            Value::<DynBrand, ReadOnly>::from_parts(directive.value, m, data.ty),
-            slots,
-        )?;
+        let value = Value::<DynBrand, ReadOnly>::from_parts(directive.value, m, data.ty);
+        // `writeOperand(V, true)` prints `V->getType()`, which for a
+        // `Function` is the pointer `GlobalValue::getType` answers. llvmkit's
+        // function value carries its signature (`docs/divergences.md` D3), so
+        // the pointer is spelled here, as the type printer's pointer arm does.
+        if matches!(data.kind, ValueKindData::Function(_)) {
+            let function =
+                FunctionValue::<Dyn, DynBrand, ReadOnly>::from_parts_unchecked(directive.value, m);
+            f.write_str("ptr")?;
+            print_address_space(f, function.address_space(), " ", "", false)?;
+            f.write_str(" ")?;
+            fmt_operand_ref(f, value, slots)?;
+        } else {
+            fmt_operand(f, value, slots)?;
+        }
     }
     f.write_str(", ")?;
     fmt_indexes(f, &directive.shuffle)

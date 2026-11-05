@@ -1549,13 +1549,7 @@ where
                 });
             }
             for val_id in dropped_values {
-                let mut uses = ctx.value_data(val_id).use_list.borrow_mut();
-                if let Some(pos) = uses
-                    .iter()
-                    .position(|e| *e == ValueUse::Instruction(inst_id))
-                {
-                    uses.remove(pos);
-                }
+                ctx.remove_use(val_id, ValueUse::Instruction(inst_id));
             }
             // Release this read borrow immediately — it must not be held into
             // pass 2, whose RAUW/erase re-enter the same phi storage. Only a
@@ -1631,13 +1625,7 @@ where
                     }
                 });
                 for val_id in dropped_case_values {
-                    let mut uses = ctx.value_data(val_id).use_list.borrow_mut();
-                    if let Some(pos) = uses
-                        .iter()
-                        .position(|e| *e == ValueUse::Instruction(term_id))
-                    {
-                        uses.remove(pos);
-                    }
+                    ctx.remove_use(val_id, ValueUse::Instruction(term_id));
                 }
                 id
             }
@@ -1668,13 +1656,7 @@ where
                     }
                 };
                 *branch.kind.borrow_mut() = BranchKind::Unconditional(surviving);
-                let mut uses = ctx.value_data(cond_id).use_list.borrow_mut();
-                if let Some(pos) = uses
-                    .iter()
-                    .position(|e| *e == ValueUse::Instruction(term_id))
-                {
-                    uses.remove(pos);
-                }
+                ctx.remove_use(cond_id, ValueUse::Instruction(term_id));
                 removed
             }
             EditSlot::SwitchDefault

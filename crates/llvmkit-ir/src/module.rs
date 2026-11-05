@@ -3510,18 +3510,12 @@ impl<'ctx> ModuleCore {
 
     fn register_metadata_value_use(&self, metadata_slot: MetadataSlot, value_id: ValueSlot) {
         self.ctx
-            .value_data(value_id)
-            .add_use(ValueUse::Metadata(metadata_slot));
+            .add_use(value_id, ValueUse::Metadata(metadata_slot));
     }
 
     fn deregister_metadata_value_use(&self, metadata_slot: MetadataSlot, value_id: ValueSlot) {
-        let mut uses = self.ctx.value_data(value_id).use_list.borrow_mut();
-        if let Some(pos) = uses
-            .iter()
-            .position(|edge| *edge == ValueUse::Metadata(metadata_slot))
-        {
-            uses.remove(pos);
-        }
+        self.ctx
+            .remove_use(value_id, ValueUse::Metadata(metadata_slot));
     }
 
     /// Look up a metadata node by id. `None` for a foreign id or one whose

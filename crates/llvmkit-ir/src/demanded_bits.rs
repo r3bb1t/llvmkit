@@ -1319,12 +1319,8 @@ fn replace_instruction_operand<'ctx, B: ModuleBrand + 'ctx>(
     operand.set(new_id);
     let module = user.module().core_ref();
     let edge = ValueUse::Instruction(user.slot_trusting_same_module());
-    let mut old_uses = module.context().value_data(old_id).use_list.borrow_mut();
-    if let Some(pos) = old_uses.iter().position(|candidate| *candidate == edge) {
-        old_uses.remove(pos);
-    }
-    drop(old_uses);
-    module.context().value_data(new_id).add_use(edge);
+    module.context().remove_use(old_id, edge);
+    module.context().add_use(new_id, edge);
     Ok(true)
 }
 
