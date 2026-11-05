@@ -17,9 +17,10 @@ use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored};
 use crate::capability::{Capability, ReadOnly};
 use crate::cmp_predicate::IntPredicate;
 use crate::constant::{
-    Constant, ConstantData, ConstantDataKind, ConstantExprData, ConstantExprOpcode, ConstantKind,
-    Undefined, is_poison,
+    Constant, ConstantData, ConstantDataKind, ConstantExprData, ConstantExprFlags,
+    ConstantExprOpcode, ConstantKind, Undefined, is_poison,
 };
+use crate::constant_fold::shufflevector_mask_from_constant;
 use crate::constant_range::{
     ConstantRange, OverflowResult, PreferredRangeType, constant_ranges_from_metadata,
 };
@@ -4973,26 +4974,143 @@ pub fn can_create_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     )
 }
 
+/// What `dyn_cast<Operator>(V)` admits: an instruction, or a constant
+/// expression.
+///
+/// llvmkit stores a constant expression in five shapes, the five that
+/// [`Constant::kind`] classifies as [`ConstantKind::Expr`]. One keeps its
+/// operands; the four compact ones stand for the expression each prints as,
+/// and are read as that expression.
+#[derive(Clone, Copy)]
+enum OperatorRef<'ctx> {
+    /// An instruction.
+    Instruction(&'ctx InstructionKindData),
+    /// A constant expression stored with its operands.
+    Expression(&'ctx ConstantExprData),
+    /// [`ConstantData::GepOffset`] at a nonzero offset, which prints as
+    /// `getelementptr inbounds (i8, ptr @base, i64 off)`. At a zero offset it
+    /// is the base global itself, and no operator.
+    GlobalOffset { base: ValueSlot },
+    /// [`ConstantData::SymbolDelta`], or [`ConstantData::SymbolDeltaPlus`]
+    /// with a zero addend: `sub (i64 ptrtoint (ptr @hi to i64), i64 ptrtoint
+    /// (ptr @lo to i64))`.
+    SymbolDelta { hi: ValueSlot, lo: ValueSlot },
+    /// [`ConstantData::SymbolDeltaPlus`] with a nonzero addend: `add (i64
+    /// <the symbol difference>, i64 addend)`.
+    SymbolDeltaPlus { hi: ValueSlot, lo: ValueSlot },
+    /// A scalable element list: the splat `ConstantVector::getSplat` builds as
+    /// `shufflevector (insertelement (poison, V, i64 0), poison,
+    /// zeroinitializer)`.
+    ScalableSplat { element: ValueSlot },
+}
+
+/// Ports `dyn_cast<Operator>(V)`, read off llvmkit's storage.
+fn operator_ref<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<OperatorRef<'ctx>> {
+    let constant = match &value.data().kind {
+        ValueKindData::Instruction(instruction) => {
+            return Some(OperatorRef::Instruction(&instruction.kind));
+        }
+        ValueKindData::Constant(constant) => constant,
+        _ => return None,
+    };
+    // Matched exhaustively, as `Constant::kind` is: a new constant kind has to
+    // be classified as an operator or not.
+    match constant {
+        ConstantData::Expr(expression) => Some(OperatorRef::Expression(expression)),
+        ConstantData::GepOffset { off: 0, .. } => None,
+        ConstantData::GepOffset { base_id, .. } => {
+            Some(OperatorRef::GlobalOffset { base: *base_id })
+        }
+        ConstantData::SymbolDelta { hi_id, lo_id }
+        | ConstantData::SymbolDeltaPlus {
+            hi_id,
+            lo_id,
+            addend: 0,
+        } => Some(OperatorRef::SymbolDelta {
+            hi: *hi_id,
+            lo: *lo_id,
+        }),
+        ConstantData::SymbolDeltaPlus { hi_id, lo_id, .. } => Some(OperatorRef::SymbolDeltaPlus {
+            hi: *hi_id,
+            lo: *lo_id,
+        }),
+        // A scalable list is never empty: `intern_element_list` stores the
+        // splat of nothing as a zero.
+        ConstantData::Aggregate(elements) if value.ty().kind() == TypeKind::ScalableVector => {
+            elements
+                .first()
+                .map(|&element| OperatorRef::ScalableSplat { element })
+        }
+        ConstantData::Aggregate(_)
+        | ConstantData::Int(_)
+        | ConstantData::Float(_)
+        | ConstantData::GlobalValueRef { .. }
+        | ConstantData::PointerNull
+        | ConstantData::ForwardRefPlaceholder
+        | ConstantData::AggregateZero
+        | ConstantData::BlockAddress { .. }
+        | ConstantData::DsoLocalEquivalent { .. }
+        | ConstantData::NoCfi { .. }
+        | ConstantData::TokenNone
+        | ConstantData::TargetExtNone
+        | ConstantData::PtrAuth { .. }
+        | ConstantData::Undef
+        | ConstantData::Poison => None,
+    }
+}
+
 /// Ports the static `canCreateUndefOrPoison(Op, Kind, ConsiderFlagsAndMetadata)`.
+///
+/// Upstream takes an `Operator`. A value that is none answers `false`, as an
+/// operator that creates nothing does; the public entries take any value, and
+/// every caller in this file asks only of an operator. Upstream's one `switch`
+/// over the opcode is split by storage: [`instruction_can_create_undef_or_poison`]
+/// holds an instruction's arms and [`expression_can_create_undef_or_poison`] a
+/// stored expression's, each in the switch's order, and a compact expression
+/// answers here as the expression it prints as.
 fn can_create_undef_or_poison_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
     kind: UndefPoisonKind,
     consider_flags_and_metadata: bool,
 ) -> bool {
-    let ValueKindData::Instruction(inst) = &value.data().kind else {
-        // Upstream reaches this through `dyn_cast<Operator>`; a non-operator is
-        // not an operator that can create anything.
+    let Some(operator) = operator_ref(value) else {
         return false;
     };
 
     if consider_flags_and_metadata
         && kind.includes_poison()
-        && has_poison_generating_annotations(&inst.kind)
+        && has_poison_generating_annotations(operator)
     {
         return true;
     }
 
-    match &inst.kind {
+    match operator {
+        OperatorRef::Instruction(instruction) => {
+            instruction_can_create_undef_or_poison(value, instruction, kind)
+        }
+        OperatorRef::Expression(expression) => {
+            expression_can_create_undef_or_poison(value, expression, kind)
+        }
+        // `case Instruction::GetElementPtr: return false;`
+        OperatorRef::GlobalOffset { .. } => false,
+        // A `sub` and an `add` reach `default`, where
+        // `Instruction::isBinaryOp(Opcode)` answers `false`.
+        OperatorRef::SymbolDelta { .. } | OperatorRef::SymbolDeltaPlus { .. } => false,
+        // `case Instruction::ShuffleVector:` over the splat's mask, which is
+        // all zeros, so `is_contained(Mask, PoisonMaskElem)` is false.
+        OperatorRef::ScalableSplat { .. } => false,
+    }
+}
+
+/// The `canCreateUndefOrPoison` switch over an instruction's opcode.
+fn instruction_can_create_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    instruction: &InstructionKindData,
+    kind: UndefPoisonKind,
+) -> bool {
+    match instruction {
         // Shifts are poison when the amount is out of range.
         InstructionKindData::Shl(data)
         | InstructionKindData::Ashr(data)
@@ -5026,15 +5144,15 @@ fn can_create_undef_or_poison_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         InstructionKindData::ExtractElement(data) => {
             kind.includes_poison()
                 && !lane_index_known_in_range(
-                    value_from_slot(value, data.vector.get()),
-                    value_from_slot(value, data.index.get()),
+                    Some(value_from_slot(value, data.vector.get())),
+                    Some(value_from_slot(value, data.index.get())),
                 )
         }
         InstructionKindData::InsertElement(data) => {
             kind.includes_poison()
                 && !lane_index_known_in_range(
-                    value_from_slot(value, data.vector.get()),
-                    value_from_slot(value, data.index.get()),
+                    Some(value_from_slot(value, data.vector.get())),
+                    Some(value_from_slot(value, data.index.get())),
                 )
         }
 
@@ -5061,11 +5179,134 @@ fn can_create_undef_or_poison_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }
 }
 
-/// Ports `Operator::hasPoisonGeneratingAnnotations` for the flags llvmkit
-/// models. The metadata half (`!range`, `!nonnull`, `!align`) is not consulted
-/// because those attach to loads and calls, whose arms already answer
-/// conservatively.
-fn has_poison_generating_annotations(kind: &InstructionKindData) -> bool {
+/// The `canCreateUndefOrPoison` switch over a constant expression's opcode,
+/// its arms in the switch's order. No llvmkit expression is a shift, an
+/// `fptosi` or `fptoui`, or a call, so those arms are not reached, and neither
+/// is `default`'s closing `return true`: every expression opcode left is a
+/// cast or a binary operator.
+fn expression_can_create_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    expression: &ConstantExprData,
+    kind: UndefPoisonKind,
+) -> bool {
+    match expression.opcode {
+        // `case Instruction::InsertElement: case Instruction::ExtractElement:`
+        // — the index is operand 2 of an `insertelement`, 1 of an
+        // `extractelement`.
+        ConstantExprOpcode::InsertElement | ConstantExprOpcode::ExtractElement => {
+            let index_operand = if expression.opcode == ConstantExprOpcode::InsertElement {
+                2
+            } else {
+                1
+            };
+            let operand = |position: usize| {
+                expression
+                    .operands
+                    .get(position)
+                    .map(|&slot| value_from_slot(anchor, slot))
+            };
+            kind.includes_poison() && !lane_index_known_in_range(operand(0), operand(index_operand))
+        }
+        // `case Instruction::ShuffleVector:` reads
+        // `cast<ConstantExpr>(Op)->getShuffleMask()`. llvmkit keeps the mask as
+        // the expression's third operand, a constant vector, and reads it as
+        // `ShuffleVectorInst::getShuffleMask` reads one; a mask it cannot read
+        // is taken to hold a poison lane, the answer that claims nothing.
+        ConstantExprOpcode::ShuffleVector => {
+            kind.includes_poison()
+                && expression_shuffle_mask(anchor, expression)
+                    .is_none_or(|mask| mask.contains(&ShuffleMaskElem::Poison))
+        }
+        // `case Instruction::GetElementPtr: return false;`
+        ConstantExprOpcode::GetElementPtr => false,
+        // `case Instruction::AddrSpaceCast: return true;`
+        ConstantExprOpcode::AddrSpaceCast => true,
+        // `default:` — `CE && CE->isCast()`.
+        ConstantExprOpcode::Trunc
+        | ConstantExprOpcode::PtrToAddr
+        | ConstantExprOpcode::PtrToInt
+        | ConstantExprOpcode::IntToPtr
+        | ConstantExprOpcode::BitCast => false,
+        // `default:` — `Instruction::isBinaryOp(Opcode)`.
+        ConstantExprOpcode::Add | ConstantExprOpcode::Sub | ConstantExprOpcode::Xor => false,
+    }
+}
+
+/// The mask of a `shufflevector` expression: its third operand, read as
+/// `ShuffleVectorInst::getShuffleMask` reads a mask constant, with an `undef`
+/// or `poison` lane as [`ShuffleMaskElem::Poison`].
+fn expression_shuffle_mask<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    expression: &ConstantExprData,
+) -> Option<Vec<ShuffleMaskElem>> {
+    let &mask = expression.operands.get(2)?;
+    let mask = Constant::try_from(value_from_slot(anchor, mask)).ok()?;
+    shufflevector_mask_from_constant(mask)
+}
+
+/// Ports `Operator::hasPoisonGeneratingAnnotations` (`Operator.cpp`):
+/// `hasPoisonGeneratingFlags()`, then, of an instruction, its
+/// poison-generating return attributes and metadata. A compact expression has
+/// the flags of the expression it prints as.
+fn has_poison_generating_annotations(operator: OperatorRef<'_>) -> bool {
+    match operator {
+        OperatorRef::Instruction(instruction) => {
+            instruction_has_poison_generating_annotations(instruction)
+        }
+        OperatorRef::Expression(expression) => expression_has_poison_generating_flags(expression),
+        // `getelementptr inbounds`: `GEP->getNoWrapFlags() !=
+        // GEPNoWrapFlags::none()`.
+        OperatorRef::GlobalOffset { .. } => true,
+        // A `sub` or an `add` with neither `nuw` nor `nsw`, and a
+        // `shufflevector`, which reaches `default` and is no `FPMathOperator`.
+        OperatorRef::SymbolDelta { .. }
+        | OperatorRef::SymbolDeltaPlus { .. }
+        | OperatorRef::ScalableSplat { .. } => false,
+    }
+}
+
+/// `Operator::hasPoisonGeneratingFlags` of a constant expression, its arms in
+/// the switch's order. `hasPoisonGeneratingAnnotations` adds nothing to it:
+/// it reads return attributes and metadata only of an `Instruction`.
+fn expression_has_poison_generating_flags(expression: &ConstantExprData) -> bool {
+    match expression.opcode {
+        // `case Instruction::Add: case Instruction::Sub:` (and `Mul` and
+        // `Shl`, which no llvmkit expression is) —
+        // `OBO->hasNoUnsignedWrap() || OBO->hasNoSignedWrap()`.
+        ConstantExprOpcode::Add | ConstantExprOpcode::Sub => match &expression.flags {
+            ConstantExprFlags::Overflowing(flags) => flags.nuw() || flags.nsw(),
+            ConstantExprFlags::None | ConstantExprFlags::Gep(_) => false,
+        },
+        // `case Instruction::Trunc:` asks `dyn_cast<TruncInst>`, which no
+        // expression is.
+        ConstantExprOpcode::Trunc => false,
+        // `case Instruction::GetElementPtr:` — `GEP->getNoWrapFlags() !=
+        // GEPNoWrapFlags::none() || GEP->getInRange() != std::nullopt`.
+        ConstantExprOpcode::GetElementPtr => match &expression.flags {
+            ConstantExprFlags::Gep(flags) => {
+                !flags.no_wrap().is_empty() || flags.in_range().is_some()
+            }
+            ConstantExprFlags::None | ConstantExprFlags::Overflowing(_) => false,
+        },
+        // `default:` asks `dyn_cast<FPMathOperator>`, whose `classof` admits
+        // only an instruction.
+        ConstantExprOpcode::Xor
+        | ConstantExprOpcode::PtrToAddr
+        | ConstantExprOpcode::PtrToInt
+        | ConstantExprOpcode::IntToPtr
+        | ConstantExprOpcode::BitCast
+        | ConstantExprOpcode::AddrSpaceCast
+        | ConstantExprOpcode::ShuffleVector
+        | ConstantExprOpcode::InsertElement
+        | ConstantExprOpcode::ExtractElement => false,
+    }
+}
+
+/// Ports `Operator::hasPoisonGeneratingAnnotations` of an instruction, for the
+/// flags llvmkit models. The metadata half (`!range`, `!nonnull`, `!align`) is
+/// not consulted because those attach to loads and calls, whose arms already
+/// answer conservatively.
+fn instruction_has_poison_generating_annotations(kind: &InstructionKindData) -> bool {
     match kind {
         InstructionKindData::Add(data)
         | InstructionKindData::Sub(data)
@@ -5095,23 +5336,19 @@ fn shift_amount_known_in_range<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         .is_some_and(|amount| amount.limited_value(u64::from(width)) < u64::from(width))
 }
 
-/// True when `index` is a constant lane index within `vector`'s element count.
-/// Ports the `InsertElement` / `ExtractElement` arm's bounds test.
-///
-/// A scalable vector answers false: upstream compares against
-/// `getKnownMinValue()`, which cannot bound the real length, and llvmkit
-/// declines rather than guessing.
+/// Ports the `InsertElement` / `ExtractElement` arm's bounds test, the negation
+/// of `!Idx || Idx->getValue().uge(VTy->getElementCount().getKnownMinValue())`:
+/// `index` is a `ConstantInt` below `vector`'s known minimum length. A
+/// scalable vector is at least that long, so a lane below it is in range there
+/// as in a fixed-width one.
 fn lane_index_known_in_range<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    vector: Value<'ctx, B, C>,
-    index: Value<'ctx, B, C>,
+    vector: Option<Value<'ctx, B, C>>,
+    index: Option<Value<'ctx, B, C>>,
 ) -> bool {
-    if vector.ty().kind() != TypeKind::FixedVector {
-        return false;
-    }
-    let Some((_, lanes, _)) = vector.ty().data().as_vector() else {
+    let Some((_, lanes, _)) = vector.and_then(|vector| vector.ty().data().as_vector()) else {
         return false;
     };
-    argument_constant(Some(index))
+    argument_constant(index)
         .is_some_and(|idx| idx.limited_value(u64::from(lanes.get())) < u64::from(lanes.get()))
 }
 
@@ -6099,6 +6336,13 @@ fn require_int_or_pointer_width<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 /// Ports the static `isGuaranteedNotToBeUndefOrPoison(V, AC, CtxI, DT, Depth,
 /// Kind)` (`ValueTracking.cpp`).
 ///
+/// Its `dyn_cast<Operator>` arm takes a constant expression as well as an
+/// instruction ([`OperatorRef`]), and llvmkit's compact constants answer there
+/// as the expressions they print as. The expressions those print inside
+/// themselves are not stored, and are answered by
+/// [`unstored_expression_is_well_defined`], with one gap that can only weaken
+/// the answer (`docs/divergences.md` D36).
+///
 /// One of upstream's arms is **not** ported, and can only make the answer weaker
 /// — a `false` where upstream proves `true` — so no caller is misled: the
 /// `@llvm.assume` arm (`getKnowledgeValidInContext`), which needs an
@@ -6155,68 +6399,33 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx, C: C
         return Ok(true);
     }
 
-    let Some(operator) = instruction_kind(value) else {
-        return Ok(false);
-    };
-
-    // A freeze can never be undef or poison.
-    if matches!(operator, InstructionKindData::Freeze(_)) {
-        return Ok(true);
-    }
-    // Nor can a call whose return is annotated `noundef`, `dereferenceable` or
-    // `dereferenceable_or_null` — the latter two imply the first.
-    if call_return_is_well_defined(value, operator) {
-        return Ok(true);
-    }
-
-    if !can_create_undef_or_poison_kind(value, kind, true) {
-        if let InstructionKindData::Phi(data) = operator {
-            // Upstream evaluates each incoming value at its edge's terminator;
-            // llvmkit has no per-edge context, so the incoming value is
-            // evaluated where it stands. That can only weaken the answer.
-            let incoming = data.incoming.borrow();
-            let mut well_defined = true;
-            for (operand, _) in incoming.iter() {
-                if operand.get() == value.slot_trusting_same_module() {
-                    continue;
-                }
-                if !is_guaranteed_not_to_be_undef_or_poison(
-                    value_from_slot(value, operand.get()),
-                    query,
-                    depth + 1,
-                    kind,
-                )? {
-                    well_defined = false;
-                    break;
-                }
-            }
-            if well_defined {
-                return Ok(true);
-            }
-        } else if let InstructionKindData::ShuffleVector(_) = operator
-            && let Some(splat) = splat_value(value)
+    // `if (auto *Opr = dyn_cast<Operator>(V))`: an instruction or a constant
+    // expression. Only the arms inside it are restricted to an operator; the
+    // load, `programUndefinedIfUndefOrPoison` and dominating-condition arms
+    // after it run for every value the arms before it leave.
+    if let Some(operator) = operator_ref(value) {
+        // A freeze can never be undef or poison.
+        if let OperatorRef::Instruction(InstructionKindData::Freeze(_)) = operator {
+            return Ok(true);
+        }
+        // Nor can a call whose return is annotated `noundef`, `dereferenceable`
+        // or `dereferenceable_or_null` — the latter two imply the first.
+        if let OperatorRef::Instruction(instruction) = operator
+            && call_return_is_well_defined(value, instruction)
         {
-            // For a splat, only the value being splatted has to be checked.
-            if is_guaranteed_not_to_be_undef_or_poison(splat, query, depth + 1, kind)? {
-                return Ok(true);
-            }
-        } else {
-            let mut well_defined = true;
-            for operand in operands_of(value) {
-                if !is_guaranteed_not_to_be_undef_or_poison(operand, query, depth + 1, kind)? {
-                    well_defined = false;
-                    break;
-                }
-            }
-            if well_defined {
-                return Ok(true);
-            }
+            return Ok(true);
+        }
+
+        if operator_is_well_defined_by_its_operands(value, operator, query, depth, kind)? {
+            return Ok(true);
         }
     }
 
-    // A load carrying `!noundef`, `!dereferenceable` or
-    // `!dereferenceable_or_null` is well defined by declaration.
-    if matches!(operator, InstructionKindData::Load(_)) && load_metadata_asserts_well_defined(value)
+    // `if (auto *I = dyn_cast<LoadInst>(V))`: a load carrying `!noundef`,
+    // `!dereferenceable` or `!dereferenceable_or_null` is well defined by
+    // declaration.
+    if matches!(instruction_kind(value), Some(InstructionKindData::Load(_)))
+        && load_metadata_asserts_well_defined(value)
     {
         return Ok(true);
     }
@@ -6230,6 +6439,212 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx, C: C
     }
 
     Ok(false)
+}
+
+/// The `if (!::canCreateUndefOrPoison(Opr, Kind, true))` block of
+/// `isGuaranteedNotToBeUndefOrPoison`'s operator arm: an operator that creates
+/// neither is well defined when its operands are — every incoming value of a
+/// phi, the splatted value of a `shufflevector` instruction that is a splat,
+/// and otherwise every operand `Opr->operands()` lists, each asked one level
+/// deeper.
+fn operator_is_well_defined_by_its_operands<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    operator: OperatorRef<'ctx>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+    kind: UndefPoisonKind,
+) -> IrResult<bool> {
+    if can_create_undef_or_poison_kind(value, kind, true) {
+        return Ok(false);
+    }
+    if let OperatorRef::Instruction(InstructionKindData::Phi(data)) = operator {
+        // Upstream evaluates each incoming value at its edge's terminator;
+        // llvmkit has no per-edge context, so the incoming value is evaluated
+        // where it stands. That can only weaken the answer.
+        let incoming = data.incoming.borrow();
+        for (operand, _) in incoming.iter() {
+            if operand.get() == value.slot_trusting_same_module() {
+                continue;
+            }
+            if !is_guaranteed_not_to_be_undef_or_poison(
+                value_from_slot(value, operand.get()),
+                query,
+                depth + 1,
+                kind,
+            )? {
+                return Ok(false);
+            }
+        }
+        return Ok(true);
+    }
+    // `isa<ShuffleVectorInst>(Opr) ? getSplatValue(Opr) : nullptr` — an
+    // instruction only; a `shufflevector` expression takes the operand walk.
+    if let OperatorRef::Instruction(InstructionKindData::ShuffleVector(_)) = operator
+        && let Some(splat) = splat_value(value)
+    {
+        // For a splat, only the value being splatted has to be checked.
+        return is_guaranteed_not_to_be_undef_or_poison(splat, query, depth + 1, kind);
+    }
+    operands_are_well_defined(value, operator_operands(operator), query, depth + 1, kind)
+}
+
+/// An operand of an operator, as `Opr->operands()` lists it.
+#[derive(Clone, Copy)]
+enum OperatorOperand {
+    /// A value llvmkit stores.
+    Stored(ValueSlot),
+    /// A `ConstantInt` a compact expression keeps as a number: a
+    /// `GepOffset`'s offset, a `SymbolDeltaPlus`'s addend, or the lane index
+    /// of a splat's `insertelement`.
+    Int,
+    /// A splat's `poison` vector.
+    Poison,
+    /// An expression a compact expression prints inside itself.
+    Unstored(UnstoredExpression),
+}
+
+/// An expression a compact expression prints inside itself. Upstream builds
+/// each as a uniqued constant; llvmkit stores none of them.
+#[derive(Clone, Copy)]
+enum UnstoredExpression {
+    /// `ptrtoint (ptr @global to i64)`, each operand of a symbol difference.
+    PtrToInt { global: ValueSlot },
+    /// The symbol difference a `SymbolDeltaPlus` adds to.
+    SymbolDelta { hi: ValueSlot, lo: ValueSlot },
+    /// A splat's `insertelement (poison, V, i64 0)`.
+    InsertIntoPoison { element: ValueSlot },
+}
+
+/// `Opr->operands()`.
+///
+/// A `shufflevector` expression's mask is no operand upstream:
+/// `ShuffleVectorConstantExpr` has two, and keeps the mask beside them.
+/// llvmkit stores it as a third, so it is left out here.
+fn operator_operands(operator: OperatorRef<'_>) -> Vec<OperatorOperand> {
+    match operator {
+        OperatorRef::Instruction(instruction) => instruction
+            .operand_ids()
+            .into_iter()
+            .map(OperatorOperand::Stored)
+            .collect(),
+        OperatorRef::Expression(expression) => {
+            let count = if expression.opcode == ConstantExprOpcode::ShuffleVector {
+                2
+            } else {
+                expression.operands.len()
+            };
+            expression
+                .operands
+                .iter()
+                .take(count)
+                .copied()
+                .map(OperatorOperand::Stored)
+                .collect()
+        }
+        OperatorRef::GlobalOffset { base } => {
+            vec![OperatorOperand::Stored(base), OperatorOperand::Int]
+        }
+        OperatorRef::SymbolDelta { hi, lo } => vec![
+            OperatorOperand::Unstored(UnstoredExpression::PtrToInt { global: hi }),
+            OperatorOperand::Unstored(UnstoredExpression::PtrToInt { global: lo }),
+        ],
+        OperatorRef::SymbolDeltaPlus { hi, lo } => vec![
+            OperatorOperand::Unstored(UnstoredExpression::SymbolDelta { hi, lo }),
+            OperatorOperand::Int,
+        ],
+        OperatorRef::ScalableSplat { element } => vec![
+            OperatorOperand::Unstored(UnstoredExpression::InsertIntoPoison { element }),
+            OperatorOperand::Poison,
+        ],
+    }
+}
+
+/// `all_of(Opr->operands(), OpCheck)`, each operand asked at `depth`.
+fn operands_are_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    operands: Vec<OperatorOperand>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+    kind: UndefPoisonKind,
+) -> IrResult<bool> {
+    for operand in operands {
+        if !operand_is_well_defined(anchor, operand, query, depth, kind)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// `OpCheck(Op)`: the routine, asked about `operand` at `depth`.
+fn operand_is_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    operand: OperatorOperand,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+    kind: UndefPoisonKind,
+) -> IrResult<bool> {
+    match operand {
+        OperatorOperand::Stored(slot) => is_guaranteed_not_to_be_undef_or_poison(
+            value_from_slot(anchor, slot),
+            query,
+            depth,
+            kind,
+        ),
+        // The depth test, then the constant arm's `isa<ConstantInt>(C)`.
+        OperatorOperand::Int => Ok(depth < query.max_depth()),
+        // The depth test, then the constant arm's `if (isa<PoisonValue>(C))
+        // return !includesPoison(Kind);`.
+        OperatorOperand::Poison => Ok(depth < query.max_depth() && !kind.includes_poison()),
+        OperatorOperand::Unstored(expression) => {
+            unstored_expression_is_well_defined(anchor, expression, query, depth, kind)
+        }
+    }
+}
+
+/// The routine, asked at `depth` about an expression a compact expression
+/// prints inside itself.
+///
+/// Its arms, in order: the depth test. No argument arm. The constant arm
+/// answers none of them: none is a `ConstantInt`, a global variable, a
+/// `ConstantFP`, a null or a function; the two casts are no vector; and
+/// `getSplatValue` answers the `insertelement` `nullptr`, since only the
+/// `shufflevector` of the splat is one. The strip leaves an integer and a
+/// vector as they are. In the operator arm, none is a `freeze` or a call, and
+/// `canCreateUndefOrPoison` answers each `false`: a `ptrtoint` is a cast, a
+/// `sub` without flags a binary operator, and an `insertelement` at lane 0 is
+/// in range of any vector. So the operand walk decides.
+///
+/// Where the walk fails, the arms after it prove none of them. None is a load;
+/// `programUndefinedIfUndefOrPoison` scans from an instruction or an argument
+/// only; and the dominating-condition walk compares conditions with the value
+/// itself, which llvmkit does not store. That last one is
+/// `docs/divergences.md` D36 for the two `i64` expressions. The
+/// `insertelement` has no such gap: it is a scalable vector, which no `br` or
+/// `switch` takes as its condition and no poison-propagating instruction turns
+/// into an `i1`.
+fn unstored_expression_is_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    expression: UnstoredExpression,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+    kind: UndefPoisonKind,
+) -> IrResult<bool> {
+    if depth >= query.max_depth() {
+        return Ok(false);
+    }
+    let operands = match expression {
+        UnstoredExpression::PtrToInt { global } => vec![OperatorOperand::Stored(global)],
+        UnstoredExpression::SymbolDelta { hi, lo } => vec![
+            OperatorOperand::Unstored(UnstoredExpression::PtrToInt { global: hi }),
+            OperatorOperand::Unstored(UnstoredExpression::PtrToInt { global: lo }),
+        ],
+        UnstoredExpression::InsertIntoPoison { element } => vec![
+            OperatorOperand::Poison,
+            OperatorOperand::Stored(element),
+            OperatorOperand::Int,
+        ],
+    };
+    operands_are_well_defined(anchor, operands, query, depth + 1, kind)
 }
 
 /// Whether a `load` carries `!noundef`, `!dereferenceable` or

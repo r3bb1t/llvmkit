@@ -1,7 +1,7 @@
 //! Ports of the speculation-safety and UB-reachability predicates — tranche 6
 //! of the `ValueTracking.h` port (see `docs/future-work.md`).
 //!
-//! Every fixture below comes from `llvm/unittests/Analysis/ValueTrackingTest.cpp`,
+//! The ported fixtures come from `llvm/unittests/Analysis/ValueTrackingTest.cpp`,
 //! IR inlined verbatim and the same API called on the same values:
 //!
 //! - `TEST(ValueTracking, GuaranteedToTransferExecutionToSuccessor)`
@@ -10,13 +10,17 @@
 //! - `TEST_F(ValueTrackingTest, programUndefinedIfUndefOrPoison)`
 //! - `TEST_F(ValueTrackingTest, isGuaranteedNotToBePoison_exploitBranchCond)`
 //! - `TEST_F(ValueTrackingTest, isGuaranteedNotToBePoison_phi)`
+//! - `TEST_F(ValueTrackingTest, isGuaranteedNotToBeUndefOrPoison)`
 //! - `TEST_F(ValueTrackingTest, isGuaranteedNotToBeUndefOrPoison_splat)`
+//!
+//! A test with no upstream counterpart says so in its own doc comment.
 
 use llvmkit_asmparser::parser;
 use llvmkit_ir::{
-    DominatorTree, DynBrand, InstructionView, Module, Unverified, Value, ValueTrackingQuery,
+    Capability, DominatorTree, DynBrand, InstructionView, Module, Unverified, User, Value,
+    ValueTrackingQuery, VectorType, can_create_poison, can_create_undef_or_poison,
     is_guaranteed_to_transfer_execution_to_successor, is_known_not_poison,
-    is_known_not_undef_or_poison, program_undefined_if_poison,
+    is_known_not_undef_or_poison, lanes, program_undefined_if_poison,
     program_undefined_if_undef_or_poison,
 };
 
@@ -420,4 +424,342 @@ define void @test() {
     assert!(is_known_not_undef_or_poison(named_value(&module, "zero"), &query).expect("succeeds"));
     // A non-zero offset is not stripped, so it stays poison-capable.
     assert!(!is_known_not_undef_or_poison(named_value(&module, "past"), &query).expect("succeeds"));
+}
+
+/// `isGuaranteedNotToBeUndefOrPoison(V)`, with no context.
+fn well_defined<'ctx, C: Capability>(
+    value: Value<'ctx, DynBrand, C>,
+    query: &ValueTrackingQuery<'_, 'ctx, DynBrand>,
+) -> bool {
+    is_known_not_undef_or_poison(value, query).expect("query succeeds")
+}
+
+/// `isGuaranteedNotToBePoison(V)`, with no context.
+fn not_poison<'ctx, C: Capability>(
+    value: Value<'ctx, DynBrand, C>,
+    query: &ValueTrackingQuery<'_, 'ctx, DynBrand>,
+) -> bool {
+    is_known_not_poison(value, query).expect("query succeeds")
+}
+
+/// `TEST_F(ValueTrackingTest, isGuaranteedNotToBeUndefOrPoison)` from
+/// `llvm/unittests/Analysis/ValueTrackingTest.cpp`, IR and assertions
+/// unchanged. Upstream's fixture string runs the declaration into the
+/// definition with no newline between them; one is written here.
+///
+/// `%A` is a `bitcast` of `%x`, so it is well defined when `%x` is. `%x`
+/// carries no attribute, and the call after `%A` passes it to a `noundef`
+/// parameter, so the program is undefined unless `%x` is well defined. That is
+/// `programUndefinedIfUndefOrPoison`, which upstream's routine reaches for an
+/// argument as for an instruction: its `dyn_cast<Operator>` arm guards only
+/// the arms inside it.
+#[test]
+fn is_known_not_undef_or_poison_of_an_argument_and_of_constants() {
+    let module = parse(
+        r"
+declare void @f(i32 noundef)
+define void @test(i32 %x) {
+  %A = bitcast i32 %x to i32
+  call void @f(i32 noundef %x)
+  ret void
+}
+",
+    );
+    let data_layout = module.data_layout();
+    let query = ValueTrackingQuery::<DynBrand>::new(&data_layout);
+
+    assert!(well_defined(named_value(&module, "A"), &query));
+    let i8_ty = module.i8_type().as_type();
+    assert!(!well_defined(i8_ty.undef().as_erased(), &query));
+    assert!(!well_defined(i8_ty.poison().as_erased(), &query));
+    assert!(not_poison(i8_ty.undef().as_erased(), &query));
+    assert!(!not_poison(i8_ty.poison().as_erased(), &query));
+
+    let i32_ty = module.i32_type();
+    let undef = i32_ty.as_type().undef().as_constant();
+    let poison = i32_ty.as_type().poison().as_constant();
+    let one = i32_ty.const_int(1_i32).as_constant();
+    let two = i32_ty.const_int(2_i32).as_constant();
+    let pair = VectorType::of(i32_ty, lanes::<2>());
+
+    let v1 = pair.const_vector([one, two]).expect("a vector").as_erased();
+    assert!(well_defined(v1, &query));
+    assert!(not_poison(v1, &query));
+
+    let v2 = pair
+        .const_vector([one, undef])
+        .expect("a vector")
+        .as_erased();
+    assert!(!well_defined(v2, &query));
+    assert!(not_poison(v2, &query));
+
+    let v3 = pair
+        .const_vector([one, poison])
+        .expect("a vector")
+        .as_erased();
+    assert!(!well_defined(v3, &query));
+    assert!(!not_poison(v3, &query));
+}
+
+/// The dominating-condition walk proves an argument, as it proves an
+/// instruction.
+///
+/// **The IR has no upstream counterpart**: it is the fixture of
+/// `is_known_not_poison_via_dominating_branch_in_another_block` with the value
+/// branched on made a parameter. Upstream's routine runs that walk for every
+/// value its earlier arms do not answer; only its `dyn_cast<Operator>` arm is
+/// restricted to operators. The oracle is upstream's comment above the
+/// `Dominator = DNode->getIDom()` loop (`ValueTracking.cpp`): "If V is used as
+/// a branch condition before reaching CtxI, V cannot be undef or poison." The
+/// unanchored query is the control: `%a`'s block, the entry, ends on another
+/// condition with two successors, so the in-block scan of
+/// `programUndefinedIfUndefOrPoison` cannot prove it.
+#[test]
+fn is_known_not_poison_of_an_argument_via_a_dominating_branch() {
+    let module = parse(
+        r"
+declare void @may_throw()
+
+define void @test(i1 %other, i1 %a) {
+entry:
+  br i1 %other, label %check, label %exit
+
+check:
+  br i1 %a, label %then, label %exit
+
+then:
+  call void @may_throw()
+  ret void
+
+exit:
+  ret void
+}
+",
+    );
+    let dominator_tree = dominator_tree(&module);
+    let data_layout = module.data_layout();
+    let function = module.function_dyn("test").expect("fixture defines @test");
+    let a = module
+        .view(function)
+        .param(1)
+        .expect("@test has a second parameter")
+        .as_erased();
+
+    let view = module.as_view();
+    let context = view
+        .functions()
+        .flat_map(|function| function.basic_blocks())
+        .find(|block| block.name().as_deref() == Some("then"))
+        .expect("fixture defines %then")
+        .instructions()
+        .next()
+        .expect("%then is not empty");
+
+    let unanchored = ValueTrackingQuery::<DynBrand>::new(&data_layout);
+    assert!(
+        !is_known_not_poison(a, &unanchored).expect("query succeeds"),
+        "no arm but the dominating-condition walk can prove this fixture"
+    );
+
+    let query = ValueTrackingQuery::<DynBrand>::new(&data_layout)
+        .with_dominator_tree(&dominator_tree)
+        .with_context_instruction(&context);
+    assert!(is_known_not_poison(a, &query).expect("query succeeds"));
+}
+
+/// The rows `(can create poison?, can create undef?, operand)`, each operand
+/// frozen as `%rN` in `@f`, over `@g` and `@h`.
+fn frozen_operands(rows: &[((bool, bool), &str)]) -> Module<DynBrand, Unverified> {
+    let mut source = String::from(
+        "@g = global i32 0\n@h = global i32 0\n\ndefine void @f(<vscale x 4 x i32> %svx, i32 %x) {\n",
+    );
+    for (index, (_, operand)) in rows.iter().enumerate() {
+        source.push_str(&format!("  %r{index} = freeze {operand}\n"));
+    }
+    source.push_str("  ret void\n}\n");
+    parse(&source)
+}
+
+/// `canCreatePoison` and `canCreateUndefOrPoison` of a constant expression.
+///
+/// **No upstream counterpart**: `TEST(ValueTracking, canCreatePoisonOrUndef)`
+/// in `llvm/unittests/Analysis/ValueTrackingTest.cpp` asks only instructions.
+/// This test has its shape, rows of `(can create poison?, can create undef?,
+/// IR)` and its two assertions, over the expressions a llvmkit
+/// `ConstantExpr` can be, with one row for each arm of `canCreateUndefOrPoison`
+/// an expression reaches. The oracle is that routine's arms and
+/// `Operator::hasPoisonGeneratingFlags`: `nuw`, `nsw`, `inbounds` and
+/// `inrange` are poison-generating flags, an `addrspacecast` can create poison,
+/// another cast or a binary operator cannot, and an `insertelement` can when its
+/// index is not below the vector's known minimum length. The `insertelement`
+/// rows are scalable because a fixed-width one folds when it is parsed
+/// (`ConstantFoldInsertElementInstruction` declines only a scalable vector).
+///
+/// Each operand is printed first, so a row the parser folded away fails as a
+/// different operand rather than as a wrong answer.
+#[test]
+fn can_create_poison_of_a_constant_expression() {
+    let rows: [((bool, bool), &str); 12] = [
+        (
+            (false, false),
+            "i64 add (i64 ptrtoint (ptr @g to i64), i64 1)",
+        ),
+        (
+            (true, false),
+            "i64 add nuw (i64 ptrtoint (ptr @g to i64), i64 1)",
+        ),
+        (
+            (true, false),
+            "i64 sub nsw (i64 ptrtoint (ptr @g to i64), i64 ptrtoint (ptr @h to i64))",
+        ),
+        (
+            (false, false),
+            "i64 xor (i64 ptrtoint (ptr @g to i64), i64 1)",
+        ),
+        ((false, false), "ptr getelementptr (i8, ptr @g, i64 1)"),
+        (
+            (true, false),
+            "ptr getelementptr inbounds (i8, ptr @g, i64 1)",
+        ),
+        (
+            (true, false),
+            "ptr getelementptr inrange(0, 4) (i8, ptr @g, i64 1)",
+        ),
+        ((false, false), "i64 ptrtoint (ptr @g to i64)"),
+        (
+            (false, false),
+            "float bitcast (i32 ptrtoint (ptr @g to i32) to float)",
+        ),
+        (
+            (true, false),
+            "ptr addrspace(1) addrspacecast (ptr @g to ptr addrspace(1))",
+        ),
+        (
+            (false, false),
+            "<vscale x 4 x i32> insertelement (<vscale x 4 x i32> poison, i32 ptrtoint (ptr @g to i32), i64 3)",
+        ),
+        (
+            (true, false),
+            "<vscale x 4 x i32> insertelement (<vscale x 4 x i32> poison, i32 ptrtoint (ptr @g to i32), i64 4)",
+        ),
+    ];
+    let module = frozen_operands(&rows);
+    for (index, ((poison, undef), written)) in rows.iter().enumerate() {
+        let operand = named_instruction(&module, &format!("r{index}"))
+            .operand(0)
+            .expect("a freeze has an operand");
+        assert_eq!(
+            &operand.to_string(),
+            written,
+            "row {index} parses as written"
+        );
+        assert_eq!(
+            can_create_poison(operand, true),
+            *poison,
+            "canCreatePoison of row {index}: {written}"
+        );
+        assert_eq!(
+            can_create_undef_or_poison(operand, true),
+            *undef || *poison,
+            "canCreateUndefOrPoison of row {index}: {written}"
+        );
+    }
+
+    // `ConsiderFlagsAndMetadata` gates the flags: without it, the `add nuw`
+    // and the `inbounds` getelementptr answer as their opcodes do.
+    for index in [1, 5] {
+        let operand = named_instruction(&module, &format!("r{index}"))
+            .operand(0)
+            .expect("a freeze has an operand");
+        assert!(!can_create_poison(operand, false), "row {index}");
+    }
+}
+
+/// The scalable splat `ConstantVector::getSplat` builds of a value that is no
+/// null, `undef` or `poison`, `shufflevector (insertelement (poison, V, 0),
+/// poison, zeroinitializer)`, which llvmkit stores as an element list.
+///
+/// **No upstream counterpart**, as for
+/// `can_create_poison_of_a_constant_expression`: the oracle is
+/// `canCreateUndefOrPoison`'s `ShuffleVector` arm, which asks only whether the
+/// mask has a poison lane, and the `dyn_cast<Operator>` arm of
+/// `isGuaranteedNotToBeUndefOrPoison`, which checks the shuffle's two operands
+/// (`ConstantExpr::getShuffleVector` keeps the mask out of them). The second is
+/// `poison`, so the splat is not proven free of poison; it is proven free of
+/// `undef` when the `insertelement` is, that is, when `V` is.
+#[test]
+fn a_scalable_splat_is_read_as_the_shuffle_it_prints_as() {
+    let rows: [((bool, bool), &str); 1] = [(
+        (false, false),
+        "<vscale x 4 x i32> shufflevector (<vscale x 4 x i32> insertelement (<vscale x 4 x i32> poison, i32 ptrtoint (ptr @g to i32), i64 0), <vscale x 4 x i32> poison, <vscale x 4 x i32> zeroinitializer)",
+    )];
+    let module = frozen_operands(&rows);
+    let splat = named_instruction(&module, "r0")
+        .operand(0)
+        .expect("a freeze has an operand");
+    assert_eq!(&splat.to_string(), rows[0].1);
+    assert!(!can_create_poison(splat, true));
+    assert!(!can_create_undef_or_poison(splat, true));
+
+    let data_layout = module.data_layout();
+    let query = ValueTrackingQuery::<DynBrand>::new(&data_layout);
+    assert!(!not_poison(splat, &query));
+    assert!(!well_defined(splat, &query));
+    assert!(
+        llvmkit_ir::is_known_not_undef(splat, &query).expect("query succeeds"),
+        "the splatted value is a cast of a global, so nothing in the splat is undef"
+    );
+}
+
+/// An `insertelement` or `extractelement` of a scalable vector, at a lane
+/// below its known minimum length, cannot create poison.
+///
+/// The two rows at lane 4 are upstream's, from
+/// `TEST(ValueTracking, canCreatePoisonOrUndef)` in
+/// `llvm/unittests/Analysis/ValueTrackingTest.cpp`, over its `%svx`. **The
+/// rows at lane 3 have no upstream counterpart**: they are its fixed-width
+/// `extractelement <4 x i32> %vx, i32 3` and `insertelement <4 x i32> %vx, i32
+/// %x, i32 3` rows over `%svx`. The oracle is the arm itself, `return !Idx ||
+/// Idx->getValue().uge(VTy->getElementCount().getKnownMinValue());`: a
+/// scalable vector is at least its known minimum long, so a lane below it is
+/// in range.
+#[test]
+fn a_scalable_lane_below_the_known_minimum_is_in_range() {
+    let rows: [((bool, bool), &str); 4] = [
+        (
+            (false, false),
+            "extractelement <vscale x 4 x i32> %svx, i32 3",
+        ),
+        (
+            (true, false),
+            "extractelement <vscale x 4 x i32> %svx, i32 4",
+        ),
+        (
+            (false, false),
+            "insertelement <vscale x 4 x i32> %svx, i32 %x, i32 3",
+        ),
+        (
+            (true, false),
+            "insertelement <vscale x 4 x i32> %svx, i32 %x, i32 4",
+        ),
+    ];
+    let mut source = String::from("define void @f(<vscale x 4 x i32> %svx, i32 %x) {\n");
+    for (index, (_, instruction)) in rows.iter().enumerate() {
+        source.push_str(&format!("  %r{index} = {instruction}\n"));
+    }
+    source.push_str("  ret void\n}\n");
+    let module = parse(&source);
+    for (index, ((poison, undef), written)) in rows.iter().enumerate() {
+        let instruction = named_value(&module, &format!("r{index}"));
+        assert_eq!(
+            can_create_poison(instruction, true),
+            *poison,
+            "canCreatePoison of row {index}: {written}"
+        );
+        assert_eq!(
+            can_create_undef_or_poison(instruction, true),
+            *undef || *poison,
+            "canCreateUndefOrPoison of row {index}: {written}"
+        );
+    }
 }

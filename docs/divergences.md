@@ -1120,42 +1120,41 @@ replacement path, as it already sends a `ConstantAggregateZero` or an `undef`.
 **Guarded by:** nothing yet. Found in Task 1 of the crash-proofing plan
 (`task-1-report.md`, Concern 4), porting the `AllSame` arms.
 
-### D35 — `isGuaranteedNotToBeUndefOrPoison` does not walk a constant expression
+### D36 — No branch condition is compared with an operand a symbol difference prints but does not store
 
 **Severity:** model-gap
-**Where:** `crates/llvmkit-ir/src/value_tracking.rs` — `is_guaranteed_not_to_be_undef_or_poison`,
-whose operator arms are reached through `instruction_kind`, and `can_create_undef_or_poison_kind`,
-which answers `false` for anything that is not an instruction.
+**Where:** `crates/llvmkit-ir/src/value_tracking.rs` — `unstored_expression_is_well_defined`,
+which answers for the `ptrtoint` and `sub` expressions that `ConstantData::SymbolDelta` and
+`ConstantData::SymbolDeltaPlus` print inside themselves.
 
-**LLVM:** after the constant arm, `if (auto *Opr = dyn_cast<Operator>(V))` admits a
-`ConstantExpr` as well as an instruction. `canCreateUndefOrPoison(Opr, Kind, true)` reads a
-constant expression's opcode and flags, and when it cannot create either, every operand is
-checked in turn. So `sub (i64 ptrtoint (ptr @a to i64), i64 ptrtoint (ptr @b to i64))` is
-guaranteed: `sub` without `nuw`/`nsw` and the two casts create nothing, and `@a`, `@b` are
-`GlobalVariable`s (derived from those arms, not run).
+**LLVM:** a symbol difference is `sub (i64 ptrtoint (ptr @hi to i64), i64 ptrtoint (ptr @lo to
+i64))`, and each operand is a uniqued constant expression. `isGuaranteedNotToBeUndefOrPoison`
+asks about each operand through `OpCheck`, one level deeper. When the operand's own walk fails,
+which for a cast of a global variable happens only at `MaxAnalysisRecursionDepth`, the routine
+goes on to its dominating-condition loop. That loop proves the cast when a dominating `br` or
+`switch` condition is the cast, or is an instruction that propagates poison from it, such as an
+`icmp` (derived from the loop, not run).
 
-**llvmkit:** a scalar constant expression falls through the constant arm, is stripped, and then
-reaches `instruction_kind`, which answers `None`, so the routine answers `false`. A vector one
-answers only through the arm's splat test. `is_known_not_undef_or_poison` and its siblings say
-`false` where upstream says `true`, and since `constant_folding.rs`'s `freeze` arm calls this
-routine (it kept a copy of its own until Task 1's fix round), `freeze` of such an expression
-does not fold. The copy answered `true` for llvmkit's compact `SymbolDelta` and `SymbolDeltaPlus`
-forms, which upstream's walk also proves; it answered `true` for `blockaddress`,
-`dso_local_equivalent`, `no_cfi` and a `getelementptr inbounds` lane too, which upstream does
-not.
+**llvmkit:** stores the compact constant and not those operands, so there is no value for a
+condition to be compared with. `unstored_expression_is_well_defined` runs every arm before the
+loop and answers `false` where the operand walk fails. The answer can only be weaker than
+upstream's: a `false` where upstream proves `true`, at the recursion limit, under a dominating
+condition built from the same constant expression.
 
-**Why:** llvmkit's port of `canCreateUndefOrPoison` was written for instructions. Before this
-entry, `rg -n -i "canCreateUndefOrPoison|isGuaranteedNotToBeUndefOrPoison|is_known_not_undef|operator tests|operator walk" docs/divergences.md docs/future-work.md`
-printed only `future-work.md`'s history of the tranche that ported the routine and D31's
-unrelated "operator walk".
+**Why:** the compact forms are llvmkit storage for constants upstream builds as expressions, and
+the loop's `Cond == V` test compares identities. Before this entry,
+`rg -n "SymbolDelta|GepOffset|compact form" docs/divergences.md docs/future-work.md` printed only
+the entry this one replaces and `future-work.md`'s closed note on interning the compact forms.
 
-**Fix:** port `canCreateUndefOrPoison`'s arms for the opcodes a llvmkit `ConstantExpr` has
-(`add`, `sub` and `xor` with their no-wrap flags, `getelementptr` with its flags, the casts,
-`shufflevector`, `insertelement`, `extractelement`), read the compact forms as the expressions
-they print as, and let the operator walk take a constant expression.
+**Fix:** compare a condition with such an operand by the expression it is (a stored `ptrtoint`
+of the same global at the same type, or a stored `sub` of two), or store the operands. Either
+needs a test that reaches the recursion limit through a compact constant.
 
-**Guarded by:** nothing. The first test that would show it: `freeze i64 sub (i64 ptrtoint (ptr
-@a to i64), i64 ptrtoint (ptr @b to i64))` folds upstream.
+**Guarded by:** nothing. Found in fix round 2 of Task 1 of the crash-proofing plan
+(`task-1-report.md`, "Fix round 2"), porting the `dyn_cast<Operator>` arm. The splat's
+`insertelement`, the third expression llvmkit prints without storing, has no such gap: it is a
+scalable vector, which no `br` or `switch` takes as its condition and no poison-propagating
+instruction turns into an `i1`.
 
 ---
 

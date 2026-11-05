@@ -24,6 +24,10 @@ use llvmkit_ir::{
     module_new,
 };
 use llvmkit_ir::{ArrayType, Constant, Type, VectorType, lanes};
+use llvmkit_ir::{
+    ValueTrackingQuery, can_create_poison, can_create_undef_or_poison, is_known_not_poison,
+    is_known_not_undef,
+};
 
 /// llvmkit-specific subset of `ConstantFolding.cpp::ConstantFoldLoadFromConstPtr`:
 /// byte extraction from constant globals uses the module `DataLayout` endianness.
@@ -835,6 +839,79 @@ fn freeze_folds_a_vector_constant_but_no_other_aggregate() -> Result<(), IrError
         .const_array([one, two])?
         .as_constant();
     assert!(!folds(array)?);
+    b.ret_void()?;
+    Ok(())
+}
+
+/// A `freeze` of one of llvmkit's compact constants folds as a `freeze` of the
+/// constant expression it prints as. `isGuaranteedNotToBeUndefOrPoison` reaches
+/// that expression through its `dyn_cast<Operator>` arm:
+///
+/// - `try_delta_from` prints as the operand
+///   `test/Transforms/InstSimplify/freeze.ll::ptrdiff`'s `CHECK` block
+///   returns, `sub (i64 ptrtoint (ptr @a to i64), i64 ptrtoint (ptr @b to
+///   i64))`. A `sub` without `nuw` or `nsw` and two casts create nothing, and
+///   the casts' operands are global variables, so it folds.
+/// - `try_delta_from_plus` adds an `i64` to that `sub`, and an `add` without
+///   flags creates nothing either. A zero addend is the `sub` itself
+///   (`Constant::kind` classifies it so, after `getBinOpIdentity`'s fold).
+/// - `ptr_offset` prints as `getelementptr inbounds (i8, ptr @a, i64 4)`.
+///   `inbounds` is a poison-generating flag (`Operator::hasPoisonGeneratingFlags`),
+///   so `canCreateUndefOrPoison` says it can create poison and the `freeze`
+///   stays, as `test/Transforms/SCCP/freeze.ll::maybe_poison`'s `add nuw` does.
+///   The flag says nothing about `undef`, so it is not `undef`.
+///
+/// llvmkit-specific (D11): no upstream fixture can spell a compact form.
+/// Regression: at `beeaa68` the routine reached its operator arm only for an
+/// instruction, so neither delta folded, where the folder's own copy of the
+/// routine, deleted in that commit, had folded both.
+#[test]
+fn freeze_reads_a_compact_constant_as_the_expression_it_prints_as() -> Result<(), IrError> {
+    let m = module_new!("analysis-freeze-compact")?;
+    let dl = DataLayout::default();
+    let i32_ty = m.i32_type();
+    let a = m.add_global_constant("a", i32_ty.const_int(0_i32))?;
+    let other = m.add_global_constant("b", i32_ty.const_int(0_i32))?;
+    let fn_ty = m.function_type_no_parameters(m.void_type())?;
+    let f = m.add_function_dyn("freeze_compact", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let folds = |operand: Constant<'_, _>| -> Result<bool, IrError> {
+        let frozen = b.freeze(operand, "frozen")?;
+        Ok(constant_fold_instruction(&b.view(frozen).as_view(), &dl, None)? == Some(operand))
+    };
+    let query = ValueTrackingQuery::new(&dl);
+
+    let delta = m.view(a).try_delta_from(m.view(other))?.as_constant();
+    assert_eq!(
+        delta.to_string(),
+        "i64 sub (i64 ptrtoint (ptr @a to i64), i64 ptrtoint (ptr @b to i64))"
+    );
+    assert!(!can_create_poison(delta.as_erased(), true));
+    assert!(folds(delta)?);
+
+    let delta_plus = m
+        .view(a)
+        .try_delta_from_plus(m.view(other), 7)?
+        .as_constant();
+    assert!(!can_create_undef_or_poison(delta_plus.as_erased(), true));
+    assert!(folds(delta_plus)?);
+    let delta_plus_zero = m
+        .view(a)
+        .try_delta_from_plus(m.view(other), 0)?
+        .as_constant();
+    assert!(folds(delta_plus_zero)?);
+
+    let offset = m.view(a).ptr_offset(4);
+    assert_eq!(
+        offset.to_string(),
+        "ptr getelementptr inbounds (i8, ptr @a, i64 4)"
+    );
+    assert!(can_create_poison(offset.as_erased(), true));
+    assert!(!can_create_poison(offset.as_erased(), false));
+    assert!(!folds(offset)?);
+    assert!(!is_known_not_poison(offset.as_erased(), &query)?);
+    assert!(is_known_not_undef(offset.as_erased(), &query)?);
     b.ret_void()?;
     Ok(())
 }
