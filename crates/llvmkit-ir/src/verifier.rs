@@ -54,8 +54,8 @@ use super::global_value::Linkage;
 use super::global_variable::GlobalVariable;
 use super::inline_asm::{ConstraintKind, InlineAsm};
 use super::instr_types::{
-    AllocaInstData, AtomicCmpXchgInstData, AtomicRmwInstData, CallAttributeData, CallBrInstData,
-    CallInstData, CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
+    AllocaInstData, AtomicCmpXchgInstData, AtomicRmwInstData, CallBrInstData, CallInstData,
+    CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
     CleanupReturnInstData, ExtractElementInstData, ExtractValueInstData, FenceInstData,
     FnegInstData, FreezeInstData, IndirectBrInstData, InsertElementInstData, InsertValueInstData,
     InvokeInstData, LandingPadClauseKind, LandingPadInstData, LoadInstData, OperandBundleData,
@@ -77,11 +77,10 @@ use crate::dominator_tree::DominatorTree;
 use crate::error::{IrError, IrResult, VerifierRule, VerifierSubject};
 use crate::function::FunctionValue;
 use crate::instr_types::{
-    BinaryOpData, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData, FcmpInstData,
-    GepInstData, PhiData, ReturnOpData,
+    BinaryOpData, BranchInstData, BranchKind, CallBaseParts, CastOpData, CastOpcode, CmpInstData,
+    FcmpInstData, GepInstData, PhiData, ReturnOpData,
 };
 use crate::instruction::{InstructionKindData, InstructionView};
-use crate::llvm_context::Context;
 use crate::marker::Dyn;
 use crate::metadata::{
     MetadataAttachmentKind, MetadataId, MetadataKind, MetadataSlot, MetadataStore, StoredBrand,
@@ -136,60 +135,6 @@ struct FunctionContext<'a, B: ModuleBrand> {
     /// `landingpad` or `resume` established, which every later one must agree
     /// with. Upstream resets it to null per function.
     landing_pad_result_ty: &'a Cell<Option<TypeSlot>>,
-}
-
-/// The four `CallBase` fields the shared `visitCallBase` / `visitIntrinsicCall`
-/// halves read, projected out of a `call`, `invoke` or `callbr` payload — the
-/// slice of `CallBase` those routines take.
-#[derive(Clone, Copy)]
-struct CallBaseParts<'a> {
-    /// `CallBase::getCalledOperand()`.
-    callee: ValueSlot,
-    /// `CallBase::getFunctionType()`.
-    fn_ty: TypeSlot,
-    /// `CallBase::args()`.
-    args: &'a [core::cell::Cell<ValueSlot>],
-    /// `CallBase::getAttributes()`.
-    attrs: &'a CallAttributeData,
-    /// The operand bundles, `CallBase::getOperandBundleAt(0 ..
-    /// getNumOperandBundles())`.
-    operand_bundles: &'a [OperandBundleData],
-}
-
-impl<'a> CallBaseParts<'a> {
-    /// A `call`, its attribute list resolved in `context`, the context of the
-    /// module that holds it.
-    fn of_call(context: &'a Context, c: &'a CallInstData) -> Self {
-        Self {
-            callee: c.callee.get(),
-            fn_ty: c.fn_ty,
-            args: &c.args,
-            attrs: context.call_attributes(c.attrs.get()),
-            operand_bundles: &c.operand_bundles,
-        }
-    }
-
-    /// An `invoke`, as [`Self::of_call`].
-    fn of_invoke(context: &'a Context, i: &'a InvokeInstData) -> Self {
-        Self {
-            callee: i.callee.get(),
-            fn_ty: i.fn_ty,
-            args: &i.args,
-            attrs: context.call_attributes(i.attrs.get()),
-            operand_bundles: &i.operand_bundles,
-        }
-    }
-
-    /// A `callbr`, as [`Self::of_call`].
-    fn of_call_br(context: &'a Context, c: &'a CallBrInstData) -> Self {
-        Self {
-            callee: c.callee.get(),
-            fn_ty: c.fn_ty,
-            args: &c.args,
-            attrs: context.call_attributes(c.attrs.get()),
-            operand_bundles: &c.operand_bundles,
-        }
-    }
 }
 
 /// Where an instruction sits in its block: the position plus the block's
@@ -3697,14 +3642,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             }
             // `Check(Call.paramHasAttr(I.index(), Attribute::SwiftError),
             //  "swifterror value when used in a callsite should be marked with
-            //   swifterror attribute", SwiftErrorVal, Call);`
+            //   swifterror attribute", SwiftErrorVal, Call);` — `paramHasAttr`
+            // reads the called function's declaration when the call site has
+            // no `swifterror`.
             self.verifier_check(
                 f,
                 bb,
-                call.attrs
-                    .arg_attrs()
-                    .get(index)
-                    .is_some_and(|set| set.has_kind(AttrIndex::Param(0), AttrKind::SwiftError)),
+                call.has_parameter_attribute(
+                    ModuleRef::<B, ReadOnly>::new(self.module),
+                    index,
+                    AttrKind::SwiftError,
+                ),
                 VerifierRule::SwiftErrorValueUse,
                 &format!(
                     "swifterror value when used in a callsite should be marked with swifterror attribute (argument #{index})"
@@ -3809,13 +3757,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         };
         // `for (unsigned i = 0, e = FTy->getNumParams(); i != e; ++i)`
         for index in 0..params.len() {
-            // `if (Call.paramHasAttr(i, Attribute::SwiftError))`
-            if !call
-                .attrs
-                .arg_attrs()
-                .get(index)
-                .is_some_and(|set| set.has_kind(AttrIndex::Param(0), AttrKind::SwiftError))
-            {
+            // `if (Call.paramHasAttr(i, Attribute::SwiftError))`, which reads
+            // the called function's declaration when the call site has no
+            // `swifterror`.
+            if !call.has_parameter_attribute(
+                ModuleRef::<B, ReadOnly>::new(self.module),
+                index,
+                AttrKind::SwiftError,
+            ) {
                 continue;
             }
             // `Value *SwiftErrorArg = Call.getArgOperand(i);`
@@ -3984,9 +3933,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             } else {
                 // `Check(!Call.paramHasAttr(ArgNo, Attribute::ElementType),
                 //  "Elementtype attribute can only be applied for indirect
-                //  constraints", &Call);`
-                let has_element_type = arg_attrs
-                    .is_some_and(|set| set.has_kind(AttrIndex::Param(0), AttrKind::ElementType));
+                //  constraints", &Call);` — the called operand is an inline
+                // asm, so `paramHasAttr`'s `getCalledFunction()` half finds no
+                // function and only the call site is read.
+                let has_element_type = call.has_parameter_attribute(
+                    ModuleRef::<B, ReadOnly>::new(self.module),
+                    arg_no,
+                    AttrKind::ElementType,
+                );
                 self.verifier_check(
                     f,
                     bb,
@@ -4328,8 +4282,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         //         (Call.doesNotReturn() && FTy->getReturnType()->isVoidTy())), …)`
         //
         // `CallBase::doesNotReturn()` is `hasFnAttr(Attribute::NoReturn)`,
-        // ported once as `call_site_has_fn_attr`.
-        let does_not_return = crate::instr_types::call_site_has_fn_attr(
+        // ported once as `call_site_has_function_attribute`.
+        let does_not_return = crate::instr_types::call_site_has_function_attribute(
             ModuleRef::<B, ReadOnly>::new(self.module),
             callee,
             attrs,
@@ -6057,7 +6011,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     // on the invoke, whose called operand is `II`'s own —
                     // not the stripped `CalledFn`.
                     if let Some(id) = intrinsic_id
-                        && crate::instr_types::call_site_has_fn_attr(
+                        && crate::instr_types::call_site_has_function_attribute(
                             ModuleRef::<B, ReadOnly>::new(self.module),
                             callee,
                             self.module.context().call_attributes(invoke.attrs.get()),

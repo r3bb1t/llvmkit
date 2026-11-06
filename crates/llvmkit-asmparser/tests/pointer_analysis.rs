@@ -475,6 +475,44 @@ define void @test(ptr %p) {
     assert_eq!(underlying_objects_for_code_gen(named(&module, "r")), None);
 }
 
+/// A call whose return is `noalias` is an identifiable object, whether the call
+/// site says so or the callee's declaration does.
+///
+/// **No upstream counterpart as a unit test.** The oracle is `isIdentifiedObject`
+/// (`AliasAnalysis.cpp`), whose `isNoAliasCall(V)` arm is
+/// `Call->hasRetAttr(Attribute::NoAlias)`, and `hasRetAttrImpl` reads the call
+/// site and then `getCalledFunction()`'s declaration. `%plain`, a call of a
+/// function declared without `noalias`, is the control: it is no identifiable
+/// object, so `getUnderlyingObjectsForCodeGen` fails.
+#[test]
+fn a_call_returning_noalias_is_identified_through_its_callee_s_declaration() {
+    let module = parse(
+        r"
+declare noalias ptr @allocates()
+declare ptr @returns()
+
+define void @test() {
+  %declared = call ptr @allocates()
+  %call.site = call noalias ptr @returns()
+  %plain = call ptr @returns()
+  ret void
+}
+",
+    );
+    for name in ["declared", "call.site"] {
+        let call = named(&module, name);
+        assert_eq!(
+            underlying_objects_for_code_gen(call),
+            Some(vec![call]),
+            "%{name} returns noalias"
+        );
+    }
+    assert_eq!(
+        underlying_objects_for_code_gen(named(&module, "plain")),
+        None
+    );
+}
+
 /// `GetPointerBaseWithConstantOffset` accumulates a chain of constant
 /// `getelementptr` indices into one byte offset.
 ///

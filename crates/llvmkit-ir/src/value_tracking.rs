@@ -13,7 +13,7 @@ use crate::assumptions::{
     AssumptionCache, AssumptionSource, DomConditionCache, find_values_affected_by_condition,
     is_valid_assume_for_context,
 };
-use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored};
+use crate::attributes::{AttrIndex, AttrKind, AttributeStored};
 use crate::capability::{Capability, ReadOnly};
 use crate::cmp_predicate::IntPredicate;
 use crate::constant::{
@@ -30,10 +30,10 @@ use crate::dominator_tree::{DominatorTree, DominatorTreeAnalysis};
 use crate::fmf::FastMathFlags;
 use crate::function::FunctionValue;
 use crate::instr_types::{
-    AddFlags, AllocaInstData, AshrFlags, BinaryOpData, BinaryOpcode, BranchKind, CallAttributeData,
-    CallAttributesSlot, CallInstData, CastOpData, CastOpcode, CmpInstData, ExtractElementInstData,
-    GepInstData, InsertElementInstData, LshrFlags, PhiData, SdivFlags, ShlFlags, ShuffleMaskElem,
-    ShuffleVectorInstData, SubFlags, UdivFlags, call_site_has_fn_attr, call_site_has_ret_attr,
+    AddFlags, AllocaInstData, AshrFlags, BinaryOpData, BinaryOpcode, BranchKind, CallBaseParts,
+    CallInstData, CastOpData, CastOpcode, CmpInstData, ExtractElementInstData, GepInstData,
+    InsertElementInstData, LshrFlags, PhiData, SdivFlags, ShlFlags, ShuffleMaskElem,
+    ShuffleVectorInstData, SubFlags, UdivFlags,
 };
 use crate::instruction::{InstructionData, InstructionKindData, InstructionView};
 use crate::intrinsics::{IntrinsicId, IntrinsicSemantic, semantic_for_callee};
@@ -899,12 +899,7 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability
         InstructionKindData::Call(data) => call_known_bits(
             value,
             CallKnownBitsInputs {
-                callee_id: data.callee.get(),
-                args: &data.args,
-                return_attrs: value
-                    .module
-                    .call_attributes(data.attrs.get())
-                    .return_attrs(),
+                call: CallBaseParts::of_call(value.module.context(), data),
                 instruction: inst,
             },
             query,
@@ -914,12 +909,7 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability
         InstructionKindData::Invoke(data) => call_known_bits(
             value,
             CallKnownBitsInputs {
-                callee_id: data.callee.get(),
-                args: &data.args,
-                return_attrs: value
-                    .module
-                    .call_attributes(data.attrs.get())
-                    .return_attrs(),
+                call: CallBaseParts::of_invoke(value.module.context(), data),
                 instruction: inst,
             },
             query,
@@ -1005,29 +995,6 @@ fn range_metadata_known_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     ranges_known_bits(ranges, bit_width)
 }
 
-fn range_attribute_known_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    value: Value<'ctx, B, C>,
-    attrs: &AttributeStorage,
-    bit_width: u32,
-) -> KnownBits {
-    let Some(stored) = attrs.get(AttrIndex::Return) else {
-        return KnownBits::unknown(bit_width);
-    };
-    let module_view = value.module();
-    let expected_ty = scalar_type_slot(
-        module_view.core_ref(),
-        value.ty().slot_trusting_same_module(),
-    );
-    let ranges = stored.iter().filter_map(|attr| match attr {
-        AttributeStored::Range { ty, lower, upper } if *ty == expected_ty => {
-            let range = ConstantRange::new(lower.clone(), upper.clone()).ok()?;
-            (!range.is_empty_set() && !range.is_full_set()).then_some(range)
-        }
-        _ => None,
-    });
-    ranges_known_bits(ranges, bit_width)
-}
-
 fn ranges_known_bits<I>(ranges: I, bit_width: u32) -> KnownBits
 where
     I: IntoIterator<Item = ConstantRange>,
@@ -1060,9 +1027,7 @@ where
 }
 
 struct CallKnownBitsInputs<'a> {
-    callee_id: ValueSlot,
-    args: &'a [Cell<ValueSlot>],
-    return_attrs: &'a AttributeStorage,
+    call: CallBaseParts<'a>,
     instruction: &'a InstructionData,
 }
 
@@ -1095,12 +1060,15 @@ fn call_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         KnownBits::unknown(width)
     };
     // `if (std::optional<ConstantRange> Range = CB->getRange())
-    //    Known = Known.unionWith(Range->toKnownBits());`
-    known = known.union_with(&range_attribute_known_bits(
-        anchor,
-        inputs.return_attrs,
-        width,
-    ));
+    //    Known = Known.unionWith(Range->toKnownBits());` — `getRange` reads the
+    // called function's `range` as well as the call site's. `unionWith`
+    // asserts equal widths, and the verifier rejects a `range` of another
+    // width; llvmkit takes no runtime panic, so such a range adds nothing.
+    if let Some(range) = inputs.call.range(anchor.module)
+        && range.bit_width() == width
+    {
+        known = known.union_with(&range.to_known_bits());
+    }
     // `if (const Value *RV = CB->getReturnedArgOperand())
     //    if (RV->getType() == I->getType()) { … }`
     if let Some(returned_arg) = returned_arg_operand(anchor)
@@ -1118,9 +1086,9 @@ fn call_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         }
     }
     // `if (const IntrinsicInst *II = dyn_cast<IntrinsicInst>(I)) switch (…)`
-    if let Some(semantic) = intrinsic_semantic_for_callee(anchor, inputs.callee_id) {
+    if let Some(semantic) = intrinsic_semantic_for_callee(anchor, inputs.call.callee) {
         let intrinsic_known =
-            intrinsic_known_bits(anchor, semantic, inputs.args, query, depth, stack)?;
+            intrinsic_known_bits(anchor, semantic, inputs.call.args, query, depth, stack)?;
         known = known.union_with(&intrinsic_known);
     }
     Ok(known)
@@ -5148,20 +5116,12 @@ fn instruction_can_create_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capabi
             if intrinsic_cannot_create_undef_or_poison(value, data, kind) {
                 return false;
             }
-            call_base_can_create_undef_or_poison(CallBaseParts::new(
-                value,
-                data.callee.get(),
-                data.fn_ty,
-                data.attrs.get(),
-            ))
+            call_base_can_create_undef_or_poison(value, instruction)
         }
         // `case Instruction::CallBr: case Instruction::Invoke:`
-        InstructionKindData::CallBr(data) => call_base_can_create_undef_or_poison(
-            CallBaseParts::new(value, data.callee.get(), data.fn_ty, data.attrs.get()),
-        ),
-        InstructionKindData::Invoke(data) => call_base_can_create_undef_or_poison(
-            CallBaseParts::new(value, data.callee.get(), data.fn_ty, data.attrs.get()),
-        ),
+        InstructionKindData::CallBr(_) | InstructionKindData::Invoke(_) => {
+            call_base_can_create_undef_or_poison(value, instruction)
+        }
 
         // `case Instruction::InsertElement: case Instruction::ExtractElement:`
         // — "If index exceeds the length of the vector, it returns poison";
@@ -5265,77 +5225,27 @@ fn intrinsic_cannot_create_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capab
 }
 
 /// `case Instruction::CallBr: case Instruction::Invoke:`, which the `Call`
-/// arm falls through into: `!CB->hasRetAttr(Attribute::NoUndef) &&
-/// !CB->hasFnAttr(Attribute::NoCreateUndefOrPoison)`. Both read the called
-/// function's attributes as well as the call site's.
-fn call_base_can_create_undef_or_poison<B: ModuleBrand, C: Capability>(
-    call: CallBaseParts<'_, B, C>,
-) -> bool {
-    !call.has_ret_attr(AttrKind::NoUndef) && !call.has_fn_attr(AttrKind::NoCreateUndefOrPoison)
-}
-
-/// What the attribute queries of a `CallBase` read: the called operand as
-/// stored, the call's function type, and the call site's attribute list, with
-/// the module they are all of.
-struct CallBaseParts<'ctx, B: ModuleBrand, C: Capability> {
-    module: ModuleRef<'ctx, B, C>,
-    callee: ValueSlot,
-    function_type: TypeSlot,
-    attributes: &'ctx CallAttributeData,
-}
-
-impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> CallBaseParts<'ctx, B, C> {
-    /// The parts of a call whose payload stores `callee`, `function_type` and
-    /// `attributes`. `anchor` is any value of the call's module.
-    fn new(
-        anchor: Value<'ctx, B, C>,
-        callee: ValueSlot,
-        function_type: TypeSlot,
-        attributes: CallAttributesSlot,
-    ) -> Self {
-        Self {
-            module: anchor.module,
-            callee,
-            function_type,
-            attributes: anchor.module.call_attributes(attributes),
-        }
-    }
-
-    /// `CB->hasRetAttr(Kind)`: [`call_site_has_ret_attr`].
-    fn has_ret_attr(&self, kind: AttrKind) -> bool {
-        call_site_has_ret_attr(
-            self.module,
-            self.callee,
-            self.function_type,
-            self.attributes,
-            kind,
-        )
-    }
-
-    /// `CB->hasFnAttr(Kind)`: [`call_site_has_fn_attr`].
-    fn has_fn_attr(&self, kind: AttrKind) -> bool {
-        call_site_has_fn_attr(self.module, self.callee, self.attributes, kind)
-    }
-}
-
-/// `dyn_cast<CallBase>(I)`: the parts of a `call`, `invoke` or `callbr`, or
-/// `None` for any other instruction. `anchor` is any value of `kind`'s module.
-fn call_base_parts<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+/// arm falls through into:
+///
+/// ```text
+/// const auto *CB = cast<CallBase>(Op);
+/// return !CB->hasRetAttr(Attribute::NoUndef) &&
+///        !CB->hasFnAttr(Attribute::NoCreateUndefOrPoison);
+/// ```
+///
+/// Both read the called function's attributes as well as the call site's
+/// ([`CallBaseParts::has_return_attribute`],
+/// [`CallBaseParts::has_function_attribute`]). Every caller passes a `call`,
+/// `invoke` or `callbr`, which `cast<CallBase>` asserts; anything else would
+/// answer `true`, the default arm's "Be conservative" answer.
+fn call_base_can_create_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     anchor: Value<'ctx, B, C>,
-    kind: &InstructionKindData,
-) -> Option<CallBaseParts<'ctx, B, C>> {
-    let (callee, function_type, attributes) = match kind {
-        InstructionKindData::Call(data) => (data.callee.get(), data.fn_ty, data.attrs.get()),
-        InstructionKindData::Invoke(data) => (data.callee.get(), data.fn_ty, data.attrs.get()),
-        InstructionKindData::CallBr(data) => (data.callee.get(), data.fn_ty, data.attrs.get()),
-        _ => return None,
-    };
-    Some(CallBaseParts::new(
-        anchor,
-        callee,
-        function_type,
-        attributes,
-    ))
+    instruction: &InstructionKindData,
+) -> bool {
+    CallBaseParts::of(anchor.module.context(), instruction).is_none_or(|call| {
+        !call.has_return_attribute(anchor.module, AttrKind::NoUndef)
+            && !call.has_function_attribute(anchor.module, AttrKind::NoCreateUndefOrPoison)
+    })
 }
 
 /// The `canCreateUndefOrPoison` switch over a constant expression's opcode,
@@ -5545,7 +5455,7 @@ fn instruction_has_poison_generating_flags<'ctx, B: ModuleBrand + 'ctx, C: Capab
         InstructionKindData::Icmp(data) => data.samesign,
         // `default:` — `if (const auto *FP = dyn_cast<FPMathOperator>(this))
         // return FP->hasNoNaNs() || FP->hasNoInfs(); return false;`
-        other => fp_math_operator_flags(other, anchor.ty()).is_some_and(|flags| {
+        _ => fp_math_operator_flags(anchor).is_some_and(|flags| {
             flags.contains(FastMathFlags::NO_NANS) || flags.contains(FastMathFlags::NO_INFS)
         }),
     }
@@ -5574,10 +5484,10 @@ fn instruction_has_poison_generating_return_attributes<
     anchor: Value<'ctx, B, C>,
     kind: &InstructionKindData,
 ) -> bool {
-    let Some(call) = call_base_parts(anchor, kind) else {
+    let Some(call) = CallBaseParts::of(anchor.module.context(), kind) else {
         return false;
     };
-    let return_attributes = call.attributes.return_attrs();
+    let return_attributes = call.attrs.return_attrs();
     [AttrKind::Range, AttrKind::Alignment, AttrKind::NonNull]
         .into_iter()
         .any(|kind| return_attributes.has_kind(AttrIndex::Return, kind))
@@ -5672,16 +5582,16 @@ fn lane_index_known_in_range<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 /// CB->hasRetAttr(Attribute::Dereferenceable) ||
 /// CB->hasRetAttr(Attribute::DereferenceableOrNull)`, which accepts all three
 /// because the two dereferenceability attributes imply `noundef`. Each
-/// `hasRetAttr` is [`call_site_has_ret_attr`], the routine
+/// `hasRetAttr` is [`CallBaseParts::has_return_attribute`], the routine
 /// `canCreateUndefOrPoison`'s `CallBase` arm asks of `noundef` alone.
 fn call_return_is_well_defined<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     anchor: Value<'ctx, B, C>,
     kind: &InstructionKindData,
 ) -> bool {
-    call_base_parts(anchor, kind).is_some_and(|call| {
-        call.has_ret_attr(AttrKind::NoUndef)
-            || call.has_ret_attr(AttrKind::Dereferenceable)
-            || call.has_ret_attr(AttrKind::DereferenceableOrNull)
+    CallBaseParts::of(anchor.module.context(), kind).is_some_and(|call| {
+        call.has_return_attribute(anchor.module, AttrKind::NoUndef)
+            || call.has_return_attribute(anchor.module, AttrKind::Dereferenceable)
+            || call.has_return_attribute(anchor.module, AttrKind::DereferenceableOrNull)
     })
 }
 

@@ -39,7 +39,7 @@ use crate::constants::global_value_type;
 use crate::data_layout::DataLayout;
 use crate::gep_no_wrap_flags::GepNoWrapFlags;
 use crate::global_variable::GlobalVariable;
-use crate::instr_types::{GepInstData, Opcode};
+use crate::instr_types::{CallBaseParts, GepInstData, Opcode};
 use crate::instruction::{InstructionKindData, InstructionView};
 use crate::intrinsics::descriptor_for_callee;
 use crate::module::{ModuleBrand, ModuleRef};
@@ -1600,11 +1600,12 @@ fn is_identified_object<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         }
         _ => {}
     }
-    // `isNoAliasCall`: a call whose return carries `noalias`.
-    call_return_attrs(value).is_some_and(|attrs| {
-        attrs
-            .iter()
-            .any(|attr| matches!(attr, AttributeStored::Enum(AttrKind::NoAlias)))
+    // `isNoAliasCall(V)`: `if (const auto *Call = dyn_cast<CallBase>(V)) return
+    // Call->hasRetAttr(Attribute::NoAlias); return false;` — `hasRetAttr`
+    // reads the called function's declaration as well as the call site.
+    instruction_kind(value).is_some_and(|kind| {
+        CallBaseParts::of(value.module.context(), kind)
+            .is_some_and(|call| call.has_return_attribute(value.module, AttrKind::NoAlias))
     })
 }
 
@@ -1741,22 +1742,6 @@ fn call_argument<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         _ => return None,
     };
     Some(value_from_slot(call, args.get(index)?.get()))
-}
-
-/// The return-position attributes of a call/invoke/callbr.
-fn call_return_attrs<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    call: Value<'ctx, B, C>,
-) -> Option<&'ctx [AttributeStored]> {
-    let attrs = match instruction_kind(call)? {
-        InstructionKindData::Call(data) => data.attrs.get(),
-        InstructionKindData::Invoke(data) => data.attrs.get(),
-        InstructionKindData::CallBr(data) => data.attrs.get(),
-        _ => return None,
-    };
-    call.module
-        .call_attributes(attrs)
-        .return_attrs()
-        .get(AttrIndex::Return)
 }
 
 /// The base name of the intrinsic `call` invokes directly.

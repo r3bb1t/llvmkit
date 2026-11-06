@@ -826,7 +826,7 @@ fn exercises_every_modeled_value_tracking_entry_point() {
     // parameters; `Default` is upstream's no-argument call.
     let _speculation_options = SpeculationOptions::new()
         .without_variable_info()
-        .ignoring_ub_implying_attrs();
+        .honouring_ub_implying_attrs();
     let _default_transfer_scan_limit = llvmkit_ir::DEFAULT_TRANSFER_SCAN_LIMIT;
 
     // Pointer and object analysis (tranche 5).

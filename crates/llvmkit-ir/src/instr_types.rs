@@ -21,11 +21,16 @@ use super::gep_no_wrap_flags::GepNoWrapFlags;
 use crate::Branded;
 use crate::align::MaybeAlign;
 use crate::atomic_ordering::AtomicOrdering;
-use crate::attributes::{AttrIndex, AttrKind, AttributeStorage};
+use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored};
 use crate::capability::{Capability, Mutable};
+use crate::constant_range::{ConstantRange, PreferredRangeType};
 use crate::error::{IrError, IrResult};
 use crate::fmf::FastMathFlags;
+use crate::fp_class::FpClassTest;
 use crate::function::FunctionValue;
+use crate::instruction::InstructionKindData;
+use crate::intrinsics::IntrinsicId;
+use crate::llvm_context::Context;
 use crate::marker::Dyn;
 use crate::module::{ModuleBrand, ModuleCore, ModuleId, ModuleRef};
 use crate::sync_scope::SyncScope;
@@ -2454,7 +2459,8 @@ impl CallAttributeData {
 /// `CallBase::hasFnAttrOnCalledFunction` it falls back to
 /// (`lib/IR/Instructions.cpp`) — for every caller in the crate: the call-site
 /// views' [`CallInst::has_fn_attr`](crate::CallInst::has_fn_attr) and its
-/// siblings, the speculation and assumption analyses, and the verifier.
+/// siblings, [`CallBaseParts::has_function_attribute`], the speculation and
+/// assumption analyses, and the verifier.
 ///
 /// `callee` is the call's called operand as stored — upstream's
 /// `getCalledOperand()`, not stripped of pointer casts — and `attrs` the call
@@ -2464,7 +2470,7 @@ impl CallAttributeData {
 /// CallBase::isNoBuiltin() to check for Attribute::NoBuiltin"); this routine
 /// is `hasFnAttrImpl`, which has no such guard, and answers for `NoBuiltin`
 /// the way `isNoBuiltin`'s first half asks it.
-pub(crate) fn call_site_has_fn_attr<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+pub(crate) fn call_site_has_function_attribute<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     module: ModuleRef<'ctx, B, C>,
     callee: ValueSlot,
     attrs: &CallAttributeData,
@@ -2486,42 +2492,358 @@ pub(crate) fn call_site_has_fn_attr<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }
 }
 
-/// Whether a call site's return has the attribute `kind`, on itself or on the
-/// function it calls. The one port of `CallBase::hasRetAttr(Attribute::AttrKind)`
-/// (`IR/InstrTypes.h`), whose body is `hasRetAttrImpl`:
+/// The `CallBase` fields the attribute queries and the verifier read,
+/// projected out of a `call`, `invoke` or `callbr` payload: the slice of
+/// `CallBase` those routines take. Each `CallBase` attribute query that reads
+/// the called function as well as the call site is ported once, as a method
+/// here, and every reader in the crate asks it.
 ///
-/// ```text
-/// if (Attrs.hasRetAttr(Kind)) return true;
-/// if (const Function *F = getCalledFunction())
-///   return F->getAttributes().hasRetAttr(Kind);
-/// return false;
-/// ```
-///
-/// `getCalledFunction` is [`called_function`]: a call through a function of
-/// another signature does not read that function's attributes. `callee` is the
-/// call's called operand as stored, `function_type` its `getFunctionType()`,
-/// and `attrs` the call site's stored attributes, all of `module`.
-pub(crate) fn call_site_has_ret_attr<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    module: ModuleRef<'ctx, B, C>,
-    callee: ValueSlot,
-    function_type: crate::r#type::TypeSlot,
-    attrs: &CallAttributeData,
-    kind: AttrKind,
-) -> bool {
-    // `if (Attrs.hasRetAttr(Kind)) return true;`
-    if attrs.return_attrs.has_kind(AttrIndex::Return, kind) {
-        return true;
+/// The attribute list is resolved in the module's `Context` when the parts are
+/// taken, so the methods ask for the module only to read the callee.
+#[derive(Clone, Copy)]
+pub(crate) struct CallBaseParts<'a> {
+    /// `CallBase::getCalledOperand()`.
+    pub(crate) callee: ValueSlot,
+    /// `CallBase::getFunctionType()`.
+    pub(crate) fn_ty: crate::r#type::TypeSlot,
+    /// `CallBase::args()`.
+    pub(crate) args: &'a [Cell<ValueSlot>],
+    /// `CallBase::getAttributes()`.
+    pub(crate) attrs: &'a CallAttributeData,
+    /// The operand bundles, `CallBase::getOperandBundleAt(0 ..
+    /// getNumOperandBundles())`.
+    pub(crate) operand_bundles: &'a [OperandBundleData],
+}
+
+impl<'a> CallBaseParts<'a> {
+    /// A `call`, its attribute list resolved in `context`, the context of the
+    /// module that holds it.
+    pub(crate) fn of_call(context: &'a Context, c: &'a CallInstData) -> Self {
+        Self {
+            callee: c.callee.get(),
+            fn_ty: c.fn_ty,
+            args: &c.args,
+            attrs: context.call_attributes(c.attrs.get()),
+            operand_bundles: &c.operand_bundles,
+        }
     }
-    // `if (const Function *F = getCalledFunction())
-    //    return F->getAttributes().hasRetAttr(Kind);
-    //  return false;`
-    called_function(module, callee, function_type).is_some_and(|function| {
-        function
+
+    /// An `invoke`, as [`Self::of_call`].
+    pub(crate) fn of_invoke(context: &'a Context, i: &'a InvokeInstData) -> Self {
+        Self {
+            callee: i.callee.get(),
+            fn_ty: i.fn_ty,
+            args: &i.args,
+            attrs: context.call_attributes(i.attrs.get()),
+            operand_bundles: &i.operand_bundles,
+        }
+    }
+
+    /// A `callbr`, as [`Self::of_call`].
+    pub(crate) fn of_call_br(context: &'a Context, c: &'a CallBrInstData) -> Self {
+        Self {
+            callee: c.callee.get(),
+            fn_ty: c.fn_ty,
+            args: &c.args,
+            attrs: context.call_attributes(c.attrs.get()),
+            operand_bundles: &c.operand_bundles,
+        }
+    }
+
+    /// `dyn_cast<CallBase>(I)`: the parts of a `call`, `invoke` or `callbr`, or
+    /// `None` for any other instruction.
+    pub(crate) fn of(context: &'a Context, kind: &'a InstructionKindData) -> Option<Self> {
+        match kind {
+            InstructionKindData::Call(c) => Some(Self::of_call(context, c)),
+            InstructionKindData::Invoke(i) => Some(Self::of_invoke(context, i)),
+            InstructionKindData::CallBr(c) => Some(Self::of_call_br(context, c)),
+            _ => None,
+        }
+    }
+
+    /// `CallBase::getCalledFunction()`: [`called_function`].
+    pub(crate) fn called_function<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        &self,
+        module: ModuleRef<'ctx, B, C>,
+    ) -> Option<FunctionValue<'ctx, Dyn, B, C>> {
+        called_function(module, self.callee, self.fn_ty)
+    }
+
+    /// `CallBase::hasFnAttr(Kind)`: [`call_site_has_function_attribute`].
+    pub(crate) fn has_function_attribute<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        &self,
+        module: ModuleRef<'ctx, B, C>,
+        kind: AttrKind,
+    ) -> bool {
+        call_site_has_function_attribute(module, self.callee, self.attrs, kind)
+    }
+
+    /// Whether the call's return has the attribute `kind`, on the call site or
+    /// on the function it calls. The one port of
+    /// `CallBase::hasRetAttr(Attribute::AttrKind)` (`IR/InstrTypes.h`), whose
+    /// body is `hasRetAttrImpl`:
+    ///
+    /// ```text
+    /// if (Attrs.hasRetAttr(Kind)) return true;
+    /// if (const Function *F = getCalledFunction())
+    ///   return F->getAttributes().hasRetAttr(Kind);
+    /// return false;
+    /// ```
+    ///
+    /// A call through a function of another signature does not read that
+    /// function's attributes ([`called_function`]).
+    pub(crate) fn has_return_attribute<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        &self,
+        module: ModuleRef<'ctx, B, C>,
+        kind: AttrKind,
+    ) -> bool {
+        // `if (Attrs.hasRetAttr(Kind)) return true;`
+        if self.attrs.return_attrs.has_kind(AttrIndex::Return, kind) {
+            return true;
+        }
+        // `if (const Function *F = getCalledFunction())
+        //    return F->getAttributes().hasRetAttr(Kind);
+        //  return false;`
+        self.called_function(module).is_some_and(|function| {
+            function
+                .data()
+                .attributes
+                .borrow()
+                .has_kind(AttrIndex::Return, kind)
+        })
+    }
+
+    /// Whether argument `argument` has the attribute `kind`, on the call site
+    /// or on the function it calls. The one port of
+    /// `CallBase::paramHasAttr(unsigned ArgNo, Attribute::AttrKind Kind)`
+    /// (`Instructions.cpp`):
+    ///
+    /// ```text
+    /// assert(ArgNo < arg_size() && "Param index out of bounds!");
+    /// if (Attrs.hasParamAttr(ArgNo, Kind)) return true;
+    /// const Function *F = getCalledFunction();
+    /// if (!F) return false;
+    /// if (!F->getAttributes().hasParamAttr(ArgNo, Kind)) return false;
+    /// // Take into account mod/ref by operand bundles.
+    /// switch (Kind) {
+    /// case Attribute::ReadNone:
+    ///   return !hasReadingOperandBundles() && !hasClobberingOperandBundles();
+    /// case Attribute::ReadOnly:  return !hasClobberingOperandBundles();
+    /// case Attribute::WriteOnly: return !hasReadingOperandBundles();
+    /// default: return true;
+    /// }
+    /// ```
+    ///
+    /// The two attribute lists are keyed differently. A call site stores one
+    /// attribute set per argument, each at `AttrIndex::Param(0)`
+    /// (`LLParser::parseOptionalParamAttrs` builds one per argument, and
+    /// `AsmWriter` reads it back there), so the argument is the slice index. A
+    /// function's one list keys parameter `i` at `AttrIndex::Param(i)`.
+    ///
+    /// The assertion is no runtime panic here: an argument past the end has no
+    /// attribute.
+    pub(crate) fn has_parameter_attribute<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        &self,
+        module: ModuleRef<'ctx, B, C>,
+        argument: usize,
+        kind: AttrKind,
+    ) -> bool {
+        if argument >= self.args.len() {
+            return false;
+        }
+        // `if (Attrs.hasParamAttr(ArgNo, Kind)) return true;`
+        if self
+            .attrs
+            .arg_attrs
+            .get(argument)
+            .is_some_and(|set| set.has_kind(AttrIndex::Param(0), kind))
+        {
+            return true;
+        }
+        // `const Function *F = getCalledFunction(); if (!F) return false;`
+        let Some(function) = self.called_function(module) else {
+            return false;
+        };
+        // `if (!F->getAttributes().hasParamAttr(ArgNo, Kind)) return false;`
+        let Ok(parameter) = u32::try_from(argument) else {
+            return false;
+        };
+        if !function
             .data()
             .attributes
             .borrow()
-            .has_kind(AttrIndex::Return, kind)
-    })
+            .has_kind(AttrIndex::Param(parameter), kind)
+        {
+            return false;
+        }
+        // "Take into account mod/ref by operand bundles."
+        match kind {
+            AttrKind::ReadNone => {
+                !self.has_reading_operand_bundles(module)
+                    && !self.has_clobbering_operand_bundles(module)
+            }
+            AttrKind::ReadOnly => !self.has_clobbering_operand_bundles(module),
+            AttrKind::WriteOnly => !self.has_reading_operand_bundles(module),
+            _ => true,
+        }
+    }
+
+    /// `CallBase::isPassingUndefUB(unsigned ArgNo)` (`IR/InstrTypes.h`): "If
+    /// passing undef to this argument is UB, passing poison is UB as well
+    /// because poison is more undefined than undef."
+    ///
+    /// ```text
+    /// return paramHasAttr(ArgNo, Attribute::NoUndef) ||
+    ///        // dereferenceable implies noundef.
+    ///        paramHasAttr(ArgNo, Attribute::Dereferenceable) ||
+    ///        // dereferenceable implies noundef, and null is a well-defined value.
+    ///        paramHasAttr(ArgNo, Attribute::DereferenceableOrNull);
+    /// ```
+    pub(crate) fn is_passing_undef_undefined_behaviour<
+        'ctx,
+        B: ModuleBrand + 'ctx,
+        C: Capability,
+    >(
+        &self,
+        module: ModuleRef<'ctx, B, C>,
+        argument: usize,
+    ) -> bool {
+        self.has_parameter_attribute(module, argument, AttrKind::NoUndef)
+            || self.has_parameter_attribute(module, argument, AttrKind::Dereferenceable)
+            || self.has_parameter_attribute(module, argument, AttrKind::DereferenceableOrNull)
+    }
+
+    /// `CallBase::getRange()` (`Instructions.cpp`): the call site's `range`
+    /// return attribute intersected with the called function's, or whichever of
+    /// the two exists.
+    ///
+    /// ```text
+    /// Attribute CallAttr = Attrs.getRetAttr(Attribute::Range);
+    /// Attribute FnAttr;
+    /// if (const Function *F = getCalledFunction())
+    ///   FnAttr = F->getRetAttribute(Attribute::Range);
+    /// if (CallAttr.isValid() && FnAttr.isValid())
+    ///   return CallAttr.getRange().intersectWith(FnAttr.getRange());
+    /// if (CallAttr.isValid()) return CallAttr.getRange();
+    /// if (FnAttr.isValid()) return FnAttr.getRange();
+    /// return std::nullopt;
+    /// ```
+    pub(crate) fn range<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        &self,
+        module: ModuleRef<'ctx, B, C>,
+    ) -> Option<ConstantRange> {
+        let call_attribute = return_range(&self.attrs.return_attrs);
+        let function_attribute = self
+            .called_function(module)
+            .and_then(|function| return_range(&function.data().attributes.borrow()));
+        match (call_attribute, function_attribute) {
+            (Some(call), Some(function)) => {
+                Some(call.intersect_with(&function, PreferredRangeType::Smallest))
+            }
+            (Some(call), None) => Some(call),
+            (None, Some(function)) => Some(function),
+            (None, None) => None,
+        }
+    }
+
+    /// `CallBase::getRetNoFPClass()` (`Instructions.cpp`): the call site's
+    /// `nofpclass` return mask ORed with the called function's.
+    ///
+    /// ```text
+    /// FPClassTest Mask = Attrs.getRetNoFPClass();
+    /// if (const Function *F = getCalledFunction())
+    ///   Mask |= F->getAttributes().getRetNoFPClass();
+    /// return Mask;
+    /// ```
+    pub(crate) fn return_no_fp_class<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        &self,
+        module: ModuleRef<'ctx, B, C>,
+    ) -> FpClassTest {
+        let mut mask = self
+            .attrs
+            .return_attrs
+            .no_fp_class(AttrIndex::Return)
+            .unwrap_or(FpClassTest::NONE);
+        if let Some(function) = self.called_function(module)
+            && let Some(declared) = function
+                .data()
+                .attributes
+                .borrow()
+                .no_fp_class(AttrIndex::Return)
+        {
+            mask |= declared;
+        }
+        mask
+    }
+
+    /// `CallBase::getIntrinsicID()` (`Instructions.cpp`): `if (auto *F =
+    /// dyn_cast_or_null<Function>(getCalledOperand())) return
+    /// F->getIntrinsicID(); return Intrinsic::not_intrinsic;`, with no
+    /// function-type test. `None` is `not_intrinsic`.
+    fn intrinsic_id<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        &self,
+        module: ModuleRef<'ctx, B, C>,
+    ) -> Option<IntrinsicId> {
+        match &module.value_data(self.callee).kind {
+            ValueKindData::Function(_) => {
+                FunctionValue::<Dyn, B, C>::from_parts_unchecked(self.callee, module).intrinsic_id()
+            }
+            _ => None,
+        }
+    }
+
+    /// `CallBase::hasOperandBundlesOtherThan(ArrayRef<uint32_t> IDs)`
+    /// (`IR/InstrTypes.h`): whether some bundle's tag is not in `tags`.
+    fn has_operand_bundles_other_than(&self, tags: &[OperandBundleTag]) -> bool {
+        self.operand_bundles
+            .iter()
+            .any(|bundle| !tags.contains(bundle.tag()))
+    }
+
+    /// `CallBase::hasReadingOperandBundles()` (`Instructions.cpp`):
+    /// "Implementation note: this is a conservative implementation of operand
+    /// bundle semantics, where *any* non-assume operand bundle (other than
+    /// ptrauth) forces a callsite to be at least readonly."
+    fn has_reading_operand_bundles<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        &self,
+        module: ModuleRef<'ctx, B, C>,
+    ) -> bool {
+        self.has_operand_bundles_other_than(&[
+            OperandBundleTag::PtrAuth,
+            OperandBundleTag::Kcfi,
+            OperandBundleTag::ConvergenceCtrl,
+            OperandBundleTag::DeactivationSymbol,
+        ]) && self.intrinsic_id(module) != Some(IntrinsicId::ASSUME)
+    }
+
+    /// `CallBase::hasClobberingOperandBundles()` (`Instructions.cpp`).
+    fn has_clobbering_operand_bundles<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        &self,
+        module: ModuleRef<'ctx, B, C>,
+    ) -> bool {
+        self.has_operand_bundles_other_than(&[
+            OperandBundleTag::Deopt,
+            OperandBundleTag::Funclet,
+            OperandBundleTag::PtrAuth,
+            OperandBundleTag::Kcfi,
+            OperandBundleTag::ConvergenceCtrl,
+            OperandBundleTag::DeactivationSymbol,
+        ]) && self.intrinsic_id(module) != Some(IntrinsicId::ASSUME)
+    }
+}
+
+/// `Attribute::getRange()` of the `range` attribute in `storage`'s return
+/// slot: upstream's `getRetAttr(Attribute::Range)` with `isValid()` as `Some`.
+fn return_range(storage: &AttributeStorage) -> Option<ConstantRange> {
+    storage
+        .get(AttrIndex::Return)?
+        .iter()
+        .find_map(|attribute| match attribute {
+            AttributeStored::Range { lower, upper, .. } => {
+                ConstantRange::new(lower.clone(), upper.clone()).ok()
+            }
+            _ => None,
+        })
 }
 
 /// The function a call site calls directly, or `None`. A port of

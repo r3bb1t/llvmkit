@@ -51,7 +51,7 @@ use super::function_signature::{FunctionReturn, token::ValidatedCallResult};
 use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::instr_types::ShuffleMaskElem;
 use super::instr_types::TailCallKind;
-use super::instr_types::call_site_has_fn_attr;
+use super::instr_types::call_site_has_function_attribute;
 use super::instr_types::{
     AllocaInstData, AtomicCmpXchgInstData, AtomicRmwInstData, CallBrInstData, CallInstData,
     CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
@@ -950,7 +950,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> CallInst<'ctx,
     /// half (`hasFnAttrImpl(Attribute::NoBuiltin)`) reads.
     pub fn has_fn_attr(self, kind: AttrKind) -> bool {
         let payload = self.payload();
-        call_site_has_fn_attr(
+        call_site_has_function_attribute(
             self.module,
             payload.callee.get(),
             self.module.call_attributes(payload.attrs.get()),
@@ -3899,7 +3899,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> InvokeInst<'ct
     /// [`CallInst::has_fn_attr`] does.
     pub fn has_fn_attr(self, kind: AttrKind) -> bool {
         let payload = self.payload();
-        call_site_has_fn_attr(
+        call_site_has_function_attribute(
             self.module,
             payload.callee.get(),
             self.module.call_attributes(payload.attrs.get()),
@@ -4133,7 +4133,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> CallBrInst<'ctx, B, C> {
     /// [`CallInst::has_fn_attr`] does.
     pub fn has_fn_attr(self, kind: AttrKind) -> bool {
         let payload = self.payload();
-        call_site_has_fn_attr(
+        call_site_has_function_attribute(
             self.module,
             payload.callee.get(),
             self.module.call_attributes(payload.attrs.get()),

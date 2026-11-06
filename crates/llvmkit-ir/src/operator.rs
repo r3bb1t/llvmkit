@@ -20,6 +20,7 @@ use crate::instructions::{
 };
 use crate::module::ModuleBrand;
 use crate::r#type::Type;
+use crate::value::{Value, ValueKindData};
 
 /// `true` when `ty` is composed of a single kind of floating-point type,
 /// possibly repeated within an aggregate. Mirrors
@@ -74,25 +75,32 @@ pub fn is_supported_floating_point_type<'ctx, B: ModuleBrand + 'ctx, C: Capabili
     ty.is_float_or_float_vector() || is_composed_of_homogeneous_floating_point_types(ty)
 }
 
-/// The fast-math flags of an instruction that is an `FPMathOperator`, or
-/// `None` for one that is not: `dyn_cast<FPMathOperator>(I)` followed by
+/// The fast-math flags of a value that is an `FPMathOperator`, or `None` for
+/// one that is not: `dyn_cast<FPMathOperator>(V)` followed by
 /// `getFastMathFlags()`.
 ///
-/// Ports `FPMathOperator::classof`'s `switch`, in its order. `fneg`, the five
-/// floating-point binary operators, `fptrunc`, `fpext` and `fcmp` always are
-/// one. A `phi`, a `select` and a `call` are one when `ty`, the instruction's
+/// Ports `FPMathOperator::classof`, in its order:
+/// `if (auto *I = dyn_cast<Instruction>(V)) Opcode = I->getOpcode(); else
+/// return false;`, so a constant expression or any other non-instruction is
+/// never one. Then its `switch`: `fneg`, the five floating-point binary
+/// operators, `fptrunc`, `fpext` and `fcmp` always are one. A `phi`, a
+/// `select` and a `call` are one when `V->getType()`, the instruction's own
 /// result type, passes [`is_supported_floating_point_type`]. Every other
-/// opcode is not. `classof` admits only an `Instruction`, so a constant
-/// expression is never one, and this takes an instruction's payload.
+/// opcode is not. The value is taken whole so that the type read is the
+/// instruction's own, as `classof` reads it.
 ///
 /// Upstream reads the flags out of `SubclassOptionalData`, which each
 /// `FPMathOperator` keeps its flags in. llvmkit keeps them in the payloads
 /// that can carry them, which are exactly the opcodes `classof` admits.
 pub(crate) fn fp_math_operator_flags<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    instruction: &InstructionKindData,
-    ty: Type<'ctx, B, C>,
+    value: Value<'ctx, B, C>,
 ) -> Option<FastMathFlags> {
-    match instruction {
+    // `if (auto *I = dyn_cast<Instruction>(V)) ... else return false;`
+    let ValueKindData::Instruction(instruction) = &value.data().kind else {
+        return None;
+    };
+    let ty = value.ty();
+    match &instruction.kind {
         // `case Instruction::FNeg:`
         InstructionKindData::Fneg(data) => Some(data.fmf),
         // `case Instruction::FAdd: case Instruction::FSub: case

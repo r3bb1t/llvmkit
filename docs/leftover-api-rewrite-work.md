@@ -260,7 +260,8 @@ narrowing is what makes the residue small enough to name:
   `CallBase::hasFnAttr` copies and the two `Function::hasFnAttribute` copies —
   `speculation.rs::callee_is_speculatable` and
   `assumptions.rs::enclosing_function_has_attribute` — were replaced by one port
-  each that does consult the groups (`instr_types::call_site_has_fn_attr`,
+  each that does consult the groups (`instr_types::call_site_has_fn_attr`, since
+  renamed `call_site_has_function_attribute`, and
   `FunctionValue::has_fn_attribute`).
 - **Still open**, per D9's own list, because each reads a *payload* and so needs
   a port of `getFnAttribute` rather than of `hasFnAttr`:

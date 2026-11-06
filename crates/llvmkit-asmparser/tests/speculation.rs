@@ -1272,24 +1272,43 @@ fn can_create_poison_reads_every_annotation_and_arm() {
 /// `switch`'s `!includesPoison(Kind)` test.
 ///
 /// **No upstream counterpart.** The oracles are
-/// `isGuaranteedNotToBeUndefOrPoison`'s `CB->hasRetAttr(Attribute::NoUndef)`
-/// arm, with `hasRetAttrImpl`'s `if (const Function *F = getCalledFunction())`
-/// fallback (`InstrTypes.h`), and `canCreateUndefOrPoison`'s `case
-/// Intrinsic::ushl_sat: if (!includesPoison(Kind) || ...) return false;`. A call
-/// of `@h`, declared `noundef`, is well defined; one of `@g`, declared without
-/// it, is the control. A `ushl.sat` over `noundef` operands by an amount that
-/// may be out of range can be poison, but it cannot create `undef`, so it is
-/// known not `undef` and not known not poison.
+/// `isGuaranteedNotToBeUndefOrPoison`'s early `dyn_cast<CallBase>` arm,
+/// `CB->hasRetAttr(Attribute::NoUndef) || CB->hasRetAttr(Attribute::Dereferenceable)
+/// || CB->hasRetAttr(Attribute::DereferenceableOrNull)`, each with
+/// `hasRetAttrImpl`'s `if (const Function *F = getCalledFunction())` fallback
+/// (`InstrTypes.h`), and `canCreateUndefOrPoison`'s `case Intrinsic::ushl_sat:
+/// if (!includesPoison(Kind) || ...) return false;`. Which assertion pins which
+/// arm:
+///
+/// - `%declared` and `%deref` / `%deref.or.null` are proven by the early arm
+///   alone. `%declared`'s operand `%z` carries no `noundef`, so the later
+///   `canCreateUndefOrPoison` arm's operand walk fails on it, and `@d` / `@dn`
+///   declare no `noundef`, which is all that later arm reads. Without the early
+///   arm's callee fallback each would answer no.
+/// - `%declared.noundef.operand` is proven either way: its operand is `noundef`,
+///   so the later arm's walk proves it too. It is the case that cannot tell the
+///   two arms apart.
+/// - `%undeclared`, a call of `@g`, declared without any of the three, is the
+///   control.
+///
+/// A `ushl.sat` over `noundef` operands by an amount that may be out of range
+/// can be poison, but it cannot create `undef`, so it is known not `undef` and
+/// not known not poison.
 #[test]
 fn a_call_reads_its_callee_s_noundef_and_a_saturating_shift_creates_no_undef() {
     let module = parse(
         r"
 declare noundef i32 @h(i32)
 declare i32 @g(i32)
+declare dereferenceable(4) ptr @d()
+declare dereferenceable_or_null(4) ptr @dn()
 declare i32 @llvm.ushl.sat.i32(i32, i32)
 
-define void @f(i32 noundef %x, i32 noundef %y) {
-  %declared = call i32 @h(i32 %x)
+define void @f(i32 noundef %x, i32 noundef %y, i32 %z) {
+  %declared = call i32 @h(i32 %z)
+  %declared.noundef.operand = call i32 @h(i32 %x)
+  %deref = call ptr @d()
+  %deref.or.null = call ptr @dn()
   %undeclared = call i32 @g(i32 %x)
   %shifted = call i32 @llvm.ushl.sat.i32(i32 %x, i32 %y)
   ret void
@@ -1298,7 +1317,22 @@ define void @f(i32 noundef %x, i32 noundef %y) {
     );
     let data_layout = module.data_layout();
     let query = ValueTrackingQuery::<DynBrand>::new(&data_layout);
-    assert!(well_defined(named_value(&module, "declared"), &query));
+    assert!(
+        well_defined(named_value(&module, "declared"), &query),
+        "the early arm reads @h's noundef; the operand walk fails on %z"
+    );
+    assert!(well_defined(
+        named_value(&module, "declared.noundef.operand"),
+        &query
+    ));
+    assert!(
+        well_defined(named_value(&module, "deref"), &query),
+        "the early arm reads @d's dereferenceable"
+    );
+    assert!(
+        well_defined(named_value(&module, "deref.or.null"), &query),
+        "the early arm reads @dn's dereferenceable_or_null"
+    );
     assert!(!well_defined(named_value(&module, "undeclared"), &query));
 
     let shifted = named_value(&module, "shifted");
@@ -1307,6 +1341,125 @@ define void @f(i32 noundef %x, i32 noundef %y) {
         "a saturating shift cannot create undef, and its operands are noundef"
     );
     assert!(!not_poison(shifted, &query));
+}
+
+/// A `speculatable` call with a UB-implying attribute on any argument or on its
+/// return, written on the call site or declared on the callee, is not safe to
+/// speculate once those attributes are honoured.
+///
+/// **No upstream counterpart**: no upstream unit test calls
+/// `isSafeToSpeculativelyExecute` with `IgnoreUBImplyingAttrs = false`. The
+/// oracle is its `Call` arm's `return IgnoreUBImplyingAttrs ||
+/// !CI->hasUBImplyingAttrs();` with `Instruction::hasUBImplyingAttrs`
+/// (`Instruction.cpp`): `CB->isPassingUndefUB(ArgNo)` for every argument, then
+/// `CB->hasRetAttr` of `noundef`, `dereferenceable` and
+/// `dereferenceable_or_null`. `isPassingUndefUB` is three
+/// `CallBase::paramHasAttr` calls (`Instructions.cpp`) and `hasRetAttr` is
+/// `hasRetAttrImpl`; each reads the call site and then `getCalledFunction()`.
+///
+/// `%plain` is the control. So is the default options' answer, which ignores the
+/// attributes, as upstream's defaulted `IgnoreUBImplyingAttrs = true` does.
+/// `%first` is the one row that can be read off argument 0 alone. `%second`
+/// carries `noundef` on argument 1, which is filed under that argument's own
+/// attribute set like every call-site argument attribute.
+#[test]
+fn a_speculatable_call_with_a_ub_implying_attribute_anywhere_is_not_safe_to_speculate() {
+    use llvmkit_ir::{SpeculationOptions, is_safe_to_speculatively_execute};
+
+    let module = parse(
+        r"
+declare i32 @f(i32, i32) speculatable
+declare i32 @second.declared(i32, i32 noundef) speculatable
+declare i32 @second.dereferenceable(i32, ptr dereferenceable(4)) speculatable
+declare noundef i32 @return.declared(i32) speculatable
+declare dereferenceable(4) ptr @return.dereferenceable() speculatable
+declare dereferenceable_or_null(4) ptr @return.dereferenceable.or.null() speculatable
+
+define void @test(i32 %a, i32 %b, ptr %p) {
+  %plain = call i32 @f(i32 %a, i32 %b)
+  %first = call i32 @f(i32 noundef %a, i32 %b)
+  %second = call i32 @f(i32 %a, i32 noundef %b)
+  %second.declared = call i32 @second.declared(i32 %a, i32 %b)
+  %second.dereferenceable = call i32 @second.dereferenceable(i32 %a, ptr %p)
+  %return = call noundef i32 @f(i32 %a, i32 %b)
+  %return.declared = call i32 @return.declared(i32 %a)
+  %return.dereferenceable = call ptr @return.dereferenceable()
+  %return.dereferenceable.or.null = call ptr @return.dereferenceable.or.null()
+  ret void
+}
+",
+    );
+    let honouring = SpeculationOptions::new().honouring_ub_implying_attrs();
+    let ignoring = SpeculationOptions::default();
+    let call = |name: &str| named_instruction(&module, name);
+
+    assert!(is_safe_to_speculatively_execute(&call("plain"), honouring));
+    for name in [
+        "first",
+        "second",
+        "second.declared",
+        "second.dereferenceable",
+        "return",
+        "return.declared",
+        "return.dereferenceable",
+        "return.dereferenceable.or.null",
+    ] {
+        assert!(
+            !is_safe_to_speculatively_execute(&call(name), honouring),
+            "%{name} carries a UB-implying attribute"
+        );
+        assert!(
+            is_safe_to_speculatively_execute(&call(name), ignoring),
+            "%{name}: the default options ignore UB-implying attributes"
+        );
+    }
+}
+
+/// Poison in an argument that carries `noundef`, on the call site or on the
+/// callee's declaration, is undefined behaviour at the call, whichever argument
+/// it is.
+///
+/// **No upstream counterpart**: `TEST_F(ValueTrackingTest,
+/// programUndefinedIfPoison)` reaches its UB through a `udiv`. The oracle is
+/// `handleGuaranteedWellDefinedOps`'s `case Instruction::Call:` arm
+/// (`ValueTracking.cpp`), `CB->paramHasAttr(i, Attribute::NoUndef) ||
+/// CB->paramHasAttr(i, Attribute::Dereferenceable) || CB->paramHasAttr(i,
+/// Attribute::DereferenceableOrNull)` for every argument `i`, where
+/// `paramHasAttr` reads the call site and then `getCalledFunction()`'s
+/// declaration. `%c` is the control: it is passed only in an argument with no
+/// such attribute. Each call sits in its own function, because the scan stops
+/// at a call that is not guaranteed to transfer execution to its successor,
+/// which a call of a function declared without `nounwind willreturn` is not.
+#[test]
+fn poison_in_a_noundef_argument_after_the_first_is_undefined_behaviour() {
+    let module = parse(
+        r"
+declare void @f(i32, i32)
+declare void @g(i32, i32 noundef)
+
+define void @call_site(i32 %x) {
+  %a = add i32 %x, 1
+  %c = add i32 %x, 3
+  call void @f(i32 %c, i32 noundef %a)
+  ret void
+}
+
+define void @declared(i32 %x) {
+  %b = add i32 %x, 2
+  call void @g(i32 %x, i32 %b)
+  ret void
+}
+",
+    );
+    assert!(program_undefined_if_poison(&named_instruction(
+        &module, "a"
+    )));
+    assert!(program_undefined_if_poison(&named_instruction(
+        &module, "b"
+    )));
+    assert!(!program_undefined_if_poison(&named_instruction(
+        &module, "c"
+    )));
 }
 
 /// The instruction named `%name` in the function `@function`.

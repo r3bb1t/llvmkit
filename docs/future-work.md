@@ -1157,7 +1157,11 @@ All four of `SqrtNszSignBit`'s blocks are ported. This paragraph used to say
 were therefore unportable; that had been false since `no_fp_class_of` landed
 (`known_fp_class.rs`, porting `CallBase::getRetNoFPClass` and
 `Argument::getNoFPClass`), and the stale sentence outlived the work by weeks
-because nothing re-derives a blocker before it is used to schedule.
+because nothing re-derives a blocker before it is used to schedule. (The
+`getRetNoFPClass` half was itself partial: it read only the called function's
+mask, and only for a `call`. Task 1b of the crash-proofing plan ported the call
+site's half and every `CallBase`, pinned by the `SelectNoFPClassCallSite*`
+ports in `crates/llvmkit-asmparser/tests/known_fp_class.rs`.)
 
 ### Order for the remaining gaps (recorded 2026-08-04)
 

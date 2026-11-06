@@ -314,7 +314,8 @@ reader of a function-index attribute has to consult the group numbers too, as
 round 3) the three `CallBase::hasFnAttr` copies and the two
 `Function::hasFnAttribute` copies (`speculation.rs::callee_is_speculatable`,
 `assumptions.rs::enclosing_function_has_attribute`) that did not were
-replaced by one port that does (`instr_types::call_site_has_fn_attr`,
+replaced by one port that does (`instr_types::call_site_has_fn_attr`, renamed
+`call_site_has_function_attribute` in Task 1b of the crash-proofing plan,
 `FunctionValue::has_fn_attribute`). Two readers still skip the groups — each
 reads a *payload*, so the fix is a port of `getFnAttribute`, not of
 `hasFnAttr`:
@@ -2677,8 +2678,10 @@ is a function": `crates/llvmkit-ir/src/verifier.rs` (the
   its signature slot equals the call's `fn_ty`), called from all four sites,
   with a mismatched-signature fixture per consequence. The port exists since
   Task 1b of the crash-proofing plan: `crates/llvmkit-ir/src/instr_types.rs`'s
-  `called_function`, which `call_site_has_ret_attr` (the port of
-  `CallBase::hasRetAttr`) calls, pinned by
+  `called_function`. `CallBaseParts`'s `has_return_attribute`,
+  `has_parameter_attribute`, `range` and `return_no_fp_class` (the ports of
+  `CallBase::hasRetAttr`, `paramHasAttr`, `getRange` and `getRetNoFPClass`)
+  call it. The type check is pinned through `has_return_attribute` by
   `crates/llvmkit-asmparser/tests/speculation.rs::can_create_poison_reads_every_annotation_and_arm`'s
   `call i64 @h(i32 %x)` row. The four sites above do not call it yet, and this
   entry stays open for them.
