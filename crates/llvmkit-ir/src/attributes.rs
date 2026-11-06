@@ -243,6 +243,24 @@ impl core::ops::BitAndAssign for MemoryEffects {
     }
 }
 
+/// Union. Mirrors `MemoryEffectsBase::operator|` (`ModRef.h`): a raw bitwise OR
+/// of the packed per-location words, exact for the same reason the AND is.
+impl core::ops::BitOr for MemoryEffects {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self {
+        Self {
+            data: self.data | rhs.data,
+        }
+    }
+}
+
+/// Mirrors `MemoryEffectsBase::operator|=`.
+impl core::ops::BitOrAssign for MemoryEffects {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.data |= rhs.data;
+    }
+}
+
 impl fmt::Display for MemoryEffects {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let effects = *self;
@@ -1831,6 +1849,41 @@ impl AttributeStorage {
             .iter()
             .find_map(|attr| match attr {
                 AttributeStored::NoFpClass(mask) => Some(*mask),
+                _ => None,
+            })
+    }
+
+    /// The `memory(...)` attribute recorded at `index`, or `None` without one.
+    ///
+    /// Ports `AttributeSetNode::getMemoryEffects` (`Attributes.cpp`), `if (auto
+    /// A = findEnumAttribute(Attribute::Memory)) return A->getMemoryEffects();
+    /// return MemoryEffects::unknown();`, with the `unknown()` fallback left to
+    /// the caller as `None`, so a caller can tell an absent attribute from a
+    /// stored `memory(readwrite)`.
+    pub(crate) fn memory_effects(&self, index: AttrIndex) -> Option<MemoryEffects> {
+        self.get(index)?
+            .iter()
+            .find_map(|attribute| match attribute {
+                AttributeStored::Memory(effects) => Some(*effects),
+                _ => None,
+            })
+    }
+
+    /// The `range` attribute recorded at `index`, as its range.
+    ///
+    /// Ports `Attribute::getRange()` of the `getAttribute(Attribute::Range)`
+    /// that `CallBase::getRange` (on the return) and `Argument::getRange` (on
+    /// a parameter) read, with `isValid()` spelled as `Some`. The parser
+    /// stores only a pair `parseRangeAttr` accepted, which is a valid
+    /// `ConstantRange`; a pair `ConstantRange::new` refuses reads as no
+    /// attribute rather than panicking.
+    pub(crate) fn range(&self, index: AttrIndex) -> Option<ConstantRange> {
+        self.get(index)?
+            .iter()
+            .find_map(|attribute| match attribute {
+                AttributeStored::Range { lower, upper, .. } => {
+                    ConstantRange::new(lower.clone(), upper.clone()).ok()
+                }
                 _ => None,
             })
     }

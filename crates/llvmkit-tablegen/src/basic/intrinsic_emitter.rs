@@ -879,6 +879,14 @@ pub(crate) fn semantic_ids(intrinsics: &[IntrinsicOut]) -> GenResult<Vec<(String
         // listed above.
         ("SSHL_SAT", "sshl_sat"),
         ("USHL_SAT", "ushl_sat"),
+        // `Instruction::isVolatile`'s `case Instruction::Call:` arm
+        // (`lib/IR/Instruction.cpp`): `MemIntrinsic::classof`'s two `inline`
+        // cases (its other three, `memcpy` / `memmove` / `memset`, are listed
+        // above) and the two matrix intrinsics with a volatile flag.
+        ("MEMCPY_INLINE", "memcpy_inline"),
+        ("MEMSET_INLINE", "memset_inline"),
+        ("MATRIX_COLUMN_MAJOR_LOAD", "matrix_column_major_load"),
+        ("MATRIX_COLUMN_MAJOR_STORE", "matrix_column_major_store"),
         // `IntrinsicInst::mayLowerToFunctionCall`'s `switch`
         // (`lib/IR/IntrinsicInst.cpp`), in its own order, plus
         // `objc_claimAutoreleasedReturnValue` — which that `switch` does *not*

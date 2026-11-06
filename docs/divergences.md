@@ -316,20 +316,23 @@ round 3) the three `CallBase::hasFnAttr` copies and the two
 `assumptions.rs::enclosing_function_has_attribute`) that did not were
 replaced by one port that does (`instr_types::call_site_has_fn_attr`, renamed
 `call_site_has_function_attribute` in Task 1b of the crash-proofing plan,
-`FunctionValue::has_fn_attribute`). Two readers still skip the groups — each
+`FunctionValue::has_fn_attribute`). One reader still skips the groups. It
 reads a *payload*, so the fix is a port of `getFnAttribute`, not of
 `hasFnAttr`:
 
-- `speculation.rs::call_site_memory_effects` (`CallBase::getMemoryEffects`)
-  reads `memory(...)` from the call's inline attributes and the callee's
-  stored list only, so `attributes #0 = { memory(none) }` on either side reads
-  as unknown effects;
 - `value_tracking.rs::function_vscale_range` (`llvm::getVScaleRange`, via
   `F->getFnAttribute(Attribute::VScaleRange)`) reads the stored list only.
 
-Both fall back to upstream's own answer for a missing attribute (unknown
-effects, no range), so the direction is conservative: an analysis learns
-less, never something false. Found with
+It falls back to upstream's own answer for a missing attribute (no range), so
+the direction is conservative: an analysis learns less, never something
+false. A second such reader, `speculation.rs::call_site_memory_effects`, was
+replaced in Task 1b's second fix round of the crash-proofing plan by
+`CallBaseParts::memory_effects` in `instr_types.rs`, which reads each
+`memory(...)` through `merged_function_memory_effects`: the last named group
+carrying one, else the inline one, as `validateEndOfModule`'s `FnAttrs.merge(B)`
+leaves it
+(`crates/llvmkit-asmparser/tests/speculation.rs::a_memory_attribute_in_an_attribute_group_counts`).
+Found with
 `rg -n "\.attributes\.borrow\(\)|function_attrs\(\)" crates/llvmkit-ir/src/`
 on the commit that adds this paragraph (17 hits), reading each: besides these
 two, the hits read a parameter or return index, which a `#N` group cannot
@@ -1163,6 +1166,37 @@ walked.
 
 **Guarded by:** nothing. The `extractvalue` side is pinned by
 `crates/llvmkit-ir/tests/constant_aggregate_zero.rs::extractvalue_reads_one_element_of_a_long_array`.
+
+### D38 — An intrinsic declared with no `memory(...)` reads its table's effects
+
+**Severity:** model-gap (narrower than upstream: a call is said to touch what the intrinsic
+table says, where upstream says it may touch anything).
+**Where:** `crates/llvmkit-ir/src/instr_types.rs` — `CallBaseParts::memory_effects`, its
+`Fn->getMemoryEffects()` half.
+
+**LLVM:** `CallBase::getMemoryEffects` (`Instructions.cpp`) reads `Fn->getMemoryEffects()`,
+which is the callee's `memory(...)` attribute or `MemoryEffects::unknown()`
+(`AttributeSetNode::getMemoryEffects`, `Attributes.cpp`). `Function::Function` (`Function.cpp`)
+gives an intrinsic its table attributes (`setAttributes(Intrinsic::getAttributes(...))`), but
+`LLParser::parseFunctionHeader` then calls `Fn->setAttributes(PAL)` with the attributes the
+`.ll` wrote, so a parsed `declare void @llvm.memcpy...(...)` with no attributes has no
+`memory(...)`, and its calls have unknown effects. (Read from the three sites, not run.)
+
+**llvmkit:** a callee that is an intrinsic and carries no `memory(...)` of its own (inline or
+through an `#N` group) answers `IntrinsicId::memory_effects`, the effects its table gives.
+
+**Why:** the fallback predates this entry (it was `speculation.rs::call_site_memory_effects`'s
+last arm). Removing it moves every analysis that asks a hand-written intrinsic declaration
+what it touches: dead-code elimination, `mayHaveNonDefUseDependency` and the assumption scan
+among them. llvmkit's own tests and fixtures write many intrinsic declarations bare. Before this
+entry, `rg -n -i "intrinsic table|descriptor.*memory|bare .declare|getMemoryEffects" docs/divergences.md docs/future-work.md`
+printed only D9's bullet on `call_site_memory_effects`, which was about attribute groups.
+
+**Fix:** drop the fallback, which makes a bare declaration's calls unknown as upstream's are, and
+re-bless what moves. Each moved answer is then a fixture that should carry the intrinsic's
+attributes, as `llvm-dis` output does.
+
+**Guarded by:** nothing pins the fallback's answer on its own.
 
 ---
 

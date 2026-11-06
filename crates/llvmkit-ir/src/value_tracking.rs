@@ -564,12 +564,22 @@ fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     {
         return Ok(known);
     }
+    // `if (const auto *A = dyn_cast<Argument>(V)) if (std::optional<ConstantRange>
+    // Range = A->getRange()) Known = Range->toKnownBits();` — above the
+    // cutoff, which upstream marks "All recursive calls that increase depth
+    // must come after this.", so an argument's range answers at any depth.
+    // `toKnownBits` of a range of another width would break `KnownBits`'
+    // width invariant; the verifier refuses such a `range`, and here it adds
+    // nothing.
+    let argument_known = argument_range(value)
+        .filter(|range| range.bit_width() == width)
+        .map(|range| range.to_known_bits());
     // Upstream writes this as `Depth == MaxAnalysisRecursionDepth`, resting on
     // the `assert(Depth <= MaxAnalysisRecursionDepth)` above it. llvmkit takes
     // no runtime panics in production paths, so the assert and the equality
     // are folded into one comparison rather than dropped.
     if depth >= query.max_depth() {
-        return Ok(KnownBits::unknown(width));
+        return Ok(argument_known.unwrap_or_else(|| KnownBits::unknown(width)));
     }
     if stack.contains(&value.slot_trusting_same_module()) {
         return Ok(KnownBits::unknown(width));
@@ -588,8 +598,11 @@ fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         ValueKindData::Instruction(inst) => {
             compute_instruction_known_bits(value, inst, query, depth, stack)?
         }
-        ValueKindData::Argument { .. }
-        | ValueKindData::BasicBlock(_)
+        // The argument's range, read above the cutoff.
+        ValueKindData::Argument { .. } => {
+            argument_known.unwrap_or_else(|| KnownBits::unknown(width))
+        }
+        ValueKindData::BasicBlock(_)
         | ValueKindData::Function(_)
         | ValueKindData::GlobalAlias(_)
         | ValueKindData::GlobalIfunc(_)
@@ -5487,7 +5500,7 @@ fn instruction_has_poison_generating_return_attributes<
     let Some(call) = CallBaseParts::of(anchor.module.context(), kind) else {
         return false;
     };
-    let return_attributes = call.attrs.return_attrs();
+    let return_attributes = call.attributes.return_attrs();
     [AttrKind::Range, AttrKind::Alignment, AttrKind::NonNull]
         .into_iter()
         .any(|kind| return_attributes.has_kind(AttrIndex::Return, kind))
@@ -5761,17 +5774,21 @@ pub fn is_known_not_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capabili
 // Constant ranges and overflow prediction
 // --------------------------------------------------------------------------
 
-/// The range of values `value` can take. Ports `llvm::computeConstantRange`.
+/// The range of values `value` can take. Ports part of `llvm::computeConstantRange`.
 ///
 /// `for_signed` selects the domain the range must not wrap in, which changes
 /// which of two equally-correct answers is returned for a value whose sign is
 /// unknown.
 ///
-/// Three of upstream's sources are not consulted, each because llvmkit does
-/// not model the input rather than because the reasoning was skipped: the
-/// `@llvm.assume`-driven refinement (no `AssumptionCache`), the select-pattern
-/// clamp (no `SelectPatternResult` — tranche 4), and `!range` metadata on
-/// `call` returns. Each omission only widens the answer.
+/// Ported: the depth cutoff, the constant arm, the `select` union, the
+/// `Argument::getRange` arm and the `CallBase::getRange` intersection. Not
+/// ported, each only widening the answer: `setLimitsForBinOp` for a binary
+/// operator, `getRangeForIntrinsic`, `setLimitForFPToI`, the
+/// `getRangeForSelectPattern` clamp on a `select`, the `!range` metadata
+/// intersection (which [`compute_constant_range_including_known_bits`] picks
+/// up through its known-bits half instead), and the `@llvm.assume` refinement.
+/// `docs/future-work.md`, "`computeConstantRange` is a partial port", lists
+/// them.
 pub fn compute_constant_range<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
     signedness: Signedness,
@@ -5819,19 +5836,53 @@ fn compute_constant_range_inner<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                 range = true_range.union_with(&false_range, preferred_for(for_signed));
             }
             _ => {
-                // Everything else is reached through its known bits below,
-                // which is where upstream's `setLimitsForBinOp` reasoning
-                // lands for llvmkit.
+                // `setLimitsForBinOp`, `getRangeForIntrinsic` and
+                // `setLimitForFPToI` are not ported (see the doc comment); the
+                // range stays full.
             }
         }
     }
+    // `} else if (const auto *A = dyn_cast<Argument>(V))
+    //    if (std::optional<ConstantRange> Range = A->getRange()) CR = *Range;`
+    if let Some(argument) = argument_range(value).filter(|argument| argument.bit_width() == width) {
+        range = argument;
+    }
 
-    // Upstream intersects `!range` metadata here. llvmkit already reads that
-    // metadata inside `compute_known_bits`, so
-    // [`compute_constant_range_including_known_bits`] — the form every caller
-    // in this module uses — picks it up through the known-bits half rather
-    // than twice.
+    if let ValueKindData::Instruction(instruction) = &value.data().kind {
+        // `if (auto *Range = IIQ.getMetadata(I, LLVMContext::MD_range))`:
+        // not consulted here. llvmkit already reads that metadata inside
+        // `compute_known_bits`, so
+        // [`compute_constant_range_including_known_bits`] — the form every
+        // caller in this module uses — picks it up through the known-bits half.
+        //
+        // `if (const auto *CB = dyn_cast<CallBase>(V)) if
+        // (std::optional<ConstantRange> Range = CB->getRange()) CR =
+        // CR.intersectWith(*Range);`, the default preferred type being
+        // `Smallest`.
+        if let Some(call) = CallBaseParts::of(value.module.context(), &instruction.kind)
+            && let Some(call_range) = call.range(value.module)
+            && call_range.bit_width() == width
+        {
+            range = range.intersect_with(&call_range, PreferredRangeType::Smallest);
+        }
+    }
     Ok(range)
+}
+
+/// `Argument::getRange()` (`Function.cpp`): `const Attribute RangeAttr =
+/// getAttribute(llvm::Attribute::Range); if (RangeAttr.isValid()) return
+/// RangeAttr.getRange(); return std::nullopt;`, the parameter's `range`
+/// attribute on its function. `None` for any value that is no argument.
+fn argument_range<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<ConstantRange> {
+    let ValueKindData::Argument { parent_fn, slot } = &value.data().kind else {
+        return None;
+    };
+    let ValueKindData::Function(function) = &value_from_slot(value, *parent_fn).data().kind else {
+        return None;
+    };
+    function.attributes.borrow().range(AttrIndex::Param(*slot))
 }
 
 /// The range of `value`, refined by its known bits. Ports

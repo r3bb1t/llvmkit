@@ -1365,7 +1365,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             }
             // `if (!Call->isCallee(&U) || (!IgnoreCastedDirectCall &&
             //      Call->getFunctionType() != getFunctionType()))`
-            if names_function(call.callee) && call.fn_ty == signature.slot_trusting_same_module() {
+            if names_function(call.callee)
+                && call.function_type == signature.slot_trusting_same_module()
+            {
                 continue;
             }
             // `if (IgnoreARCAttachedCall &&
@@ -1392,7 +1394,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         match &instruction.kind {
             InstructionKindData::Call(c) => Some(CallBaseParts::of_call(context, c)),
             InstructionKindData::Invoke(i) => Some(CallBaseParts::of_invoke(context, i)),
-            InstructionKindData::CallBr(c) => Some(CallBaseParts::of_call_br(context, c)),
+            InstructionKindData::CallBr(c) => Some(CallBaseParts::of_call_branch(context, c)),
             _ => None,
         }
     }
@@ -3750,8 +3752,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     ) -> IrResult<()> {
         // `FTy = Call.getFunctionType()`; a payload whose recorded type is not
         // a function type is rejected by the caller's own guard.
-        let Some((_ret, params, _var_arg)) =
-            self.module.context().type_data(call.fn_ty).as_function()
+        let Some((_ret, params, _var_arg)) = self
+            .module
+            .context()
+            .type_data(call.function_type)
+            .as_function()
         else {
             return Ok(());
         };
@@ -3872,7 +3877,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         let CallBaseParts {
             callee,
             args,
-            attrs,
+            attributes: attrs,
             ..
         } = call;
         // `const InlineAsm *IA = cast<InlineAsm>(Call.getCalledOperand());`
@@ -4256,8 +4261,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     ) -> IrResult<()> {
         let CallBaseParts {
             callee,
-            fn_ty,
-            attrs,
+            function_type: fn_ty,
+            attributes: attrs,
             ..
         } = call;
         // `FunctionType *FTy = Call.getFunctionType();`
@@ -4769,7 +4774,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     ) -> IrResult<()> {
         let CallBaseParts {
             callee: callee_id,
-            fn_ty,
+            function_type: fn_ty,
             args,
             operand_bundles,
             ..
@@ -5500,7 +5505,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         d: &CallBrInstData,
         cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
-        let call = CallBaseParts::of_call_br(self.module.context(), d);
+        let call = CallBaseParts::of_call_branch(self.module.context(), d);
         let callee_data = self.module.context().value_data(d.callee.get());
         // `if (!CBI.isInlineAsm()) { … } else { … }`
         if let ValueKindData::InlineAsm(_) = &callee_data.kind {

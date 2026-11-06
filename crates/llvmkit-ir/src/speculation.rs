@@ -32,16 +32,15 @@
 
 use crate::ApInt;
 use crate::atomic_ordering::AtomicOrdering;
-use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored, MemoryEffects};
+use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored};
 use crate::capability::Capability;
 use crate::cfg::kind_successor_ids;
 use crate::constant::ConstantData;
 use crate::dominator_tree::DominatorTree;
 use crate::function::FunctionValue;
 use crate::instr_types::{
-    BranchKind, CallAttributeData, CallBaseParts, CastOpcode, LandingPadClauseKind,
-    LandingPadInstData, Opcode, ShuffleMaskElem, ShuffleVectorInstData,
-    call_site_has_function_attribute,
+    BranchKind, CallBaseParts, CastOpcode, LandingPadClauseKind, LandingPadInstData, Opcode,
+    ShuffleMaskElem, ShuffleVectorInstData, call_site_has_function_attribute,
 };
 use crate::instruction::{InstructionKindData, InstructionView};
 use crate::intrinsics::{IntrinsicId, descriptor_for_callee};
@@ -1155,7 +1154,7 @@ fn may_read_or_write_memory<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             let Some(call) = CallBaseParts::of(module_ref(anchor).context(), kind) else {
                 return true;
             };
-            let effects = call_site_memory_effects(anchor, call.callee, call.attrs);
+            let effects = call.memory_effects(module_ref(anchor));
             // Reads unless write-only; writes unless read-only.
             !effects.only_writes_memory() || !effects.only_reads_memory()
         }
@@ -1184,7 +1183,7 @@ fn may_write_to_memory<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             let Some(call) = CallBaseParts::of(module_ref(anchor).context(), kind) else {
                 return true;
             };
-            !call_site_memory_effects(anchor, call.callee, call.attrs).only_reads_memory()
+            !call.memory_effects(module_ref(anchor)).only_reads_memory()
         }
         InstructionKindData::Load(data) => !is_unordered(data.ordering, data.volatile),
         _ => false,
@@ -1329,39 +1328,6 @@ fn view_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         Some(kind) => kind,
         None => unreachable!("InstructionView invariant: kind is Instruction"),
     }
-}
-
-/// The memory effects of a call site: the `memory(...)` attribute if present,
-/// otherwise the callee's, otherwise unknown. Ports `CallBase::getMemoryEffects`.
-fn call_site_memory_effects<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    anchor: Value<'ctx, B, C>,
-    callee: ValueSlot,
-    attrs: &CallAttributeData,
-) -> MemoryEffects {
-    if let Some(effects) = memory_effects_in(attrs.function_attrs()) {
-        return effects;
-    }
-    let callee = value_from_slot(anchor, callee);
-    if let ValueKindData::Function(data) = &callee.data().kind
-        && let Some(effects) = memory_effects_in(&data.attributes.borrow())
-    {
-        return effects;
-    }
-    match descriptor_for_callee(callee) {
-        Some(descriptor) => descriptor.id().memory_effects(),
-        None => MemoryEffects::unknown(),
-    }
-}
-
-/// The `memory(...)` attribute in `storage`'s function-attribute slot.
-fn memory_effects_in(storage: &AttributeStorage) -> Option<MemoryEffects> {
-    storage
-        .get(AttrIndex::Function)?
-        .iter()
-        .find_map(|stored| match stored {
-            AttributeStored::Memory(effects) => Some(*effects),
-            _ => None,
-        })
 }
 
 /// Whether `storage` carries the enum attribute `attribute` at `index`.

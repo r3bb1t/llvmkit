@@ -1533,6 +1533,161 @@ define void @declared(i32 %x) {
     )));
 }
 
+/// Poison in an argument the callee declares `noundef` is undefined behaviour
+/// when the callee is declared *after* the call.
+///
+/// **No upstream counterpart**: the `@declared` case of
+/// `poison_in_a_noundef_argument_after_the_first_is_undefined_behaviour` with
+/// the declaration moved below the function, where clang writes it.
+/// `paramHasAttr`'s `getCalledFunction()` half sees the same `Function`
+/// whichever comes first. `%c`, passed in the argument with no attribute, is
+/// the control.
+#[test]
+fn poison_in_a_noundef_argument_of_a_callee_declared_after_the_call_is_undefined_behaviour() {
+    let module = parse(
+        r"
+define void @declared(i32 %x) {
+  %b = add i32 %x, 2
+  %c = add i32 %x, 3
+  call void @g(i32 %c, i32 %b)
+  ret void
+}
+
+declare void @g(i32, i32 noundef)
+",
+    );
+    assert!(program_undefined_if_poison(&named_instruction(
+        &module, "b"
+    )));
+    assert!(!program_undefined_if_poison(&named_instruction(
+        &module, "c"
+    )));
+}
+
+/// A call of a `nounwind willreturn` callee declared *after* it transfers
+/// execution to its successor.
+///
+/// **No upstream counterpart**: the oracle is
+/// `isGuaranteedToTransferExecutionToSuccessor` (`ValueTracking.cpp`), which
+/// for a call asks `mayThrow` and `willReturn`, each a `hasFnAttr` that reads
+/// `getCalledOperand()`'s `Function` when the call site has no such attribute.
+/// The declaration sits below the function, where clang writes it. `%unknown`,
+/// a call of a callee with neither attribute, is the control.
+#[test]
+fn a_call_of_a_callee_declared_after_it_transfers_execution_through_its_attributes() {
+    let module = parse(
+        r"
+define void @test() {
+  %returns = call i32 @returns()
+  %unknown = call i32 @unknown()
+  ret void
+}
+
+declare i32 @returns() nounwind willreturn
+declare i32 @unknown()
+",
+    );
+    assert!(is_guaranteed_to_transfer_execution_to_successor(
+        &named_instruction(&module, "returns")
+    ));
+    assert!(!is_guaranteed_to_transfer_execution_to_successor(
+        &named_instruction(&module, "unknown")
+    ));
+}
+
+/// A call's memory effects are the call site's intersected with its callee's,
+/// and an operand bundle widens the callee's.
+///
+/// **No upstream counterpart as a unit test.** The oracle is
+/// `CallBase::getMemoryEffects` (`Instructions.cpp`): `ME =
+/// getAttributes().getMemoryEffects()`, then for a `Function` callee `FnME =
+/// Fn->getMemoryEffects()`, widened by `readOnly()` when
+/// `hasReadingOperandBundles()` and by `writeOnly()` when
+/// `hasClobberingOperandBundles()`, and `ME &= FnME`. `mayHaveNonDefUseDependency`
+/// answers `true` first of all for an instruction that `mayReadOrWriteMemory`;
+/// every callee here is `speculatable nounwind willreturn`, so memory is the
+/// only thing that can make it `true`.
+///
+/// - `%bundled` calls a `memory(none)` callee with a `"foo"` bundle, which is
+///   both reading and clobbering, so the call may read and write.
+/// - `%narrowed` carries `memory(read)` on the call site while its callee is
+///   `memory(none)`: the intersection is `memory(none)`.
+/// - `%plain` is the control.
+#[test]
+fn a_bundle_widens_and_a_call_site_attribute_narrows_a_call_s_memory_effects() {
+    let module = parse(
+        r#"
+declare i32 @pure() memory(none) nounwind willreturn speculatable
+
+define void @test() {
+  %bundled = call i32 @pure() [ "foo"(i32 0) ]
+  %narrowed = call i32 @pure() memory(read)
+  %plain = call i32 @pure()
+  ret void
+}
+"#,
+    );
+    assert!(llvmkit_ir::may_have_non_def_use_dependency(
+        &named_instruction(&module, "bundled")
+    ));
+    assert!(!llvmkit_ir::may_have_non_def_use_dependency(
+        &named_instruction(&module, "narrowed")
+    ));
+    assert!(!llvmkit_ir::may_have_non_def_use_dependency(
+        &named_instruction(&module, "plain")
+    ));
+}
+
+/// A `memory(...)` attribute reached through an `#N` group counts, on the
+/// callee and on the call site, with a group's overriding an inline one.
+///
+/// **No upstream counterpart as a unit test.** Upstream's
+/// `LLParser::validateEndOfModule` merges each holder's groups into its
+/// function attributes (`FnAttrs.merge(B)`, where `B` holds the groups merged
+/// in order and `AttrBuilder::merge` replaces an attribute of the same kind),
+/// and `CallBase::getMemoryEffects` then reads the one `memory(...)` of each
+/// list. llvmkit keeps the group numbers beside the inline set
+/// (`docs/divergences.md` D9). Every callee is `speculatable nounwind
+/// willreturn`, so only memory can make `mayHaveNonDefUseDependency` `true`.
+///
+/// - `%grouped` calls a callee whose `memory(none)` is in `#0`: no access.
+/// - `%group.wins` calls a callee written `memory(readwrite) #0`: the group's
+///   `memory(none)` replaces the inline one, so no access.
+/// - `%call.site.group` carries `#1`, `memory(readwrite)`, on a `memory(none)`
+///   callee: the intersection is `memory(none)`.
+/// - `%reads` calls a callee whose group says `memory(read)`: it reads.
+#[test]
+fn a_memory_attribute_in_an_attribute_group_counts() {
+    let module = parse(
+        r"
+declare i32 @grouped() #0
+declare i32 @overridden() memory(readwrite) #0
+declare i32 @reads() #2
+
+define void @test() {
+  %grouped = call i32 @grouped()
+  %group.wins = call i32 @overridden()
+  %call.site.group = call i32 @grouped() #1
+  %reads = call i32 @reads()
+  ret void
+}
+
+attributes #0 = { memory(none) nounwind willreturn speculatable }
+attributes #1 = { memory(readwrite) }
+attributes #2 = { memory(read) nounwind willreturn speculatable }
+",
+    );
+    for name in ["grouped", "group.wins", "call.site.group"] {
+        assert!(
+            !llvmkit_ir::may_have_non_def_use_dependency(&named_instruction(&module, name)),
+            "%{name} touches no memory"
+        );
+    }
+    assert!(llvmkit_ir::may_have_non_def_use_dependency(
+        &named_instruction(&module, "reads")
+    ));
+}
+
 /// The instruction named `%name` in the function `@function`.
 fn instruction_in<'m>(
     module: &'m Module<DynBrand, Unverified>,

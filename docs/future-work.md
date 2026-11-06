@@ -936,6 +936,41 @@ rather than a scope decision:
 |---|---|
 | `fromHexadecimalString`, `fromStringSpecials` | Unported. `crates/llvmkit-ir/tests/ap_float_from_string.rs` covers the same rules with llvmkit-chosen boundary spellings and says so — it is marked `llvmkit-specific subset` in `UPSTREAM.md`, not a port. Its header used to claim this backlog entry existed; it did not until now. `TEST(APFloatTest, makeNaN)`, the third fixture that header named, **is** ported (`ap_float_upstream_predicates.rs::make_nan`). |
 
+## `computeConstantRange` is a partial port (found 2026-11-06, crash-proofing Task 1b review)
+
+`value_tracking.rs::compute_constant_range` ports the depth cutoff, the
+constant arm, the `select` union, `Argument::getRange` and the
+`CallBase::getRange` intersection of `llvm::computeConstantRange`
+(`ValueTracking.cpp`). The rest of the routine is not ported, and each missing
+arm leaves the range full, so the answer is only ever wider than upstream's:
+
+- `setLimitsForBinOp`, the `BinaryOperator` arm;
+- `getRangeForIntrinsic`, the `IntrinsicInst` arm;
+- `setLimitForFPToI`, the `fptoui` / `fptosi` arm;
+- `getRangeForSelectPattern`, the clamp intersected into a `select`'s union;
+- the `!range` metadata intersection, which
+  `compute_constant_range_including_known_bits` gets through its known-bits
+  half instead;
+- the `@llvm.assume` refinement over `AC->assumptionsFor(V)`.
+
+The 2026-08-02 tranche row below (`3e`) marks `compute_constant_range` done; that
+row counted the entry point, not the arms. The first test is upstream's
+`TEST_F(ValueTrackingTest, ComputeConstantRange)` in
+`unittests/Analysis/ValueTrackingTest.cpp`, whose cases go through an
+`AssumptionCache` and so need the assumption half.
+
+## `paramHasAttr`'s operand-bundle arms have no reader (found 2026-11-06, crash-proofing Task 1b review)
+
+`instr_types.rs::CallBaseParts::has_parameter_attribute` ports
+`CallBase::paramHasAttr` whole, including its "Take into account mod/ref by
+operand bundles" switch: `ReadNone`, `ReadOnly` and `WriteOnly` asked of a
+callee's parameter attribute are refused when the call has reading or
+clobbering bundles. No llvmkit caller asks those three kinds, so the arms are
+untested. Upstream's readers are `CallBase::doesNotAccessMemory(OpNo)`,
+`onlyReadsMemory(OpNo)` and `onlyWritesMemory(OpNo)`, through
+`dataOperandHasImpliedAttr` (`IR/InstrTypes.h`). The port of that family is
+where the arms get their test.
+
 ## ValueTracking.h — remaining tranches, and the order to take them
 
 **Status after the residue port (2026-08-04):** the header's entry points were

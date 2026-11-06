@@ -513,6 +513,39 @@ define void @test() {
     );
 }
 
+/// A call returning `noalias` is identified through a callee declared *after*
+/// it.
+///
+/// **No upstream counterpart**: the `%declared` case of
+/// `a_call_returning_noalias_is_identified_through_its_callee_s_declaration`
+/// with the declaration moved below the function, where clang writes it.
+/// `hasRetAttr`'s `getCalledFunction()` half sees the same `Function`
+/// whichever comes first. `%plain` is the control.
+#[test]
+fn a_call_returning_noalias_is_identified_through_a_callee_declared_after_it() {
+    let module = parse(
+        r"
+define void @test() {
+  %declared = call ptr @allocates()
+  %plain = call ptr @returns()
+  ret void
+}
+
+declare noalias ptr @allocates()
+declare ptr @returns()
+",
+    );
+    let declared = named(&module, "declared");
+    assert_eq!(
+        underlying_objects_for_code_gen(declared),
+        Some(vec![declared])
+    );
+    assert_eq!(
+        underlying_objects_for_code_gen(named(&module, "plain")),
+        None
+    );
+}
+
 /// `GetPointerBaseWithConstantOffset` accumulates a chain of constant
 /// `getelementptr` indices into one byte offset.
 ///

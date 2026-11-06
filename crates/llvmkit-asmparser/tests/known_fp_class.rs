@@ -515,6 +515,30 @@ define float @test() {
     );
 }
 
+/// The callee's `nofpclass(nan)` rules NaN out when the callee is declared
+/// *after* the call.
+///
+/// **No upstream counterpart**: `select_no_fp_class_declaration_no_nan`'s
+/// fixture with the declaration moved below the function, where clang writes
+/// it. `getRetNoFPClass`'s `getCalledFunction()` sees the same `Function`
+/// whichever comes first, so the answer must not change.
+#[test]
+fn select_no_fp_class_declaration_after_the_call_no_nan() {
+    let module = parse(
+        r"
+define float @test() {
+  %A = call float @no_nans()
+  ret float %A
+}
+declare nofpclass(nan) float @no_nans()
+",
+    );
+    assert_eq!(
+        known_class_of_a(&module),
+        (FpClassTest::NAN.complement(), None)
+    );
+}
+
 /// "Check nofpclass + ninf works on a callsite": the call site's mask and the
 /// call's `ninf` flag join.
 ///

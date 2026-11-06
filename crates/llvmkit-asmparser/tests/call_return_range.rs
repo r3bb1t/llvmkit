@@ -1,16 +1,20 @@
-//! `CallBase::getRange` as `computeKnownBits` reads it.
+//! `CallBase::getRange` and `Argument::getRange` as `computeKnownBits` and
+//! `computeConstantRange` read them.
 //!
 //! Upstream's `computeKnownBitsFromOperator` `Call` / `Invoke` arm asks
 //! `if (std::optional<ConstantRange> Range = CB->getRange()) Known =
 //! Known.unionWith(Range->toKnownBits());`, and `CallBase::getRange`
 //! (`Instructions.cpp`) is the call site's `range` return attribute
 //! intersected with `getCalledFunction()`'s, or whichever of the two exists.
+//! `computeKnownBits` reads `Argument::getRange` (`Function.cpp`) before its
+//! depth cutoff, and `computeConstantRange` reads both.
 
 use core::cmp::Ordering;
 
 use llvmkit_asmparser::parser;
 use llvmkit_ir::{
-    DynBrand, KnownBits, Module, Unverified, Value, ValueTrackingQuery, compute_known_bits,
+    ConstantRange, DynBrand, KnownBits, Module, Signedness, Unverified, Value, ValueTrackingQuery,
+    compute_constant_range, compute_known_bits,
 };
 
 fn parse(source: &str) -> Module<DynBrand, Unverified> {
@@ -129,4 +133,146 @@ define void @test() {
         known_bits(&module, "test", "callee.only").to_string(),
         "00000000000000000000000000??????"
     );
+}
+
+/// `getRange` reads a callee declared *after* its call.
+///
+/// **No upstream counterpart**: this is
+/// `a_callee_s_declared_range_bounds_the_shift_amount`'s fixture with both
+/// declarations moved below the functions that call them, which is where clang
+/// writes them. A call that precedes its callee's declaration names the
+/// function through the parser's forward reference, and the answer must not
+/// depend on which came first: upstream's `getCalledFunction()` sees the same
+/// `Function` either way.
+#[test]
+fn a_callee_declared_after_its_call_still_bounds_the_shift_amount() {
+    let module = parse(
+        r"
+define i32 @shl_amount_is_known_bogus_range_return(i32 %a) {
+  %b = call i32 @returns_out_of_range_helper()
+  %shl = shl i32 %a, %b
+  ret i32 %shl
+}
+
+define i32 @neg_shl_amount_is_known_bogus_range_return(i32 %a) {
+  %b = call i32 @returns_in_range_helper()
+  %shl = shl i32 %a, %b
+  ret i32 %shl
+}
+
+declare range(i32 32, 64) i32 @returns_out_of_range_helper()
+declare range(i32 0, 32) i32 @returns_in_range_helper()
+",
+    );
+    assert!(shift_amount_is_known_out_of_range(&known_bits(
+        &module,
+        "shl_amount_is_known_bogus_range_return",
+        "b"
+    )));
+    assert!(!shift_amount_is_known_out_of_range(&known_bits(
+        &module,
+        "neg_shl_amount_is_known_bogus_range_return",
+        "b"
+    )));
+}
+
+/// Whether `range` is exactly the unsigned interval `[min, max]`.
+fn spans(range: &ConstantRange, min: u64, max: u64) -> bool {
+    range.unsigned_min().unsigned_cmp_u64(min) == Ordering::Equal
+        && range.unsigned_max().unsigned_cmp_u64(max) == Ordering::Equal
+}
+
+/// An argument's `range` gives its known bits and its constant range.
+///
+/// **No upstream counterpart as a unit test.** The oracles are
+/// `computeKnownBits`'s `if (const auto *A = dyn_cast<Argument>(V)) if
+/// (std::optional<ConstantRange> Range = A->getRange()) Known =
+/// Range->toKnownBits();` and `computeConstantRange`'s `else if (const auto *A
+/// = dyn_cast<Argument>(V)) if (std::optional<ConstantRange> Range =
+/// A->getRange()) CR = *Range;` (`ValueTracking.cpp`), with
+/// `Argument::getRange` reading the parameter's `range` attribute
+/// (`Function.cpp`). `[32, 64)` has bit 5 set and bits 6 to 31 clear. `%free`,
+/// with no attribute, is the control.
+#[test]
+fn an_argument_s_range_bounds_its_known_bits_and_its_constant_range() {
+    let module = parse(
+        r"
+define void @test(i32 range(i32 32, 64) %bounded, i32 %free) {
+  ret void
+}
+",
+    );
+    let function = module.function_dyn("test").expect("fixture defines @test");
+    let mut arguments = module
+        .view(function)
+        .params()
+        .map(|argument| argument.as_erased());
+    let bounded = arguments.next().expect("@test has two parameters");
+    let free = arguments.next().expect("@test has two parameters");
+    let data_layout = module.data_layout();
+    let query = ValueTrackingQuery::<DynBrand>::new(&data_layout);
+
+    assert_eq!(
+        compute_known_bits(bounded, &query)
+            .expect("query succeeds")
+            .to_string(),
+        "000000000000000000000000001?????"
+    );
+    assert!(spans(
+        &compute_constant_range(bounded, Signedness::Unsigned, &query).expect("query succeeds"),
+        32,
+        63
+    ));
+    assert_eq!(
+        compute_known_bits(free, &query)
+            .expect("query succeeds")
+            .to_string(),
+        "????????????????????????????????"
+    );
+    assert!(
+        compute_constant_range(free, Signedness::Unsigned, &query)
+            .expect("query succeeds")
+            .is_full_set()
+    );
+}
+
+/// A call's `range`, on the call site or on its callee, bounds its constant
+/// range.
+///
+/// **No upstream counterpart as a unit test.** The oracle is
+/// `computeConstantRange`'s `if (const auto *CB = dyn_cast<CallBase>(V)) if
+/// (std::optional<ConstantRange> Range = CB->getRange()) CR =
+/// CR.intersectWith(*Range);` (`ValueTracking.cpp`). `%both` meets `[32, 128)`
+/// and `[0, 64)` at `[32, 64)`, as `a_call_site_range_and_a_callee_range_are_intersected`
+/// does for known bits. `%plain` is the control.
+#[test]
+fn a_call_s_range_bounds_its_constant_range() {
+    let module = parse(
+        r"
+declare range(i32 0, 64) i32 @bounded()
+declare i32 @unbounded()
+
+define void @test() {
+  %both = call range(i32 32, 128) i32 @bounded()
+  %call.site.only = call range(i32 32, 128) i32 @unbounded()
+  %callee.only = call i32 @bounded()
+  %plain = call i32 @unbounded()
+  ret void
+}
+",
+    );
+    let data_layout = module.data_layout();
+    let query = ValueTrackingQuery::<DynBrand>::new(&data_layout);
+    let range = |name: &str| {
+        compute_constant_range(
+            named_in(&module, "test", name),
+            Signedness::Unsigned,
+            &query,
+        )
+        .expect("query succeeds")
+    };
+    assert!(spans(&range("both"), 32, 63));
+    assert!(spans(&range("call.site.only"), 32, 127));
+    assert!(spans(&range("callee.only"), 0, 63));
+    assert!(range("plain").is_full_set());
 }

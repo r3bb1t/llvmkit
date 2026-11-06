@@ -489,6 +489,33 @@ entry:
     );
 }
 
+/// The swifterror rules read a callee declared *after* the call.
+///
+/// **No upstream counterpart**: `the_swifterror_rules_read_the_callee_s_declaration`'s
+/// `@passes_unmarked` with `@foo`'s declaration moved below it, where clang
+/// writes it. `paramHasAttr`'s `getCalledFunction()` half sees the same
+/// `Function` whichever comes first, so `Verifier::verifySwiftErrorCall`'s
+/// `Check` still holds and the module verifies.
+#[test]
+fn the_swifterror_rules_read_a_callee_declared_after_the_call() {
+    let source = r"
+define void @passes_unmarked() {
+  %e = alloca swifterror ptr
+  %call = call float @foo(ptr %e)
+  ret void
+}
+declare float @foo(ptr swifterror)
+";
+    let module = Module::dynamic("swifterror_declared_after");
+    Parser::new(source.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    module
+        .verify_borrowed()
+        .unwrap_or_else(|e| panic!("the later declaration marks the argument swifterror: {e}"));
+}
+
 /// Parse `prelude` plus the `define` beginning at `marker`, verify it, and
 /// assert either that it verifies clean (`expected` is `None`) or that the
 /// failure carries `expected`.

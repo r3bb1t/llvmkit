@@ -361,6 +361,17 @@ impl IntrinsicId {
     pub(crate) const SSHL_SAT: Self = checked_intrinsic_id(generated::SEMANTIC_SSHL_SAT);
     pub(crate) const USHL_SAT: Self = checked_intrinsic_id(generated::SEMANTIC_USHL_SAT);
 
+    /// The intrinsics `Instruction::isVolatile`'s `case Instruction::Call:` arm
+    /// names (`Instruction.cpp`): `MemIntrinsic::classof`'s two `inline`
+    /// cases, beside [`Self::MEMCPY`], [`Self::MEMMOVE`] and [`Self::MEMSET`],
+    /// and the two matrix intrinsics whose volatile flag it reads.
+    pub(crate) const MEMCPY_INLINE: Self = checked_intrinsic_id(generated::SEMANTIC_MEMCPY_INLINE);
+    pub(crate) const MEMSET_INLINE: Self = checked_intrinsic_id(generated::SEMANTIC_MEMSET_INLINE);
+    pub(crate) const MATRIX_COLUMN_MAJOR_LOAD: Self =
+        checked_intrinsic_id(generated::SEMANTIC_MATRIX_COLUMN_MAJOR_LOAD);
+    pub(crate) const MATRIX_COLUMN_MAJOR_STORE: Self =
+        checked_intrinsic_id(generated::SEMANTIC_MATRIX_COLUMN_MAJOR_STORE);
+
     /// The ObjC ARC intrinsics named by `IntrinsicInst::mayLowerToFunctionCall`
     /// and `Verifier::verifyAttachedCallBundle`. Crate-internal: they exist to
     /// spell those two routines, not as a public intrinsic catalogue.

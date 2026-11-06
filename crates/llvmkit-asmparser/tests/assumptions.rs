@@ -1003,3 +1003,54 @@ define i32 @test(i32 %x) nosync {
         &instruction(&module, "use")
     ));
 }
+
+/// A volatile call is a side effect, so the values it uses are not ephemeral to
+/// an assume it feeds.
+///
+/// **No upstream counterpart as a unit test.** The oracle is
+/// `CallBase::getMemoryEffects` (`Instructions.cpp`), whose `if (isVolatile())
+/// FnME |= MemoryEffects::inaccessibleMemOnly();` makes a volatile
+/// `llvm.matrix.column.major.load` write memory, read through
+/// `Instruction::isVolatile`'s `case Instruction::Call:` arm
+/// (`cast<ConstantInt>(II->getArgOperand(2))->isOne()`, `Instruction.cpp`).
+/// `isEphemeralValueOf` (`ValueTracking.cpp`) stops at an instruction that
+/// `mayHaveSideEffects`, so `%volatile.stride` is not ephemeral to the first
+/// assume and the assume is valid for it. The second half, with the flag
+/// `false`, is the control: there the load only reads, `%stride` is ephemeral,
+/// and the assume is not valid for it. Each load's declaration is `nounwind
+/// willreturn memory(argmem: read)`, so only the volatile flag differs.
+#[test]
+fn a_volatile_call_ends_the_ephemeral_values_of_an_assume() {
+    let module = parse(
+        r"
+declare <4 x float> @llvm.matrix.column.major.load.v4f32.i64(ptr, i64, i1 immarg, i32 immarg, i32 immarg) nounwind willreturn memory(argmem: read)
+declare void @llvm.assume(i1)
+
+define void @test(ptr %p, i64 %n) {
+  %volatile.stride = add i64 %n, 2
+  %volatile.load = call <4 x float> @llvm.matrix.column.major.load.v4f32.i64(ptr %p, i64 %volatile.stride, i1 true, i32 2, i32 2)
+  %volatile.lane = extractelement <4 x float> %volatile.load, i64 0
+  %volatile.condition = fcmp oeq float %volatile.lane, 0.0
+  call void @llvm.assume(i1 %volatile.condition)
+  %stride = add i64 %n, 3
+  %load = call <4 x float> @llvm.matrix.column.major.load.v4f32.i64(ptr %p, i64 %stride, i1 false, i32 2, i32 2)
+  %lane = extractelement <4 x float> %load, i64 0
+  %condition = fcmp oeq float %lane, 0.0
+  call void @llvm.assume(i1 %condition)
+  ret void
+}
+",
+    );
+    assert!(is_valid_assume_for_context(
+        &assume(&module, 0),
+        &instruction(&module, "volatile.stride"),
+        None,
+        false
+    ));
+    assert!(!is_valid_assume_for_context(
+        &assume(&module, 1),
+        &instruction(&module, "stride"),
+        None,
+        false
+    ));
+}

@@ -21,8 +21,9 @@ use super::gep_no_wrap_flags::GepNoWrapFlags;
 use crate::Branded;
 use crate::align::MaybeAlign;
 use crate::atomic_ordering::AtomicOrdering;
-use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored};
+use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, MemoryEffects};
 use crate::capability::{Capability, Mutable};
+use crate::constant::ConstantData;
 use crate::constant_range::{ConstantRange, PreferredRangeType};
 use crate::error::{IrError, IrResult};
 use crate::fmf::FastMathFlags;
@@ -2483,7 +2484,10 @@ pub(crate) fn call_site_has_function_attribute<'ctx, B: ModuleBrand + 'ctx, C: C
     // `return hasFnAttrOnCalledFunction(Kind);`, which is
     // `if (auto *F = dyn_cast<Function>(getCalledOperand()))
     //    return F->getAttributes().hasFnAttr(Kind);
-    //  return false;`
+    //  return false;` — the cell read through the `GlobalValueRef` wrapper a
+    // forward reference leaves there (`docs/divergences.md` D3), as
+    // [`called_function`] reads it.
+    let callee = module.context().use_edge_target(callee);
     match &module.value_data(callee).kind {
         ValueKindData::Function(_) => {
             FunctionValue::<Dyn, B, C>::from_parts_unchecked(callee, module).has_fn_attribute(kind)
@@ -2502,52 +2506,86 @@ pub(crate) fn call_site_has_function_attribute<'ctx, B: ModuleBrand + 'ctx, C: C
 /// taken, so the methods ask for the module only to read the callee.
 #[derive(Clone, Copy)]
 pub(crate) struct CallBaseParts<'a> {
-    /// `CallBase::getCalledOperand()`.
+    /// `Instruction::getOpcode()`: `Call`, `Invoke` or `CallBr`. Upstream's
+    /// `CallBase` routines that ask `dyn_cast<IntrinsicInst>` (a `CallInst`
+    /// only) read it, `Instruction::isVolatile`'s `case Instruction::Call:`
+    /// among them.
+    pub(crate) opcode: Opcode,
+    /// `CallBase::getCalledOperand()`, as the operand cell stores it: the
+    /// function itself, or the `GlobalValueRef` wrapper a forward reference
+    /// resolved to (`docs/divergences.md` D3).
     pub(crate) callee: ValueSlot,
     /// `CallBase::getFunctionType()`.
-    pub(crate) fn_ty: crate::r#type::TypeSlot,
+    pub(crate) function_type: crate::r#type::TypeSlot,
     /// `CallBase::args()`.
     pub(crate) args: &'a [Cell<ValueSlot>],
     /// `CallBase::getAttributes()`.
-    pub(crate) attrs: &'a CallAttributeData,
+    pub(crate) attributes: &'a CallAttributeData,
     /// The operand bundles, `CallBase::getOperandBundleAt(0 ..
     /// getNumOperandBundles())`.
     pub(crate) operand_bundles: &'a [OperandBundleData],
 }
 
 impl<'a> CallBaseParts<'a> {
+    /// The one projection the three call forms share, the attribute list
+    /// resolved in `context`, the context of the module that holds the call.
+    fn project(
+        context: &'a Context,
+        opcode: Opcode,
+        callee: &Cell<ValueSlot>,
+        function_type: crate::r#type::TypeSlot,
+        args: &'a [Cell<ValueSlot>],
+        attributes: CallAttributesSlot,
+        operand_bundles: &'a [OperandBundleData],
+    ) -> Self {
+        Self {
+            opcode,
+            callee: callee.get(),
+            function_type,
+            args,
+            attributes: context.call_attributes(attributes),
+            operand_bundles,
+        }
+    }
+
     /// A `call`, its attribute list resolved in `context`, the context of the
     /// module that holds it.
     pub(crate) fn of_call(context: &'a Context, c: &'a CallInstData) -> Self {
-        Self {
-            callee: c.callee.get(),
-            fn_ty: c.fn_ty,
-            args: &c.args,
-            attrs: context.call_attributes(c.attrs.get()),
-            operand_bundles: &c.operand_bundles,
-        }
+        Self::project(
+            context,
+            Opcode::Call,
+            &c.callee,
+            c.fn_ty,
+            &c.args,
+            c.attrs.get(),
+            &c.operand_bundles,
+        )
     }
 
     /// An `invoke`, as [`Self::of_call`].
     pub(crate) fn of_invoke(context: &'a Context, i: &'a InvokeInstData) -> Self {
-        Self {
-            callee: i.callee.get(),
-            fn_ty: i.fn_ty,
-            args: &i.args,
-            attrs: context.call_attributes(i.attrs.get()),
-            operand_bundles: &i.operand_bundles,
-        }
+        Self::project(
+            context,
+            Opcode::Invoke,
+            &i.callee,
+            i.fn_ty,
+            &i.args,
+            i.attrs.get(),
+            &i.operand_bundles,
+        )
     }
 
     /// A `callbr`, as [`Self::of_call`].
-    pub(crate) fn of_call_br(context: &'a Context, c: &'a CallBrInstData) -> Self {
-        Self {
-            callee: c.callee.get(),
-            fn_ty: c.fn_ty,
-            args: &c.args,
-            attrs: context.call_attributes(c.attrs.get()),
-            operand_bundles: &c.operand_bundles,
-        }
+    pub(crate) fn of_call_branch(context: &'a Context, c: &'a CallBrInstData) -> Self {
+        Self::project(
+            context,
+            Opcode::CallBr,
+            &c.callee,
+            c.fn_ty,
+            &c.args,
+            c.attrs.get(),
+            &c.operand_bundles,
+        )
     }
 
     /// `dyn_cast<CallBase>(I)`: the parts of a `call`, `invoke` or `callbr`, or
@@ -2556,7 +2594,7 @@ impl<'a> CallBaseParts<'a> {
         match kind {
             InstructionKindData::Call(c) => Some(Self::of_call(context, c)),
             InstructionKindData::Invoke(i) => Some(Self::of_invoke(context, i)),
-            InstructionKindData::CallBr(c) => Some(Self::of_call_br(context, c)),
+            InstructionKindData::CallBr(c) => Some(Self::of_call_branch(context, c)),
             _ => None,
         }
     }
@@ -2566,7 +2604,7 @@ impl<'a> CallBaseParts<'a> {
         &self,
         module: ModuleRef<'ctx, B, C>,
     ) -> Option<FunctionValue<'ctx, Dyn, B, C>> {
-        called_function(module, self.callee, self.fn_ty)
+        called_function(module, self.callee, self.function_type)
     }
 
     /// `CallBase::hasFnAttr(Kind)`: [`call_site_has_function_attribute`].
@@ -2575,7 +2613,7 @@ impl<'a> CallBaseParts<'a> {
         module: ModuleRef<'ctx, B, C>,
         kind: AttrKind,
     ) -> bool {
-        call_site_has_function_attribute(module, self.callee, self.attrs, kind)
+        call_site_has_function_attribute(module, self.callee, self.attributes, kind)
     }
 
     /// Whether the call's return has the attribute `kind`, on the call site or
@@ -2598,7 +2636,11 @@ impl<'a> CallBaseParts<'a> {
         kind: AttrKind,
     ) -> bool {
         // `if (Attrs.hasRetAttr(Kind)) return true;`
-        if self.attrs.return_attrs.has_kind(AttrIndex::Return, kind) {
+        if self
+            .attributes
+            .return_attrs
+            .has_kind(AttrIndex::Return, kind)
+        {
             return true;
         }
         // `if (const Function *F = getCalledFunction())
@@ -2642,6 +2684,16 @@ impl<'a> CallBaseParts<'a> {
     ///
     /// The assertion is no runtime panic here: an argument past the end has no
     /// attribute.
+    ///
+    /// **Guarded by: nothing, for the three bundle arms.** No caller in the
+    /// crate asks `ReadNone`, `ReadOnly` or `WriteOnly` of a parameter (the
+    /// swifterror, `elementtype`, `noundef` and dereferenceability queries reach
+    /// only `default: return true`), so no answer depends on those arms yet.
+    /// Upstream's readers of them are `CallBase::doesNotAccessMemory(OpNo)`,
+    /// `onlyReadsMemory(OpNo)` and `onlyWritesMemory(OpNo)`, each through
+    /// `dataOperandHasImpliedAttr` (`IR/InstrTypes.h`), which llvmkit has not
+    /// ported; the first such port is what will test them
+    /// (`docs/future-work.md`, "`paramHasAttr`'s operand-bundle arms").
     pub(crate) fn has_parameter_attribute<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
         module: ModuleRef<'ctx, B, C>,
@@ -2653,7 +2705,7 @@ impl<'a> CallBaseParts<'a> {
         }
         // `if (Attrs.hasParamAttr(ArgNo, Kind)) return true;`
         if self
-            .attrs
+            .attributes
             .arg_attrs
             .get(argument)
             .is_some_and(|set| set.has_kind(AttrIndex::Param(0), kind))
@@ -2732,10 +2784,10 @@ impl<'a> CallBaseParts<'a> {
         &self,
         module: ModuleRef<'ctx, B, C>,
     ) -> Option<ConstantRange> {
-        let call_attribute = return_range(&self.attrs.return_attrs);
+        let call_attribute = self.attributes.return_attrs.range(AttrIndex::Return);
         let function_attribute = self
             .called_function(module)
-            .and_then(|function| return_range(&function.data().attributes.borrow()));
+            .and_then(|function| function.data().attributes.borrow().range(AttrIndex::Return));
         match (call_attribute, function_attribute) {
             (Some(call), Some(function)) => {
                 Some(call.intersect_with(&function, PreferredRangeType::Smallest))
@@ -2760,7 +2812,7 @@ impl<'a> CallBaseParts<'a> {
         module: ModuleRef<'ctx, B, C>,
     ) -> FpClassTest {
         let mut mask = self
-            .attrs
+            .attributes
             .return_attrs
             .no_fp_class(AttrIndex::Return)
             .unwrap_or(FpClassTest::NONE);
@@ -2779,16 +2831,179 @@ impl<'a> CallBaseParts<'a> {
     /// `CallBase::getIntrinsicID()` (`Instructions.cpp`): `if (auto *F =
     /// dyn_cast_or_null<Function>(getCalledOperand())) return
     /// F->getIntrinsicID(); return Intrinsic::not_intrinsic;`, with no
-    /// function-type test. `None` is `not_intrinsic`.
+    /// function-type test. `None` is `not_intrinsic`. The called operand is
+    /// read through the `GlobalValueRef` wrapper a forward reference left in
+    /// the cell, as [`called_function`] reads it.
     fn intrinsic_id<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
         module: ModuleRef<'ctx, B, C>,
     ) -> Option<IntrinsicId> {
-        match &module.value_data(self.callee).kind {
+        let callee = module.context().use_edge_target(self.callee);
+        match &module.value_data(callee).kind {
             ValueKindData::Function(_) => {
-                FunctionValue::<Dyn, B, C>::from_parts_unchecked(self.callee, module).intrinsic_id()
+                FunctionValue::<Dyn, B, C>::from_parts_unchecked(callee, module).intrinsic_id()
             }
             _ => None,
+        }
+    }
+
+    /// `CallBase::getMemoryEffects()` (`Instructions.cpp`), in its order:
+    ///
+    /// ```text
+    /// MemoryEffects ME = getAttributes().getMemoryEffects();
+    /// if (auto *Fn = dyn_cast<Function>(getCalledOperand())) {
+    ///   MemoryEffects FnME = Fn->getMemoryEffects();
+    ///   if (hasOperandBundles()) {
+    ///     if (hasReadingOperandBundles())   FnME |= MemoryEffects::readOnly();
+    ///     if (hasClobberingOperandBundles()) FnME |= MemoryEffects::writeOnly();
+    ///   }
+    ///   if (isVolatile())
+    ///     // Volatile operations also access inaccessible memory.
+    ///     FnME |= MemoryEffects::inaccessibleMemOnly();
+    ///   ME &= FnME;
+    /// }
+    /// return ME;
+    /// ```
+    ///
+    /// `getMemoryEffects` of an attribute set is its `memory(...)` attribute,
+    /// or `MemoryEffects::unknown()` without one (`AttributeSetNode::getMemoryEffects`).
+    /// `dyn_cast<Function>` takes no function-type test, and reads through the
+    /// wrapper as [`Self::intrinsic_id`] does.
+    ///
+    /// One arm is not upstream's: a callee that is an intrinsic and carries no
+    /// `memory(...)` attribute of its own answers its intrinsic table's
+    /// effects ([`IntrinsicId::memory_effects`]) where upstream's
+    /// `Fn->getMemoryEffects()` answers `unknown()`. `parseFunctionHeader`'s
+    /// `Fn->setAttributes(PAL)` replaces the table attributes
+    /// `Function::Function` gave a parsed intrinsic with the ones the `.ll`
+    /// wrote, so upstream sees no `memory(...)` on a bare `declare`.
+    /// Recorded as `docs/divergences.md` D38; kept because llvmkit's own
+    /// declarations and fixtures rely on the table, and the difference only
+    /// ever narrows what the call is said to touch to what the intrinsic
+    /// table says it touches.
+    pub(crate) fn memory_effects<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        &self,
+        module: ModuleRef<'ctx, B, C>,
+    ) -> MemoryEffects {
+        // `MemoryEffects ME = getAttributes().getMemoryEffects();`
+        let mut effects = merged_function_memory_effects(
+            module.module(),
+            &self.attributes.function_attrs,
+            &self.attributes.function_attr_groups,
+        )
+        .unwrap_or_else(MemoryEffects::unknown);
+        // `if (auto *Fn = dyn_cast<Function>(getCalledOperand())) {`
+        let callee = module.context().use_edge_target(self.callee);
+        if let ValueKindData::Function(data) = &module.value_data(callee).kind {
+            // `MemoryEffects FnME = Fn->getMemoryEffects();`
+            let declared = merged_function_memory_effects(
+                module.module(),
+                &data.attributes.borrow(),
+                &data.function_attr_groups.borrow(),
+            );
+            let mut function_effects = match declared {
+                Some(declared) => declared,
+                // The intrinsic-table stand-in described above (D38).
+                None => FunctionValue::<Dyn, B, C>::from_parts_unchecked(callee, module)
+                    .intrinsic_id()
+                    .map_or_else(MemoryEffects::unknown, IntrinsicId::memory_effects),
+            };
+            // `if (hasOperandBundles()) { ... }`
+            if !self.operand_bundles.is_empty() {
+                if self.has_reading_operand_bundles(module) {
+                    function_effects |= MemoryEffects::read_only();
+                }
+                if self.has_clobbering_operand_bundles(module) {
+                    function_effects |= MemoryEffects::write_only();
+                }
+            }
+            // `if (isVolatile()) FnME |= MemoryEffects::inaccessibleMemOnly();`
+            if self.is_volatile(module) {
+                function_effects |= MemoryEffects::inaccessible_mem_only();
+            }
+            // `ME &= FnME;`
+            effects &= function_effects;
+        }
+        effects
+    }
+
+    /// `Instruction::isVolatile()` (`Instruction.cpp`) of a call form, its
+    /// `case Instruction::Call: case Instruction::Invoke:` arm:
+    ///
+    /// ```text
+    /// // There are a very limited number of intrinsics with volatile flags.
+    /// if (auto *II = dyn_cast<IntrinsicInst>(this)) {
+    ///   if (auto *MI = dyn_cast<MemIntrinsic>(II))
+    ///     return MI->isVolatile();
+    ///   switch (II->getIntrinsicID()) {
+    ///   default: break;
+    ///   case Intrinsic::matrix_column_major_load:
+    ///     return cast<ConstantInt>(II->getArgOperand(2))->isOne();
+    ///   case Intrinsic::matrix_column_major_store:
+    ///     return cast<ConstantInt>(II->getArgOperand(3))->isOne();
+    ///   }
+    /// }
+    /// return false;
+    /// ```
+    ///
+    /// `IntrinsicInst::classof` admits a `CallInst` only, whose
+    /// `getCalledFunction()` is an intrinsic, so an `invoke` or a `callbr`
+    /// answers `false` (a `callbr` reaches the switch's `default: return
+    /// false;`). `MemIntrinsic::classof` is `memcpy`, `memmove`, `memset`,
+    /// `memset_inline` and `memcpy_inline`, and `MemIntrinsic::isVolatile` is
+    /// `!getVolatileCst()->isZero()`, the `ConstantInt` at `ARG_VOLATILE = 3`.
+    /// Each `cast<ConstantInt>` asserts; an operand that is no integer constant
+    /// answers `true` here, the reading that claims more memory is touched.
+    fn is_volatile<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        &self,
+        module: ModuleRef<'ctx, B, C>,
+    ) -> bool {
+        // `dyn_cast<IntrinsicInst>(this)`.
+        if self.opcode != Opcode::Call {
+            return false;
+        }
+        let Some(intrinsic) = self
+            .called_function(module)
+            .and_then(|function| function.intrinsic_id())
+        else {
+            return false;
+        };
+        // `cast<ConstantInt>(II->getArgOperand(index))`: its words, or `None`
+        // where the cast would assert.
+        let constant_words = |index: usize| -> Option<&[u64]> {
+            match &module.value_data(self.args.get(index)?.get()).kind {
+                ValueKindData::Constant(ConstantData::Int(words)) => Some(words),
+                _ => None,
+            }
+        };
+        // `APInt::isZero` and `APInt::isOne` of the stored words.
+        let is_zero = |words: &[u64]| words.iter().all(|word| *word == 0);
+        let is_one = |words: &[u64]| {
+            words
+                .split_first()
+                .is_some_and(|(low, high)| *low == 1 && is_zero(high))
+        };
+        // `if (auto *MI = dyn_cast<MemIntrinsic>(II)) return MI->isVolatile();`
+        if intrinsic == IntrinsicId::MEMCPY
+            || intrinsic == IntrinsicId::MEMMOVE
+            || intrinsic == IntrinsicId::MEMSET
+            || intrinsic == IntrinsicId::MEMSET_INLINE
+            || intrinsic == IntrinsicId::MEMCPY_INLINE
+        {
+            // `!getVolatileCst()->isZero()`, `ARG_VOLATILE = 3`.
+            return constant_words(3).is_none_or(|words| !is_zero(words));
+        }
+        match intrinsic {
+            // `return cast<ConstantInt>(II->getArgOperand(2))->isOne();`
+            id if id == IntrinsicId::MATRIX_COLUMN_MAJOR_LOAD => {
+                constant_words(2).is_none_or(is_one)
+            }
+            // `return cast<ConstantInt>(II->getArgOperand(3))->isOne();`
+            id if id == IntrinsicId::MATRIX_COLUMN_MAJOR_STORE => {
+                constant_words(3).is_none_or(is_one)
+            }
+            // `default: break;` then `return false;`.
+            _ => false,
         }
     }
 
@@ -2832,18 +3047,32 @@ impl<'a> CallBaseParts<'a> {
     }
 }
 
-/// `Attribute::getRange()` of the `range` attribute in `storage`'s return
-/// slot: upstream's `getRetAttr(Attribute::Range)` with `isValid()` as `Some`.
-fn return_range(storage: &AttributeStorage) -> Option<ConstantRange> {
-    storage
-        .get(AttrIndex::Return)?
+/// The `memory(...)` function attribute of a list llvmkit stores as inline
+/// attributes beside the `#N` group numbers they name, read as upstream reads
+/// the one merged list (`docs/divergences.md` D9).
+///
+/// `LLParser::validateEndOfModule` merges a holder's groups, in the order it
+/// names them, into one `AttrBuilder B`, then merges `B` over the inline
+/// function attributes (`FnAttrs.merge(B)`). `AttrBuilder::merge` is
+/// `addAttribute` per attribute, which replaces one of the same kind, so the
+/// last named group carrying `memory(...)` wins, and the inline attribute
+/// counts only when no group carries one. `AttributeSetNode::getMemoryEffects`
+/// then reads that one attribute; `None` here is its `MemoryEffects::unknown()`
+/// fallback, left to the caller.
+fn merged_function_memory_effects(
+    module: &ModuleCore,
+    inline: &AttributeStorage,
+    groups: &[u32],
+) -> Option<MemoryEffects> {
+    groups
         .iter()
-        .find_map(|attribute| match attribute {
-            AttributeStored::Range { lower, upper, .. } => {
-                ConstantRange::new(lower.clone(), upper.clone()).ok()
-            }
-            _ => None,
+        .rev()
+        .find_map(|group| {
+            module
+                .attribute_group(*group)?
+                .memory_effects(AttrIndex::Function)
         })
+        .or_else(|| inline.memory_effects(AttrIndex::Function))
 }
 
 /// The function a call site calls directly, or `None`. A port of
@@ -2861,11 +3090,18 @@ fn return_range(storage: &AttributeStorage) -> Option<ConstantRange> {
 /// call's called operand as stored and `function_type` its
 /// `getFunctionType()`, both of `module`. The sites that still spell
 /// `getCalledFunction` as the bare `dyn_cast` are `docs/divergences.md` D134.
+///
+/// The cell may hold the `GlobalValueRef` wrapper rather than the function:
+/// a call that precedes its callee's `declare` or `define` resolves its
+/// forward reference to `ptr @f` (`docs/divergences.md` D3). Upstream's
+/// called operand *is* the `Function` either way, so the cell is read through
+/// [`Context::use_edge_target`] before the `dyn_cast`.
 pub(crate) fn called_function<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     module: ModuleRef<'ctx, B, C>,
     callee: ValueSlot,
     function_type: crate::r#type::TypeSlot,
 ) -> Option<FunctionValue<'ctx, Dyn, B, C>> {
+    let callee = module.context().use_edge_target(callee);
     match &module.value_data(callee).kind {
         ValueKindData::Function(function) if function.signature == function_type => Some(
             FunctionValue::<Dyn, B, C>::from_parts_unchecked(callee, module),
