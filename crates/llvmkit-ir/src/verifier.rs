@@ -610,6 +610,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     }
                 }
             }
+            // Every lane is the element, so its one subtree is the lanes'.
+            ConstantData::Splat { element } => {
+                let operand_data = self.module.context().value_data(*element);
+                if matches!(operand_data.kind, ValueKindData::Constant(_)) {
+                    self.verify_constant_tree(Constant::try_from(Value::from_parts(
+                        *element,
+                        self.module,
+                        operand_data.ty,
+                    ))?)?;
+                }
+            }
             ConstantData::ForwardRefPlaceholder => {
                 return Err(IrError::InvalidOperation {
                     message: "unresolved forward-reference placeholder",

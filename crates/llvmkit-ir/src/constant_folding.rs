@@ -196,14 +196,34 @@ pub fn flush_fp_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         return Ok(Some(operand));
     }
 
+    // `if (VecTy) { if (auto *Splat =
+    // dyn_cast_or_null<ConstantFP>(Operand->getSplatValue())) { ConstantFP
+    // *Folded = flushDenormalConstantFP(Splat, Inst, IsOutput); if (!Folded)
+    // return nullptr; return ConstantVector::getSplat(VecTy->getElementCount(),
+    // Folded); } }` — fixed or scalable, and ahead of the `ConstantExpr`
+    // check, so a scalable splat, a `shufflevector` expression upstream, is
+    // flushed here too.
+    if let Ok(vector_ty) = VectorType::<ElemDyn, LenDyn, B, C>::try_from(operand.ty())
+        && let Some(splat) = operand.splat_value(false)
+        && ConstantFloatValue::<FloatDyn, B, C>::try_from(splat).is_ok()
+    {
+        let Some(folded) = flush_fp_constant(splat, mode, side)? else {
+            return Ok(None);
+        };
+        return Ok(Some(vector_ty.const_splat(folded)?.as_constant()));
+    }
+
+    // `if (isa<ConstantExpr>(Operand)) return Operand;`
+    if matches!(operand.kind(), ConstantKind::Expr(_)) {
+        return Ok(Some(operand));
+    }
+
     // Mirrors the `ConstantVector`/`ConstantDataVector` arms of upstream
     // `FlushFPConstant` (`ConstantFolding.cpp`): flush every lane of a fixed
     // FP vector and rebuild the vector constant. A whole-vector zero or
-    // `undef` is already handled above. Upstream's splat fast path is a
-    // performance shortcut this loop reaches the same answer without.
-    // Scalable vectors have no compile-time lane list to walk and fall through
-    // to the decline below, matching upstream's decline for a non-splat
-    // scalable operand.
+    // `undef` is already handled above, and a splat by the fast path, so the
+    // list here has two lanes that differ. A scalable vector is a splat, a
+    // zero or an `undef`, each handled above.
     if matches!(operand.ty().data(), TypeData::FixedVector { .. })
         && let ValueKindData::Constant(ConstantData::Aggregate(elements)) =
             &operand.as_erased().data().kind
@@ -1219,10 +1239,13 @@ fn is_constant_vector_or_expr<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 /// pointer.
 ///
 /// Two of llvmkit's spellings answer `isa<ConstantExpr>` without being a
-/// stored expression. A scalable list is the `shufflevector` splat
+/// stored expression. A scalable splat is the `shufflevector` splat
 /// `ConstantVector::getSplat` builds; its element stands in for the operand,
-/// and the list is rebuilt through `intern_element_list`, as
-/// `getWithOperands` rebuilds the splat and `getSplat` canonicalises it. The
+/// and the splat is rebuilt through `getSplat`'s canonicalisation, as
+/// `getWithOperands` rebuilds the splat and `getSplat` canonicalises it. A
+/// fixed splat that is a `ConstantVector` has one operand per lane, each its
+/// element, so its element is folded once and the splat rebuilt the same way,
+/// which is `ConstantVector::get` of the folded lanes. The
 /// compact `GepOffset`, `SymbolDelta` and `SymbolDeltaPlus` forms keep their
 /// operands, which are globals, so they are returned as they are: folding the
 /// expression each prints as gives that expression back (derived from
@@ -1244,6 +1267,7 @@ fn constant_fold_constant_impl<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     let operand_ids: &[ValueSlot] = match data {
         ValueKindData::Constant(ConstantData::Expr(expr)) => &expr.operands,
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => elements,
+        ValueKindData::Constant(ConstantData::Splat { element }) => core::slice::from_ref(element),
         _ => return Ok(constant),
     };
 
@@ -1281,6 +1305,16 @@ fn constant_fold_constant_impl<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 
     // `assert(isa<ConstantVector>(C)); return ConstantVector::get(Ops);`
     let ty = constant.ty().slot_trusting_same_module();
+    // A splat's one folded element is every lane's.
+    if let (ValueKindData::Constant(ConstantData::Splat { .. }), [folded]) = (data, ops.as_slice())
+    {
+        let id = crate::constants::intern_canonical_aggregate(
+            module.module(),
+            ty,
+            crate::constant::splat_canonical(module, folded.slot_trusting_same_module()),
+        );
+        return Ok(Constant::from_parts(Value::from_parts(id, module, ty)));
+    }
     // Internal: every operand was folded from this vector's own element, in
     // its module.
     let ids = ops

@@ -1083,10 +1083,11 @@ pub fn is_bytewise_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             }
             splat_byte(&ApInt::from_words(bits, words)).map(BytewiseValue::Byte)
         }
-        // Every element has to agree, with undef matching anything.
-        ConstantData::Aggregate(elements) => {
+        // Every element has to agree, with undef matching anything. A splat's
+        // lanes are all its element, so merging it once is merging them all.
+        ConstantData::Aggregate(_) | ConstantData::Splat { .. } => {
             let mut merged = BytewiseValue::AnyByte;
-            for element in elements.iter() {
+            for element in constant.lane_slots().into_iter().flatten() {
                 let element = value_from_slot(value, *element);
                 merged = merge_bytewise(merged, is_bytewise_value(element, data_layout)?)?;
             }

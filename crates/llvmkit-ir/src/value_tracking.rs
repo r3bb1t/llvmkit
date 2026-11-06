@@ -664,6 +664,9 @@ fn compute_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         ConstantData::Aggregate(elements) => {
             aggregate_constant_known_bits(value, elements, query, depth, stack)?
         }
+        ConstantData::Splat { element } => {
+            splat_constant_known_bits(value, *element, query, depth, stack)?
+        }
         // Answered above, by `leaf_constant_known_bits`; listed so a new
         // `ConstantData` variant is a non-exhaustive-match error here rather
         // than a silent `unknown`.
@@ -3496,6 +3499,9 @@ fn is_immediate_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         ConstantData::Aggregate(elements) => elements
             .iter()
             .all(|element| is_immediate_constant(value_from_slot(value, *element))),
+        // A splat contains its element and nothing else; for a scalable one
+        // this is upstream's splat escape hatch.
+        ConstantData::Splat { element } => is_immediate_constant(value_from_slot(value, *element)),
         _ => true,
     }
 }
@@ -5027,14 +5033,13 @@ fn operator_ref<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             hi: *hi_id,
             lo: *lo_id,
         }),
-        // A scalable list is never empty: `intern_element_list` stores the
-        // splat of nothing as a zero.
-        ConstantData::Aggregate(elements) if value.ty().kind() == TypeKind::ScalableVector => {
-            elements
-                .first()
-                .map(|&element| OperatorRef::ScalableSplat { element })
+        // A scalable splat is upstream's `shufflevector` expression. A fixed
+        // one is a `ConstantDataVector` or a `ConstantVector`, no `Operator`.
+        ConstantData::Splat { element } if value.ty().kind() == TypeKind::ScalableVector => {
+            Some(OperatorRef::ScalableSplat { element: *element })
         }
-        ConstantData::Aggregate(_)
+        ConstantData::Splat { .. }
+        | ConstantData::Aggregate(_)
         | ConstantData::Int(_)
         | ConstantData::Float(_)
         | ConstantData::GlobalValueRef { .. }
@@ -6520,6 +6525,34 @@ fn aggregate_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>
     } else {
         Ok(known)
     }
+}
+
+/// [`aggregate_constant_known_bits`]'s answer for a [`ConstantData::Splat`],
+/// without walking its lanes: every lane is `element`, so the intersection
+/// over the demanded lanes is the element's bits when any lane is demanded,
+/// and the empty intersection (unknown) when none is. A scalable splat answers
+/// unknown, as a scalable list did.
+fn splat_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    element: ValueSlot,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+    stack: &mut HashSet<ValueSlot>,
+) -> IrResult<KnownBits> {
+    let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
+    let Some(ElementCount {
+        min: lanes,
+        scalable: false,
+    }) = value.ty().data().element_count()
+    else {
+        return Ok(KnownBits::unknown(width));
+    };
+    let demanded =
+        demanded_elements_for(value, query).unwrap_or_else(|| ApInt::all_ones(lanes.get()));
+    if demanded.is_zero() {
+        return Ok(KnownBits::unknown(width));
+    }
+    compute_known_bits_inner(value_from_slot(value, element), query, depth + 1, stack)
 }
 
 fn compute_known_bits_for_demanded<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(

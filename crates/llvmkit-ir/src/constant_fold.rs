@@ -3052,11 +3052,13 @@ fn is_not_poison_for_select<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         )
         | ValueKindData::Function(_)
         | ValueKindData::GlobalVariable(_) => true,
-        ValueKindData::Constant(ConstantData::Aggregate(elements))
-            if constant.ty().data().as_vector().is_some() =>
-        {
+        // A splat's lanes are all its element, so its one element answers for
+        // them.
+        ValueKindData::Constant(
+            data @ (ConstantData::Aggregate(_) | ConstantData::Splat { .. }),
+        ) if constant.ty().data().as_vector().is_some() => {
             let module = constant.as_erased().module();
-            elements.iter().all(|element| {
+            data.lane_slots().into_iter().flatten().all(|element| {
                 !matches!(
                     &module.context().value_data(*element).kind,
                     ValueKindData::Constant(ConstantData::Poison | ConstantData::Expr(_))
@@ -3138,6 +3140,21 @@ fn aggregate_elements<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             (0..count)
                 .map(|index| constant.aggregate_element(index))
                 .collect()
+        }
+        // A splat's lanes, each its element: the list a stored list of them
+        // was, fixed or scalable (a scalable one walks its known minimum, as
+        // its stored list did), so a walking fold answers as it did. Walking
+        // costs the lane count, as walking that list did.
+        ValueKindData::Constant(ConstantData::Splat { element }) => {
+            let (_, lanes, _) = constant.ty().data().as_vector()?;
+            let lanes = usize::try_from(lanes.get()).ok()?;
+            let data = module.context().value_data(*element);
+            Some(vec![
+                Constant::from_parts(crate::Value::from_parts(
+                    *element, module, data.ty
+                ));
+                lanes
+            ])
         }
         _ => None,
     }

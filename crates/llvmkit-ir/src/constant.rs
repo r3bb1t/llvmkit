@@ -361,12 +361,27 @@ pub(crate) enum ConstantData {
     /// constructor would not keep the list: `intern_aggregate` turns those
     /// into [`Self::AggregateZero`], [`Self::Undef`] and [`Self::Poison`], as
     /// `ConstantArray::getImpl`, `ConstantStruct::get` and
-    /// `ConstantVector::getImpl` do.
+    /// `ConstantVector::getImpl` do. A vector list never has every lane equal
+    /// either, nor is any list scalable: those are [`Self::Splat`].
     Aggregate(Box<[ValueSlot]>),
     /// `ConstantAggregateZero`: the null value of an array, struct or vector
     /// type. It keeps no elements: `ConstantAggregateZero::getElementValue`
     /// answers from the type, so its cost does not depend on the length.
     AggregateZero,
+    /// A vector constant whose every lane is `element`, fixed or scalable, the
+    /// element being no null, `undef` or `poison` (those are
+    /// [`Self::AggregateZero`], [`Self::Undef`] and [`Self::Poison`]).
+    ///
+    /// Upstream has no such class. A fixed splat is a `ConstantDataVector` or
+    /// a `ConstantVector` that stores every lane, and a scalable one is
+    /// `ConstantVector::getSplat`'s `shufflevector (insertelement poison, V,
+    /// 0), poison, zeroinitializer`. Storing one element is hardening: the
+    /// cost no longer depends on the lane count, so `<4294967295 x i32> splat
+    /// (i32 1)` costs one slot. [`Constant::kind`] still answers the class
+    /// upstream's constructor leaves, and `intern_aggregate` turns an
+    /// all-equal vector list into this, so a splat and its written-out list
+    /// are one constant.
+    Splat { element: ValueSlot },
     /// A specialised byte-offset into a global, printed as the constant
     /// expression `getelementptr inbounds (i8, ptr @<base>, i64 <off>)`.
     /// `base_id` is the value-id of the host global/function; `off` is the byte
@@ -427,6 +442,19 @@ pub(crate) enum ConstantData {
 }
 
 impl ConstantData {
+    /// The element slots an every-lane or any-lane test over this element
+    /// list or splat must visit: a list's every element, and a splat's one
+    /// element, which each of its lanes is. `None` for any other storage.
+    /// Not the lanes themselves: a reader that needs lane `i`, or the count,
+    /// asks [`Constant::aggregate_element`] or the type.
+    pub(crate) fn lane_slots(&self) -> Option<&[ValueSlot]> {
+        match self {
+            Self::Aggregate(elements) => Some(elements),
+            Self::Splat { element } => Some(core::slice::from_ref(element)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn for_each_operand<F>(&self, mut f: F)
     where
         F: FnMut(ValueSlot),
@@ -442,6 +470,11 @@ impl ConstantData {
                     f(element);
                 }
             }
+            // One use of the element, whatever the lane count: a scalable
+            // splat's `insertelement` uses it once upstream, a
+            // `ConstantDataVector` keeps no use list, and a `ConstantVector`'s
+            // one use per lane is `docs/divergences.md` D39.
+            Self::Splat { element } => f(*element),
             Self::PtrAuth {
                 pointer,
                 key,
@@ -760,6 +793,32 @@ pub(crate) enum CanonicalAggregate {
     Zero,
     /// `UndefValue::get(Ty)` or `PoisonValue::get(Ty)`.
     Undefined(Undefined),
+    /// A vector whose every lane is this element, which is none of the above:
+    /// [`ConstantData::Splat`]. Upstream keeps the lanes; llvmkit stores the
+    /// one element, as hardening.
+    Splat(ValueSlot),
+}
+
+/// What `ConstantVector::getSplat` builds from `element`, after its zero,
+/// `undef` and `poison` checks: the uniqued zero, the marker, or the splat.
+/// Total, so a splat never reaches a list of its lanes.
+///
+/// `getSplat`'s fixed branch returns `ConstantDataVector::getSplat` or
+/// `get(SmallVector<Constant *, 32>(N, V))`, and each canonicalises an
+/// all-null list to a `ConstantAggregateZero` and an all-`undef` or
+/// all-`poison` one to the marker before keeping it. Its scalable branch tests
+/// `V->isNullValue()`, then `isa<PoisonValue>(V)`, then `isa<UndefValue>(V)`.
+/// A constant is at most one of the three, so the order of the two is one
+/// answer.
+pub(crate) fn splat_canonical<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
+    element: ValueSlot,
+) -> CanonicalAggregate {
+    match UniqueConstant::of(element_at(module, element)) {
+        UniqueConstant::Null => CanonicalAggregate::Zero,
+        UniqueConstant::Undefined(undefined) => CanonicalAggregate::Undefined(undefined),
+        UniqueConstant::Other => CanonicalAggregate::Splat(element),
+    }
 }
 
 /// Which uniqued constant upstream's constructor for an aggregate of type
@@ -783,7 +842,7 @@ pub(crate) fn canonical_aggregate<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         TypeData::Array { .. } => array_get_impl(module, slots),
         TypeData::Struct(_) => struct_get(module, slots),
         TypeData::FixedVector { .. } => vector_get_impl(module, slots),
-        TypeData::ScalableVector { .. } => scalable_vector_get_splat(module, slots),
+        TypeData::ScalableVector { .. } => Some(scalable_vector_get_splat(module, slots)),
         _ => None,
     }
 }
@@ -984,6 +1043,13 @@ fn vector_get_impl<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     if is_undef {
         return Some(CanonicalAggregate::Undefined(Undefined::Undef));
     }
+    // Not upstream's: a list whose lanes are all one constant is stored as
+    // that constant (`ConstantData::Splat`), where upstream's
+    // `getSequenceIfElementsMatch` / `ConstantVector` keeps every lane.
+    // Constants are uniqued, so "every lane is `V[0]`" is slot equality.
+    if slots.iter().all(|slot| *slot == first_slot) {
+        return Some(CanonicalAggregate::Splat(first_slot));
+    }
     None
 }
 
@@ -993,25 +1059,20 @@ fn vector_get_impl<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 fn scalable_vector_get_splat<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     module: ModuleRef<'ctx, B, C>,
     slots: &[ValueSlot],
-) -> Option<CanonicalAggregate> {
+) -> CanonicalAggregate {
     // Upstream first tries the hidden `-use-constant-int-for-scalable-splat`
     // and `-use-constant-fp-for-scalable-splat` options; both default to
     // `false` and llvmkit has no option surface, so neither arm can run. An
     // empty list answers as `vector_get_impl` answers one.
     let Some(&splat_slot) = slots.first() else {
-        return Some(CanonicalAggregate::Zero);
+        return CanonicalAggregate::Zero;
     };
     // `if (V->isNullValue())`, then `isa<PoisonValue>(V)`, then
-    // `isa<UndefValue>(V)`; a constant is at most one of the three.
-    match UniqueConstant::of(element_at(module, splat_slot)) {
-        UniqueConstant::Null => Some(CanonicalAggregate::Zero),
-        UniqueConstant::Undefined(undefined) => Some(CanonicalAggregate::Undefined(undefined)),
-        // Upstream builds the splat as
-        // `shufflevector (insertelement poison, V, 0), poison, zeroinitializer`;
-        // llvmkit keeps the list, which `Constant::kind` classifies as that
-        // expression.
-        UniqueConstant::Other => None,
-    }
+    // `isa<UndefValue>(V)`. Upstream builds anything else as
+    // `shufflevector (insertelement poison, V, 0), poison, zeroinitializer`;
+    // llvmkit stores the splat, which `Constant::kind` classifies as that
+    // expression.
+    splat_canonical(module, splat_slot)
 }
 
 // --------------------------------------------------------------------------
@@ -1095,6 +1156,17 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Constant<'ctx, B, C> {
             // `dyn_cast<ConstantDataVector>` and `dyn_cast<ConstantVector>`,
             // one element list here; the loop below is their `getSplatValue`.
             ValueKindData::Constant(ConstantData::Aggregate(_)) => {}
+            // Every lane is the element, which is no `poison`: both
+            // `getSplatValue`s answer it whatever `AllowPoison` says, and so
+            // does the constant-expression form a scalable splat is upstream.
+            ValueKindData::Constant(ConstantData::Splat { element }) => {
+                let module = self.module;
+                return Some(Constant::from_parts(Value::from_parts(
+                    *element,
+                    module,
+                    module.value_data(*element).ty,
+                )));
+            }
             // The constant-expression splat `ConstantVector::getSplat` builds.
             ValueKindData::Constant(ConstantData::Expr(_)) => {
                 return self.constant_expression_splat_value();
@@ -1273,6 +1345,12 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Constant<'ctx, B, C> {
             ConstantData::TokenNone => ConstantKind::Data(ConstantDataKind::TokenNone),
             ConstantData::TargetExtNone => ConstantKind::Data(ConstantDataKind::TargetNone),
             ConstantData::Aggregate(elements) => self.element_list_kind(elements),
+            // A splat is classified as its lanes would be: every lane is
+            // `element`, so `getSequenceIfElementsMatch` over the lanes is its
+            // answer over the one element.
+            ConstantData::Splat { element } => {
+                self.element_list_kind(core::slice::from_ref(element))
+            }
             ConstantData::AggregateZero => ConstantKind::Data(ConstantDataKind::AggregateZero),
             ConstantData::Expr(expr) => ConstantKind::Expr(expr.opcode),
             // llvmkit's compact forms, each printed as the constant expression
@@ -1438,6 +1516,21 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Constant<'ctx, B, C> {
                     slot,
                     module,
                     module.value_data(slot).ty,
+                )))
+            }
+            // The same arm for a fixed splat, a `ConstantDataVector` or a
+            // `ConstantVector` upstream: every lane is the element. A scalable
+            // splat is upstream's `shufflevector` expression and reaches the
+            // bail-out below.
+            ConstantData::Splat { element } if !scalable => {
+                if index >= aggregate_element_count(data)? {
+                    return None;
+                }
+                let module = self.module;
+                Some(Constant::from_parts(Value::from_parts(
+                    *element,
+                    module,
+                    module.value_data(*element).ty,
                 )))
             }
             // `if (const auto *CAZ = dyn_cast<ConstantAggregateZero>(this))

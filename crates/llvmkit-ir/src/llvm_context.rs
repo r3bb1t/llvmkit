@@ -115,6 +115,12 @@ pub(crate) struct Context {
     aggregate_constants: RefCell<AggregateConstantMap>,
     /// `LLVMContextImpl::CAZConstants`: one `ConstantAggregateZero` per type.
     aggregate_zero_constants: RefCell<HashMap<TypeSlot, ValueSlot>>,
+    /// One [`ConstantData::Splat`] per vector type and element. Upstream keeps
+    /// a splat in whichever map its class lives in (`CDSConstants` for a
+    /// `ConstantDataVector`, `VectorConstants` for a `ConstantVector`, the
+    /// `ExprConstants` for a scalable `shufflevector`); llvmkit stores every
+    /// splat as its one element, so it has one map of its own.
+    splat_constants: RefCell<HashMap<(TypeSlot, ValueSlot), ValueSlot>>,
     expr_constants: RefCell<HashMap<ConstantExprData, ValueSlot>>,
     block_address_constants: RefCell<HashMap<(TypeSlot, ValueSlot, ValueSlot), ValueSlot>>,
     dso_local_equivalent_constants: RefCell<HashMap<(TypeSlot, ValueSlot), ValueSlot>>,
@@ -231,6 +237,7 @@ impl Context {
             poison_constants: RefCell::new(HashMap::new()),
             aggregate_constants: RefCell::new(HashMap::new()),
             aggregate_zero_constants: RefCell::new(HashMap::new()),
+            splat_constants: RefCell::new(HashMap::new()),
             expr_constants: RefCell::new(HashMap::new()),
             block_address_constants: RefCell::new(HashMap::new()),
             dso_local_equivalent_constants: RefCell::new(HashMap::new()),
@@ -1185,6 +1192,29 @@ impl Context {
             use_list: core::cell::RefCell::new(Vec::new()),
         });
         self.aggregate_zero_constants.borrow_mut().insert(ty, id);
+        id
+    }
+
+    /// The splat of `element` at the vector type `ty`, uniqued per pair. The
+    /// caller has applied `ConstantVector::getSplat`'s canonicalisation, so
+    /// `element` is no null, `undef` or `poison` (those are the zero and the
+    /// two markers). One use of `element` is registered, through
+    /// [`ConstantData::for_each_operand`]; see `docs/divergences.md` D39 for
+    /// what that means for a `ConstantVector` splat.
+    pub(crate) fn intern_constant_splat(&self, ty: TypeSlot, element: ValueSlot) -> ValueSlot {
+        let key = (ty, element);
+        if let Some(&id) = self.splat_constants.borrow().get(&key) {
+            return id;
+        }
+        let id = self.push_value(ValueData {
+            ty,
+            name: core::cell::RefCell::new(None),
+            debug_loc: None,
+            kind: ValueKindData::Constant(ConstantData::Splat { element }),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        });
+        self.register_constant_operand_uses(id);
+        self.splat_constants.borrow_mut().insert(key, id);
         id
     }
 

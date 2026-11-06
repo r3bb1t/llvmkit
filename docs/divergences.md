@@ -1198,6 +1198,34 @@ attributes, as `llvm-dis` output does.
 
 **Guarded by:** nothing pins the fallback's answer on its own.
 
+### D39 — A fixed splat of a value with a use list is one use of it, not one per lane
+
+**Severity:** wrong-output (narrow): a use count and a `uselistorder` shuffle.
+**Where:** `crates/llvmkit-ir/src/constant.rs` — `ConstantData::Splat` and its arm of
+`ConstantData::for_each_operand`; `crates/llvmkit-ir/src/llvm_context.rs` —
+`Context::intern_constant_splat`.
+
+**LLVM:** a fixed vector whose lanes are all one value that is no `ConstantInt` or `ConstantFP`
+of a `ConstantDataSequential` element type — `<2 x ptr> <ptr @g, ptr @g>`, or `splat (ptr @g)`
+— is a `ConstantVector` (`ConstantVector::getImpl`, `getSplat`'s `get(Elts)`), and each lane is
+an operand, so `@g` has one use per lane. A `ConstantDataVector` has no operands, and a
+scalable splat's `insertelement` uses the value once.
+
+**llvmkit:** every splat is stored as its one element (`ConstantData::Splat`, so that
+`<4294967295 x ptr> splat (ptr @g)` costs one constant), and it registers one use of that
+element. For the `ConstantVector` case only, `@g`'s use list therefore holds one edge from the
+splat where upstream's holds one per lane, which changes `num_uses` and the `uselistorder`
+directive the printer predicts for `@g`.
+
+**Why:** an edge per lane would make the use list as long as the lane count, which is the
+allocation the storage exists to avoid. Before this entry, `rg -n -i "splat" docs/divergences.md`
+printed no entry on use counts.
+
+**Fix:** none planned that keeps the storage bounded. A use edge carrying a lane multiplicity
+would let the count and the order be upstream's.
+
+**Guarded by:** nothing pins it.
+
 ---
 
 ---

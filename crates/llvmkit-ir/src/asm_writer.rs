@@ -822,6 +822,7 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         ConstantData::Undef => f.write_str("undef"),
         ConstantData::Poison => f.write_str("poison"),
         ConstantData::Aggregate(elems) => fmt_aggregate_constant(f, host, elems),
+        ConstantData::Splat { element } => fmt_splat_constant(f, host, *element),
         // `if (isa<ConstantAggregateZero>(CV) || isa<ConstantTargetNone>(CV))
         // { Out << "zeroinitializer"; return; }`
         ConstantData::AggregateZero => f.write_str("zeroinitializer"),
@@ -1531,13 +1532,11 @@ fn is_int_or_fp_splat_value(module: &ModuleCore, id: ValueSlot) -> bool {
 /// a minimum, not a count, so a list cannot describe the lanes one for one and
 /// LLVM would reject the text. `splat (…)` is the only form it has, whatever
 /// the element category, so the int/fp restriction must not apply. Upstream
-/// never faces the question: `ConstantVector::get` takes a fixed count, so a
-/// scalable vector constant with an element list cannot exist there. llvmkit
-/// builds one deliberately — it is how a scalable splat is represented, see
-/// `constant_fold::vector_splat_constant` — which is why the printer has to
-/// know the difference. `VectorType::const_vector` requires a scalable
-/// constant's lanes to agree, so every scalable aggregate that reaches here
-/// takes this arm and the element-list fallback below is fixed-width only.
+/// prints its scalable splat, a `shufflevector` expression, as `splat (…)` for
+/// the same reason. llvmkit stores every scalable vector constant that is no
+/// zero, `undef` or `poison` as a `ConstantData::Splat`, so every scalable
+/// constant that reaches here takes this arm and the element-list fallbacks
+/// are fixed-width only.
 fn prints_as_splat<B: ModuleBrand, C: Capability>(
     module: &ModuleCore,
     ty: Type<'_, B, C>,
@@ -1606,6 +1605,38 @@ fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         fmt_operand(f, v, None)?;
     }
     f.write_str(close)
+}
+
+/// A [`ConstantData::Splat`], printed as its lanes would be: `splat (…)` where
+/// [`prints_as_splat`] says so (a fixed `ConstantInt` / `ConstantFP` splat,
+/// and every scalable one), otherwise each lane in a `< … >` list, as
+/// `writeConstantInternal` writes a `ConstantVector` whose splat value is no
+/// `ConstantInt` or `ConstantFP`. The lanes are written one by one rather than
+/// collected, so a long splat costs its output and nothing more.
+fn fmt_splat_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    f: &mut fmt::Formatter<'_>,
+    host: Value<'ctx, B, C>,
+    element: ValueSlot,
+) -> fmt::Result {
+    let module = host.module();
+    let ty = host.ty();
+    let value = Value::from_parts(element, module, module.context().value_data(element).ty);
+    if prints_as_splat(module.core_ref(), ty, element) {
+        f.write_str("splat (")?;
+        fmt_operand(f, value, None)?;
+        return f.write_str(")");
+    }
+    // `prints_as_splat` answers `true` for every scalable vector, so this is a
+    // fixed one, and its lane count is its length.
+    let lanes = ty.data().as_vector().map_or(0, |(_, lanes, _)| lanes.get());
+    f.write_str("<")?;
+    for lane in 0..lanes {
+        if lane != 0 {
+            f.write_str(", ")?;
+        }
+        fmt_operand(f, value, None)?;
+    }
+    f.write_str(">")
 }
 
 // --------------------------------------------------------------------------

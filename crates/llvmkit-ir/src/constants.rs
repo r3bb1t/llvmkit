@@ -31,7 +31,7 @@ use super::capability::{CanMutate, Capability, CapabilityOf, Mutable, ReadOnly};
 use super::constant::{
     CanonicalAggregate, Constant, ConstantData, ConstantExprData, ConstantExprFlags,
     ConstantExprOpcode, ForwardRefValue, IntoConstantValue, IsConstant, Undefined,
-    canonical_aggregate,
+    canonical_aggregate, splat_canonical,
 };
 use super::constant_fold::{
     constant_fold_binary_instruction_trusting_same_module,
@@ -1238,14 +1238,15 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, Cap: Capability>
     /// element-list constant is *always* fixed-width there and a scalable
     /// vector constant can only be born from
     /// `ConstantVector::getSplat(ElementCount, V)` — one value, replicated.
-    /// llvmkit stores a scalable splat as `min_len` equal elements (see
-    /// `constant_fold::vector_splat_constant`), which is a representation
-    /// choice, not a licence to describe lanes upstream cannot: the list must
-    /// have exactly `min_len` entries and every entry must be the same
-    /// constant, so what this builds is `getSplat` under llvmkit's spelling
-    /// and nothing else. Without that rule a non-uniform scalable constant is
-    /// constructible and prints text neither LLVM nor llvmkit's own `.ll`
-    /// parser will read back.
+    /// Here a scalable list must have exactly `min_len` entries, every entry
+    /// the same constant, so what this builds is `getSplat` under another
+    /// spelling and nothing else ([`Self::const_splat`] is the direct one).
+    /// Without that rule a non-uniform scalable constant is constructible and
+    /// prints text neither LLVM nor llvmkit's own `.ll` parser will read back.
+    ///
+    /// A list whose lanes are all one constant is stored as that constant,
+    /// as [`Self::const_splat`] stores it, so the two spellings are one
+    /// constant.
     pub fn const_vector<C, I>(self, elements: I) -> IrResult<ConstantAggregate<'ctx, B, Cap>>
     where
         I: IntoIterator<Item = C>,
@@ -1282,6 +1283,40 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, Cap: Capability>
             });
         }
         Ok(intern_aggregate(self.as_type(), ids.into_boxed_slice()))
+    }
+
+    /// `<N x T> splat (T V)`. Mirrors `ConstantVector::getSplat(ElementCount,
+    /// V)` at this type's element count: the zero, `undef` or `poison` its
+    /// canonicalisation names, and otherwise the splat, which stores the one
+    /// element whatever the lane count, so `<4294967295 x i32> splat (i32 1)`
+    /// costs one constant. Upstream's fixed branch builds every lane (a
+    /// `ConstantDataVector` or a `ConstantVector`) and its scalable branch a
+    /// `shufflevector` expression; [`Constant::kind`] answers those classes.
+    ///
+    /// `element` must be of this type's element type, as
+    /// `VectorType::get(V->getType(), EC)` makes it upstream.
+    pub fn const_splat<C>(self, element: C) -> IrResult<ConstantAggregate<'ctx, B, Cap>>
+    where
+        C: IntoConstantValue<'ctx, B>,
+    {
+        let value = element.into_constant(self.module)?.as_erased();
+        if value.ty().slot_trusting_same_module() != self.element().slot_trusting_same_module() {
+            return Err(IrError::TypeIdentityMismatch {
+                expected: self.element().rendered(),
+                got: value.ty().rendered(),
+            });
+        }
+        let ty = self.as_type();
+        let module = ty.module;
+        let slot = ty.slot_trusting_same_module();
+        let id = intern_canonical_aggregate(
+            module.module(),
+            slot,
+            splat_canonical(module, value.slot_trusting_same_module()),
+        );
+        Ok(ConstantAggregate::from_parts(constant_handle(
+            id, module, slot,
+        )))
     }
 }
 
@@ -1950,9 +1985,6 @@ fn vector_splat_constant(
     scalar: ValueSlot,
     count: ElementCount,
 ) -> IrResult<ValueSlot> {
-    let lane_count = usize::try_from(count.min.get()).map_err(|_| IrError::InvalidOperation {
-        message: "invalid getelementptr constant expression",
-    })?;
     let module_ref = ModuleRef::<DynBrand, ReadOnly>::new(module);
     let elem_ty = Type::new(module.context().value_data(scalar).ty, module_ref);
     // `ConstantVector::getSplat`'s `VectorType::get(V->getType(), EC)`: the
@@ -1963,7 +1995,13 @@ fn vector_splat_constant(
         module_ref.vector_type(elem_ty, count.min)?
     }
     .as_type();
-    Ok(intern_aggregate(vector_ty, vec![scalar; lane_count].into_boxed_slice()).id)
+    // `ConstantVector::getSplat(EC, V)`, through its canonicalisation rather
+    // than a list of `EC` lanes, so the cost does not depend on the count.
+    Ok(intern_canonical_aggregate(
+        module,
+        vector_ty.slot_trusting_same_module(),
+        splat_canonical(module_ref, scalar),
+    ))
 }
 /// Ports the mask-value tail of `ShuffleVectorInst::isValidOperands(const
 /// Value *V1, const Value *V2, const Value *Mask)` (`Instructions.cpp`),
@@ -2024,6 +2062,14 @@ pub(crate) fn valid_shufflevector_mask_constant(
                     ValueKindData::Constant(ConstantData::Int(_))
                 ) && const_index_u64(module, *element).is_some_and(|value| value < bound)
             })
+        }
+        // The same per-lane test, every lane being the element. The element
+        // is no `undef` or `poison` (those masks are the markers above).
+        ValueKindData::Constant(ConstantData::Splat { element }) => {
+            matches!(
+                &module.context().value_data(*element).kind,
+                ValueKindData::Constant(ConstantData::Int(_))
+            ) && const_index_u64(module, *element).is_some_and(|value| value < bound)
         }
         _ => false,
     }
@@ -2379,6 +2425,21 @@ fn constant_with_replaced_operand(
                 elements,
                 from_id,
                 replacement_id,
+            )))
+        }
+        // `ConstantVector::handleOperandChangeImpl` replaces every lane equal
+        // to `From`, which for a splat is every lane, and asks `getImpl` of
+        // the result: the splat of `To`, through `getSplat`'s canonicalisation.
+        // A newly interned splat is the in-place update, as an aggregate's is.
+        ConstantData::Splat { element } => {
+            if *element != from_id {
+                return Ok(None);
+            }
+            let module_ref = ModuleRef::<DynBrand, ReadOnly>::new(module);
+            Ok(Some(intern_canonical_aggregate(
+                module,
+                ty,
+                splat_canonical(module_ref, replacement_id),
             )))
         }
         ConstantData::Expr(expr) => {
@@ -3289,7 +3350,7 @@ pub(crate) fn intern_element_list(
 }
 
 /// The uniqued constant `canonical` names, at type `ty`.
-fn intern_canonical_aggregate(
+pub(crate) fn intern_canonical_aggregate(
     module: &ModuleCore,
     ty: TypeSlot,
     canonical: CanonicalAggregate,
@@ -3299,6 +3360,7 @@ fn intern_canonical_aggregate(
         CanonicalAggregate::Zero => context.intern_constant_aggregate_zero(ty),
         CanonicalAggregate::Undefined(Undefined::Undef) => context.intern_constant_undef(ty),
         CanonicalAggregate::Undefined(Undefined::Poison) => context.intern_constant_poison(ty),
+        CanonicalAggregate::Splat(element) => context.intern_constant_splat(ty, element),
     }
 }
 

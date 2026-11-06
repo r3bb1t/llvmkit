@@ -94,3 +94,39 @@ fn the_whole_vector_shortcuts_answer_before_the_element_loop() {
         .expect("zeroinitializer splats");
     assert!(zero.ty().is_integer());
 }
+
+/// A `splat` of a lane count past addressable memory parses, splats and prints
+/// back, and a written-out list of equal lanes is the same constant as its
+/// `splat` spelling.
+///
+/// **No upstream counterpart**: upstream's `LLParser::convertValIDToValue`
+/// reaches `ConstantVector::getSplat` for `splat (…)`, which builds every lane,
+/// so `@huge` costs one constant only here (hardening, `ConstantData::Splat`).
+/// The round trip and the shared identity are what upstream answers: `@list`
+/// and `@spelled` are one `ConstantDataVector`, which `writeConstantInternal`
+/// prints as `splat (i32 7)`.
+#[test]
+fn a_splat_of_any_length_is_one_constant() {
+    let source = "@huge = global <4294967295 x i32> splat (i32 1)\n\
+                  @list = global <4 x i32> <i32 7, i32 7, i32 7, i32 7>\n\
+                  @spelled = global <4 x i32> splat (i32 7)\n";
+    let module = parser::parse_dynamic(source).expect("parses");
+    let huge = initializer(&module, "huge");
+    assert_eq!(
+        huge.splat_value(false).map(|one| one.to_string()),
+        Some("i32 1".to_string())
+    );
+    assert_eq!(
+        initializer(&module, "list"),
+        initializer(&module, "spelled")
+    );
+    let printed = format!("{module}");
+    assert!(
+        printed.contains("@huge = global <4294967295 x i32> splat (i32 1)"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("@list = global <4 x i32> splat (i32 7)"),
+        "{printed}"
+    );
+}

@@ -8642,13 +8642,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 loc,
             });
         }
-        let len = usize::try_from(vec_ty.min_len().get()).map_err(|_| ParseError::Expected {
-            expected: "vector type for splat constant".into(),
-            loc,
-        })?;
-        let elements = vec![scalar; len];
+        // `ConstantVector::getSplat(cast<VectorType>(Ty)->getElementCount(),
+        // ID.ConstantVal)`, which stores no lane list, so a long vector costs
+        // one constant.
         vec_ty
-            .const_vector(elements)
+            .const_splat(scalar)
             .map(|c| c.as_constant())
             .map_err(|e| self.builder_err_at(loc, "splat constant", e))
     }
