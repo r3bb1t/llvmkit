@@ -720,33 +720,25 @@ fn a_scalable_splat_is_read_as_the_shuffle_it_prints_as() {
 /// An `insertelement` or `extractelement` of a scalable vector, at a lane
 /// below its known minimum length, cannot create poison.
 ///
-/// The two rows at lane 4 are upstream's, from
-/// `TEST(ValueTracking, canCreatePoisonOrUndef)` in
-/// `llvm/unittests/Analysis/ValueTrackingTest.cpp`, over its `%svx`. **The
-/// rows at lane 3 have no upstream counterpart**: they are its fixed-width
+/// **No upstream counterpart.** The rows are
+/// `TEST(ValueTracking, canCreatePoisonOrUndef)`'s fixed-width
 /// `extractelement <4 x i32> %vx, i32 3` and `insertelement <4 x i32> %vx, i32
-/// %x, i32 3` rows over `%svx`. The oracle is the arm itself, `return !Idx ||
+/// %x, i32 3` rows, asked over its scalable `%svx` instead. The oracle is the
+/// arm itself, `return !Idx ||
 /// Idx->getValue().uge(VTy->getElementCount().getKnownMinValue());`: a
 /// scalable vector is at least its known minimum long, so a lane below it is
-/// in range.
+/// in range. The control is upstream's own pair of lane-4 rows over `%svx`,
+/// which [`can_create_poison_or_undef`] ports with the rest of that table.
 #[test]
 fn a_scalable_lane_below_the_known_minimum_is_in_range() {
-    let rows: [((bool, bool), &str); 4] = [
+    let rows: [((bool, bool), &str); 2] = [
         (
             (false, false),
             "extractelement <vscale x 4 x i32> %svx, i32 3",
         ),
         (
-            (true, false),
-            "extractelement <vscale x 4 x i32> %svx, i32 4",
-        ),
-        (
             (false, false),
             "insertelement <vscale x 4 x i32> %svx, i32 %x, i32 3",
-        ),
-        (
-            (true, false),
-            "insertelement <vscale x 4 x i32> %svx, i32 %x, i32 4",
         ),
     ];
     let mut source = String::from("define void @f(<vscale x 4 x i32> %svx, i32 %x) {\n");
@@ -929,7 +921,9 @@ exit:
 /// `Index`-th row. `canCreatePoison` and `canCreateUndefOrPoison` are called
 /// as upstream calls them, with the default `ConsiderFlagsAndMetadata = true`.
 /// `EXPECT_EQ` does not stop at a failure, so every mismatch is collected and
-/// the test fails once, naming them all, with upstream's messages.
+/// the test fails once, naming them all. Each message is upstream's prefix
+/// ("Incorrect answer of canCreatePoison at instruction N = "); where upstream
+/// streams the printed instruction after it, the row's own IR text stands in.
 ///
 /// One assertion is llvmkit's: the walk must reach as many instructions as
 /// there are rows. Upstream needs no such check, because its parser keeps each
@@ -1263,6 +1257,83 @@ fn can_create_poison_reads_every_annotation_and_arm() {
             !can_create_poison(instruction, false),
             "row {index} without its annotations: {}",
             rows[index].1
+        );
+    }
+}
+
+/// An `invoke` and a `callbr` answer `canCreatePoison` through the same
+/// `CallBase` reads a `call` does.
+///
+/// **No upstream counterpart**: `TEST(ValueTracking, canCreatePoisonOrUndef)`
+/// asks only `call`s. The oracles are `Instruction::hasPoisonGeneratingReturnAttributes`
+/// (`Instruction.cpp`), whose `dyn_cast<CallBase>` admits both, and
+/// `canCreateUndefOrPoison`'s `case Instruction::CallBr: case
+/// Instruction::Invoke:` arm, `!CB->hasRetAttr(Attribute::NoUndef) &&
+/// !CB->hasFnAttr(Attribute::NoCreateUndefOrPoison)`, with `hasRetAttr`'s
+/// `getCalledFunction()` fallback. A `range` return attribute makes each
+/// poison-generating, a `noundef` one, written or declared, makes each unable
+/// to create poison, and the plain one of each kind is the control.
+#[test]
+fn the_invoke_and_callbr_arms_read_the_same_attributes_as_a_call() {
+    let module = parse(
+        r"
+declare i32 @g(i32)
+declare noundef i32 @h(i32)
+declare i32 @personality(...)
+
+define void @test(i32 %x) personality ptr @personality {
+entry:
+  %invoke.range = invoke noundef range(i32 0, 10) i32 @g(i32 %x) to label %b1 unwind label %lp
+
+b1:
+  %invoke.noundef = invoke noundef i32 @g(i32 %x) to label %b2 unwind label %lp
+
+b2:
+  %invoke.declared = invoke i32 @h(i32 %x) to label %b3 unwind label %lp
+
+b3:
+  %invoke.plain = invoke i32 @g(i32 %x) to label %b4 unwind label %lp
+
+b4:
+  %callbr.range = callbr noundef range(i32 0, 10) i32 @g(i32 %x) to label %b5 []
+
+b5:
+  %callbr.noundef = callbr noundef i32 @g(i32 %x) to label %b6 []
+
+b6:
+  %callbr.declared = callbr i32 @h(i32 %x) to label %b7 []
+
+b7:
+  %callbr.plain = callbr i32 @g(i32 %x) to label %b8 []
+
+b8:
+  ret void
+
+lp:
+  %pad = landingpad { ptr, i32 } cleanup
+  ret void
+}
+",
+    );
+    for kind in ["invoke", "callbr"] {
+        let value = |suffix: &str| named_value(&module, &format!("{kind}.{suffix}"));
+        assert!(
+            can_create_poison(value("range"), true),
+            "{kind} noundef range: the range return attribute is poison-generating"
+        );
+        assert!(
+            !can_create_poison(value("range"), false),
+            "{kind} noundef range, no annotations: noundef settles the CallBase arm"
+        );
+        assert!(!can_create_poison(value("noundef"), true), "{kind} noundef");
+        assert!(
+            !can_create_poison(value("declared"), true),
+            "{kind} of a function declared noundef"
+        );
+        assert!(can_create_poison(value("plain"), true), "{kind} plain");
+        assert!(
+            can_create_undef_or_poison(value("plain"), true),
+            "{kind} plain"
         );
     }
 }
