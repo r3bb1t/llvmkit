@@ -16,7 +16,7 @@ fn main() {
         .add_typed_function::<(), (), _>("sink", Linkage::External)
         .unwrap()
         .as_function();
-    let caller_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<_>>::new());
+    let caller_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<_>>::new()).expect("valid function type");
     let caller = m.add_function_dyn("c", caller_ty, Linkage::External).unwrap();
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);

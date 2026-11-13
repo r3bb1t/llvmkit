@@ -32,8 +32,8 @@ fn cast_is_valid_answers_upstreams_cast_inst_assertions() {
     let i16_ty = m.i16_type();
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
-    let ptr_as1_ty = m.ptr_type(1);
+    let ptr_ty = m.ptr_type_in::<0>();
+    let ptr_as1_ty = m.ptr_type_in::<1>();
 
     let v2_int32 = VectorType::of(i32_ty, lanes::<2>()).as_type();
     let v2_int64 = VectorType::of(i64_ty, lanes::<2>()).as_type();
@@ -103,7 +103,7 @@ fn build_trunc_emits_trunc_to_dst_type() -> Result<(), IrError> {
     let m = module_new!("t")?;
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let fn_ty = m.function_type(i32_ty, [i64_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i64_ty.as_type()])?;
     let f = m.add_function_dyn("narrow", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -140,7 +140,7 @@ fn build_trunc_dyn_runtime_check_widening_rejected() -> Result<(), IrError> {
     let m = module_new!("t")?;
     let dyn_i32: IntType<'_, IntDyn, _> = m.custom_width_int_type(32)?;
     let dyn_i64: IntType<'_, IntDyn, _> = m.custom_width_int_type(64)?;
-    let fn_ty = m.function_type(dyn_i64.as_type(), [dyn_i32.as_type()]);
+    let fn_ty = m.function_type(dyn_i64.as_type(), [dyn_i32.as_type()])?;
     let f = m.add_function_dyn("bad", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -166,7 +166,7 @@ fn build_trunc_preserves_anonymous_slot_naming() -> Result<(), IrError> {
     let m = module_new!("t")?;
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let fn_ty = m.function_type(i32_ty, [i64_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i64_ty.as_type()])?;
     let f = m.add_function_dyn("anon", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -186,7 +186,7 @@ fn build_zext_static_static_emits_zext() -> Result<(), IrError> {
     let m = module_new!("z")?;
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let fn_ty = m.function_type(i64_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i64_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("widen", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -206,7 +206,7 @@ fn build_sext_static_static_emits_sext() -> Result<(), IrError> {
     let m = module_new!("s")?;
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let fn_ty = m.function_type(i64_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i64_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("widen", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -227,7 +227,7 @@ fn default_constant_folder_folds_zext_to_constant() -> Result<(), IrError> {
     let m = module_new!("zext-fold")?;
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let fn_ty = m.function_type(i64_ty, Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let fn_ty = m.function_type(i64_ty, Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("widen", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -247,7 +247,7 @@ fn typed_zext_nneg_prints_flag() -> Result<(), IrError> {
     let m = module_new!("z")?;
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let fn_ty = m.function_type(i64_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i64_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("widen", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -273,7 +273,7 @@ fn typed_trunc_nuw_nsw_prints_flags() -> Result<(), IrError> {
     let m = module_new!("t")?;
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let fn_ty = m.function_type(i32_ty, [i64_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i64_ty.as_type()])?;
     let f = m.add_function_dyn("narrow", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -296,7 +296,7 @@ fn typed_uitofp_nneg_prints_flag() -> Result<(), IrError> {
     let m = module_new!("u")?;
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
-    let fn_ty = m.function_type(f32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(f32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("to_float", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

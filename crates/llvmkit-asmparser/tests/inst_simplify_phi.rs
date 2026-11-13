@@ -147,3 +147,66 @@ EXIT:
     let printed = instsimplify(src, "only_poison");
     assert!(printed.contains("ret i8 poison"), "{printed}");
 }
+
+/// A phi of an `icmp samesign` and `undef` survives, because the compare can
+/// be poison.
+///
+/// **No upstream counterpart.** It is `@undef` above with the common value an
+/// `icmp samesign` over two `noundef` arguments instead of an argument. The
+/// oracle is `simplifyPHINode`'s `if (HasUndefInput &&
+/// !isGuaranteedNotToBePoison(CommonValue, Q.AC, Q.CxtI, Q.DT)) return
+/// nullptr;` (`InstructionSimplify.cpp`) with
+/// `Operator::hasPoisonGeneratingFlags`'s `case Instruction::ICmp: return
+/// cast<ICmpInst>(this)->hasSameSign();` (`Operator.cpp`): `samesign` makes
+/// `canCreateUndefOrPoison` answer yes, so the compare is not proven free of
+/// poison and the `undef` is not replaced by it. `@plain` is the positive
+/// control: the same function without the flag, whose compare is well defined
+/// because its operands are `noundef`, so the phi folds to it.
+#[test]
+fn undef_incoming_does_not_fold_onto_a_samesign_compare() {
+    let src = "\
+define i1 @samesign(i1 %cond, i32 noundef %a, i32 noundef %b) {
+  %c = icmp samesign ult i32 %a, %b
+  br i1 %cond, label %A, label %B
+A:
+  br label %EXIT
+B:
+  br label %EXIT
+EXIT:
+  %w = phi i1 [%c, %A], [undef, %B]
+  ret i1 %w
+}
+
+define i1 @plain(i1 %cond, i32 noundef %a, i32 noundef %b) {
+  %c = icmp ult i32 %a, %b
+  br i1 %cond, label %A, label %B
+A:
+  br label %EXIT
+B:
+  br label %EXIT
+EXIT:
+  %w = phi i1 [%c, %A], [undef, %B]
+  ret i1 %w
+}
+";
+    let printed = instsimplify(src, "samesign");
+    let samesign = printed
+        .split("define i1 @plain")
+        .next()
+        .expect("split yields a first piece");
+    assert!(
+        samesign.contains("phi i1 [ %c, %A ], [ undef, %B ]"),
+        "the phi must survive:\n{printed}"
+    );
+
+    let printed = instsimplify(src, "plain");
+    let plain = printed
+        .split("define i1 @plain")
+        .nth(1)
+        .expect("the module prints @plain");
+    assert!(
+        !plain.contains("phi i1"),
+        "the phi must fold away:\n{printed}"
+    );
+    assert!(plain.contains("ret i1 %c"), "{printed}");
+}

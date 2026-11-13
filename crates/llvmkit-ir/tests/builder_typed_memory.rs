@@ -18,7 +18,9 @@ struct CpuState {
 /// Asserts the D3 requirement directly -- the typed `alloca`/`store`/
 /// `load` overlay must print byte-identical IR to the erased path
 /// (`alloca` + `store` + `int_load`), anchored on the
-/// same alloca/load/store forms as `tests/medium_builder_int.rs`.
+/// same alloca/load/store forms as `tests/medium_builder_int.rs`. A `u32`
+/// pointee is the control for the layout route: it must allocate the same
+/// `i32` slot the erased path names.
 #[test]
 fn typed_alloca_load_store_round_trip_prints_identically_to_erased() -> IrResult<()> {
     let typed = {
@@ -28,7 +30,11 @@ fn typed_alloca_load_store_round_trip_prints_identically_to_erased() -> IrResult
         let b = m.view(f).builder(&m).position_at_end(entry);
         let (x,) = m.view(f).params();
         let slot = b.typed_alloca::<i32, _>("slot")?;
+        // A `u32` pointee has the signless `i32` layout: the same slot type,
+        // and it stores the same `i32` value.
+        let unsigned = b.typed_alloca::<u32, _>("unsigned")?;
         b.typed_store(x, slot)?;
+        b.typed_store(x, unsigned)?;
         let v = b.typed_load(slot, "v")?; // IntValue<'_, i32, _> -- no try_into
         b.ret(v)?;
         format!("{m}")
@@ -40,7 +46,9 @@ fn typed_alloca_load_store_round_trip_prints_identically_to_erased() -> IrResult
         let b = m.view(f).builder(&m).position_at_end(entry);
         let (x,) = m.view(f).params();
         let slot = b.alloca(m.i32_type(), "slot")?;
+        let unsigned = b.alloca(m.i32_type(), "unsigned")?;
         b.store(x, slot)?;
+        b.store(x, unsigned)?;
         let v = b.int_load::<i32, _, _>(slot, "v")?;
         b.ret(v)?;
         format!("{m}")

@@ -33,7 +33,6 @@ use core::marker::PhantomData;
 use core::num::{NonZeroU32, NonZeroU64};
 use std::borrow::Cow;
 
-use llvmkit_ir::DataLayout;
 use llvmkit_ir::attributes::{
     AttrIndex, AttrKind, Attribute, AttributeStorage, MemoryEffects, MemoryLocation, ModRefInfo,
 };
@@ -45,6 +44,7 @@ use llvmkit_ir::metadata::{
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 
+use llvmkit_ir::{AddressSpace, ArrayType, DataLayout, FunctionValue, IsValue};
 use llvmkit_ir::{
     Align, AnyTypeEnum, ApFloat, ApFloatSemantics, ApFloatSign, ApInt, AtomicOrdering,
     AtomicRmwBinOp, CallingConv, CastOperation, Constant, ConstantExprFlags, ConstantExprInRange,
@@ -56,7 +56,6 @@ use llvmkit_ir::{
     Visibility, ZextFlags, derived_types::PointerType, resolve_intrinsic_name,
     shufflevector_mask_from_constant,
 };
-use llvmkit_ir::{ArrayType, FunctionValue, IsValue};
 use llvmkit_macros::Branded;
 use llvmkit_support::{Span, Spanned};
 
@@ -133,6 +132,14 @@ struct TypeEntry<'ctx, B: ModuleBrand> {
     /// *invalid* location means "defined". That one bit drives both
     /// `redefinition of type` and `use of undefined type`.
     forward_ref_loc: Option<Span>,
+}
+
+/// Which of upstream's two tables a `type` directive's entry is in.
+enum TypeEntryKey {
+    /// `NamedTypes[Name]`.
+    Named(String),
+    /// `NumberedTypes[TypeID]`.
+    Numbered(u32),
 }
 
 struct MetadataSlotEntry<B: ModuleBrand> {
@@ -294,9 +301,6 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
     named_types: HashMap<String, TypeEntry<'ctx, B>>,
     /// Numbered struct-type table (`%0 = type {...}`).
     numbered_types: HashMap<u32, TypeEntry<'ctx, B>>,
-    /// Slot id of the next anonymous numbered type, mirroring upstream's
-    /// `LLParser::NumberedTypes`'s `getNext()` discipline.
-    next_unnamed_type_id: u32,
 
     /// Numbered global / function table. Exposed via [`Parser::take_slot_mapping`].
     numbered_globals: NumberedValues<GlobalRef<'ctx, B>>,
@@ -345,9 +349,10 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
     /// and `convertValIDToValue` wraps whatever `getGlobalVal` returns —
     /// including the forward-reference placeholder — in a `NoCFIValue`, which
     /// re-interns itself through `handleOperandChange` when the placeholder is
-    /// RAUW'd. llvmkit's `ConstantData::NoCfi` deliberately does not register
-    /// an operand use (`docs/divergences.md` D2/D3), so nothing would rewrite
-    /// it; the wrapper is built at end of module instead. The *reference*
+    /// RAUW'd. llvmkit's `ConstantData::NoCfi` registers its operand use, but
+    /// the constant rewrite RAUW runs (`constant_with_replaced_operand` in
+    /// `llvmkit-ir`) has no `NoCfi` arm, so nothing would re-intern it; the
+    /// wrapper is built at end of module instead. The *reference*
     /// still goes into `forward_ref_globals` / `forward_ref_global_ids`
     /// exactly as `getGlobalVal` does, so an undefined referent is reported by
     /// upstream's own `ForwardRefVals` sweep, in its position and with its
@@ -1080,7 +1085,7 @@ fn global_ref_value_type_is_function<'ctx, B: ModuleBrand + 'ctx>(r: GlobalRef<'
 
 fn pointer_address_space_or_vector_element<'ctx, B: ModuleBrand + 'ctx>(
     ty: Type<'ctx, B>,
-) -> Option<u32> {
+) -> Option<AddressSpace> {
     match AnyTypeEnum::from(ty) {
         AnyTypeEnum::Pointer(ptr_ty) => Some(ptr_ty.address_space()),
         AnyTypeEnum::Vector(vector_ty) => match vector_ty.element().into_type_enum() {
@@ -1145,7 +1150,8 @@ fn is_valid_shufflevector<'ctx, B: ModuleBrand + 'ctx>(
 #[derive(Clone, Copy)]
 struct ParsedAliasHeader {
     linkage: Linkage,
-    dso_locality: llvmkit_ir::DsoLocality,
+    /// `parseOptionalDSOLocal`'s answer.
+    dso_local: bool,
     visibility: Visibility,
     dll_storage_class: DllStorageClass,
     thread_local_mode: ThreadLocalMode,
@@ -1181,7 +1187,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             module,
             named_types: HashMap::new(),
             numbered_types: HashMap::new(),
-            next_unnamed_type_id: 0,
             numbered_globals: NumberedValues::new(),
             numbered_attr_groups: NumberedValues::new(),
             deferred_block_addresses: Vec::new(),
@@ -1270,11 +1275,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 )
             })
             .collect();
-        parser.next_unnamed_type_id = slots
-            .numbered_types
-            .keys()
-            .next_back()
-            .map_or(0, |id| id.saturating_add(1));
         parser.metadata_slots = slots
             .metadata_nodes
             .iter()
@@ -1770,7 +1770,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 &item.attrs,
                 &item.attr_groups,
                 &item.expected_attrs,
-            )? {
+            ) {
                 return Err(self.intrinsic_attribute_error(item.loc));
             }
         }
@@ -1782,9 +1782,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         attrs: &AttributeStorage,
         attr_groups: &[u32],
         expected_attrs: &AttributeStorage,
-    ) -> ParseResult<bool> {
+    ) -> bool {
         if !attrs.is_subset_of(expected_attrs) {
-            return Ok(false);
+            return false;
         }
         self.intrinsic_declaration_attr_groups_match(attr_groups, expected_attrs)
     }
@@ -1793,21 +1793,21 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         &self,
         attr_groups: &[u32],
         expected_attrs: &AttributeStorage,
-    ) -> ParseResult<bool> {
+    ) -> bool {
         if attr_groups.is_empty() {
-            return Ok(true);
+            return true;
         }
         if Self::has_duplicate_attr_groups(attr_groups) {
-            return Ok(false);
+            return false;
         }
         let mut group_attrs = AttributeStorage::new();
         for group in attr_groups {
             let Some(attrs) = self.numbered_attr_groups.get(*group) else {
-                return Ok(false);
+                return false;
             };
             group_attrs.merge_from(attrs);
         }
-        Ok(group_attrs.has_only_index_attributes_subset_of(expected_attrs, AttrIndex::Function))
+        group_attrs.has_only_index_attributes_subset_of(expected_attrs, AttrIndex::Function)
     }
 
     fn intrinsic_declaration_attrs_are_pending(&self, attr_groups: &[u32]) -> bool {
@@ -2542,7 +2542,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// which is why `target datalayout` has to have been seen already —
     /// upstream guarantees that by parsing target definitions in their own
     /// pass before any entity.
-    fn parse_addr_space_paren(&mut self) -> ParseResult<u32> {
+    fn parse_addr_space_paren(&mut self) -> ParseResult<AddressSpace> {
         self.expect_punct(PunctKind::LParen, "'(' in address space")?;
         let addr_space = match self.peek() {
             Token::StringConstant(bytes) => {
@@ -2578,12 +2578,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let n = self.parse_uint32()?;
                 // `isUInt<24>` — upstream checks the parsed value, not the
                 // token, so the diagnostic points at the number.
-                if n >= (1 << 24) {
+                let Some(addr_space) = AddressSpace::new(n) else {
                     return Err(
                         self.message_at(loc, "invalid address space, must be a 24-bit integer")
                     );
-                }
-                n
+                };
+                addr_space
             }
             _ => return Err(self.expected("integer or string constant")),
         };
@@ -2593,7 +2593,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     /// `addrspace(...)` where omitting it means the *program* address space.
     /// Mirrors `LLParser::parseOptionalProgramAddrSpace`.
-    fn parse_optional_program_addr_space(&mut self) -> ParseResult<u32> {
+    fn parse_optional_program_addr_space(&mut self) -> ParseResult<AddressSpace> {
         if self.eat_keyword(Keyword::Addrspace)? {
             self.parse_addr_space_paren()
         } else {
@@ -6964,7 +6964,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // between them, and it is `parseNamedType` that says `after name`.
         self.expect_punct(PunctKind::Equal, "'=' after name")?;
         self.expect_keyword(Keyword::Type, "'type' after name")?;
-        self.parse_struct_definition(Some(name), None, name_loc)
+        let key = TypeEntryKey::Named(name);
+        let result = self.parse_struct_definition(name_loc, &key)?;
+        self.record_non_struct_type(name_loc, &key, result)
     }
 
     /// `%N = type ...` — mirrors `LLParser::parseUnnamedType`.
@@ -6979,163 +6981,201 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // the keyword, where `parseNamedType` says `after name` for both.
         self.expect_punct(PunctKind::Equal, "'=' after name")?;
         self.expect_keyword(Keyword::Type, "'type' after '='")?;
-        self.parse_struct_definition(None, Some(id), loc)
+        let key = TypeEntryKey::Numbered(id);
+        let result = self.parse_struct_definition(loc, &key)?;
+        self.record_non_struct_type(loc, &key, result)
     }
 
-    /// Common path between `parseNamedType` and `parseUnnamedType`. The
-    /// directive's RHS is restricted to a struct type (or `opaque`) per
-    /// upstream `parseStructDefinition`; non-struct RHS is a typed error.
+    /// The tail `LLParser::parseNamedType` and `parseUnnamedType` share: a
+    /// struct is in its entry already, or it is an alias to a struct, for which
+    /// upstream records nothing. A non-struct result that found its entry filled
+    /// was named by its own right-hand side.
+    fn record_non_struct_type(
+        &mut self,
+        loc: Span,
+        key: &TypeEntryKey,
+        result: Type<'ctx, B>,
+    ) -> ParseResult<()> {
+        if !result.is_struct() {
+            if self.type_entry(key).is_some() {
+                return Err(self.message_at(loc, "non-struct types may not be recursive"));
+            }
+            self.set_type_entry(
+                key,
+                TypeEntry {
+                    ty: result,
+                    forward_ref_loc: None,
+                },
+            );
+        }
+        Ok(())
+    }
+
     /// `%name = type ...` / `%N = type ...`. Mirrors
-    /// `LLParser::parseStructDefinition`.
+    /// `LLParser::parseStructDefinition`, statement by statement; the `Type`
+    /// returned is its `ResultTy`.
     ///
-    /// The table entry's `forward_ref_loc` is the whole state machine:
+    /// A key missing from its table is upstream's entry whose `first` is null.
+    /// The table entry's `forward_ref_loc` is the rest of the state machine:
     /// present means "referenced, not yet defined", absent means "defined".
     /// Upstream spells the same thing as the validity of the `LocTy` half of
     /// its `std::pair<Type *, LocTy>`.
     fn parse_struct_definition(
         &mut self,
-        name: Option<String>,
-        slot: Option<u32>,
-        decl_loc: Span,
-    ) -> ParseResult<()> {
-        let existing = match (&name, slot) {
-            (Some(n), None) => self.named_types.get(n.as_str()).copied(),
-            (None, Some(id)) => self.numbered_types.get(&id).copied(),
-            _ => unreachable!("parse_struct_definition called without a name xor slot"),
-        };
-        // Already defined once — `Entry.first && !Entry.second.isValid()`.
-        if let Some(entry) = existing
+        type_loc: Span,
+        key: &TypeEntryKey,
+    ) -> ParseResult<Type<'ctx, B>> {
+        let entry = self.type_entry(key);
+        // If the type was already defined, diagnose the redefinition.
+        if let Some(entry) = entry
             && entry.forward_ref_loc.is_none()
         {
-            return Err(self.message_at(decl_loc, "redefinition of type"));
+            return Err(self.message_at(type_loc, "redefinition of type"));
         }
 
-        // `%t = type opaque` counts as a definition even though it leaves the
-        // body unset, which is why a later `%t = type {i32}` is a redefinition.
+        // If we have opaque, just return without filling in the definition for
+        // the struct. This counts as a definition as far as the .ll file goes.
         if matches!(self.peek(), Token::Kw(Keyword::Opaque)) {
             self.bump()?;
-            let ty = match existing {
-                Some(entry) => entry.ty,
-                None => self.fresh_identified_struct(&name),
-            };
-            self.record_type_definition(name, slot, ty);
-            return Ok(());
+            return Ok(self.define_struct_entry(key, entry));
         }
 
-        // `<` here is either a packed struct body or a vector type alias.
+        // If the type starts with '<', then it is either a packed struct or a
+        // vector.
         let is_packed = self.eat_punct(PunctKind::Less)?;
+
+        // If we don't have a struct, then we have a random type alias, which
+        // we accept for compatibility with old files. These types are not
+        // allowed to be forward referenced and not allowed to be recursive.
         if !matches!(self.peek(), Token::LBrace) {
-            // A random type alias, accepted for compatibility with old files.
-            // These may not be forward referenced, because there is no
-            // identified struct to fill in later.
-            if existing.is_some() {
-                return Err(self.message_at(decl_loc, "forward references to non-struct type"));
+            if entry.is_some() {
+                return Err(self.message_at(type_loc, "forward references to non-struct type"));
             }
-            let aliased = if is_packed {
-                self.parse_array_or_vector_after_open(true)?
-            } else {
-                self.parse_type(false)?
-            };
-            self.record_type_definition(name, slot, aliased);
-            return Ok(());
+            if is_packed {
+                return self.parse_array_or_vector_after_open(true);
+            }
+            return self.parse_type(false);
         }
 
-        // `<` was already eaten above when present, so the two shapes take
-        // different helpers: the brace-only one when we are inside `<{...}>`,
-        // and the general one — which handles its own `<` — otherwise.
-        let (elements, packed) = if is_packed {
-            let (elements, _) = self.parse_struct_body_braces()?;
+        // The entry is made before the body is parsed, so a body that names
+        // this definition meets this struct.
+        let ty = self.define_struct_entry(key, entry);
+        let struct_ty: StructType<'ctx, llvmkit_ir::StructBodyDyn, B> = StructType::try_from(ty)
+            .unwrap_or_else(|_| {
+                unreachable!(
+                    "`cast<StructType>(Entry.first)`: an undefined entry is a forward \
+                     reference, which `parseType` creates as a struct"
+                )
+            });
+
+        let body = self.parse_struct_body()?;
+        if is_packed {
             self.expect_punct(PunctKind::Greater, "'>' in packed struct")?;
-            (elements, true)
-        } else {
-            self.parse_struct_body()?
-        };
+        }
 
-        let ty = match existing {
-            Some(entry) => entry.ty,
-            None => self.fresh_identified_struct(&name),
-        };
-        let handle: StructType<'ctx, llvmkit_ir::StructBodyDyn, B> = StructType::try_from(ty)
-            .map_err(|_| ParseError::Message {
-                message: "redefinition of type".into(),
-                loc: decl_loc,
-            })?;
+        // `setBodyOrError`'s message goes straight to `tokError`.
         self.module
-            .set_struct_body_dyn(handle, elements, packed)
-            .map_err(|e| match e {
-                // `parseStructDefinition` hands `setBodyOrError`'s message
-                // straight to `tokError`, so it is printed verbatim.
-                IrError::RecursiveStructBody { .. } => ParseError::Message {
-                    message: e.to_string().into(),
-                    loc: decl_loc,
-                },
-                other => ParseError::Expected {
-                    expected: format!("valid struct body: {other}").into(),
-                    loc: decl_loc,
-                },
-            })?;
-        self.record_type_definition(name, slot, ty);
-        Ok(())
+            .set_struct_body_dyn(struct_ty, body, is_packed)
+            .map_err(|e| self.message(e.to_string()))?;
+        Ok(ty)
     }
 
-    /// The identified struct a `type` directive defines when the name has not
-    /// been uttered before — named or anonymous, matching upstream's two
-    /// `StructType::create` overloads.
-    fn fresh_identified_struct(&self, name: &Option<String>) -> Type<'ctx, B> {
-        match name {
-            Some(n) => self.module.get_or_insert_named_struct(n).as_type(),
-            None => self.module.anonymous_identified_struct().as_type(),
-        }
-    }
-
-    /// Record a completed `type` definition, clearing the forward-reference
-    /// location so a second definition is caught as a redefinition.
-    fn record_type_definition(
+    /// The two statements `parseStructDefinition` opens each struct arm with:
+    /// clear the location to say this type is being defined, and if this name
+    /// or number has never been uttered, create it.
+    fn define_struct_entry(
         &mut self,
-        name: Option<String>,
-        slot: Option<u32>,
-        ty: Type<'ctx, B>,
-    ) {
-        let entry = TypeEntry {
-            ty,
-            forward_ref_loc: None,
+        key: &TypeEntryKey,
+        entry: Option<TypeEntry<'ctx, B>>,
+    ) -> Type<'ctx, B> {
+        let ty = match (entry, key) {
+            (Some(entry), _) => entry.ty,
+            (None, TypeEntryKey::Named(name)) => self.create_identified_struct(Some(name)),
+            (None, TypeEntryKey::Numbered(_)) => self.create_identified_struct(None),
         };
-        match (name, slot) {
-            (Some(n), _) => {
-                self.named_types.insert(n, entry);
-            }
-            (None, Some(id)) => {
-                self.numbered_types.insert(id, entry);
-                self.next_unnamed_type_id = self.next_unnamed_type_id.max(id.saturating_add(1));
-            }
-            (None, None) => unreachable!("a type definition is either named or numbered"),
+        self.set_type_entry(
+            key,
+            TypeEntry {
+                ty,
+                forward_ref_loc: None,
+            },
+        );
+        ty
+    }
+
+    /// Mirrors `StructType::create(Context, Name)`: always a new struct, and
+    /// `setName` keeps its name unique, so a name the module already uses takes
+    /// a `.N` suffix rather than meeting the struct that holds it.
+    fn create_identified_struct(&self, name: Option<&str>) -> Type<'ctx, B> {
+        let st = self.module.anonymous_identified_struct();
+        if let Some(name) = name {
+            self.module.set_struct_name(st, name).unwrap_or_else(|_| {
+                unreachable!(
+                    "a struct created on the line above is this module's, identified, \
+                     and held by no schema"
+                )
+            });
+        }
+        st.as_type()
+    }
+
+    /// The entry at `key`: `NamedTypes[Name]` or `NumberedTypes[TypeID]`.
+    fn type_entry(&self, key: &TypeEntryKey) -> Option<TypeEntry<'ctx, B>> {
+        match key {
+            TypeEntryKey::Named(name) => self.named_types.get(name).copied(),
+            TypeEntryKey::Numbered(id) => self.numbered_types.get(id).copied(),
         }
     }
 
-    /// Parse a struct body: `{ T, T, ... }` or `<{ T, T, ... }>` (packed).
-    fn parse_struct_body(&mut self) -> ParseResult<(Vec<Type<'ctx, B>>, bool)> {
-        let packed;
-        if self.eat_punct(PunctKind::Less)? {
-            packed = true;
-            self.expect_punct(PunctKind::LBrace, "'{' after '<' in packed struct")?;
-        } else {
-            packed = false;
-            self.expect_punct(PunctKind::LBrace, "'{' to start struct body")?;
-        }
-        let mut elems = Vec::new();
-        if !matches!(self.peek(), Token::RBrace) {
-            loop {
-                elems.push(self.parse_struct_element()?);
-                if !self.eat_punct(PunctKind::Comma)? {
-                    break;
-                }
+    /// Write the entry at `key`.
+    fn set_type_entry(&mut self, key: &TypeEntryKey, entry: TypeEntry<'ctx, B>) {
+        match key {
+            TypeEntryKey::Named(name) => {
+                self.named_types.insert(name.clone(), entry);
+            }
+            TypeEntryKey::Numbered(id) => {
+                self.numbered_types.insert(*id, entry);
             }
         }
-        self.expect_punct(PunctKind::RBrace, "'}' to close struct body")?;
-        if packed {
-            self.expect_punct(PunctKind::Greater, "'>' to close packed struct")?;
+    }
+
+    /// Mirrors `LLParser::parseStructBody`. Each caller stands on the `{`, as
+    /// upstream's `assert` says. The `<` of a packed struct and the `>` after it
+    /// belong to the caller: the two callers word that `>` differently.
+    fn parse_struct_body(&mut self) -> ParseResult<Vec<Type<'ctx, B>>> {
+        self.bump()?; // Consume the '{'
+
+        let mut body = Vec::new();
+        // Handle the empty struct.
+        if self.eat_punct(PunctKind::RBrace)? {
+            return Ok(body);
         }
-        Ok((elems, packed))
+
+        body.push(self.parse_struct_element()?);
+        while self.eat_punct(PunctKind::Comma)? {
+            body.push(self.parse_struct_element()?);
+        }
+
+        self.expect_punct(PunctKind::RBrace, "'}' at end of struct")?;
+        Ok(body)
+    }
+
+    /// Mirrors `LLParser::parseAnonStructType`: `StructType::get` of the body,
+    /// which `parse_struct_element` has checked element by element, so the
+    /// constructor's own refusal is a backstop only.
+    fn parse_anon_struct_type(
+        &mut self,
+        type_loc: Span,
+        packed: bool,
+    ) -> ParseResult<Type<'ctx, B>> {
+        let elements = self.parse_struct_body()?;
+        if packed {
+            self.module.packed_struct_type(elements)
+        } else {
+            self.module.struct_type(elements)
+        }
+        .map(|st| st.as_type())
+        .map_err(|e| self.builder_err_at(type_loc, "struct type", e))
     }
 
     // ── Type grammar (`LLParser::parseType`) ─────────────────────────────
@@ -7155,7 +7195,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                             self.bump()?;
                             self.parse_addr_space_paren()?
                         } else {
-                            0
+                            AddressSpace::DEFAULT
                         };
                         let ptr_ty: PointerType<'ctx, llvmkit_ir::SpaceDyn, B> =
                             self.module.ptr_type(addr_space);
@@ -7174,33 +7214,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         ty
                     }
                 }
-                Token::LBrace => {
-                    // `parse_struct_element` refused an invalid element at
-                    // its own location, as `LLParser::parseStructBody` does,
-                    // so the constructor's own refusal is a backstop only:
-                    // `LLParser::parseAnonStructType` calls `StructType::get`
-                    // with nothing after it that can fail.
-                    let (elems, packed) = self.parse_struct_body()?;
-                    if packed {
-                        self.module.packed_struct_type(elems)
-                    } else {
-                        self.module.struct_type(elems)
-                    }
-                    .map_err(|e| self.builder_err_at(type_loc, "struct type", e))?
-                    .as_type()
-                }
+                Token::LBrace => self.parse_anon_struct_type(type_loc, false)?,
                 Token::Less => {
                     // `<` introduces vector or `<{ packed-struct }>`.
                     self.bump()?; // eat `<`
                     if matches!(self.peek(), Token::LBrace) {
-                        let (elems, _was_packed_redundant) = self.parse_struct_body_braces()?;
+                        let packed = self.parse_anon_struct_type(type_loc, true)?;
                         self.expect_punct(PunctKind::Greater, "'>' at end of packed struct")?;
-                        // As in the `{` arm: the elements were checked where
-                        // they were parsed.
-                        self.module
-                            .packed_struct_type(elems)
-                            .map_err(|e| self.builder_err_at(type_loc, "struct type", e))?
-                            .as_type()
+                        packed
                     } else {
                         self.parse_array_or_vector_after_open(true)?
                     }
@@ -7244,7 +7265,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Token::Star => {
                     self.check_pointer_element(result, PointerSuffix::Star)?;
                     self.bump()?;
-                    result = self.module.ptr_type(0).as_type();
+                    result = self.module.ptr_type_in::<0>().as_type();
                 }
                 Token::Kw(Keyword::Addrspace) => {
                     self.check_pointer_element(result, PointerSuffix::AddrSpace)?;
@@ -7323,16 +7344,19 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         self.expect_punct(PunctKind::RParen, "')' in target extension type")?;
         let loc = self.loc();
-        let ty = self.module.target_ext_type(name, type_params, int_params);
-        // Upstream surfaces `TargetExtType::getOrError`'s message through
-        // `tokError`, so the arity complaint is the whole diagnostic.
-        ty.check_params().map_err(|e| match e {
-            IrError::InvalidOperation { message } => ParseError::Message {
-                message: message.into(),
-                loc,
-            },
-            other => self.builder_err("target extension type", other),
-        })?;
+        let ty = self
+            .module
+            .target_ext_type(name, type_params, int_params)
+            .map_err(|e| match e {
+                // Upstream surfaces `TargetExtType::getOrError`'s message
+                // through `tokError`, so the arity complaint is the whole
+                // diagnostic.
+                IrError::TargetExtTypeParameters { rule } => ParseError::Message {
+                    message: rule.to_string().into(),
+                    loc,
+                },
+                other => self.builder_err("target extension type", other),
+            })?;
         Ok(ty.as_type())
     }
 
@@ -7343,22 +7367,29 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // `vscale x N x T>` ?
         let scalable = if is_vector && matches!(self.peek(), Token::Kw(Keyword::Vscale)) {
             self.bump()?;
-            self.expect_keyword(Keyword::X, "'x' after 'vscale'")?;
+            self.expect_keyword(Keyword::X, "'x' after vscale")?;
             true
         } else {
             false
         };
-        // Upstream reads the count as an APSInt and only *then* range-checks
-        // it, so an over-large vector count is `size too large for vector`
-        // rather than a parse failure. Reading it as u64 here keeps that
-        // ordering.
+        // `Lex.getKind() != lltok::APSInt || Lex.getAPSIntVal().isSigned() ||
+        // Lex.getAPSIntVal().getBitWidth() > 64`. The word "address space" is
+        // upstream's, in a routine that reads a size. An over-large vector
+        // count fits in 64 bits and is `size too large for vector` below.
+        let size = self
+            .peek_unsigned_apsint()
+            .map(|lit| self.apsint_from_int_lit(lit))
+            .transpose()?
+            .filter(|size| size.bit_width() <= 64)
+            .ok_or_else(|| self.expected("number in address space"))?;
         let size_loc = self.loc();
-        let n = self.parse_uint64()?;
-        self.expect_keyword(Keyword::X, "'x' between count and element type")?;
+        let n = size.value.limited_value(u64::MAX);
+        self.bump()?;
+        self.expect_keyword(Keyword::X, "'x' after element count")?;
         let elem_loc = self.loc();
         let elem = self.parse_type(false)?;
         if is_vector {
-            self.expect_punct(PunctKind::Greater, "'>' at end of vector type")?;
+            self.expect_punct(PunctKind::Greater, "end of sequential type")?;
             let Some(lanes) = NonZeroU64::new(n) else {
                 return Err(self.message_at(size_loc, "zero element vector is illegal"));
             };
@@ -7376,7 +7407,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .map_err(|e| self.builder_err_at(elem_loc, "vector type", e))?;
             Ok(v.as_type())
         } else {
-            self.expect_punct(PunctKind::RSquare, "']' at end of array type")?;
+            self.expect_punct(PunctKind::RSquare, "end of sequential type")?;
             if !elem.is_valid_array_element() {
                 return Err(self.message_at(elem_loc, "invalid array element type"));
             }
@@ -7386,23 +7417,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .map_err(|e| self.builder_err_at(elem_loc, "array type", e))?;
             Ok(arr.as_type())
         }
-    }
-
-    fn parse_struct_body_braces(&mut self) -> ParseResult<(Vec<Type<'ctx, B>>, bool)> {
-        // Used after `<` is already eaten; the inner `{...}` then `>`. We
-        // re-use `parse_struct_body`'s logic without re-eating the `<`.
-        self.expect_punct(PunctKind::LBrace, "'{' after '<' in packed struct")?;
-        let mut elems = Vec::new();
-        if !matches!(self.peek(), Token::RBrace) {
-            loop {
-                elems.push(self.parse_struct_element()?);
-                if !self.eat_punct(PunctKind::Comma)? {
-                    break;
-                }
-            }
-        }
-        self.expect_punct(PunctKind::RBrace, "'}' in packed struct body")?;
-        Ok((elems, true))
     }
 
     /// One struct element, checked where `LLParser::parseStructBody` checks
@@ -7552,7 +7566,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
 
         let params: Vec<Type<'ctx, B>> = args.iter().map(|arg| arg.ty).collect();
-        let fn_ty = function_type_with_variadic(self.module, ret, params, var_args);
+        // The result was refused above and each parameter where it was parsed
+        // (`parse_argument_list`), as `LLParser::parseFunctionType` and
+        // `parseArgumentList` do, so the constructor's own refusal is a
+        // backstop only: `FunctionType::get` runs with nothing after it that
+        // can fail.
+        let fn_ty = function_type_with_variadic(self.module, ret, params, var_args)
+            .map_err(|e| self.builder_err("function type", e))?;
         Ok(fn_ty.as_type())
     }
 
@@ -7572,7 +7592,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             PrimitiveTy::X86Fp80 => Ok(m.x86_fp80_type().as_type()),
             PrimitiveTy::Fp128 => Ok(m.fp128_type().as_type()),
             PrimitiveTy::PpcFp128 => Ok(m.ppc_fp128_type().as_type()),
-            PrimitiveTy::Ptr => Ok(m.ptr_type(0).as_type()),
+            PrimitiveTy::Ptr => Ok(m.ptr_type_in::<0>().as_type()),
             PrimitiveTy::Integer(n) => m
                 .custom_width_int_type(n.get())
                 .map(|t| t.as_type())
@@ -7594,15 +7614,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if let Some(entry) = self.named_types.get(name) {
             return entry.ty;
         }
-        let st = self.module.get_or_insert_named_struct(name);
+        let ty = self.create_identified_struct(Some(name));
         self.named_types.insert(
             name.to_owned(),
             TypeEntry {
-                ty: st.as_type(),
+                ty,
                 forward_ref_loc: Some(loc),
             },
         );
-        st.as_type()
+        ty
     }
 
     /// The `lltok::LocalVarID` twin of [`Self::lookup_or_forward_named_type`],
@@ -7616,15 +7636,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if let Some(entry) = self.numbered_types.get(&id) {
             return entry.ty;
         }
-        let st = self.module.anonymous_identified_struct();
+        let ty = self.create_identified_struct(None);
         self.numbered_types.insert(
             id,
             TypeEntry {
-                ty: st.as_type(),
+                ty,
                 forward_ref_loc: Some(loc),
             },
         );
-        st.as_type()
+        ty
     }
 
     // ── Globals ──────────────────────────────────────────────────────────
@@ -7676,7 +7696,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             },
             _ => (Linkage::External, false),
         };
-        let (dso_locality, visibility, dll_storage_class) =
+        let (dso_local, visibility, dll_storage_class) =
             self.parse_optional_preemption_visibility_dll()?;
         let thread_local_mode = if self.eat_keyword(Keyword::ThreadLocal)? {
             if self.eat_punct(PunctKind::LParen)? {
@@ -7715,7 +7735,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 decl_loc,
                 ParsedAliasHeader {
                     linkage,
-                    dso_locality,
+                    dso_local,
                     visibility,
                     dll_storage_class,
                     thread_local_mode,
@@ -7727,7 +7747,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let address_space = if self.eat_keyword(Keyword::Addrspace)? {
             self.parse_addr_space_paren()?
         } else {
-            0
+            AddressSpace::DEFAULT
         };
         let externally_initialized = self.eat_keyword(Keyword::ExternallyInitialized)?;
 
@@ -7860,7 +7880,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .module
             .global_builder(&name_string, ty)
             .linkage(linkage)
-            .dso_locality(dso_locality)
+            .dso_local(dso_local)
             .visibility(visibility)
             .dll_storage_class(dll_storage_class)
             .thread_local_mode(thread_local_mode)
@@ -7928,7 +7948,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         header: ParsedAliasHeader,
     ) -> ParseResult<()> {
         let linkage = header.linkage;
-        let dso_locality = header.dso_locality;
+        let dso_local = header.dso_local;
         let visibility = header.visibility;
         let dll_storage_class = header.dll_storage_class;
         let thread_local_mode = header.thread_local_mode;
@@ -8053,7 +8073,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .module
                 .alias_builder(&name_string, value_type, target)
                 .linkage(linkage)
-                .dso_locality(dso_locality)
+                .dso_local(dso_local)
                 .visibility(visibility)
                 .dll_storage_class(dll_storage_class)
                 .thread_local_mode(thread_local_mode)
@@ -8094,7 +8114,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .module
                 .ifunc_builder(&name_string, value_type, target)
                 .linkage(linkage)
-                .dso_locality(dso_locality)
+                .dso_local(dso_local)
                 .visibility(visibility)
                 // Upstream applies all three to `GV` in the ifunc branch too —
                 // it simply never *prints* them, because `printIFunc` stops
@@ -8378,7 +8398,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
                 let Some(lanes) = NonZeroU32::new(u32::try_from(values.len()).unwrap_or(u32::MAX))
                 else {
-                    return Err(self.message("constant vector must not be empty"));
+                    return Err(self.message_at(loc, "constant vector must not be empty"));
                 };
                 let element_ty = values[0].ty();
                 if !element_ty.is_integer()
@@ -8600,7 +8620,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .map_err(|e| self.builder_err_at(loc, "struct constant", e))
     }
 
-    fn expand_splat_constant(
+    fn splat_constant(
         &self,
         loc: Span,
         ty: Type<'ctx, B>,
@@ -8622,114 +8642,49 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 loc,
             });
         }
-        let len = usize::try_from(vec_ty.min_len().get()).map_err(|_| ParseError::Expected {
-            expected: "vector type for splat constant".into(),
-            loc,
-        })?;
-        let elements = vec![scalar; len];
+        // `ConstantVector::getSplat(cast<VectorType>(Ty)->getElementCount(),
+        // ID.ConstantVal)`, which stores no lane list, so a long vector costs
+        // one constant.
         vec_ty
-            .const_vector(elements)
+            .const_splat(scalar)
             .map(|c| c.as_constant())
             .map_err(|e| self.builder_err_at(loc, "splat constant", e))
     }
 
-    /// Mirrors `Constant::getNullValue`, which `convertValIDToValue`'s
-    /// `t_Zero` arm and `parseConstantValue`'s `t_Null` arm both end in.
-    ///
-    /// llvmkit has no `ConstantAggregateZero`, so the three arms upstream
-    /// routes through it build the zero element-wise instead; every other arm
-    /// is one upstream `case`. The `_` catch-all stands in for upstream's
-    /// `llvm_unreachable` default, which llvmkit reports rather than traps.
+    /// The tail of `convertValIDToValue`'s `t_Zero` arm — its target-type
+    /// guard, then `Constant::getNullValue`, which is [`Type::null_value`] —
+    /// and of `parseConstantValue`'s `t_Null` arm, which is
+    /// `C = Constant::getNullValue(Ty);` with no guard. On that path the guard
+    /// stands for the assert in `ConstantTargetNone::get`, and answers what
+    /// `null_value`'s `None` would: the same message at the same token.
     fn zero_initializer_constant(
         &self,
         loc: Span,
         ty: Type<'ctx, B>,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
-        match ty.into_type_enum() {
-            AnyTypeEnum::Int(t) => Ok(t.const_zero().as_constant()),
-            AnyTypeEnum::Pointer(t) => Ok(t.const_null().as_constant()),
-            AnyTypeEnum::Float(t) => Ok(t.const_from_bits(0).as_constant()),
-            AnyTypeEnum::Array(t) => {
-                let len = usize::try_from(t.len()).map_err(|_| ParseError::Expected {
-                    expected: "array zeroinitializer length fits in usize".into(),
-                    loc,
-                })?;
-                let element = t.element();
-                let mut elements = Vec::with_capacity(len);
-                for _ in 0..len {
-                    elements.push(self.zero_initializer_constant(loc, element)?);
-                }
-                t.const_array(elements)
-                    .map(|c| c.as_constant())
-                    .map_err(|e| self.builder_err_at(loc, "array zeroinitializer", e))
-            }
-            AnyTypeEnum::Vector(t) => {
-                let len = usize::try_from(t.min_len().get()).map_err(|_| ParseError::Expected {
-                    expected: "vector zeroinitializer length fits in usize".into(),
-                    loc,
-                })?;
-                let element = t.element();
-                let mut elements = Vec::with_capacity(len);
-                for _ in 0..len {
-                    elements.push(self.zero_initializer_constant(loc, element)?);
-                }
-                t.const_vector(elements)
-                    .map(|c| c.as_constant())
-                    .map_err(|e| self.builder_err_at(loc, "vector zeroinitializer", e))
-            }
-            AnyTypeEnum::Struct(t) => {
-                if t.is_opaque() {
-                    return Err(ParseError::Message {
-                        message: "invalid type for null constant".into(),
-                        loc,
-                    });
-                }
-                let mut elements = Vec::with_capacity(t.field_count());
-                for idx in 0..t.field_count() {
-                    let field_ty = t.field_type(idx).ok_or_else(|| {
-                        self.expected_at(loc, "struct field type for zeroinitializer")
-                    })?;
-                    elements.push(self.zero_initializer_constant(loc, field_ty)?);
-                }
-                t.const_struct(elements)
-                    .map(|c| c.as_constant())
-                    .map_err(|e| self.builder_err_at(loc, "struct zeroinitializer", e))
-            }
-            // `case Type::TokenTyID: return ConstantTokenNone::get(...)`. A
-            // token type is first-class, is neither a label nor a
-            // `TargetExtType`, and so passes both of `convertValIDToValue`'s
-            // `t_Zero` guards on the way here; the constant it builds is the
-            // one the `token none` spelling builds.
-            AnyTypeEnum::Token(_) => Ok(self.module.token_none()),
-            // `if (auto *TETy = dyn_cast<TargetExtType>(Ty)) if
-            //  (!TETy->hasProperty(TargetExtType::HasZeroInit)) return
-            //  error(ID.Loc, "invalid type for null constant");`
-            //
-            // `Module::target_ext_none` answers with upstream's complete
-            // sentence already, so it goes into `ParseError::Message`, which
-            // adds nothing — `Expected` prefixed it with `expected `.
-            AnyTypeEnum::TargetExt(_) => self.module.target_ext_none(ty).map_err(|e| match e {
-                IrError::InvalidOperation { message } => ParseError::Message {
-                    message: message.into(),
-                    loc,
-                },
-                other => self.builder_err_at(loc, "target extension none", other),
-            }),
-            // `default: llvm_unreachable("Cannot create a null constant of
-            // that type!")`. The repo bans a runtime panic in a production
-            // path, so the arm rejects instead — and it carries the message of
-            // the guard that *should* have stopped the type earlier, because
-            // that is the only text upstream associates with `t_Zero` at all.
-            //
-            // What reaches it is what upstream traps on: `metadata`, `x86_amx`
-            // and `exnref` pass `convertValIDToValue`'s first-class/label
-            // guard and have no `Constant::getNullValue` case. `label` reaches
-            // it from neither path — the guard runs on both now. Probed at
-            // this commit with `target/release/examples/parse_file.exe` on
-            // `@g = global <T> zeroinitializer` and
-            // `%v = freeze <T> zeroinitializer` for each of the four.
-            _ => Err(self.message_at(loc, "invalid type for null constant")),
+        // `if (auto *TETy = dyn_cast<TargetExtType>(Ty)) if
+        //  (!TETy->hasProperty(TargetExtType::HasZeroInit)) return
+        //  error(ID.Loc, "invalid type for null constant");`
+        if let AnyTypeEnum::TargetExt(target_ty) = ty.into_type_enum()
+            && !target_ty.has_property(llvmkit_ir::TargetExtProperty::HasZeroInit)
+        {
+            return Err(self.message_at(loc, "invalid type for null constant"));
         }
+        // `V = Constant::getNullValue(Ty);`, whose `default:
+        // llvm_unreachable("Cannot create a null constant of that type!")` is
+        // `None`. The repo bans a runtime panic in a production path, so that
+        // rejects instead — with the message of the guard that *should* have
+        // stopped the type earlier, because that is the only text upstream
+        // associates with `t_Zero` at all.
+        //
+        // What reaches it is what upstream traps on: `metadata`, `x86_amx`
+        // and `exnref` pass `convertValIDToValue`'s first-class/label guard
+        // and have no `Constant::getNullValue` case. `label` reaches it from
+        // neither path — the guard runs on both. An opaque struct is stopped
+        // by that guard on the `t_Zero` path; on the `t_Null` path, which has
+        // no guard, it is the `ConstantAggregateZero` upstream builds.
+        ty.null_value()
+            .ok_or_else(|| self.message_at(loc, "invalid type for null constant"))
     }
 
     /// Every element of an array or vector constant must have element 0's
@@ -8883,9 +8838,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             ValIdKind::Constant(c) => self
                 .checked_constant_type(loc, ty, c)
                 .map(|c| c.as_erased()),
-            ValIdKind::ConstantSplat(c) => self
-                .expand_splat_constant(loc, ty, c)
-                .map(|c| c.as_erased()),
+            ValIdKind::ConstantSplat(c) => self.splat_constant(loc, ty, c).map(|c| c.as_erased()),
             ValIdKind::EmptyArray => self.empty_array_constant(loc, ty).map(|c| c.as_erased()),
             ValIdKind::ConstantStruct(values) => self
                 .struct_initializer_constant(loc, ty, &values, false)
@@ -8956,7 +8909,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Ok(ty.poison().as_constant())
             }
             ValIdKind::Constant(c) => self.checked_constant_type(loc, ty, c),
-            ValIdKind::ConstantSplat(c) => self.expand_splat_constant(loc, ty, c),
+            ValIdKind::ConstantSplat(c) => self.splat_constant(loc, ty, c),
             ValIdKind::EmptyArray => self.empty_array_constant(loc, ty),
             ValIdKind::ConstantStruct(values) => {
                 self.struct_initializer_constant(loc, ty, &values, false)
@@ -9157,9 +9110,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         self.global_forward_ref(None, Some(id), ty, loc)
     }
+    /// A global in value position. `getGlobalVal` returns the `GlobalValue *`,
+    /// whose `getType` is `ptr`. A function's own value has its signature for a
+    /// type (`docs/divergences.md` D3), so it stands here as the `ptr` constant
+    /// naming it: `icmp ule ptr null, @f` compares two pointers.
     fn global_ref_to_value(&self, r: GlobalRef<'ctx, B>) -> llvmkit_ir::Value<'ctx, B> {
         match r {
-            GlobalRef::Function(f) => f.as_erased(),
+            GlobalRef::Function(f) => f.as_global_constant_ptr().as_erased(),
             GlobalRef::Variable(g) => g.as_erased(),
             GlobalRef::Alias(a) => a.as_erased(),
             GlobalRef::Ifunc(i) => i.as_erased(),
@@ -9470,9 +9427,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         loc: Span,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
         // Upstream's placeholder is `new GlobalVariable(*M, Int8Ty, ...)` with
-        // no address space, so the reference types as a plain `ptr`; the
+        // no address space, which takes `getDefaultGlobalsAddressSpace`; the
         // demanded type is compared against it by `convertValIDToValue`.
-        let ptr_ty = self.module.ptr_type(0).as_type();
+        let ptr_ty = self
+            .module
+            .ptr_type(self.module.data_layout().default_globals_addr_space())
+            .as_type();
         let existing = match &reference {
             NameOrId::Name(name) => self.forward_ref_dso_local_equivalent_names.get(name),
             NameOrId::Id(id) => self.forward_ref_dso_local_equivalent_ids.get(id),
@@ -9519,7 +9479,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // `@name` operand would, so an undefined one is reported by that
         // sweep, in its position and with its wording. The `NoCFIValue` itself
         // cannot be built over the placeholder here — see `pending_no_cfi`.
-        let ptr_ty = self.module.ptr_type(0).as_type();
+        let ptr_ty = self.module.ptr_type_in::<0>().as_type();
         match &reference {
             NameOrId::Name(name) => self.global_forward_ref(Some(name), None, ptr_ty, loc)?,
             NameOrId::Id(id) => self.global_forward_ref(None, Some(*id), ptr_ty, loc)?,
@@ -9556,12 +9516,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let addr_discriminator = if self.eat_punct(PunctKind::Comma)? {
             self.parse_ptrauth_operand()?
         } else {
-            self.module.ptr_type(0).const_null().as_constant()
+            self.module.ptr_type_in::<0>().const_null().as_constant()
         };
         let deactivation_symbol = if self.eat_punct(PunctKind::Comma)? {
             self.parse_ptrauth_operand()?
         } else {
-            self.module.ptr_type(0).const_null().as_constant()
+            self.module.ptr_type_in::<0>().const_null().as_constant()
         };
         self.expect_punct(PunctKind::RParen, "')' in constant ptrauth expression")?;
         self.module
@@ -9778,7 +9738,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn gep_constant_expr_flags(
         &self,
         parsed: ParsedGepConstantExprFlags,
-        address_space: u32,
+        address_space: AddressSpace,
     ) -> ParseResult<ConstantExprFlags> {
         let Some((start, end)) = parsed.in_range else {
             return Ok(ConstantExprFlags::gep(parsed.no_wrap));
@@ -10193,7 +10153,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         &mut self,
         name: &str,
         name_id: &NameOrId,
-        address_space: u32,
+        address_space: AddressSpace,
         name_loc: Span,
     ) -> ParseResult<Option<ForwardRef<'ctx, B>>> {
         // `PointerType *PFT = PointerType::get(Context, AddrSpace);`
@@ -10304,13 +10264,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    fn parse_optional_dso_locality(&mut self) -> ParseResult<llvmkit_ir::DsoLocality> {
-        if self.eat_keyword(Keyword::DsoLocal)? {
-            Ok(llvmkit_ir::DsoLocality::Local)
-        } else if self.eat_keyword(Keyword::DsoPreemptable)? {
-            Ok(llvmkit_ir::DsoLocality::Preemptable)
-        } else {
-            Ok(llvmkit_ir::DsoLocality::Default)
+    /// Mirrors `LLParser::parseOptionalDSOLocal`: `dso_local` answers true,
+    /// and `dso_preemptable` or no keyword false. Only `maybeSetDSOLocal`
+    /// reads the answer, and it only ever sets the bit.
+    fn parse_optional_dso_local(&mut self) -> ParseResult<bool> {
+        match self.peek() {
+            Token::Kw(Keyword::DsoLocal) => {
+                self.bump()?;
+                Ok(true)
+            }
+            Token::Kw(Keyword::DsoPreemptable) => {
+                self.bump()?;
+                Ok(false)
+            }
+            _ => Ok(false),
         }
     }
 
@@ -10324,20 +10291,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// The order is load-bearing rather than cosmetic. `AsmWriter.cpp`'s
     /// `printFunction` and `printGlobal` emit these three in the same
     /// sequence, so reading them in any other one makes LLVM's own output
-    /// unparseable — `define dso_local hidden void @f()` is the canonical
-    /// spelling, not an exotic one.
+    /// unparseable — `define dso_local dllexport void @f()` is a spelling it
+    /// prints.
     fn parse_optional_preemption_visibility_dll(
         &mut self,
-    ) -> ParseResult<(llvmkit_ir::DsoLocality, Visibility, DllStorageClass)> {
-        let dso_locality = self.parse_optional_dso_locality()?;
+    ) -> ParseResult<(bool, Visibility, DllStorageClass)> {
+        let dso_local = self.parse_optional_dso_local()?;
         let visibility = self.parse_optional_visibility()?;
         let dll_storage_class = self.parse_optional_dll_storage_class()?;
-        if dso_locality == llvmkit_ir::DsoLocality::Local
-            && dll_storage_class == DllStorageClass::DllImport
-        {
+        if dso_local && dll_storage_class == DllStorageClass::DllImport {
             return Err(self.message("dso_location and DLL-StorageClass mismatch"));
         }
-        Ok((dso_locality, visibility, dll_storage_class))
+        Ok((dso_local, visibility, dll_storage_class))
     }
 
     fn parse_optional_function_unnamed_addr(&mut self) -> ParseResult<UnnamedAddr> {
@@ -11564,7 +11529,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         let linkage_loc = self.loc();
         let linkage = self.parse_optional_function_linkage()?;
-        let (dso_locality, visibility, dll_storage_class) =
+        let (dso_local, visibility, dll_storage_class) =
             self.parse_optional_preemption_visibility_dll()?;
         let calling_conv = self.parse_optional_calling_conv()?;
         let mut attrs = AttributeStorage::new();
@@ -11623,7 +11588,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let suffix = self.parse_optional_function_suffix(&mut attrs)?;
         self.check_function_attribute_rules(&suffix, &attrs, ret_ty, ret_ty_loc)?;
 
-        let fn_ty = function_type_with_variadic(self.module, ret_ty, params, var_args);
+        // The result and each parameter were refused where they were parsed,
+        // as `LLParser::parseFunctionHeader` and `parseArgumentList` do, so the
+        // constructor's own refusal is a backstop only.
+        let fn_ty = function_type_with_variadic(self.module, ret_ty, params, var_args)
+            .map_err(|e| self.builder_err_at(decl_loc, "function type", e))?;
         match resolve_intrinsic_name(&name) {
             IntrinsicNameResolution::NonIntrinsic => {}
             IntrinsicNameResolution::UnknownIntrinsic => {
@@ -11636,10 +11605,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if linkage != Linkage::External
                     || visibility != Visibility::Default
                     || dll_storage_class != DllStorageClass::Default
-                    || dso_locality != llvmkit_ir::DsoLocality::Default
+                    || dso_local
                     || calling_conv != CallingConv::default()
                     || unnamed_addr != UnnamedAddr::None
-                    || address_space != 0
+                    || address_space != self.module.data_layout().program_addr_space()
                     || suffix.section.is_some()
                     || suffix.partition.is_some()
                     || suffix.comdat.is_some()
@@ -11677,7 +11646,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         },
                     );
                 } else if !self
-                    .intrinsic_declaration_attr_groups_match(&suffix.attr_groups, &expected_attrs)?
+                    .intrinsic_declaration_attr_groups_match(&suffix.attr_groups, &expected_attrs)
                 {
                     return Err(self.intrinsic_attribute_error(decl_loc));
                 }
@@ -11746,9 +11715,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 loc: decl_loc,
             })?;
         let f = self.module.view(f);
+        // `Fn->setLinkage(Linkage); maybeSetDSOLocal(DSOLocal, *Fn);
+        // Fn->setVisibility(Visibility); Fn->setDLLStorageClass(...)` — the
+        // linkage went in with the function, and `maybeSetDSOLocal` only ever
+        // sets the bit.
+        if dso_local {
+            f.set_dso_local(self.module, true);
+        }
         f.set_visibility(self.module, visibility);
         f.set_dll_storage_class(self.module, dll_storage_class);
-        f.set_dso_locality(self.module, dso_locality);
         f.set_calling_conv(self.module, calling_conv);
         f.set_unnamed_addr(self.module, unnamed_addr);
         f.set_address_space(self.module, address_space);
@@ -11794,17 +11769,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .map_err(|e| self.builder_err("function comdat", e))?;
         }
         f.set_align(self.module, suffix.align);
-        if let Some(gc) = suffix.gc {
-            f.set_gc(self.module, gc);
-        }
-        if let Some(prefix_data) = suffix.prefix_data {
-            f.set_prefix_data(self.module, prefix_data)
-                .map_err(|e| self.builder_err("function prefix", e))?;
-        }
-        if let Some(prologue_data) = suffix.prologue_data {
-            f.set_prologue_data(self.module, prologue_data)
-                .map_err(|e| self.builder_err("function prologue", e))?;
-        }
+        // `Fn->setPersonalityFn(PersonalityFn); if (!GC.empty()) Fn->setGC(GC);
+        // Fn->setPrefixData(Prefix); Fn->setPrologueData(Prologue);` — in that
+        // order, because each setter that names a value adds a use at the head
+        // of its list, and a `uselistorder` names those uses by position.
         if let Some(personality_fn) = suffix.personality_fn {
             match personality_fn {
                 ParsedPersonalityFn::Resolved(personality_fn) => {
@@ -11820,6 +11788,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     });
                 }
             }
+        }
+        if let Some(gc) = suffix.gc {
+            f.set_gc(self.module, gc);
+        }
+        if let Some(prefix_data) = suffix.prefix_data {
+            f.set_prefix_data(self.module, prefix_data)
+                .map_err(|e| self.builder_err("function prefix", e))?;
+        }
+        if let Some(prologue_data) = suffix.prologue_data {
+            f.set_prologue_data(self.module, prologue_data)
+                .map_err(|e| self.builder_err("function prologue", e))?;
         }
         // `if (FwdFn) { FwdFn->replaceAllUsesWith(Fn); FwdFn->eraseFromParent(); }`
         // — the last statement of `parseFunctionHeader`'s common tail, after
@@ -11866,7 +11845,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.expect_keyword(Keyword::Define, "'define'")?;
         let linkage_loc = self.loc();
         let linkage = self.parse_optional_function_linkage()?;
-        let (dso_locality, visibility, dll_storage_class) =
+        let (dso_local, visibility, dll_storage_class) =
             self.parse_optional_preemption_visibility_dll()?;
         let calling_conv = self.parse_optional_calling_conv()?;
         let mut attrs = AttributeStorage::new();
@@ -11940,7 +11919,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.check_function_attribute_rules(&suffix, &attrs, ret_ty, ret_ty_loc)?;
         let function_metadata = self.parse_optional_function_metadata()?;
 
-        let fn_ty = function_type_with_variadic(self.module, ret_ty, param_types, var_args);
+        // As in `parse_declare`: the result and each parameter were refused
+        // where they were parsed, so this refusal is a backstop only.
+        let fn_ty = function_type_with_variadic(self.module, ret_ty, param_types, var_args)
+            .map_err(|e| self.builder_err_at(decl_loc, "function type", e))?;
         let forward_ref =
             self.claim_function_forward_ref(&name, &name_id, address_space, decl_loc)?;
         // `Fn = Function::Create(FT, ExternalLinkage, AddrSpace, FunctionName,
@@ -11954,9 +11936,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 loc: decl_loc,
             })?;
         let f = self.module.view(f);
+        // `Fn->setLinkage(Linkage); maybeSetDSOLocal(DSOLocal, *Fn);
+        // Fn->setVisibility(Visibility); Fn->setDLLStorageClass(...)` — the
+        // linkage went in with the function, and `maybeSetDSOLocal` only ever
+        // sets the bit.
+        if dso_local {
+            f.set_dso_local(self.module, true);
+        }
         f.set_visibility(self.module, visibility);
         f.set_dll_storage_class(self.module, dll_storage_class);
-        f.set_dso_locality(self.module, dso_locality);
         f.set_calling_conv(self.module, calling_conv);
         f.set_unnamed_addr(self.module, unnamed_addr);
         f.set_address_space(self.module, address_space);
@@ -12004,17 +11992,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .map_err(|e| self.builder_err("function comdat", e))?;
         }
         f.set_align(self.module, suffix.align);
-        if let Some(gc) = suffix.gc {
-            f.set_gc(self.module, gc);
-        }
-        if let Some(prefix_data) = suffix.prefix_data {
-            f.set_prefix_data(self.module, prefix_data)
-                .map_err(|e| self.builder_err("function prefix", e))?;
-        }
-        if let Some(prologue_data) = suffix.prologue_data {
-            f.set_prologue_data(self.module, prologue_data)
-                .map_err(|e| self.builder_err("function prologue", e))?;
-        }
+        // Upstream's setter order, as in the `declare` tail: personality,
+        // `gc`, prefix, prologue. Each value-naming setter adds a use at the
+        // head of its list, and a `uselistorder` names those uses by position.
         if let Some(personality_fn) = suffix.personality_fn {
             match personality_fn {
                 ParsedPersonalityFn::Resolved(personality_fn) => {
@@ -12030,6 +12010,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     });
                 }
             }
+        }
+        if let Some(gc) = suffix.gc {
+            f.set_gc(self.module, gc);
+        }
+        if let Some(prefix_data) = suffix.prefix_data {
+            f.set_prefix_data(self.module, prefix_data)
+                .map_err(|e| self.builder_err("function prefix", e))?;
+        }
+        if let Some(prologue_data) = suffix.prologue_data {
+            f.set_prologue_data(self.module, prologue_data)
+                .map_err(|e| self.builder_err("function prologue", e))?;
         }
         // `if (FwdFn) { FwdFn->replaceAllUsesWith(Fn); FwdFn->eraseFromParent(); }`
         // — the last statement of `parseFunctionHeader`'s common tail, so a
@@ -12695,11 +12686,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<()> {
         self.bump()?; // eat `ret`
         // `parseRet` compares against the *enclosing function's* return type
-        // and reports at the returned type's own token, in both arms.
+        // and reports at the returned type's own token, in both arms. It reads
+        // a whole type first, `parseType(Ty, /*AllowVoid=*/true)`, and only
+        // then asks `Ty->isVoidTy()`: a `void` token is the start of
+        // `void ()*` as much as of `ret void`.
         let type_loc = self.loc();
+        let ty = self.parse_type(true)?;
         let result_ty = state.func.signature().return_type();
-        if let Token::PrimitiveType(PrimitiveTy::Void) = self.peek() {
-            self.bump()?;
+        if ty.is_void() {
             if !result_ty.is_void() {
                 return Err(self.message_at(
                     type_loc,
@@ -12712,7 +12706,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             })?;
             return Ok(());
         }
-        let ty = self.parse_type(false)?;
         let v = self.parse_value(state, ty)?;
         if result_ty != v.ty() {
             return Err(self.message_at(
@@ -13256,7 +13249,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// llvmkit spells by putting the comma back so the caller's own metadata
     /// loop reads it — upstream instead keeps the comma eaten and reports it
     /// through `AteExtraComma`.
-    fn parse_optional_comma_addrspace(&mut self) -> ParseResult<Option<u32>> {
+    fn parse_optional_comma_addrspace(&mut self) -> ParseResult<Option<AddressSpace>> {
         if !matches!(self.peek(), Token::Comma) {
             return Ok(None);
         }
@@ -14278,12 +14271,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         self.message_at(ret_ty_loc, "Invalid result type for LLVM function")
                     );
                 }
+                // Each argument type was refused where it was parsed
+                // (`parse_parameter_list`, as `LLParser::parseParameterList`
+                // does), so the constructor's own refusal is a backstop only.
                 function_type_with_variadic(
                     self.module,
                     callee_ty,
                     arg_list.iter().map(|arg| arg.ty),
                     false,
                 )
+                .map_err(|e| self.builder_err_at(ret_ty_loc, "function type", e))?
             }
         };
         // `CalleeID.StrVal` survives `convertValIDToValue` upstream because
@@ -14545,7 +14542,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_direct_callee_ref(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        callee_addr_space: u32,
+        callee_addr_space: AddressSpace,
     ) -> ParseResult<ParsedDirectCallee<'ctx, B>> {
         let loc = self.loc();
         match self.peek() {
@@ -14588,7 +14585,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         &mut self,
         parsed: ParsedDirectCallee<'ctx, B>,
         parsed_fn_ty: llvmkit_ir::FunctionType<'ctx, B>,
-        callee_addr_space: u32,
+        callee_addr_space: AddressSpace,
     ) -> ParseResult<ParsedCallee<'ctx, B>> {
         match parsed {
             ParsedDirectCallee::Name { name, loc } => {
@@ -14952,9 +14949,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if ordering == AtomicOrdering::Monotonic {
             return Err(self.message("fence cannot be monotonic"));
         }
-        let _ = b
-            .fence(ordering, sync_scope, "")
-            .map_err(|e| self.builder_err("fence", e))?;
+        let _ = b.fence(ordering, sync_scope, "");
         Ok(())
     }
 
@@ -15083,8 +15078,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 format!("atomicrmw {op} operand must be an integer"),
             ));
         }
-        let size = self.module.data_layout().type_store_size_in_bits(val_ty);
-        if size < 8 || !size.is_power_of_two() {
+        // Upstream's `unsigned Size` is the implicit `uint64_t` conversion. A
+        // scalable operand was refused above, so the size is fixed.
+        let is_byte_sized = self
+            .module
+            .data_layout()
+            .type_store_size_in_bits(val_ty)
+            .fixed_value()
+            .is_some_and(|size| size >= 8 && size.is_power_of_two());
+        if !is_byte_sized {
             return Err(self.message_at(
                 val_loc,
                 "atomicrmw operand must be power-of-two byte-sized integer",
@@ -15138,8 +15140,23 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     // ── S3.3: EH/funclet opcodes ──────────────────────────────────────────
 
+    /// `isa<Constant>(V)`. Upstream's `GlobalValue` is a `Constant`; llvmkit
+    /// gives a global variable, alias and ifunc value categories of their own
+    /// (`docs/divergences.md` D3), so the question spans those as well. A
+    /// function in value position is already its `ptr @f` constant.
+    fn is_constant_operand(value: llvmkit_ir::Value<'ctx, B>) -> bool {
+        llvmkit_ir::Constant::try_from(value).is_ok()
+            || matches!(
+                value.category(),
+                llvmkit_ir::ValueCategory::Function
+                    | llvmkit_ir::ValueCategory::GlobalVariable
+                    | llvmkit_ir::ValueCategory::GlobalAlias
+                    | llvmkit_ir::ValueCategory::GlobalIfunc
+            )
+    }
+
     /// `landingpad <type> [cleanup] [catch/filter ...]`.
-    /// Non-terminator. Mirrors `LLParser::parseLandingPad` (LLParser.cpp ~7820).
+    /// Non-terminator. Mirrors `LLParser::parseLandingPad`.
     ///
     /// Upstream: `test/Assembler/landingpad.ll`.
     fn parse_landingpad(
@@ -15168,7 +15185,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                             self.message_at(clause_loc, "'catch' clause has an invalid type")
                         );
                     }
-                    if llvmkit_ir::Constant::try_from(clause_v).is_err() {
+                    if !Self::is_constant_operand(clause_v) {
                         return Err(
                             self.message_at(clause_loc, "clause argument must be a constant")
                         );
@@ -15187,7 +15204,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                             self.message_at(clause_loc, "'filter' clause has an invalid type")
                         );
                     }
-                    if llvmkit_ir::Constant::try_from(filter_v).is_err() {
+                    if !Self::is_constant_operand(filter_v) {
                         return Err(
                             self.message_at(clause_loc, "clause argument must be a constant")
                         );
@@ -15359,7 +15376,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             (Some(parent), Some(dest)) => b.catch_switch(parent, dest, name),
             (Some(parent), None) => b.catch_switch_to_caller(parent, name),
             (None, Some(dest)) => b.catch_switch_within_none(dest, name),
-            (None, None) => b.catch_switch_within_none_to_caller(name),
+            (None, None) => Ok(b.catch_switch_within_none_to_caller(name)),
         }
         .map_err(|e| self.builder_err("catchswitch", e))?;
         for h in handlers {
@@ -15417,12 +15434,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         self.message_at(ret_ty_loc, "Invalid result type for LLVM function")
                     );
                 }
+                // As in `parse_call`: each argument type was refused where it
+                // was parsed, so this refusal is a backstop only.
                 function_type_with_variadic(
                     self.module,
                     callee_ty,
                     arg_list.iter().map(|arg| arg.ty),
                     false,
                 )
+                .map_err(|e| self.builder_err_at(ret_ty_loc, "function type", e))?
             }
         };
         // `parseInvoke` resolves the callee before the argument loop, exactly
@@ -15516,7 +15536,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // address space 0 whatever the datalayout says. Written out here so the
         // asymmetry with `parseCall` / `parseInvoke` is visible at the call
         // site rather than hidden in a callee helper's default.
-        let callbr_addr_space = 0;
+        let callbr_addr_space = AddressSpace::DEFAULT;
         let parsed_callee = self.parse_direct_callee_ref(state, callbr_addr_space)?;
         // `parseParameterList(ArgList, PFS)` — `IsMustTailCall` and
         // `InVarArgsFunc` left at their `false` defaults, so a forwarding
@@ -15557,12 +15577,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         self.message_at(ret_ty_loc, "Invalid result type for LLVM function")
                     );
                 }
+                // As in `parse_call`: each argument type was refused where it
+                // was parsed, so this refusal is a backstop only.
                 function_type_with_variadic(
                     self.module,
                     callee_ty,
                     arg_list.iter().map(|arg| arg.ty),
                     false,
                 )
+                .map_err(|e| self.builder_err_at(ret_ty_loc, "function type", e))?
             }
         };
         // `parseCallBr` resolves the callee before the argument loop, exactly
@@ -16834,7 +16857,7 @@ fn function_type_with_variadic<'ctx, B, I, R, T>(
     return_type: R,
     parameters: I,
     var_args: bool,
-) -> llvmkit_ir::FunctionType<'ctx, B>
+) -> IrResult<llvmkit_ir::FunctionType<'ctx, B>>
 where
     B: ModuleBrand + 'ctx,
     I: IntoIterator<Item = T>,

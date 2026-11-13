@@ -32,14 +32,14 @@
 //! and relies on the [`ModuleId`] tag alone.
 //!
 //! Public handle accessors expose [`ModuleView`], a branded view of the
-//! storage. It carries every *type* constructor — interning a type is
-//! preservation-neutral, so it needs no mutation authority, which is what lets
-//! the schema traits ([`crate::IrField`], [`crate::StructSchema`]) be declared
-//! against it. Module-structural work — declaring functions, globals, aliases,
-//! ifuncs, and the typestate struct-body setters — requires the unverified
-//! [`Module`] token instead.
+//! storage. It carries the *type* constructors — interning a type is
+//! preservation-neutral, so it needs no mutation authority. Module-structural
+//! work — declaring functions, globals, aliases, ifuncs, minting a struct
+//! schema's type, and the typestate struct-body setters — requires the
+//! unverified [`Module`] token instead.
 
 use crate::Branded;
+use crate::CrateOnly;
 use core::any::TypeId;
 use core::hash::{Hash, Hasher};
 use core::iter::FusedIterator;
@@ -50,6 +50,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 
+use super::addr_space::{AddressSpace, address_space};
 use super::align::MaybeAlign;
 use super::ap_int::ApInt;
 use super::array_len::{ArrLen, ArrLenDyn};
@@ -70,13 +71,13 @@ use super::derived_types::{
     TargetExtType, TokenType, VectorType, VoidType,
 };
 use super::element::{ElemDyn, StaticVecElem};
-use super::error::{BrandError, IrError, IrResult, TypePosition};
+use super::error::{BrandError, IrError, IrResult, TargetExtParameterRule, TypePosition};
 use super::float_kind::{Bfloat, Fp128, Half, PpcFp128, X86Fp80};
 use super::function::FunctionData;
 use super::function::{FunctionBuilder, FunctionValue};
 use super::function_signature::TypedVarArgsFunctionValue;
 use super::function_signature::{
-    FunctionParamList, FunctionReturn, FunctionSignature, TypedFunctionValue,
+    FunctionParamList, FunctionReturn, FunctionSignature, TypedFunctionValue, plan_signature_mint,
 };
 use super::global_alias::{GlobalAlias, GlobalAliasBuilder, GlobalAliasData};
 use super::global_ifunc::{GlobalIfunc, GlobalIfuncBuilder, GlobalIfuncData};
@@ -87,7 +88,7 @@ use super::int_width::{IntDyn, Width};
 use super::intrinsics::IntrinsicFunctionData;
 use super::intrinsics::{
     IntrinsicDescriptor, IntrinsicId, IntrinsicNameResolution, descriptor_for_name,
-    resolve_intrinsic_name,
+    match_intrinsic_fixed_types, resolve_intrinsic_name,
 };
 use super::llvm_context::{Context, NamedStructSlot};
 use super::marker::Dyn;
@@ -104,10 +105,11 @@ use super::named_md_node::{
 };
 use super::pass_context::{FunctionView, ModuleFunctionViews};
 use super::struct_body_state::StructBodyDyn;
-use super::struct_body_state::{BodySet, Opaque};
-use super::struct_schema::StructSchema;
+use super::struct_body_state::{BodySet, Opaque, StructBodyState};
+use super::struct_schema::{FieldLayout, FieldList, MintPlan, StructOf, StructSchema};
 use super::r#type::{
     IrType, MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeData, TypeSlot, TypeSlotAccess,
+    TypedPointeeSlot,
 };
 use super::type_components::{lanes, require_component};
 use super::typed_pointer_type::TypedPointerType;
@@ -587,6 +589,17 @@ impl<'ctx, B: ModuleBrand, C: Capability> ModuleRef<'ctx, B, C> {
         }
     }
 
+    /// This module's read-only view, the public surface of a reference: what
+    /// a hand-written [`FunctionParam`](crate::FunctionParam) names its type
+    /// through.
+    #[inline]
+    pub fn as_view(self) -> ModuleView<'ctx, B> {
+        ModuleView {
+            core: self.core,
+            _brand: PhantomData,
+        }
+    }
+
     /// Crate-internal: the one door from any capability to [`Mutable`]. Sound
     /// only where the caller holds mutation authority over this very module —
     /// a real `&Module<B, Unverified>` it has compared with [`Self::id`], or a
@@ -848,30 +861,41 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
 
     /// Opaque pointer in address space `addr_space` (`0` = default). The space
     /// is a run-time number, so the type is marked [`SpaceDyn`](crate::SpaceDyn).
-    pub(crate) fn ptr_type(self, addr_space: u32) -> PointerType<'ctx, crate::SpaceDyn, B, C> {
+    pub(crate) fn ptr_type(
+        self,
+        addr_space: AddressSpace,
+    ) -> PointerType<'ctx, crate::SpaceDyn, B, C> {
         PointerType::new(self.core.ctx.ptr_type(addr_space), self)
     }
 
-    /// Opaque pointer in address space `N`, marked [`Space<N>`](crate::Space).
+    /// Opaque pointer in address space `N`, marked [`Space<N>`](crate::Space);
+    /// `N` past 24 bits is [`address_space`]'s compile error.
     pub(crate) fn ptr_type_in<const N: u32>(self) -> PointerType<'ctx, crate::Space<N>, B, C> {
-        PointerType::new(self.core.ctx.ptr_type(N), self)
+        PointerType::new(self.core.ctx.ptr_type(address_space::<N>()), self)
     }
 
-    /// Legacy typed pointer `T*` in address space `addr_space`.
+    /// Typed pointer to `pointee` in `addr_space`. Mirrors
+    /// `TypedPointerType::get`: its `isValidElementType` assert is
+    /// [`require_component`]; a pointee of another module is refused with
+    /// [`IrError::ForeignType`] first.
     pub(crate) fn typed_pointer_type<T>(
         self,
         pointee: T,
-        addr_space: u32,
-    ) -> TypedPointerType<'ctx, B, C>
+        addr_space: AddressSpace,
+    ) -> IrResult<TypedPointerType<'ctx, B, C>>
     where
         T: IrType<'ctx, B>,
     {
-        // boundary (F1): refused by Task 26
-        let pointee_id = pointee.as_type().slot_trusting_same_module();
-        TypedPointerType::new(
-            self.core.ctx.typed_pointer_type(pointee_id, addr_space),
+        let pointee = pointee.as_type();
+        // Boundary: the caller's pointee, admitted against this module.
+        let slot = pointee.slot_in(self.id())?;
+        require_component(TypePosition::PointerElement, pointee)?;
+        Ok(TypedPointerType::new(
+            self.core
+                .ctx
+                .typed_pointer_type(TypedPointeeSlot::Ir(slot), addr_space),
             self,
-        )
+        ))
     }
 
     /// `[len x elem]`. Mirrors `ArrayType::get`: its `isValidElementType`
@@ -893,15 +917,15 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
     }
 
     /// Const-generic typed array `[N x E]`; `N == 0` is permitted.
-    pub(crate) fn array_type_n<E, const N: u64>(self) -> ArrayType<'ctx, E, ArrLen<N>, B, C>
+    pub(crate) fn array_type_n<E, const N: usize>(self) -> ArrayType<'ctx, E, ArrLen<N>, B, C>
     where
         E: StaticVecElem<'ctx, B>,
     {
         let elem = E::element_ir_type(self);
-        let id = self
-            .core
-            .ctx
-            .array_type(elem.slot_trusting_same_module(), N);
+        let id = self.core.ctx.array_type(
+            elem.slot_trusting_same_module(),
+            crate::array_len::static_len_u64(N),
+        );
         ArrayType::new(id, self)
     }
 
@@ -920,12 +944,21 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
     }
 
     /// Target extension type `target("name", type_params..., int_params...)`.
+    ///
+    /// Mirrors `TargetExtType::getOrError` (`lib/IR/Type.cpp`): the parameter
+    /// counts a named target type's rule forbids are
+    /// [`IrError::TargetExtTypeParameters`], `TargetExtType::checkParams`'s
+    /// message, after each type parameter is admitted against this module
+    /// ([`IrError::ForeignType`]). Upstream interns the type first and checks
+    /// it after, so its second request for the same malformed type finds the
+    /// interned one and answers it unchecked; refusing before interning leaves
+    /// no malformed type in the arena, so every request is refused.
     pub(crate) fn target_ext_type<Name, I, T, J>(
         self,
         name: Name,
         type_params: I,
         int_params: J,
-    ) -> TargetExtType<'ctx, B, C>
+    ) -> IrResult<TargetExtType<'ctx, B, C>>
     where
         Name: Into<String>,
         I: IntoIterator<Item = T>,
@@ -933,16 +966,23 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
         J: IntoIterator<Item = u32>,
     {
         let name: String = name.into();
-        // boundary (F1): refused by Task 26
-        let type_params: Box<[TypeSlot]> = type_params
+        let owner = self.id();
+        let type_params = type_params
             .into_iter()
-            .map(|t| t.as_type().slot_trusting_same_module())
-            .collect();
+            // Boundary: each caller type parameter, admitted against this
+            // module.
+            .map(|t| t.as_type().slot_in(owner))
+            .collect::<IrResult<Box<[TypeSlot]>>>()?;
         let int_params: Box<[u32]> = int_params.into_iter().collect();
-        TargetExtType::new(
+        if let Some(rule) =
+            TargetExtParameterRule::broken_by(&name, type_params.len(), int_params.len())
+        {
+            return Err(IrError::TargetExtTypeParameters { rule });
+        }
+        Ok(TargetExtType::new(
             self.core.ctx.target_ext_type(name, type_params, int_params),
             self,
-        )
+        ))
     }
 
     /// Fixed `<lanes x elem>` vector. Mirrors `FixedVectorType::get`: its
@@ -1008,41 +1048,44 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
     }
 
     /// Function type, variadic or not.
+    ///
+    /// Mirrors `FunctionType::FunctionType` (`lib/IR/Type.cpp`): the result is
+    /// checked first (`isValidReturnType`), then each parameter in order
+    /// (`isValidArgumentType`). Upstream `assert`s both; here each is
+    /// [`IrError::InvalidTypeComponent`], after the component's module check
+    /// ([`IrError::ForeignType`]).
     pub(super) fn raw_function_type<I, R, T>(
         self,
         return_type: R,
         parameters: I,
         is_var_arg: bool,
-    ) -> FunctionType<'ctx, B, C>
+    ) -> IrResult<FunctionType<'ctx, B, C>>
     where
         I: IntoIterator<Item = T>,
         R: IrType<'ctx, B>,
         T: IrType<'ctx, B>,
     {
-        // boundary (F1): refused by Task 26
-        let ret = return_type.as_type().slot_trusting_same_module();
-        // boundary (F1): refused by Task 26
-        let params: Box<[TypeSlot]> = parameters
+        let owner = self.id();
+        let return_type = return_type.as_type();
+        // Boundary: the caller's result type, admitted against this module.
+        let ret = return_type.slot_in(owner)?;
+        require_component(TypePosition::FunctionReturn, return_type)?;
+        let params = parameters
             .into_iter()
-            .map(|t| t.as_type().slot_trusting_same_module())
-            .collect();
-        FunctionType::new(self.core.ctx.function_type(ret, params, is_var_arg), self)
-    }
-
-    /// Get or create the identified struct type `%name`, body unset.
-    pub(super) fn get_or_insert_named_struct(
-        self,
-        name: &str,
-    ) -> StructType<'ctx, StructBodyDyn, B, C> {
-        let id = self.core.ctx.get_or_create_named_struct(name).slot();
-        StructType::new(id, self)
-    }
-
-    /// A fresh identified struct with no name. Mirrors
-    /// `StructType::create(Context)` called without a name.
-    pub(super) fn anonymous_identified_struct(self) -> StructType<'ctx, StructBodyDyn, B, C> {
-        let id = self.core.ctx.create_anonymous_identified_struct();
-        StructType::new(id, self)
+            .enumerate()
+            .map(|(index, parameter)| {
+                let parameter = parameter.as_type();
+                // Boundary: each caller parameter type, admitted against this
+                // module.
+                let slot = parameter.slot_in(owner)?;
+                require_component(TypePosition::FunctionParameter { index }, parameter)?;
+                Ok(slot)
+            })
+            .collect::<IrResult<Box<[TypeSlot]>>>()?;
+        Ok(FunctionType::new(
+            self.core.ctx.function_type(ret, params, is_var_arg),
+            self,
+        ))
     }
 
     /// An existing identified struct type by name, or `None`.
@@ -1052,42 +1095,104 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
             .named_struct(name)
             .map(|id| StructType::new(id, self))
     }
+}
+
+// Creating an identified struct or setting an opaque one's body changes what
+// the module prints, because it prints every identified struct, so each takes
+// the `Mutable` reference only an unverified module or a builder holds (D8).
+// Type interning above stays open to any capability: a structural type that
+// nothing uses prints nowhere.
+impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
+    /// Get or create the identified struct type `%name`, body unset.
+    pub(super) fn get_or_insert_named_struct(
+        self,
+        name: &str,
+    ) -> StructType<'ctx, StructBodyDyn, B> {
+        let id = self.core.ctx.get_or_create_named_struct(name).slot();
+        StructType::new(id, self)
+    }
+
+    /// A fresh identified struct with no name. Mirrors
+    /// `StructType::create(Context)` called without a name.
+    pub(super) fn anonymous_identified_struct(self) -> StructType<'ctx, StructBodyDyn, B> {
+        let id = self.core.ctx.create_anonymous_identified_struct();
+        StructType::new(id, self)
+    }
 
     /// Idempotently intern schema `S`'s named struct type; see
-    /// [`ModuleView::get_or_insert_struct_of`].
-    pub(super) fn get_or_insert_struct_of<S>(self) -> IrResult<StructType<'ctx, BodySet, B, C>>
+    /// [`Module::get_or_insert_struct_of`].
+    pub(super) fn get_or_insert_struct_of<S>(self) -> IrResult<StructOf<'ctx, S, B>>
     where
         S: StructSchema,
     {
-        if S::NAME.is_empty() {
-            return Err(IrError::InvalidOperation {
-                message: "struct schema name must not be empty",
-            });
+        let ty = self.mint_layout::<S>()?;
+        // The plan answered yes and the mint followed it, so `%S` has `S`'s
+        // body.
+        Ok(StructOf::new_unchecked(StructType::<BodySet, B>::new(
+            ty.slot_trusting_same_module(),
+            self,
+        )))
+    }
+
+    /// Layout `L`'s type in this module. The one door into a mint: a walk that
+    /// creates nothing gives the mint's answer first, so a refusal at any depth
+    /// leaves the module as it was.
+    pub(crate) fn mint_layout<L: FieldLayout>(self) -> IrResult<Type<'ctx, B>> {
+        L::plan_mint(self.read_only(), &mut MintPlan::new(), CrateOnly(()))?;
+        L::mint_type(self, CrateOnly(()))
+    }
+
+    /// Mint schema `S`'s named struct type in this module, its body built
+    /// from the field layouts: an existing `%S` with a body is taken as it is;
+    /// otherwise the fields come first, then find or create `%S` and set its
+    /// body.
+    ///
+    /// Reached only through [`mint_layout`](Self::mint_layout), whose plan has
+    /// already answered every question this could refuse on: a body that
+    /// differs ([`IrError::StructBodyMismatch`]) and a schema that contains
+    /// itself by value ([`IrError::RecursiveStructBody`]), the two a
+    /// `StructType::setBodyOrError` port and a name lookup would otherwise meet
+    /// here. So nothing is created on a refusal, at any depth. The body setter
+    /// keeps its own `checkBody` port, and its `Result` is carried rather than
+    /// asserted away. `S::NAME` must not be empty —
+    /// `StructType::create(Context, "")` makes an anonymous struct — which is
+    /// checked at compile time.
+    ///
+    /// Each struct this answers for is held by its schema from here on, so
+    /// [`Module::set_struct_name`] refuses it: a `StructOf` proves `%S`, a nested
+    /// field's `%Point` included.
+    pub(crate) fn mint_struct_of<S>(self) -> IrResult<TypeSlot>
+    where
+        S: StructSchema,
+    {
+        const {
+            assert!(
+                !S::NAME.is_empty(),
+                "a struct schema's NAME must not be empty"
+            )
+        };
+        if let Some(id) = self.core.ctx.named_struct(S::NAME) {
+            let has_body = self
+                .core
+                .ctx
+                .type_data(id)
+                .as_struct()
+                .unwrap_or_else(|| unreachable!("named struct id stores struct data"))
+                .body
+                .borrow()
+                .is_some();
+            if has_body {
+                self.core.ctx.hold_schema_struct(id);
+                return Ok(id);
+            }
         }
-        let field_types = S::field_types(ModuleView::<B>::new(self.core))?;
-        // Internal: the schema's field types were minted in this module.
+        let field_types = <S::Fields as FieldList>::mint_types(self, CrateOnly(()))?;
+        // Internal: each field type was minted in this module by its layout.
         let elements: Box<[TypeSlot]> = field_types
             .iter()
             .map(|t| t.slot_trusting_same_module())
             .collect();
         let id = self.core.ctx.get_or_create_named_struct(S::NAME).slot();
-        let data = self
-            .core
-            .ctx
-            .type_data(id)
-            .as_struct()
-            .unwrap_or_else(|| unreachable!("named struct id stores struct data"));
-        {
-            let body = data.body.borrow();
-            if let Some(body) = body.as_ref() {
-                if body.packed == S::PACKED && body.elements.as_ref() == elements.as_ref() {
-                    return Ok(StructType::<BodySet, B, C>::new(id, self));
-                }
-                return Err(IrError::StructBodyMismatch {
-                    name: S::NAME.to_owned(),
-                });
-            }
-        }
         self.core.ctx.set_named_struct_body(
             id,
             StructBody {
@@ -1095,7 +1200,8 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
                 packed: S::PACKED,
             },
         )?;
-        Ok(StructType::<BodySet, B, C>::new(id, self))
+        self.core.ctx.hold_schema_struct(id);
+        Ok(id)
     }
 }
 
@@ -1145,10 +1251,10 @@ impl<B: ModuleBrand, C: Capability> core::fmt::Debug for ModuleRef<'_, B, C> {
 /// `ModuleView` lets handles report their owning module without exposing the
 /// crate-private storage or the linear verification-state token. Beyond reads
 /// it carries the full type-constructor surface (see the `Type constructors`
-/// section below for why that is not a loosening), which is what the
-/// user-implementable schema traits ([`IrField::ir_type`](crate::IrField),
-/// [`StructSchema`], the `FunctionReturn` /
-/// `FunctionParam` family) are declared against.
+/// section below for why that is not a loosening). A [`StructSchema`]'s named
+/// struct is the exception: creating it or setting its body changes what the
+/// module prints, so that takes
+/// [`Module::get_or_insert_struct_of`] on an unverified module (D8).
 ///
 /// This is the **read capability** grade over a module's storage;
 /// [`ModuleRef`] is the bare **storage pointer** grade. The two have the same
@@ -1189,7 +1295,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariableView<'ctx, B> {
     }
 
     #[inline]
-    pub fn address_space(self) -> u32 {
+    pub fn address_space(self) -> AddressSpace {
         self.global.address_space()
     }
 
@@ -1302,7 +1408,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasView<'ctx, B> {
     }
 
     #[inline]
-    pub fn address_space(self) -> u32 {
+    pub fn address_space(self) -> AddressSpace {
         self.alias.address_space()
     }
 
@@ -1380,7 +1486,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfuncView<'ctx, B> {
     }
 
     #[inline]
-    pub fn address_space(self) -> u32 {
+    pub fn address_space(self) -> AddressSpace {
         self.ifunc.address_space()
     }
 
@@ -1513,6 +1619,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     #[inline]
     fn read_only_ref(self) -> ModuleRef<'ctx, B, ReadOnly> {
         ModuleRef::new(self.core)
+    }
+
+    /// Whether the `"SemanticInterposition"` module flag is set. Mirrors
+    /// `Module::getSemanticInterposition`.
+    #[inline]
+    pub fn semantic_interposition(self) -> bool {
+        self.core.semantic_interposition()
     }
 
     /// Module identifier.
@@ -1700,7 +1813,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     /// is a run-time number, so the type is marked [`SpaceDyn`](crate::SpaceDyn);
     /// [`ptr_type_in`](Self::ptr_type_in) names a static one.
     #[inline]
-    pub fn ptr_type(self, addr_space: u32) -> PointerType<'ctx, crate::SpaceDyn, B, ReadOnly> {
+    pub fn ptr_type(
+        self,
+        addr_space: AddressSpace,
+    ) -> PointerType<'ctx, crate::SpaceDyn, B, ReadOnly> {
         self.read_only_ref().ptr_type(addr_space)
     }
 
@@ -1716,13 +1832,32 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         self.read_only_ref().ptr_type_in::<N>()
     }
 
-    /// Legacy typed pointer `T*` in address space `addr_space`.
+    /// Typed pointer `typedptr(<pointee>, <addrspace>)` — an analysis-only
+    /// type, which no IR type contains (`TypedPointerType.h`). For a typed
+    /// pointee, [`TypedPointerType::of`] cannot fail.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidTypeComponent`] for a pointee
+    /// `TypedPointerType::isValidElementType` refuses (`void`, `label`,
+    /// `metadata`, `token`, `x86_amx`); [`IrError::ForeignType`] for one of
+    /// another module, checked first.
+    ///
+    /// ```
+    /// # use llvmkit_ir::{AddressSpace, Module};
+    /// let m = Module::dynamic("doc");
+    /// let view = m.as_view();
+    /// let space = AddressSpace::DEFAULT;
+    /// assert_eq!(view.typed_pointer_type(view.i32_type(), space)?.to_string(), "typedptr(i32, 0)");
+    /// assert!(view.typed_pointer_type(view.void_type(), space).is_err());
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
     #[inline]
     pub fn typed_pointer_type<T>(
         self,
         pointee: T,
-        addr_space: u32,
-    ) -> TypedPointerType<'ctx, B, ReadOnly>
+        addr_space: AddressSpace,
+    ) -> IrResult<TypedPointerType<'ctx, B, ReadOnly>>
     where
         T: IrType<'ctx, B>,
     {
@@ -1762,7 +1897,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     /// [`vector_type_n`](Self::vector_type_n), `N == 0` is **not** rejected:
     /// LLVM permits zero-length arrays `[0 x T]`.
     #[inline]
-    pub fn array_type_n<E, const N: u64>(self) -> ArrayType<'ctx, E, ArrLen<N>, B, ReadOnly>
+    pub fn array_type_n<E, const N: usize>(self) -> ArrayType<'ctx, E, ArrLen<N>, B, ReadOnly>
     where
         E: StaticVecElem<'ctx, B>,
     {
@@ -1908,12 +2043,30 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     }
 
     /// Function type `ret (params...)`.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidTypeComponent`] for a result
+    /// `FunctionType::isValidReturnType` refuses (a function, `label` or
+    /// `metadata`) or a parameter `isValidArgumentType` refuses (not first
+    /// class, or `label`), the result checked first; [`IrError::ForeignType`]
+    /// for a component of another module, checked before its kind.
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// let view = m.as_view();
+    /// let ty = view.function_type(view.i32_type(), [view.i64_type()])?;
+    /// assert_eq!(ty.to_string(), "i32 (i64)");
+    /// assert!(view.function_type(view.void_type(), [view.label_type()]).is_err());
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
     #[inline]
     pub fn function_type<I, R, T>(
         self,
         return_type: R,
         parameters: I,
-    ) -> FunctionType<'ctx, B, ReadOnly>
+    ) -> IrResult<FunctionType<'ctx, B, ReadOnly>>
     where
         I: IntoIterator<Item = T>,
         R: IrType<'ctx, B>,
@@ -1924,12 +2077,26 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     }
 
     /// Variadic function type `ret (params..., ...)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`function_type`](Self::function_type).
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// let view = m.as_view();
+    /// let ty = view.variadic_function_type(view.i32_type(), [view.ptr_type_in::<0>()])?;
+    /// assert_eq!(ty.to_string(), "i32 (ptr, ...)");
+    /// assert!(view.variadic_function_type(view.label_type(), [view.ptr_type_in::<0>()]).is_err());
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
     #[inline]
     pub fn variadic_function_type<I, R, T>(
         self,
         return_type: R,
         parameters: I,
-    ) -> FunctionType<'ctx, B, ReadOnly>
+    ) -> IrResult<FunctionType<'ctx, B, ReadOnly>>
     where
         I: IntoIterator<Item = T>,
         R: IrType<'ctx, B>,
@@ -1945,8 +2112,26 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     /// otherwise have to spell it. This pins the element type for them —
     /// `function_type_no_parameters(ret)` is exactly
     /// `function_type(ret, [] as [Type; 0])`.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidTypeComponent`] for a result
+    /// `FunctionType::isValidReturnType` refuses, [`IrError::ForeignType`] for
+    /// one of another module.
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// let view = m.as_view();
+    /// assert_eq!(view.function_type_no_parameters(view.void_type())?.to_string(), "void ()");
+    /// assert!(view.function_type_no_parameters(view.metadata_type()).is_err());
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
     #[inline]
-    pub fn function_type_no_parameters<R>(self, return_type: R) -> FunctionType<'ctx, B, ReadOnly>
+    pub fn function_type_no_parameters<R>(
+        self,
+        return_type: R,
+    ) -> IrResult<FunctionType<'ctx, B, ReadOnly>>
     where
         R: IrType<'ctx, B>,
     {
@@ -1960,11 +2145,25 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     /// Variadic sibling of
     /// [`function_type_no_parameters`](Self::function_type_no_parameters):
     /// `ret (...)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`function_type_no_parameters`](Self::function_type_no_parameters).
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// let view = m.as_view();
+    /// let ty = view.variadic_function_type_no_parameters(view.i32_type())?;
+    /// assert_eq!(ty.to_string(), "i32 (...)");
+    /// assert!(view.variadic_function_type_no_parameters(view.label_type()).is_err());
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
     #[inline]
     pub fn variadic_function_type_no_parameters<R>(
         self,
         return_type: R,
-    ) -> FunctionType<'ctx, B, ReadOnly>
+    ) -> IrResult<FunctionType<'ctx, B, ReadOnly>>
     where
         R: IrType<'ctx, B>,
     {
@@ -1975,67 +2174,38 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         )
     }
 
-    /// Get or create the identified struct type `%name`, leaving its body
-    /// unset. Pure type interning, so it belongs to the same
-    /// preservation-neutral family as the primitive constructors above.
-    #[inline]
-    pub fn get_or_insert_named_struct(
-        self,
-        name: &str,
-    ) -> StructType<'ctx, StructBodyDyn, B, ReadOnly> {
-        self.read_only_ref().get_or_insert_named_struct(name)
-    }
-
-    /// A fresh identified struct with no name — `%0 = type { i32 }`.
-    /// Mirrors `StructType::create(Context)` called without a name.
-    ///
-    /// Never uniqued: two calls give two distinct types even at the same
-    /// body, which is what makes `%0` and `%1` different types when both are
-    /// written `type { i32 }`. Body-setting goes through the same
-    /// `set_struct_body` path as a named one.
-    #[inline]
-    pub fn anonymous_identified_struct(self) -> StructType<'ctx, StructBodyDyn, B, ReadOnly> {
-        self.read_only_ref().anonymous_identified_struct()
-    }
-
     /// Look up an existing identified struct type by name, or `None`.
     #[inline]
     pub fn named_struct(self, name: &str) -> Option<StructType<'ctx, StructBodyDyn, B, ReadOnly>> {
         self.read_only_ref().named_struct(name)
     }
 
-    /// Idempotently intern the named LLVM struct type described by schema `S`,
-    /// filling its body the first time.
-    ///
-    /// This lives on the read-only view for the same reason the primitive
-    /// constructors above do: it is preservation-**neutral**. It interns into
-    /// the context's type table and either fills a body that was empty or
-    /// confirms one that already matches — it never touches a function, block,
-    /// or global, and a mismatch is refused with
-    /// [`IrError::StructBodyMismatch`] rather than rewriting anything. That is
-    /// what lets [`crate::StructSchema`] and [`crate::IrField`] be declared
-    /// against a `ModuleView` instead of a `&Module<Unverified>` token —
-    /// which in turn is what lets [`crate::IrBuilder`] answer schema queries
-    /// without fabricating a module token it does not own.
-    ///
-    /// The *typestate* body setters — [`Module::set_struct_body`] and
-    /// [`Module::set_struct_body_dyn`], which drive an `Opaque` struct handle
-    /// to `BodySet` — stay on the token alone.
-    pub fn get_or_insert_struct_of<S>(self) -> IrResult<StructType<'ctx, BodySet, B, ReadOnly>>
-    where
-        S: StructSchema,
-    {
-        self.read_only_ref().get_or_insert_struct_of::<S>()
-    }
-
     /// Target extension type `target("name", type_params..., int_params...)`.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::TargetExtTypeParameters`] for parameter counts
+    /// `TargetExtType::checkParams` refuses (`aarch64.svcount` takes none,
+    /// `riscv.vector.tuple` one of each, `amdgcn.named.barrier` one integer),
+    /// with upstream's message; [`IrError::ForeignType`] for a type parameter
+    /// of another module, checked first.
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// let view = m.as_view();
+    /// let ty = view.target_ext_type("spirv.Image", [view.i32_type()], [0])?;
+    /// assert_eq!(ty.to_string(), "target(\"spirv.Image\", i32, 0)");
+    /// assert!(view.target_ext_type("aarch64.svcount", [view.i32_type()], []).is_err());
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
     #[inline]
     pub fn target_ext_type<Name, I, T, J>(
         self,
         name: Name,
         type_params: I,
         int_params: J,
-    ) -> TargetExtType<'ctx, B, ReadOnly>
+    ) -> IrResult<TargetExtType<'ctx, B, ReadOnly>>
     where
         Name: Into<String>,
         I: IntoIterator<Item = T>,
@@ -2447,7 +2617,7 @@ impl<'ctx> ModuleCore {
     /// Opaque pointer in address space `addr_space` (`0` = default).
     pub fn ptr_type<B: ModuleBrand + 'ctx>(
         &'ctx self,
-        addr_space: u32,
+        addr_space: AddressSpace,
     ) -> PointerType<'ctx, crate::SpaceDyn, B, ReadOnly> {
         PointerType::new(self.ctx.ptr_type(addr_space), self)
     }
@@ -2539,7 +2709,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
 
         // `intrinsic` is the identity `Function`'s constructor computes from
         // the name; the one caller that passes one minted it for this name.
-        let fn_data = FunctionData::new(signature_id, linkage, calling_conv, intrinsic);
+        // `Function::Create(Ty, Linkage, N, M)`, and `getOrInsertFunction`'s
+        // own spelling of it: with no address space given, the data layout's
+        // program address space.
+        let address_space = self.core.data_layout().program_addr_space();
+        let fn_data = FunctionData::new(
+            signature_id,
+            linkage,
+            address_space,
+            calling_conv,
+            intrinsic,
+        );
         let fn_id = self.core.ctx.push_value(ValueData {
             ty: signature_id,
             name: core::cell::RefCell::new(None),
@@ -2734,6 +2914,44 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
         ))
     }
 
+    /// Mirrors `Intrinsic::getOrInsertDeclaration(M, ID, RetTy, ArgTys)`: a
+    /// non-overloaded intrinsic ignores the signature, and an overloaded one
+    /// deduces its overload types from it, variadic if the table says so.
+    /// Upstream asserts the signature matches; here it is an error.
+    pub(crate) fn get_or_insert_intrinsic_declaration_by_signature<R, I, T>(
+        self,
+        id: IntrinsicId,
+        return_type: R,
+        argument_types: I,
+    ) -> IrResult<FunctionValue<'ctx, Dyn, B>>
+    where
+        R: IrType<'ctx, B>,
+        I: IntoIterator<Item = T>,
+        T: IrType<'ctx, B>,
+    {
+        // If the intrinsic is not overloaded, use the non-overloaded version.
+        if !id.is_overloaded() {
+            let descriptor = IntrinsicDescriptor::<B>::new(id, [])?;
+            return self.get_or_insert_intrinsic_declaration(&descriptor);
+        }
+
+        let fn_ty = self.raw_function_type(return_type, argument_types, false)?;
+
+        // Automatically determine the overloaded types.
+        let mut matched = match_intrinsic_fixed_types(id, self, fn_ty)?;
+
+        // If intrinsic requires vararg, recreate the FunctionType accordingly.
+        let fn_ty = if matched.var_arg_matches(true) {
+            self.raw_function_type(fn_ty.return_type(), fn_ty.params(), true)?
+        } else {
+            fn_ty
+        };
+
+        let overloads = matched.into_overloads(id, self, fn_ty)?;
+        let descriptor = IntrinsicDescriptor::new(id, overloads)?;
+        self.get_or_insert_intrinsic_declaration(&descriptor)
+    }
+
     pub(crate) fn get_or_insert_intrinsic_declaration_by_name(
         self,
         name: &str,
@@ -2830,7 +3048,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
         self,
         name: String,
         data: GlobalVariableData,
-        address_space: u32,
+        address_space: AddressSpace,
     ) -> IrResult<GlobalVariable<'ctx, B>> {
         if !name.is_empty() && self.core.named_value(&name).is_some() {
             return Err(IrError::DuplicateGlobalName { name });
@@ -2870,7 +3088,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
         self,
         name: String,
         data: GlobalAliasData,
-        address_space: u32,
+        address_space: AddressSpace,
     ) -> IrResult<GlobalAlias<'ctx, B>> {
         if !name.is_empty() && self.core.named_value(&name).is_some() {
             return Err(IrError::DuplicateGlobalName { name });
@@ -2908,7 +3126,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
         self,
         name: String,
         data: GlobalIfuncData,
-        address_space: u32,
+        address_space: AddressSpace,
     ) -> IrResult<GlobalIfunc<'ctx, B>> {
         if !name.is_empty() && self.core.named_value(&name).is_some() {
             return Err(IrError::DuplicateGlobalName { name });
@@ -3292,18 +3510,12 @@ impl<'ctx> ModuleCore {
 
     fn register_metadata_value_use(&self, metadata_slot: MetadataSlot, value_id: ValueSlot) {
         self.ctx
-            .value_data(value_id)
-            .add_use(ValueUse::Metadata(metadata_slot));
+            .add_use(value_id, ValueUse::Metadata(metadata_slot));
     }
 
     fn deregister_metadata_value_use(&self, metadata_slot: MetadataSlot, value_id: ValueSlot) {
-        let mut uses = self.ctx.value_data(value_id).use_list.borrow_mut();
-        if let Some(pos) = uses
-            .iter()
-            .position(|edge| *edge == ValueUse::Metadata(metadata_slot))
-        {
-            uses.remove(pos);
-        }
+        self.ctx
+            .remove_use(value_id, ValueUse::Metadata(metadata_slot));
     }
 
     /// Look up a metadata node by id. `None` for a foreign id or one whose
@@ -3477,6 +3689,15 @@ impl<'ctx> ModuleCore {
             }
         }
         None
+    }
+
+    /// Mirrors `Module::getSemanticInterposition` (`lib/IR/Module.cpp`). Upstream's
+    /// two `cast`s assert on a flag that is no constant integer, which the verifier
+    /// refuses. It parses, and on it this answers `false`, as for no flag.
+    pub(super) fn semantic_interposition(&self) -> bool {
+        self.module_flag_value(ModuleFlagKey::SemanticInterposition.key())
+            .and_then(|flag| self.metadata_constant_int_value(flag))
+            .is_some_and(|(_, value)| !value.is_zero())
     }
 
     /// Decode every well-formed flag tuple. Mirrors
@@ -3889,6 +4110,13 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
         self.core().name()
     }
 
+    /// Whether the `"SemanticInterposition"` module flag is set. Mirrors
+    /// `Module::getSemanticInterposition`.
+    #[inline]
+    pub fn semantic_interposition(&self) -> bool {
+        self.core().semantic_interposition()
+    }
+
     /// Read-only branded view.
     #[inline]
     pub fn as_view(&'ctx self) -> ModuleView<'ctx, B> {
@@ -4007,7 +4235,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// assert_eq!(m.instruction_count(), 0);
     ///
     /// let i32_ty = m.i32_type();
-    /// let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    /// let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     /// let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     /// let entry = m.view(f).append_basic_block(&m, "entry");
     ///
@@ -4496,7 +4724,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// Opaque pointer in address space `addr_space` (`0` = default). The space
     /// is a run-time number, so the type is marked [`SpaceDyn`](crate::SpaceDyn);
     /// [`ptr_type_in`](Self::ptr_type_in) names a static one.
-    pub fn ptr_type(&'ctx self, addr_space: u32) -> PointerType<'ctx, crate::SpaceDyn, B> {
+    pub fn ptr_type(&'ctx self, addr_space: AddressSpace) -> PointerType<'ctx, crate::SpaceDyn, B> {
         self.capability_ref().ptr_type(addr_space)
     }
 
@@ -4511,11 +4739,28 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.capability_ref().ptr_type_in::<N>()
     }
 
+    /// Typed pointer `typedptr(<pointee>, <addrspace>)` — an analysis-only
+    /// type; see [`ModuleView::typed_pointer_type`].
+    ///
+    /// # Errors
+    ///
+    /// As [`ModuleView::typed_pointer_type`]: an invalid pointee
+    /// ([`IrError::InvalidTypeComponent`]) or one of another module
+    /// ([`IrError::ForeignType`]).
+    ///
+    /// ```
+    /// # use llvmkit_ir::{AddressSpace, Module};
+    /// let m = Module::dynamic("doc");
+    /// let space = AddressSpace::DEFAULT;
+    /// assert_eq!(m.typed_pointer_type(m.i32_type(), space)?.to_string(), "typedptr(i32, 0)");
+    /// assert!(m.typed_pointer_type(m.void_type(), space).is_err());
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
     pub fn typed_pointer_type<T>(
         &'ctx self,
         pointee: T,
-        addr_space: u32,
-    ) -> TypedPointerType<'ctx, B>
+        addr_space: AddressSpace,
+    ) -> IrResult<TypedPointerType<'ctx, B>>
     where
         T: IrType<'ctx, B>,
     {
@@ -4555,7 +4800,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// [`vector_type_n`](Self::vector_type_n), `N == 0` is **not** rejected:
     /// LLVM permits zero-length arrays `[0 x T]`. Mirrors `Type::getIntNTy`
     /// + `ArrayType::get`.
-    pub fn array_type_n<E, const N: u64>(&'ctx self) -> ArrayType<'ctx, E, ArrLen<N>, B>
+    pub fn array_type_n<E, const N: usize>(&'ctx self) -> ArrayType<'ctx, E, ArrLen<N>, B>
     where
         E: StaticVecElem<'ctx, B>,
     {
@@ -4693,15 +4938,26 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.capability_ref().literal_struct_type(elements, true)
     }
 
-    /// Get or create the identified struct type `%name`, body unset.
-    /// Delegates to [`ModuleView::get_or_insert_named_struct`].
     /// A fresh identified struct with no name — `%0 = type { i32 }`.
     /// Mirrors `StructType::create(Context)` called without a name.
+    ///
+    /// Never uniqued: two calls give two distinct types even at the same
+    /// body, which is what makes `%0` and `%1` different types when both are
+    /// written `type { i32 }`. Body-setting goes through the same
+    /// `set_struct_body` path as a named one.
+    ///
+    /// Only an unverified module creates one: the module prints every
+    /// identified struct, so creating one changes its text (D8).
     #[inline]
     pub fn anonymous_identified_struct(&'ctx self) -> StructType<'ctx, StructBodyDyn, B> {
         self.capability_ref().anonymous_identified_struct()
     }
 
+    /// Get or create the identified struct type `%name`, leaving its body
+    /// unset.
+    ///
+    /// Only an unverified module creates one: the module prints every
+    /// identified struct, so creating one changes its text (D8).
     pub fn get_or_insert_named_struct(
         &'ctx self,
         name: &str,
@@ -4733,10 +4989,24 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.capability_ref().named_struct(name)
     }
 
-    /// Idempotently intern schema `S`'s named struct type. Shares its body
-    /// with [`ModuleView::get_or_insert_struct_of`], which is where the
-    /// schema traits reach it.
-    pub fn get_or_insert_struct_of<S>(&'ctx self) -> IrResult<StructType<'ctx, BodySet, B>>
+    /// Idempotently intern the named LLVM struct type described by schema `S`,
+    /// filling its body the first time from the field layouts.
+    ///
+    /// Only an unverified module can do this: it creates `%S` or sets the body
+    /// of an opaque one, both of which change what the module prints, so a
+    /// [`ModuleView`] or a verified module has no such method (D8). A body
+    /// that differs is refused with [`IrError::StructBodyMismatch`] rather
+    /// than rewritten. A struct this answers for keeps its name:
+    /// [`set_struct_name`](Self::set_struct_name) refuses it.
+    ///
+    /// Mirrors `StructType::setBodyOrError` for the body: a hand-written
+    /// schema that contains itself by value, directly or through others, is
+    /// [`IrError::RecursiveStructBody`]. An empty `S::NAME` does not compile.
+    ///
+    /// Every refusal comes before anything is created, at any depth of the
+    /// schema's fields, so a refused module is the module it was and a second
+    /// call answers the same.
+    pub fn get_or_insert_struct_of<S>(&'ctx self) -> IrResult<StructOf<'ctx, S, B>>
     where
         S: StructSchema,
     {
@@ -4790,6 +5060,63 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.core().ctx.set_named_struct_body(st_id, body)
     }
 
+    /// Rename an identified struct, or remove its name with an empty `name`.
+    /// Mirrors `StructType::setName`: a name already in use takes the first
+    /// free `.N` suffix, as `%Foo.0`, and a struct with no name prints by
+    /// number. A name read earlier through [`StructType::name`] stays valid.
+    ///
+    /// Stricter than `setName`, which renames anything: a struct a schema
+    /// minted, or a whole check confirmed, keeps its name, because a [`StructOf`] or a
+    /// [`SchemaValue`](crate::SchemaValue) proves the struct is `%S`, and the
+    /// builds that take no `?` rest on that proof.
+    ///
+    /// # Errors
+    ///
+    /// A struct from another module is [`IrError::ForeignType`]; a literal
+    /// struct is [`IrError::LiteralStructNameNotSettable`]; a struct a schema
+    /// holds is [`IrError::SchemaStructNameNotSettable`].
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// let foo = m.get_or_insert_named_struct("Foo");
+    /// let bar = m.get_or_insert_named_struct("Bar");
+    /// m.set_struct_name(bar, "Foo")?;
+    /// assert_eq!(foo.name(), Some("Foo"));
+    /// assert_eq!(bar.name(), Some("Foo.0"));
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
+    pub fn set_struct_name<Body>(
+        &'ctx self,
+        st: StructType<'ctx, Body, B, impl Capability>,
+        name: &str,
+    ) -> IrResult<()>
+    where
+        Body: StructBodyState,
+    {
+        // Boundary: the caller's struct, admitted against this module before
+        // it is read or renamed.
+        let id = st.slot_in(self.id())?;
+        if st.is_literal() {
+            return Err(IrError::LiteralStructNameNotSettable);
+        }
+        let held = self
+            .core()
+            .ctx
+            .type_data(id)
+            .as_struct()
+            .unwrap_or_else(|| unreachable!("StructType wraps struct data"))
+            .schema_held
+            .get();
+        if held {
+            return Err(IrError::SchemaStructNameNotSettable {
+                name: st.name().unwrap_or_default().to_owned(),
+            });
+        }
+        self.core().ctx.set_struct_name(id, name);
+        Ok(())
+    }
+
     /// Set an opaque identified struct's body, upgrading the handle to
     /// [`BodySet`].
     ///
@@ -4829,11 +5156,26 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     }
 
     /// Function type `ret (params...)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`ModuleView::function_type`]: an invalid result or parameter
+    /// ([`IrError::InvalidTypeComponent`]), or a component of another module
+    /// ([`IrError::ForeignType`]).
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// let ty = m.function_type(m.void_type(), [m.i32_type(), m.i32_type()])?;
+    /// assert_eq!(ty.to_string(), "void (i32, i32)");
+    /// assert!(m.function_type(m.i32_type(), [m.void_type()]).is_err());
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
     pub fn function_type<I, R, T>(
         &'ctx self,
         return_type: R,
         parameters: I,
-    ) -> FunctionType<'ctx, B>
+    ) -> IrResult<FunctionType<'ctx, B>>
     where
         I: IntoIterator<Item = T>,
         R: IrType<'ctx, B>,
@@ -4844,11 +5186,24 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     }
 
     /// Variadic function type `ret (params..., ...)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`function_type`](Self::function_type).
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// let ty = m.variadic_function_type(m.i32_type(), [m.ptr_type_in::<0>()])?;
+    /// assert_eq!(ty.to_string(), "i32 (ptr, ...)");
+    /// assert!(m.variadic_function_type(m.i32_type(), [m.label_type()]).is_err());
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
     pub fn variadic_function_type<I, R, T>(
         &'ctx self,
         return_type: R,
         parameters: I,
-    ) -> FunctionType<'ctx, B>
+    ) -> IrResult<FunctionType<'ctx, B>>
     where
         I: IntoIterator<Item = T>,
         R: IrType<'ctx, B>,
@@ -4861,7 +5216,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// A function type with no parameters. Avoids the empty-iterator
     /// inference cliff of [`function_type`](Self::function_type); see
     /// [`ModuleView::function_type_no_parameters`].
-    pub fn function_type_no_parameters<R>(&'ctx self, return_type: R) -> FunctionType<'ctx, B>
+    ///
+    /// # Errors
+    ///
+    /// An invalid result ([`IrError::InvalidTypeComponent`]) or one of
+    /// another module ([`IrError::ForeignType`]).
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// assert_eq!(m.function_type_no_parameters(m.i64_type())?.to_string(), "i64 ()");
+    /// assert!(m.function_type_no_parameters(m.label_type()).is_err());
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
+    pub fn function_type_no_parameters<R>(
+        &'ctx self,
+        return_type: R,
+    ) -> IrResult<FunctionType<'ctx, B>>
     where
         R: IrType<'ctx, B>,
     {
@@ -4874,10 +5245,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
 
     /// Variadic sibling of
     /// [`function_type_no_parameters`](Self::function_type_no_parameters).
+    ///
+    /// # Errors
+    ///
+    /// As [`function_type_no_parameters`](Self::function_type_no_parameters).
+    ///
+    /// ```
+    /// # use llvmkit_ir::Module;
+    /// let m = Module::dynamic("doc");
+    /// assert_eq!(m.variadic_function_type_no_parameters(m.void_type())?.to_string(), "void (...)");
+    /// assert!(m.variadic_function_type_no_parameters(m.metadata_type()).is_err());
+    /// # Ok::<(), llvmkit_ir::IrError>(())
+    /// ```
     pub fn variadic_function_type_no_parameters<R>(
         &'ctx self,
         return_type: R,
-    ) -> FunctionType<'ctx, B>
+    ) -> IrResult<FunctionType<'ctx, B>>
     where
         R: IrType<'ctx, B>,
     {
@@ -4894,9 +5277,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Ret: FunctionReturn,
         Params: FunctionParamList,
     {
-        let ret = Ret::ir_type(self.as_view())?;
-        let params = Params::ir_types(self.as_view())?;
-        Ok(self.function_type(ret, params))
+        plan_signature_mint::<Ret, Params, B>(self.capability_ref())?;
+        let ret = Ret::ir_type(self.capability_ref())?;
+        let params = Params::ir_types(self.capability_ref())?;
+        self.function_type(ret, params)
     }
 
     /// Fixed-arity typed function type from a Rust function-pointer
@@ -4916,9 +5300,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Ret: FunctionReturn,
         Params: FunctionParamList,
     {
-        let ret = Ret::ir_type(self.as_view())?;
-        let params = Params::ir_types(self.as_view())?;
-        Ok(self.variadic_function_type(ret, params))
+        plan_signature_mint::<Ret, Params, B>(self.capability_ref())?;
+        let ret = Ret::ir_type(self.capability_ref())?;
+        let params = Params::ir_types(self.capability_ref())?;
+        self.variadic_function_type(ret, params)
     }
 
     /// Variadic typed function type from a Rust function-pointer schema.
@@ -4929,12 +5314,29 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.typed_varargs_function_type::<Sig::Ret, Sig::Params>()
     }
 
+    /// Target extension type `target("name", type_params..., int_params...)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`ModuleView::target_ext_type`]: parameter counts the type's rule
+    /// forbids ([`IrError::TargetExtTypeParameters`]) or a type parameter of
+    /// another module ([`IrError::ForeignType`]).
+    ///
+    /// ```
+    /// # use llvmkit_ir::{IrError, Module, TargetExtParameterRule};
+    /// let m = Module::dynamic("doc");
+    /// assert_eq!(
+    ///     m.target_ext_type("amdgcn.named.barrier", [m.i32_type()], [0]).map(|_| ()),
+    ///     Err(IrError::TargetExtTypeParameters { rule: TargetExtParameterRule::AmdgcnNamedBarrier })
+    /// );
+    /// assert!(m.target_ext_type("amdgcn.named.barrier", Vec::<llvmkit_ir::Type<'_, _>>::new(), [0]).is_ok());
+    /// ```
     pub fn target_ext_type<Name, I, T, J>(
         &'ctx self,
         name: Name,
         type_params: I,
         int_params: J,
-    ) -> TargetExtType<'ctx, B>
+    ) -> IrResult<TargetExtType<'ctx, B>>
     where
         Name: Into<String>,
         I: IntoIterator<Item = T>,
@@ -4958,6 +5360,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Params: FunctionParamList,
         Name: AsRef<str>,
     {
+        self.check_function_name(name.as_ref())?;
         let signature = self.typed_function_type::<Ret, Params>()?;
         let function = self.declare_function::<Ret::Marker>(name.as_ref(), signature, linkage)?;
         TypedFunctionValue::<Ret, Params, B>::try_from_function(function).map(|f| f.id())
@@ -4974,6 +5377,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Sig: FunctionSignature,
         Name: AsRef<str>,
     {
+        self.check_function_name(name.as_ref())?;
         let signature = self.typed_function_type_of::<Sig>()?;
         let function = self.declare_function::<<Sig::Ret as FunctionReturn>::Marker>(
             name.as_ref(),
@@ -4997,6 +5401,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Params: FunctionParamList,
         Name: AsRef<str>,
     {
+        self.check_function_name(name.as_ref())?;
         let signature = self.typed_varargs_function_type::<Ret, Params>()?;
         let function = self.declare_function::<Ret::Marker>(name.as_ref(), signature, linkage)?;
         TypedVarArgsFunctionValue::<Ret, Params, B>::try_from_function(function).map(|f| f.id())
@@ -5013,6 +5418,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Sig: FunctionSignature,
         Name: AsRef<str>,
     {
+        self.check_function_name(name.as_ref())?;
         let signature = self.typed_varargs_function_type_of::<Sig>()?;
         let function = self.declare_function::<<Sig::Ret as FunctionReturn>::Marker>(
             name.as_ref(),
@@ -5021,6 +5427,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         )?;
         TypedVarArgsFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(function)
             .map(|f| f.id())
+    }
+
+    /// The refusals [`declare_function`](Self::declare_function) has, which
+    /// read only the name. A typed constructor asks first, so a refused name
+    /// mints no part of its signature.
+    fn check_function_name(&'ctx self, name: &str) -> IrResult<()> {
+        reject_reserved_intrinsic_name(name)?;
+        if !name.is_empty() && self.core().named_value(name).is_some() {
+            return Err(IrError::DuplicateFunctionName {
+                name: name.to_owned(),
+            });
+        }
+        Ok(())
     }
 
     /// Shared declaration tail for every public constructor: name
@@ -5045,12 +5464,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     where
         R: ReturnMarker,
     {
-        reject_reserved_intrinsic_name(name)?;
-        if !name.is_empty() && self.core().named_value(name).is_some() {
-            return Err(IrError::DuplicateFunctionName {
-                name: name.to_owned(),
-            });
-        }
+        self.check_function_name(name)?;
         Ok(self.capability_ref().push_function(
             name,
             signature,
@@ -5161,6 +5575,34 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.get_or_insert_intrinsic_declaration(&descriptor)
     }
 
+    /// [`Self::get_or_insert_intrinsic_declaration`] for the overloads
+    /// `return_type` and `argument_types` imply. Mirrors
+    /// `Intrinsic::getOrInsertDeclaration(M, ID, RetTy, ArgTys)`: a
+    /// non-overloaded intrinsic ignores the signature, and a variadic one is
+    /// given its fixed argument types.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::InvalidTypeComponent`] or [`IrError::ForeignType`] if the
+    /// signature is no function type of this module;
+    /// [`IrError::IntrinsicSignatureMismatch`] if no overload fits it, where
+    /// upstream asserts; then [`Self::get_or_insert_intrinsic_declaration`]'s.
+    pub fn get_or_insert_intrinsic_declaration_by_signature<R, I, T>(
+        &'ctx self,
+        id: IntrinsicId,
+        return_type: R,
+        argument_types: I,
+    ) -> IrResult<FunctionId<Dyn, B>>
+    where
+        R: IrType<'ctx, B>,
+        I: IntoIterator<Item = T>,
+        T: IrType<'ctx, B>,
+    {
+        self.capability_ref()
+            .get_or_insert_intrinsic_declaration_by_signature(id, return_type, argument_types)
+            .map(|function| function.id())
+    }
+
     /// [`Self::get_or_insert_intrinsic_declaration`] for the intrinsic `name`
     /// spells, overload suffix included (`llvm.abs.i32`).
     ///
@@ -5219,6 +5661,30 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
             .constant()
             .initializer(constant)
             .build()
+    }
+
+    /// The global variable named `name`, or a new external declaration of
+    /// `value_type` in the data layout's default globals address space.
+    /// Mirrors `Module::getOrInsertGlobal(Name, Ty)`: a global that holds the
+    /// name is returned as it is, whatever its type and address space.
+    ///
+    /// # Errors
+    ///
+    /// A `value_type` of another module is [`IrError::ForeignType`]. A
+    /// function, alias or ifunc that holds the name is
+    /// [`IrError::DuplicateGlobalName`], where upstream's new global would take
+    /// a uniqued name.
+    pub fn get_or_insert_global<T>(&'ctx self, name: &str, value_type: T) -> IrResult<GlobalId<B>>
+    where
+        T: IrType<'ctx, B>,
+    {
+        // Boundary: the caller's type, admitted against this module whether or
+        // not a global holds the name, so a foreign one is never answered.
+        value_type.as_type().slot_in(self.id())?;
+        match self.global(name) {
+            Some(global) => Ok(global),
+            None => self.global_builder(name, value_type).build(),
+        }
     }
 
     /// Add a global with no initializer, declared at `value_type`.
@@ -5359,7 +5825,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Asm: Into<String>,
         Constraints: Into<String>,
     {
-        let ptr_ty = self.ptr_type(0).as_type().slot_trusting_same_module();
+        let ptr_ty = self
+            .ptr_type(AddressSpace::DEFAULT)
+            .as_type()
+            .slot_trusting_same_module();
         let data = InlineAsmData {
             asm_string: asm.into(),
             constraint_string: constraints.into(),

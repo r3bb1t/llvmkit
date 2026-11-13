@@ -305,16 +305,16 @@ impl<'src> Lexer<'src> {
                 }
 
                 // Prefix tokens.
-                b'+' => return self.lex_positive(),
+                b'+' => return Ok(self.lex_positive()),
                 b'-' | b'0'..=b'9' => return self.lex_digit_or_negative(),
                 b'@' => return self.lex_var(QuotedNameKind::Global),
                 b'%' => return self.lex_var(QuotedNameKind::Local),
                 b'$' => return self.lex_dollar(),
-                b'!' => return self.lex_exclaim(),
+                b'!' => return Ok(self.lex_exclaim()),
                 b'^' => return self.lex_caret(),
                 b'#' => return self.lex_hash(),
                 b'"' => return self.lex_quote(),
-                b'.' => return self.lex_dot(),
+                b'.' => return Ok(self.lex_dot()),
 
                 c if c.is_ascii_alphabetic() || c == b'_' => return self.lex_identifier(),
 
@@ -475,15 +475,15 @@ impl<'src> Lexer<'src> {
 
     /// Lex `!…`. Either `!` alone (`Exclaim`) or `!name` (`MetadataVar`).
     /// Mirrors `LLLexer::LexExclaim`.
-    fn lex_exclaim(&mut self) -> Result<Spanned<Token<'src>>, LexError> {
+    fn lex_exclaim(&mut self) -> Spanned<Token<'src>> {
         self.bump(); // consume '!'
 
         let name_start = self.pos;
         let Some(first) = self.peek() else {
-            return Ok(self.spanned(Token::Exclaim, self.current_span()));
+            return self.spanned(Token::Exclaim, self.current_span());
         };
         if !is_metadata_name_start(first) {
-            return Ok(self.spanned(Token::Exclaim, self.current_span()));
+            return self.spanned(Token::Exclaim, self.current_span());
         }
         self.bump();
         while let Some(b) = self.peek() {
@@ -495,7 +495,7 @@ impl<'src> Lexer<'src> {
         }
         let raw = &self.src[name_start..self.pos];
         let decoded = escape::unescape(raw);
-        Ok(self.spanned(Token::MetadataVar(decoded), self.current_span()))
+        self.spanned(Token::MetadataVar(decoded), self.current_span())
     }
 
     /// Lex `^[0-9]+` summary id. Mirrors `LLLexer::LexCaret`.
@@ -610,15 +610,15 @@ impl<'src> Lexer<'src> {
 
     /// Lex `.` — either `...` punctuation or a `.` -prefixed label.
     /// Mirrors `LLLexer::LexToken`'s `case '.'`.
-    fn lex_dot(&mut self) -> Result<Spanned<Token<'src>>, LexError> {
+    fn lex_dot(&mut self) -> Spanned<Token<'src>> {
         // Look-ahead label tail starting at the '.'.
         if let Some(end) = is_label_tail(self.src, self.pos + 1) {
             let content = &self.src[self.pos..end - 1];
             self.pos = end;
-            return Ok(self.spanned(
+            return self.spanned(
                 Token::LabelStr(std::borrow::Cow::Borrowed(content)),
                 self.current_span(),
-            ));
+            );
         }
         // ...
         if self.peek_at(0) == Some(b'.')
@@ -626,12 +626,12 @@ impl<'src> Lexer<'src> {
             && self.peek_at(2) == Some(b'.')
         {
             self.pos += 3;
-            return Ok(self.spanned(Token::DotDotDot, self.current_span()));
+            return self.spanned(Token::DotDotDot, self.current_span());
         }
         // Bare '.' isn't a token in LLVM IR: `LLLexer::LexToken`'s `case '.'`
         // ends `return lltok::Error;` with no message.
         self.bump();
-        Ok(self.spanned(Token::Error, self.current_span()))
+        self.spanned(Token::Error, self.current_span())
     }
 
     /// `[0-9]+` or `-[0-9…]` or numeric label. Mirrors
@@ -721,18 +721,18 @@ impl<'src> Lexer<'src> {
             ));
         }
 
-        self.consume_fp_tail()?;
+        self.consume_fp_tail();
         let lex = ascii_str(&self.src[self.tok_start..self.pos]);
         Ok(self.spanned(Token::FloatLit(FpLit::Decimal(lex)), self.current_span()))
     }
 
     /// Lex `+1.5` style positive FP literal. Mirrors `LLLexer::LexPositive`.
-    fn lex_positive(&mut self) -> Result<Spanned<Token<'src>>, LexError> {
+    fn lex_positive(&mut self) -> Spanned<Token<'src>> {
         self.bump(); // '+'
         if !matches!(self.peek(), Some(b'0'..=b'9')) {
             // `LLLexer::LexPositive`'s leading guard: silent `lltok::Error`,
             // cursor left one past the `+`.
-            return Ok(self.spanned(Token::Error, self.current_span()));
+            return self.spanned(Token::Error, self.current_span());
         }
         // Skip integer part.
         while matches!(self.peek(), Some(b'0'..=b'9')) {
@@ -744,16 +744,16 @@ impl<'src> Lexer<'src> {
         // lexed from, so it is reproduced rather than merely reported.
         if self.peek() != Some(b'.') {
             self.pos = self.tok_start + 1;
-            return Ok(self.spanned(Token::Error, self.current_span()));
+            return self.spanned(Token::Error, self.current_span());
         }
-        self.consume_fp_tail()?;
+        self.consume_fp_tail();
         let lex = ascii_str(&self.src[self.tok_start..self.pos]);
-        Ok(self.spanned(Token::FloatLit(FpLit::Decimal(lex)), self.current_span()))
+        self.spanned(Token::FloatLit(FpLit::Decimal(lex)), self.current_span())
     }
 
-    /// Consume `\.[0-9]*([eE][-+]?[0-9]+)?`. Cursor is on the `.`. Returns Ok
-    /// regardless of whether the exponent is present.
-    fn consume_fp_tail(&mut self) -> Result<(), LexError> {
+    /// Consume `\.[0-9]*([eE][-+]?[0-9]+)?`. Cursor is on the `.`; the
+    /// exponent is optional.
+    fn consume_fp_tail(&mut self) {
         debug_assert_eq!(self.peek(), Some(b'.'));
         self.bump(); // '.'
         while matches!(self.peek(), Some(b'0'..=b'9')) {
@@ -777,7 +777,6 @@ impl<'src> Lexer<'src> {
                 }
             }
         }
-        Ok(())
     }
 
     /// Lex `0x[KLMHR]?[0-9A-Fa-f]+` (the `0x` is already at `self.tok_start`).

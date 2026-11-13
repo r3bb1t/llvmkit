@@ -24,16 +24,19 @@
 //! Bit-width constants [`MIN_INT_BITS`] / [`MAX_INT_BITS`] mirror
 //! `IntegerType::MIN_INT_BITS` / `MAX_INT_BITS` (`DerivedTypes.h`).
 
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::num::NonZeroU32;
 
 use crate::TypeKindLabel;
+use crate::addr_space::AddressSpace;
 use crate::capability::{Capability, CapabilityOf, Mutable};
 use crate::error::RenderedType;
 use crate::error::{IrError, IrResult};
+use crate::llvm_context::Context;
 use crate::module::{ModuleBrand, ModuleCore, ModuleId, ModuleRef, ModuleView};
+use crate::type_size::TypeSize;
 
 /// Minimum legal integer width. Mirrors `IntegerType::MIN_INT_BITS`
 /// (`DerivedTypes.h`).
@@ -73,6 +76,41 @@ impl TypeSlot {
     }
 }
 
+/// Index into a context's typed-pointer table — a table of its own, beside
+/// the type arena, because a typed pointer is no IR type
+/// (`TypedPointerType.h`: "not legal to use this type ... in LLVM IR"), so no
+/// [`TypeSlot`] may name one. Crate-internal like [`TypeSlot`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct TypedPointerSlot(NonZeroU32);
+
+impl TypedPointerSlot {
+    /// Build from a 0-based table index. Stored as `index + 1` so the
+    /// underlying value is always non-zero.
+    #[inline]
+    pub(crate) fn from_index(index: usize) -> Self {
+        let raw =
+            u32::try_from(index + 1).expect("typed-pointer table overflow (>u32::MAX entries)");
+        Self(NonZeroU32::new(raw).expect("idx + 1 > 0"))
+    }
+
+    /// Recover the 0-based table index.
+    #[inline]
+    pub(crate) fn table_index(self) -> usize {
+        // Subtraction is sound: every TypedPointerSlot was produced by
+        // `from_index`, which guarantees the value is in `1..=u32::MAX`.
+        let nz = u32::from(self.0);
+        usize::try_from(nz - 1).expect("u32 fits in usize on supported targets")
+    }
+}
+
+/// What a typed pointer's slot points at: an IR type, or another typed
+/// pointer (`TypedPointerType::isValidElementType` admits one).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum TypedPointeeSlot {
+    Ir(TypeSlot),
+    Typed(TypedPointerSlot),
+}
+
 // --------------------------------------------------------------------------
 // Internal payload
 // --------------------------------------------------------------------------
@@ -104,7 +142,7 @@ pub(crate) enum TypeData {
     /// `Pointer`; `getelementptr` / `load` / `store` carry them
     /// explicitly.
     Pointer {
-        addr_space: u32,
+        addr_space: AddressSpace,
     },
 
     // ---- Derived ----
@@ -130,12 +168,6 @@ pub(crate) enum TypeData {
         min: NonZeroU32,
     },
     Struct(StructTypeData),
-    /// Typed pointer (legacy, only used by a few GPU targets in LLVM 22).
-    /// Mirrors `TypedPointerType` (`TypedPointerType.h`).
-    TypedPointer {
-        pointee: TypeSlot,
-        addr_space: u32,
-    },
     TargetExt(TargetExtTypeData),
 }
 
@@ -170,7 +202,6 @@ impl TypeData {
             TypeData::FixedVector { .. } => TypeKindLabel::FixedVector,
             TypeData::ScalableVector { .. } => TypeKindLabel::ScalableVector,
             TypeData::Struct(_) => TypeKindLabel::Struct,
-            TypeData::TypedPointer { .. } => TypeKindLabel::TypedPointer,
             TypeData::TargetExt(_) => TypeKindLabel::TargetExt,
         }
     }
@@ -194,7 +225,7 @@ impl TypeData {
         }
     }
     #[inline]
-    pub(crate) fn as_pointer(&self) -> Option<u32> {
+    pub(crate) fn as_pointer(&self) -> Option<AddressSpace> {
         if let Self::Pointer { addr_space } = *self {
             Some(addr_space)
         } else {
@@ -246,18 +277,6 @@ impl TypeData {
         }
     }
     #[inline]
-    pub(crate) fn as_typed_pointer(&self) -> Option<(TypeSlot, u32)> {
-        if let Self::TypedPointer {
-            pointee,
-            addr_space,
-        } = *self
-        {
-            Some((pointee, addr_space))
-        } else {
-            None
-        }
-    }
-    #[inline]
     pub(crate) fn as_target_ext(&self) -> Option<&TargetExtTypeData> {
         if let Self::TargetExt(t) = self {
             Some(t)
@@ -295,6 +314,12 @@ pub(crate) struct ElementCount {
 pub(crate) struct StructTypeData {
     pub(crate) identity: StructIdentity,
     pub(crate) body: RefCell<Option<StructBody>>,
+    /// Whether a schema minted this struct, or a whole check confirmed it, and
+    /// from then on a `StructOf` or a `SchemaValue` may rest on its name, so
+    /// `Module::set_struct_name` refuses it. `Context::hold_schema_struct` sets
+    /// it. llvmkit-only: upstream has no schemas, and `StructType::setName`
+    /// renames anything.
+    pub(crate) schema_held: Cell<bool>,
 }
 
 /// Which of LLVM's two struct-identity regimes a struct type belongs to.
@@ -307,20 +332,32 @@ pub(crate) struct StructTypeData {
 /// The name is not the discriminator. llvmkit used to spell literal-ness as
 /// `name.is_none()`, which cannot represent an *anonymous identified* struct
 /// — exactly what `%0 = type {i32}` is.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// An identified struct's name can be replaced or removed
+/// (`StructType::setName`), so it is an index into the context's list of every
+/// name a struct has held, not a string here. `StructType::name` hands out a
+/// `&'ctx str`, so a replaced name has to stay alive: upstream's own test reads
+/// the old name across the rename (`TEST(TypesTest, StructType)`, PR13522).
+#[derive(Debug)]
 pub(crate) enum StructIdentity {
     Literal,
-    Identified { name: Option<String> },
+    Identified { name: Cell<Option<usize>> },
 }
 
 impl StructIdentity {
     /// The declared name, for an identified struct that has one.
     #[inline]
-    pub(crate) fn name(&self) -> Option<&str> {
+    pub(crate) fn name<'a>(&self, context: &'a Context) -> Option<&'a str> {
         match self {
             Self::Literal => None,
-            Self::Identified { name } => name.as_deref(),
+            Self::Identified { name } => context.struct_name(name.get()?),
         }
+    }
+
+    /// `true` for an identified struct with no name, the kind `%0` is.
+    #[inline]
+    pub(crate) fn is_anonymous_identified(&self) -> bool {
+        matches!(self, Self::Identified { name } if name.get().is_none())
     }
 
     #[inline]
@@ -560,7 +597,6 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Type<'ctx, B, C> {
             TypeData::FixedVector { .. } => TypeKind::FixedVector,
             TypeData::ScalableVector { .. } => TypeKind::ScalableVector,
             TypeData::Struct(_) => TypeKind::Struct,
-            TypeData::TypedPointer { .. } => TypeKind::TypedPointer,
             TypeData::TargetExt(_) => TypeKind::TargetExt,
         }
     }
@@ -598,14 +634,6 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Type<'ctx, B, C> {
     #[inline]
     pub fn is_pointer(self) -> bool {
         matches!(self.data(), TypeData::Pointer { .. })
-    }
-    /// Legacy *typed* pointer (`i32*`), mirroring `TypedPointerType`. Distinct
-    /// from [`Self::is_pointer`], which is the opaque `ptr` — a first-class data
-    /// type just the same, so anywhere that accepts a pointer value (a `phi`
-    /// result, say) must accept both.
-    #[inline]
-    pub fn is_typed_pointer(self) -> bool {
-        matches!(self.data(), TypeData::TypedPointer { .. })
     }
     #[inline]
     pub fn is_function(self) -> bool {
@@ -746,29 +774,42 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Type<'ctx, B, C> {
     /// Mirrors `Type::getScalarSizeInBits`, whose zero return is the "not a
     /// sized primitive" signal the cast table relies on.
     pub fn scalar_size_in_bits(self) -> u32 {
-        self.scalar_type().primitive_size_in_bits()
+        // "It is safe to assume that the scalar types have a fixed size." It is
+        // `unsigned` upstream too, and no scalar is wider than `MAX_INT_BITS`.
+        u32::try_from(
+            self.scalar_type()
+                .primitive_size_in_bits()
+                .known_min_value(),
+        )
+        .unwrap_or(u32::MAX)
     }
 
     /// Mirrors `Type::getPrimitiveSizeInBits`: the bit width of a primitive
-    /// or vector of primitives, and 0 for everything else. A scalable vector
-    /// reports its minimum width, matching upstream's `TypeSize` in the
-    /// contexts the parser uses this for.
-    pub fn primitive_size_in_bits(self) -> u32 {
+    /// or vector of primitives, and 0 for everything else. The product is 64
+    /// bits wide: 2^32 lanes of the widest element fit.
+    pub fn primitive_size_in_bits(self) -> TypeSize {
+        // Upstream's `ETS.getFixedValue()`, behind an `assert`: an element is
+        // never a vector, so its size is fixed.
+        let element_bits = |elem: TypeSlot| {
+            Type::new(elem, self.module)
+                .primitive_size_in_bits()
+                .known_min_value()
+        };
         match self.data() {
-            TypeData::Half | TypeData::Bfloat => 16,
-            TypeData::Float => 32,
-            TypeData::Double => 64,
-            TypeData::X86Fp80 => 80,
-            TypeData::Fp128 | TypeData::PpcFp128 => 128,
-            TypeData::X86Amx => 8192,
-            TypeData::Integer { bits } => *bits,
-            TypeData::FixedVector { elem, n } => Type::new(*elem, self.module)
-                .primitive_size_in_bits()
-                .saturating_mul(n.get()),
-            TypeData::ScalableVector { elem, min } => Type::new(*elem, self.module)
-                .primitive_size_in_bits()
-                .saturating_mul(min.get()),
-            _ => 0,
+            TypeData::Half | TypeData::Bfloat => TypeSize::fixed(16),
+            TypeData::Float => TypeSize::fixed(32),
+            TypeData::Double => TypeSize::fixed(64),
+            TypeData::X86Fp80 => TypeSize::fixed(80),
+            TypeData::Fp128 | TypeData::PpcFp128 => TypeSize::fixed(128),
+            TypeData::X86Amx => TypeSize::fixed(8192),
+            TypeData::Integer { bits } => TypeSize::fixed(u64::from(*bits)),
+            TypeData::FixedVector { elem, n } => {
+                TypeSize::fixed(element_bits(*elem) * u64::from(n.get()))
+            }
+            TypeData::ScalableVector { elem, min } => {
+                TypeSize::scalable(element_bits(*elem) * u64::from(min.get()))
+            }
+            _ => TypeSize::fixed(0),
         }
     }
 
@@ -800,10 +841,9 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Type<'ctx, B, C> {
     /// Address space of a pointer type, or `None` if this is not one.
     /// Mirrors `PointerType::getAddressSpace` with the null check folded in
     /// (design law 3: the `dyn_cast` plus null test becomes an `Option`).
-    pub fn pointer_address_space(self) -> Option<u32> {
+    pub fn pointer_address_space(self) -> Option<AddressSpace> {
         match self.data() {
             TypeData::Pointer { addr_space } => Some(*addr_space),
-            TypeData::TypedPointer { addr_space, .. } => Some(*addr_space),
             _ => None,
         }
     }
@@ -834,11 +874,14 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Type<'ctx, B, C> {
     /// Mirrors `VectorType::isValidElementType` — the one *allow*-list in the
     /// family: integers, floats, pointers, and target extension types that
     /// declare `CanBeVectorElement`.
+    ///
+    /// Upstream also admits `TypedPointerTyID`, for the vectors a DXIL or
+    /// SPIR-V backend builds in its analyses. llvmkit has no IR type that is a
+    /// typed pointer (`TypedPointerType` is analysis-only, as its header
+    /// requires), so the arm has nothing to admit.
     pub fn is_valid_vector_element(self) -> bool {
         match self.data() {
-            TypeData::Integer { .. } | TypeData::Pointer { .. } | TypeData::TypedPointer { .. } => {
-                true
-            }
+            TypeData::Integer { .. } | TypeData::Pointer { .. } => true,
             TypeData::TargetExt(_) => crate::derived_types::TargetExtType::try_from(self)
                 .is_ok_and(|t| {
                     t.has_property(crate::derived_types::TargetExtProperty::CanBeVectorElement)
@@ -891,13 +934,12 @@ pub enum TypeKind {
     Metadata,
     Token,
     Integer { bits: u32 },
-    Pointer { addr_space: u32 },
+    Pointer { addr_space: AddressSpace },
     Function,
     Array,
     FixedVector,
     ScalableVector,
     Struct,
-    TypedPointer,
     TargetExt,
 }
 
@@ -972,22 +1014,19 @@ impl<'ctx, B: ModuleBrand, C: Capability> fmt::Display for Type<'ctx, B, C> {
                 // its position among the module's anonymous identified structs
                 // (`TypePrinting::NumberedTypes`). Only a literal struct spells
                 // its body inline.
-                match &s.identity {
-                    StructIdentity::Identified { name: Some(name) } => {
-                        return write!(f, "%{name}");
-                    }
-                    StructIdentity::Identified { name: None } => {
-                        return match self
-                            .module
-                            .module()
-                            .context()
-                            .anonymous_identified_struct_number(self.id)
-                        {
-                            Some(number) => write!(f, "%{number}"),
-                            None => f.write_str("%<unnumbered>"),
-                        };
-                    }
-                    StructIdentity::Literal => {}
+                if let Some(name) = s.identity.name(self.module.module().context()) {
+                    return crate::asm_writer::fmt_llvm_name(f, "%", name);
+                }
+                if s.identity.is_anonymous_identified() {
+                    return match self
+                        .module
+                        .module()
+                        .context()
+                        .anonymous_identified_struct_number(self.id)
+                    {
+                        Some(number) => write!(f, "%{number}"),
+                        None => f.write_str("%<unnumbered>"),
+                    };
                 }
                 let body = s.body.borrow();
                 let body = body.as_ref().expect("literal struct must have body");
@@ -1011,18 +1050,6 @@ impl<'ctx, B: ModuleBrand, C: Capability> fmt::Display for Type<'ctx, B, C> {
                     f.write_str(" }")
                 }
             }
-            TypeData::TypedPointer {
-                pointee,
-                addr_space: 0,
-            } => write!(f, "{}*", Type::new(*pointee, self.module)),
-            TypeData::TypedPointer {
-                pointee,
-                addr_space,
-            } => write!(
-                f,
-                "{} addrspace({addr_space})*",
-                Type::new(*pointee, self.module)
-            ),
             TypeData::TargetExt(t) => {
                 write!(f, "target(\"{}\"", t.name)?;
                 for tp in t.type_params.iter() {
@@ -1123,8 +1150,7 @@ fn is_sized(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot>) -> b
         | TypeData::PpcFp128
         | TypeData::X86Amx
         | TypeData::Integer { .. }
-        | TypeData::Pointer { .. }
-        | TypeData::TypedPointer { .. } => true,
+        | TypeData::Pointer { .. } => true,
         TypeData::Array { elem, .. }
         | TypeData::FixedVector { elem, .. }
         | TypeData::ScalableVector { elem, .. } => is_sized(module, *elem, visited),
@@ -1192,7 +1218,7 @@ fn contains_homogeneous_scalable_vector_types(module: &ModuleCore, elements: &[T
 /// `Type::isScalableTargetExtTy`. Note that upstream does *not* recurse
 /// through a fixed vector's element type here — a fixed vector of scalable
 /// vectors is unrepresentable — so neither does this.
-fn is_scalable(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot>) -> bool {
+pub(crate) fn is_scalable(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot>) -> bool {
     match module.context().type_data(id) {
         TypeData::Array { elem, .. } => is_scalable(module, *elem, visited),
         TypeData::Struct(data) => {
@@ -1238,6 +1264,12 @@ pub(crate) mod sealed {
 /// not an extension point. Bound generic code with `T: IrType<'ctx>`
 /// when a function should accept any type without enumerating every
 /// concrete handle.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not an LLVM IR type",
+    label = "expected an IR type handle (`IntType`, `PointerType`, `Type`, …)",
+    note = "an analysis-only type such as `TypedPointerType` never appears in LLVM IR \
+            (`TypedPointerType.h`: \"not legal to use this type ... in LLVM IR\")"
+)]
 pub trait IrType<'ctx, B: ModuleBrand>:
     sealed::Sealed + Copy + Sized + core::fmt::Debug + CapabilityOf
 {

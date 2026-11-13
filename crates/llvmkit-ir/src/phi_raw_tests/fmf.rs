@@ -18,11 +18,11 @@ fn phi_add_incoming_from_value_rejects_type_mismatch() -> Result<(), IrError> {
     let m = crate::module_new!("a")?;
     let i32_ty = m.i32_type();
     let f64_ty = m.f64_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let phi = b.view(b.int_phi::<i32, _>("p")?);
+    let phi = b.view(b.int_phi::<i32, _>("p"));
     let phi_val = phi.as_int_value().as_erased();
     // f64 incoming value against an i32 phi -> result-type mismatch.
     let f64_val = f64_ty.const_double(1.0).as_erased();
@@ -50,12 +50,12 @@ fn phi_add_incoming_from_value_rejects_type_mismatch() -> Result<(), IrError> {
 fn phi_add_incoming_from_value_rejects_differing_duplicate() -> Result<(), IrError> {
     let m = crate::module_new!("a")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let _a = m.view(f).append_basic_block(&m, "a");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let phi = b.view(b.int_phi::<i32, _>("p")?);
+    let phi = b.view(b.int_phi::<i32, _>("p"));
     let phi_val = phi.as_int_value().as_erased();
     let c1 = i32_ty.const_int(1_i32).as_erased();
     let c2 = i32_ty.const_int(2_i32).as_erased();
@@ -86,13 +86,13 @@ fn phi_add_incoming_from_value_rejects_differing_duplicate() -> Result<(), IrErr
 fn typed_add_incoming_rejects_differing_duplicate() -> Result<(), IrError> {
     let m = crate::module_new!("a")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let a = m.view(f).append_basic_block(&m, "a");
     let a_label = a.id();
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let phi = b.view(b.int_phi::<i32, _>("p")?);
+    let phi = b.view(b.int_phi::<i32, _>("p"));
     let err = phi
         .add_incoming(1_i32, a_label)?
         .add_incoming(2_i32, a_label)
@@ -112,13 +112,13 @@ fn typed_add_incoming_rejects_differing_duplicate() -> Result<(), IrError> {
 fn fp_phi_add_incoming_rejects_differing_duplicate() -> Result<(), IrError> {
     let m = crate::module_new!("a")?;
     let f64_ty = m.f64_type();
-    let fn_ty = m.function_type(f64_ty, [f64_ty.as_type()]);
+    let fn_ty = m.function_type(f64_ty, [f64_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let a = m.view(f).append_basic_block(&m, "a");
     let a_label = a.id();
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let phi = b.view(b.fp_phi::<f64, _>("p")?);
+    let phi = b.view(b.fp_phi::<f64, _>("p"));
     // `1.0_f64` and `2.0_f64` intern to distinct constants, so the two
     // edges from block `a` carry different values: the guard fires.
     let err = phi
@@ -141,14 +141,14 @@ fn fp_phi_add_incoming_rejects_differing_duplicate() -> Result<(), IrError> {
 #[test]
 fn pointer_phi_add_incoming_rejects_differing_duplicate() -> Result<(), IrError> {
     let m = crate::module_new!("a")?;
-    let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.function_type(ptr_ty, [ptr_ty.as_type(), ptr_ty.as_type()]);
+    let ptr_ty = m.ptr_type_in::<0>();
+    let fn_ty = m.function_type(ptr_ty, [ptr_ty.as_type(), ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let a = m.view(f).append_basic_block(&m, "a");
     let a_label = a.id();
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let phi = b.view(b.pointer_phi("p")?);
+    let phi = b.view(b.pointer_phi("p"));
     let p1: PointerValue<'_, crate::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let p2: PointerValue<'_, crate::SpaceDyn, _> = m.view(f).param(1)?.try_into()?;
     // Two distinct params are two distinct SSA values, so the two edges
@@ -171,13 +171,13 @@ fn pointer_phi_add_incoming_rejects_differing_duplicate() -> Result<(), IrError>
 fn same_value_duplicate_incoming_is_legal() -> Result<(), IrError> {
     let m = crate::module_new!("a")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let a = m.view(f).append_basic_block(&m, "a");
     let a_label = a.id();
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let phi = b.view(b.int_phi::<i32, _>("p")?);
+    let phi = b.view(b.int_phi::<i32, _>("p"));
     // `7_i32` interns to one constant id, so both edges carry the same
     // value from the same block: both accepted.
     let phi = phi
@@ -205,7 +205,7 @@ fn same_value_duplicate_incoming_is_legal() -> Result<(), IrError> {
 fn ambiguous_phi_names_the_block_asm_writer_prints() -> Result<(), IrError> {
     let m = crate::module_new!("a")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     m.view(f).param(0)?.set_name(&m, "i")?;
     // An UNNAMED entry block: `SlotTracker::for_function` numbers it, and
@@ -216,7 +216,7 @@ fn ambiguous_phi_names_the_block_asm_writer_prints() -> Result<(), IrError> {
     let entry_label = entry.id();
     let a = m.view(f).append_basic_block(&m, "a");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(a);
-    let phi = b.view(b.int_phi::<i32, _>("p")?);
+    let phi = b.view(b.int_phi::<i32, _>("p"));
     let err = phi
         .add_incoming(1_i32, entry_label)?
         .add_incoming(2_i32, entry_label)
@@ -243,13 +243,13 @@ fn ambiguous_phi_names_the_block_asm_writer_prints() -> Result<(), IrError> {
 fn ambiguous_phi_names_a_named_block_by_its_name() -> Result<(), IrError> {
     let m = crate::module_new!("a")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let a = m.view(f).append_basic_block(&m, "a");
     let a_label = a.id();
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let phi = b.view(b.int_phi::<i32, _>("p")?);
+    let phi = b.view(b.int_phi::<i32, _>("p"));
     let err = phi
         .add_incoming(1_i32, a_label)?
         .add_incoming(2_i32, a_label)

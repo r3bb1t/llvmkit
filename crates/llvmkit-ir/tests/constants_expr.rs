@@ -1,13 +1,147 @@
 //! Constant-expression, blockaddress, and token-none tests.
 
 use llvmkit_ir::{
-    ApInt, ArrayType, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, Dyn,
-    GepNoWrapFlags, IrBuilder, IrError, Linkage, Module, ModuleBrand, OverflowingConstantExprFlags,
-    VectorType, lanes, module_new,
+    ApInt, ArrayType, CastOpcode, Constant, ConstantExprFlags, ConstantExprInRange,
+    ConstantExprOpcode, ConstantFolder, Dyn, DynBrand, ElemDyn, GepNoWrapFlags, IntoConstantValue,
+    IrBuilder, IrBuilderFolder, IrError, LenDyn, Linkage, Module, ModuleBrand,
+    OverflowingConstantExprFlags, Type, Value, VectorType, lanes, module_new,
 };
 
 fn module_text<B: ModuleBrand, S>(m: &Module<B, S>) -> String {
     format!("{m}")
+}
+
+/// `Constant::getNullValue` of `ty`, a vector of `element`: llvmkit has no one
+/// call for it.
+fn null_vector<'m, E>(
+    ty: VectorType<'m, ElemDyn, LenDyn, DynBrand>,
+    element: E,
+) -> Constant<'m, DynBrand>
+where
+    E: IntoConstantValue<'m, DynBrand> + Copy,
+{
+    let count = usize::try_from(ty.min_len().get()).expect("the count fits");
+    ty.const_vector(core::iter::repeat_n(element, count))
+        .expect("the elements have the vector's element type")
+        .as_constant()
+}
+
+/// `ConstantExpr::getPointerCast`, which `ConstantFolder::CreatePointerCast`
+/// forwards to.
+fn pointer_cast<'m>(value: Constant<'m, DynBrand>, ty: Type<'m, DynBrand>) -> Value<'m, DynBrand> {
+    ConstantFolder
+        .create_pointer_cast(value, ty)
+        .expect("a valid pointer cast")
+        .expect("a constant folds")
+}
+
+/// `ConstantExpr::getIntToPtr` and `getAddrSpaceCast`, through
+/// `ConstantFolder::FoldCast`.
+fn cast<'m>(
+    opcode: CastOpcode,
+    value: Value<'m, DynBrand>,
+    ty: Type<'m, DynBrand>,
+) -> Value<'m, DynBrand> {
+    ConstantFolder
+        .fold_cast_dyn(opcode, value, ty)
+        .expect("a valid cast")
+        .expect("a constant folds")
+}
+
+/// Port of `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, PointerCast)`.
+#[test]
+fn upstream_pointer_cast() {
+    let m = Module::dynamic("C");
+    let ptr_ty = m.ptr_type_in::<0>();
+    let int64_ty = m.i64_type();
+    let ptr_vec_ty = m.vector_type(ptr_ty, lanes::<4>()).expect("a pointer");
+    let int64_vec_ty = m.vector_type(int64_ty, lanes::<4>()).expect("an integer");
+    let ptr_scalable_vec_ty = m
+        .scalable_vector_type(ptr_ty, lanes::<4>())
+        .expect("a pointer");
+    let int64_scalable_vec_ty = m
+        .scalable_vector_type(int64_ty, lanes::<4>())
+        .expect("an integer");
+
+    let null_ptr = ptr_ty.const_null().as_constant();
+    let null_int64 = int64_ty.const_zero();
+
+    // ptrtoint ptr to i64
+    assert_eq!(
+        null_int64.as_erased(),
+        pointer_cast(null_ptr, int64_ty.as_type())
+    );
+
+    // bitcast ptr to ptr
+    assert_eq!(
+        null_ptr.as_erased(),
+        pointer_cast(null_ptr, ptr_ty.as_type())
+    );
+
+    // ptrtoint <4 x ptr> to <4 x i64>
+    assert_eq!(
+        null_vector(int64_vec_ty, null_int64).as_erased(),
+        pointer_cast(null_vector(ptr_vec_ty, null_ptr), int64_vec_ty.as_type())
+    );
+
+    // ptrtoint <vscale x 4 x ptr> to <vscale x 4 x i64>
+    assert_eq!(
+        null_vector(int64_scalable_vec_ty, null_int64).as_erased(),
+        pointer_cast(
+            null_vector(ptr_scalable_vec_ty, null_ptr),
+            int64_scalable_vec_ty.as_type()
+        )
+    );
+
+    // bitcast <4 x ptr> to <4 x ptr>
+    assert_eq!(
+        null_vector(ptr_vec_ty, null_ptr).as_erased(),
+        pointer_cast(null_vector(ptr_vec_ty, null_ptr), ptr_vec_ty.as_type())
+    );
+
+    // bitcast <vscale x 4 x ptr> to <vscale x 4 x ptr>
+    assert_eq!(
+        null_vector(ptr_scalable_vec_ty, null_ptr).as_erased(),
+        pointer_cast(
+            null_vector(ptr_scalable_vec_ty, null_ptr),
+            ptr_scalable_vec_ty.as_type()
+        )
+    );
+
+    let ptr1_ty = m.ptr_type_in::<1>();
+    let k = int64_ty.const_int(1234_i64).as_erased();
+
+    // Make sure that addrspacecast of inttoptr is not folded away.
+    assert_ne!(
+        k,
+        cast(
+            CastOpcode::AddrSpaceCast,
+            cast(CastOpcode::IntToPtr, k, ptr_ty.as_type()),
+            ptr1_ty.as_type()
+        )
+    );
+    assert_ne!(
+        k,
+        cast(
+            CastOpcode::AddrSpaceCast,
+            cast(CastOpcode::IntToPtr, k, ptr1_ty.as_type()),
+            ptr_ty.as_type()
+        )
+    );
+
+    let null_ptr0 = ptr_ty.const_null().as_erased();
+    let null_ptr1 = ptr1_ty.const_null().as_erased();
+
+    // Make sure that addrspacecast of null is not folded away.
+    assert_ne!(
+        null_ptr0,
+        cast(CastOpcode::AddrSpaceCast, null_ptr0, ptr1_ty.as_type())
+    );
+
+    assert_ne!(
+        null_ptr1,
+        cast(CastOpcode::AddrSpaceCast, null_ptr1, ptr_ty.as_type())
+    );
 }
 
 fn assert_line(text: &str, expected: &str) {
@@ -122,7 +256,7 @@ fn constant_expr_ptrtoaddr_round_trips() -> Result<(), IrError> {
 fn blockaddress_constant_round_trips() -> Result<(), IrError> {
     let m = module_new!("blockaddress_const")?;
     let void_ty = m.void_type();
-    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let addr = m.block_address(m.view(f), &entry)?;
@@ -143,11 +277,11 @@ fn blockaddress_constant_round_trips() -> Result<(), IrError> {
 fn blockaddress_constant_uses_function_address_space() -> Result<(), IrError> {
     let m = module_new!("blockaddress_addrspace_const")?;
     let void_ty = m.void_type();
-    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m
         .function_builder::<(), _>("f", fn_ty)
         .linkage(Linkage::External)
-        .address_space(2)
+        .address_space(llvmkit_ir::address_space::<2>())
         .build()?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let addr = m.block_address(m.view(f), &entry)?;
@@ -241,7 +375,7 @@ fn constant_expr_opcode_surface_matches_llvm22_parse_val_id() {
 fn bitcast_scalar_pointer_and_one_lane_pointer_vector_round_trip() -> Result<(), IrError> {
     let m = module_new!("constexpr_ptr_vec_bitcast")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let vec_ptr_ty = VectorType::of(ptr_ty, lanes::<1>());
     let g = m.add_global("g", i32_ty.const_zero())?;
     let scalar = m.view(g).as_global_constant_ptr();
@@ -305,7 +439,7 @@ fn invalid_bitcast_constant_expr_is_rejected() -> Result<(), IrError> {
     );
 
     m.constant_expr(
-        m.ptr_type(0).as_type(),
+        m.ptr_type_in::<0>().as_type(),
         ConstantExprOpcode::BitCast,
         [ptr],
         [],
@@ -330,7 +464,7 @@ fn invalid_gep_constant_expr_indices_are_rejected() -> Result<(), IrError> {
 
     let err = m
         .constant_expr_with_options(
-            m.ptr_type(0).as_type(),
+            m.ptr_type_in::<0>().as_type(),
             ConstantExprOpcode::GetElementPtr,
             [
                 m.view(g).as_global_constant_ptr().as_erased(),
@@ -599,12 +733,12 @@ fn invalid_gep_constant_expr_scalable_aggregate_source_is_rejected() -> Result<(
     let i8_ty = m.i8_type();
     let scalable = VectorType::scalable_of(i8_ty, lanes::<1>());
     let source_ty = ArrayType::of(scalable, 2);
-    let ptr = m.ptr_type(0).const_null();
+    let ptr = m.ptr_type_in::<0>().const_null();
     let one = m.i64_type().const_int(1i64);
 
     let err = m
         .constant_expr_with_options(
-            m.ptr_type(0).as_type(),
+            m.ptr_type_in::<0>().as_type(),
             ConstantExprOpcode::GetElementPtr,
             [ptr.as_erased(), one.as_erased()],
             [],
@@ -659,13 +793,13 @@ fn vector_gep_scalar_sequential_indices_are_splatted_before_interning() -> Resul
     let i8_ty = m.i8_type();
     let i64_ty = m.i64_type();
     let source_ty = ArrayType::of(i8_ty, 4);
-    let ptr = m.ptr_type(0).const_null();
+    let ptr = m.ptr_type_in::<0>().const_null();
     let zero = i64_ty.const_zero();
     let one = i64_ty.const_int(1i64);
     let vec_i64_ty = VectorType::of(i64_ty, lanes::<2>());
     let vector_index =
         vec_i64_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i64, _>, _>([zero, one])?;
-    let result_ty = VectorType::of(m.ptr_type(0), lanes::<2>());
+    let result_ty = VectorType::of(m.ptr_type_in::<0>(), lanes::<2>());
 
     let gep = m.constant_expr_with_options(
         result_ty.as_type(),
@@ -695,7 +829,7 @@ fn vector_gep_struct_index_width_mismatch_is_rejected() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
     let source_ty = m.struct_type([i8_ty.as_type()])?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let result_ty = VectorType::of(ptr_ty, lanes::<4>());
     let base = result_ty.const_vector([ptr_ty.const_null(); 4])?;
     let zero64 = i64_ty.const_zero();
@@ -751,7 +885,7 @@ fn constant_expr_gep_inrange_words_are_truncated_before_interning() -> Result<()
     );
 
     let canonical = m.constant_expr_with_options(
-        m.ptr_type(0).as_type(),
+        m.ptr_type_in::<0>().as_type(),
         ConstantExprOpcode::GetElementPtr,
         [ptr.as_erased(), offset.as_erased()],
         [],
@@ -764,7 +898,7 @@ fn constant_expr_gep_inrange_words_are_truncated_before_interning() -> Result<()
             )),
     )?;
     let high_word = m.constant_expr_with_options(
-        m.ptr_type(0).as_type(),
+        m.ptr_type_in::<0>().as_type(),
         ConstantExprOpcode::GetElementPtr,
         [ptr.as_erased(), offset.as_erased()],
         [],
@@ -796,7 +930,7 @@ fn constant_expr_gep_inrange_width_must_match_base_index_width() -> Result<(), I
 
     let err = m
         .constant_expr_with_options(
-            m.ptr_type(0).as_type(),
+            m.ptr_type_in::<0>().as_type(),
             ConstantExprOpcode::GetElementPtr,
             [
                 m.view(g).as_global_constant_ptr().as_erased(),
@@ -830,7 +964,7 @@ fn invalid_gep_constant_expr_address_space_mismatch_is_rejected() -> Result<(), 
     let i8_ty = m.i8_type();
     let target = m
         .global_builder("g", i8_ty.as_type())
-        .address_space(1)
+        .address_space(llvmkit_ir::address_space::<1>())
         .initializer(i8_ty.const_zero())
         .build()?;
     let i64_ty = m.i64_type();
@@ -839,7 +973,7 @@ fn invalid_gep_constant_expr_address_space_mismatch_is_rejected() -> Result<(), 
     let one = i64_ty.const_int(1i64);
     let vector_index =
         vec_i64_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i64, _>, _>([zero, one])?;
-    let wrong_result_ty = VectorType::of(m.ptr_type(0), lanes::<2>());
+    let wrong_result_ty = VectorType::of(m.ptr_type_in::<0>(), lanes::<2>());
 
     let err = m
         .constant_expr_with_options(
@@ -875,7 +1009,7 @@ fn ptrauth_constructor_requires_five_operand_shape() -> Result<(), IrError> {
     let ptr = m.view(g).as_global_constant_ptr();
     let key = m.i32_type().const_zero();
     let disc = m.i64_type().const_int(1i64);
-    let addr_disc = m.ptr_type(0).const_null();
+    let addr_disc = m.ptr_type_in::<0>().const_null();
     let signed = m.ptr_auth(ptr, key, disc, addr_disc, ptr)?;
     m.add_global("signed", signed)?;
 
@@ -894,7 +1028,7 @@ fn ptrauth_constructor_requires_five_operand_shape() -> Result<(), IrError> {
     );
 
     let constant_expr_pointer = m.constant_expr_with_options(
-        m.ptr_type(0).as_type(),
+        m.ptr_type_in::<0>().as_type(),
         ConstantExprOpcode::GetElementPtr,
         [addr_disc.as_erased(), disc.as_erased()],
         [],

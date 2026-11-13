@@ -1,8 +1,8 @@
 error[E0308]: `?` operator has incompatible types
   --> tests/compile_fail/ir_struct_accessor_type_mismatch.rs:26:21
    |
-26 |     expects_pointer(point.x(&b)?);
-   |                     ^^^^^^^^^^^^ expected `PointerValue<'_, SpaceDyn, _>`, found `IntValue<'_, i32, DynBrand>`
+26 |     expects_pointer(point.try_x(&b)?);
+   |                     ^^^^^^^^^^^^^^^^ expected `PointerValue<'_, SpaceDyn, _>`, found `IntValue<'_, i32, DynBrand>`
    |
    = note: `?` operator cannot convert from `IntValue<'_, i32, DynBrand>` to `PointerValue<'_, SpaceDyn, _>`
    = note: expected struct `PointerValue<'_, SpaceDyn, _>`

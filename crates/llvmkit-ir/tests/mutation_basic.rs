@@ -50,7 +50,7 @@ fn use_test_sort() -> Result<(), IrError> {
     let m = module_new!("u")?;
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(void_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -108,7 +108,7 @@ fn use_list_reads_newest_first() -> Result<(), IrError> {
     let m = module_new!("u")?;
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(void_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -142,7 +142,7 @@ fn erase_no_invalidation() -> Result<(), IrError> {
     let m = module_new!("e")?;
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(void_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("foo", fn_ty, Linkage::External)?;
     let bb = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
@@ -188,7 +188,7 @@ fn erase_no_invalidation() -> Result<(), IrError> {
 fn erase_releases_local_name_for_reuse() -> Result<(), IrError> {
     let m = module_new!("erase-name")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -219,7 +219,7 @@ fn erase_releases_local_name_for_reuse() -> Result<(), IrError> {
 fn detached_append_reinserts_and_uniques_against_destination() -> Result<(), IrError> {
     let m = module_new!("move-name")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let fn_ty = m.function_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let from = m.add_function_dyn("from", fn_ty, Linkage::External)?;
     let from_entry = m.view(from).append_basic_block(&m, "entry");
     let from_b = IrBuilder::with_folder(&m, NoFolder).position_at_end(from_entry);
@@ -264,7 +264,7 @@ fn detached_append_reinserts_and_uniques_against_destination() -> Result<(), IrE
 fn detached_set_name_updates_carried_name_without_old_parent_binding() -> Result<(), IrError> {
     let m = module_new!("detached-rename")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let fn_ty = m.function_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -306,7 +306,7 @@ fn erase_deregisters_from_operand_use_lists() -> Result<(), IrError> {
     let m = module_new!("e")?;
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(void_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("foo", fn_ty, Linkage::External)?;
     let bb = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
@@ -366,7 +366,7 @@ fn metadata_constant_operand_counts_as_structural_value_use() -> Result<(), IrEr
 fn self_anchored_instruction_moves_are_no_ops() -> Result<(), IrError> {
     let m = module_new!("self-move")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let fn_ty = m.function_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let builder = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -403,7 +403,7 @@ fn debug_record_value_operand_counts_as_structural_use_and_erases() -> Result<()
     let m = module_new!("dbg-use")?;
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(void_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
@@ -447,7 +447,7 @@ fn debug_record_value_operand_is_rewritten_by_rauw() -> Result<(), IrError> {
     let m = module_new!("dbg-rauw")?;
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(void_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -511,7 +511,7 @@ fn debug_record_value_operand_is_rewritten_by_rauw() -> Result<(), IrError> {
 fn split_at_refuses_an_instruction_of_another_block_without_mutating() -> Result<(), IrError> {
     let m = module_new!("split-at-foreign-block")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let next = m.view(f).append_basic_block(&m, "next");
@@ -559,7 +559,7 @@ fn split_at_refuses_an_instruction_of_another_block_without_mutating() -> Result
 fn split_at_refuses_a_block_without_a_terminator_without_mutating() -> Result<(), IrError> {
     let m = module_new!("split-at-degenerate-block")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -599,7 +599,7 @@ fn split_at_refuses_a_block_without_a_terminator_without_mutating() -> Result<()
 fn split_before_refuses_a_block_without_a_terminator_without_mutating() -> Result<(), IrError> {
     let m = module_new!("split-before-degenerate-block")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -642,7 +642,7 @@ fn split_before_refuses_a_block_without_a_terminator_without_mutating() -> Resul
 fn detach_from_parent_leaves_the_instruction_in_no_block() -> Result<(), IrError> {
     let m = module_new!("detached-parent")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -682,7 +682,7 @@ fn detach_from_parent_leaves_the_instruction_in_no_block() -> Result<(), IrError
 fn position_before_refuses_an_anchor_in_no_block_without_mutating() -> Result<(), IrError> {
     let m = module_new!("position-before-detached")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -744,7 +744,7 @@ fn position_before_refuses_an_anchor_in_no_block_without_mutating() -> Result<()
 fn a_move_or_insert_refuses_an_anchor_in_no_block_without_mutating() -> Result<(), IrError> {
     let m = module_new!("move-detached-anchor")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -802,7 +802,7 @@ fn a_move_or_insert_refuses_an_anchor_in_no_block_without_mutating() -> Result<(
 fn placed_instructions_mint_a_witness_for_the_block_being_walked() -> Result<(), IrError> {
     let m = module_new!("placed-instructions")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let entry = m.view(f).append_basic_block(&m, "entry");

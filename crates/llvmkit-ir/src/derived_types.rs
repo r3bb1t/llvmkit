@@ -32,12 +32,16 @@ use core::num::NonZeroU32;
 
 use super::capability::{Capability, CapabilityOf, Mutable};
 use super::error::{IrError, IrResult, TypeKindLabel};
+use super::intrinsics::{
+    double_elements_vector_type, extend_integer_type, one_nth_vector_type, subdivide_vector_type,
+    trunc_argument_type, vector_of_bitcasts_to_int,
+};
 use super::module::{ModuleBrand, ModuleRef};
 use super::r#type::{Type, TypeData, TypeKind, TypeSlot, TypeSlotAccess};
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
-use super::addr_space::{AddrSpace, Space, SpaceDyn};
+use super::addr_space::{AddrSpace, AddressSpace, Space, SpaceDyn};
 use super::array_len::{ArrLenDyn, ArrayLen};
 use super::element::{ElemDyn, VecElem};
 use super::float_kind::{Bfloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
@@ -287,8 +291,9 @@ impl<'ctx, const N: u32, B: ModuleBrand, C: Capability> TryFrom<PointerType<'ctx
 }
 // `ArrayType<'ctx, E, L>` is hand-written below: the `E: VecElem` /
 // `L: ArrayLen` markers pin the element type and element count at the type
-// level, mirroring `VectorType<'ctx, E, L>` (arrays differ only in the
-// `u64` length and the `ArrLen`/`ArrLenDyn` marker family). Existing
+// level, mirroring `VectorType<'ctx, E, L>` (arrays differ in the length —
+// a `usize` static one, a `u64` run-time one — and the `ArrLen`/`ArrLenDyn`
+// marker family). Existing
 // `ArrayType<'ctx>` references resolve to `ArrayType<'ctx, ElemDyn,
 // ArrLenDyn>` via the defaults.
 /// `[N x T]` array. Mirrors `ArrayType` (`DerivedTypes.h`).
@@ -1224,7 +1229,7 @@ impl<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability> PointerType<'ctx, A, B, 
     /// Address space; `0` is the default flat space. Answers the run-time
     /// address space for both markers.
     #[inline]
-    pub fn address_space(self) -> u32 {
+    pub fn address_space(self) -> AddressSpace {
         self.module
             .type_data(self.id)
             .as_pointer()
@@ -1319,6 +1324,79 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, C: Capability>
     pub fn static_len(self) -> Option<NonZeroU32> {
         L::static_len()
     }
+    /// A vector of `element` with this vector's element count. Mirrors
+    /// `VectorType::get(ElementType, Other)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`ModuleView::vector_type`](crate::ModuleView::vector_type): an
+    /// invalid element ([`IrError::InvalidTypeComponent`]) or an element of
+    /// another module ([`IrError::ForeignType`]).
+    pub fn with_element<T>(self, element: T) -> IrResult<VectorType<'ctx, ElemDyn, LenDyn, B, C>>
+    where
+        T: IrType<'ctx, B>,
+    {
+        if self.is_scalable() {
+            self.module.scalable_vector_type(element, self.min_len())
+        } else {
+            self.module.vector_type(element, self.min_len())
+        }
+    }
+    /// The vector of integers with this vector's element count and element
+    /// width. Mirrors `VectorType::getInteger`; `None` where it asserts, on an
+    /// element with no primitive size.
+    pub fn integer(self) -> Option<VectorType<'ctx, ElemDyn, LenDyn, B, C>> {
+        self.derived(vector_of_bitcasts_to_int(self.module, self.as_type()))
+    }
+    /// This vector with integer elements twice as wide. Mirrors
+    /// `VectorType::getExtendedElementVectorType`; `None` where it asserts, on
+    /// an element that is no integer, or one past `IntegerType::MAX_INT_BITS`
+    /// once doubled.
+    pub fn extended_element(self) -> Option<VectorType<'ctx, ElemDyn, LenDyn, B, C>> {
+        self.derived(extend_integer_type(self.module, self.as_type()))
+    }
+    /// This vector with elements half as wide. Mirrors
+    /// `VectorType::getTruncatedElementVectorType`; `None` where it asserts, on
+    /// a float with no narrower type, an odd width, or an element with no
+    /// primitive size.
+    pub fn truncated_element(self) -> Option<VectorType<'ctx, ElemDyn, LenDyn, B, C>> {
+        self.derived(trunc_argument_type(self.module, self.as_type()))
+    }
+    /// This vector with half as many elements. Mirrors
+    /// `VectorType::getHalfElementsVectorType`; `None` where it asserts, on an
+    /// odd element count.
+    pub fn half_elements(self) -> Option<VectorType<'ctx, ElemDyn, LenDyn, B, C>> {
+        self.derived(one_nth_vector_type(self.module, self.as_type(), 2))
+    }
+    /// This vector with twice as many elements. Mirrors
+    /// `VectorType::getDoubleElementsVectorType`; `None` where it asserts, on a
+    /// count past `UINT_MAX`.
+    pub fn double_elements(self) -> Option<VectorType<'ctx, ElemDyn, LenDyn, B, C>> {
+        self.derived(double_elements_vector_type(self.module, self.as_type()))
+    }
+    /// This vector subdivided `subdivisions` times, each doubling the element
+    /// count and halving the element width: `<4 x i64>` twice is `<16 x i16>`.
+    /// Mirrors `VectorType::getSubdividedVectorType`; `None` where
+    /// [`double_elements`](Self::double_elements) or
+    /// [`truncated_element`](Self::truncated_element) answers it.
+    pub fn subdivided(self, subdivisions: u32) -> Option<VectorType<'ctx, ElemDyn, LenDyn, B, C>> {
+        self.derived(subdivide_vector_type(
+            self.module,
+            self.as_type(),
+            subdivisions,
+        ))
+    }
+    /// The vector `routine` derived from this one, or `None` where it refused:
+    /// the refusal is upstream's assert, and the routines are the ones the
+    /// intrinsic signature matcher already ports.
+    fn derived(
+        self,
+        routine: IrResult<Type<'ctx, B, C>>,
+    ) -> Option<VectorType<'ctx, ElemDyn, LenDyn, B, C>> {
+        routine
+            .ok()
+            .map(|ty| VectorType::new(ty.slot_trusting_same_module(), self.module))
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -1374,7 +1452,7 @@ impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx, C: Capability>
             .as_struct()
             .expect("StructType invariant: wraps Struct")
             .identity
-            .name()
+            .name(self.module.context())
     }
     /// `true` for a literal struct — `{ i32, float }`, the anonymous
     /// structurally-uniqued form. Mirrors `StructType::isLiteral`.
@@ -1448,6 +1526,43 @@ impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx, C: Capability>
             .and_then(|b| b.elements.get(index).copied())
             .map(|id| Type::new(id, self.module))
     }
+    /// The field types in order, none while opaque. Mirrors
+    /// `StructType::elements`, as a snapshot: an opaque struct's body can be
+    /// set while this iterator is held, so it cannot borrow the body.
+    pub fn fields(
+        self,
+    ) -> impl ExactSizeIterator<Item = Type<'ctx, B, C>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
+        let s = self
+            .module
+            .type_data(self.id)
+            .as_struct()
+            .expect("StructType invariant: wraps Struct");
+        let elements = s
+            .body
+            .borrow()
+            .as_ref()
+            .map_or_else(Vec::new, |body| body.elements.to_vec());
+        let module = self.module;
+        elements.into_iter().map(move |id| Type::new(id, module))
+    }
+    /// `true` if `other` has this struct's layout: the same struct, or the
+    /// same packed flag and the same field types. Mirrors
+    /// `StructType::isLayoutIdentical`.
+    pub fn is_layout_identical<Other: StructBodyState>(
+        self,
+        other: StructType<'ctx, Other, B, C>,
+    ) -> bool {
+        if self.as_type() == other.as_type() {
+            return true;
+        }
+
+        if self.is_packed() != other.is_packed() {
+            return false;
+        }
+
+        self.fields().eq(other.fields())
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -1464,35 +1579,6 @@ pub enum TargetExtProperty {
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> TargetExtType<'ctx, B, C> {
-    /// Arity constraints for the target extension types that declare them.
-    /// Port of `TargetExtType::checkParams` (`llvm/lib/IR/Type.cpp`), whose
-    /// messages this reproduces verbatim.
-    ///
-    /// Upstream runs this from `getOrError`, i.e. as part of construction.
-    /// llvmkit keeps construction infallible and exposes the check, because
-    /// its intrinsic tables build these types from a closed, known-good set;
-    /// the `.ll` parser — the only place a malformed one can be written — is
-    /// what calls this.
-    pub fn check_params(self) -> IrResult<()> {
-        let message = match (
-            self.name(),
-            self.type_params().count(),
-            self.int_params().count(),
-        ) {
-            ("aarch64.svcount", types, ints) if types != 0 || ints != 0 => {
-                "target extension type aarch64.svcount should have no parameters"
-            }
-            ("riscv.vector.tuple", types, ints) if types != 1 || ints != 1 => {
-                "target extension type riscv.vector.tuple should have one type parameter and one integer parameter"
-            }
-            ("amdgcn.named.barrier", types, ints) if types != 0 || ints != 1 => {
-                "target extension type amdgcn.named.barrier should have no type parameters and one integer parameter"
-            }
-            _ => return Ok(()),
-        };
-        Err(IrError::InvalidOperation { message })
-    }
-
     pub fn name(self) -> &'ctx str {
         self.module
             .type_data(self.id)
@@ -1523,7 +1609,13 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> TargetExtType<'ctx, B, C> {
             .expect("TargetExtType invariant: wraps TargetExt");
         t.int_params.iter().copied()
     }
+    /// Mirrors `TargetExtType::hasProperty`. Upstream reads the properties off
+    /// `getTargetTypeInfo`, which also builds the layout type, so a type it
+    /// can only assert on has none here (`docs/divergences.md` D22).
     pub fn has_property(self, property: TargetExtProperty) -> bool {
+        if crate::data_layout::target_ext_layout_type(self.module.module(), self.id).is_none() {
+            return false;
+        }
         let name = self.name();
         match name {
             "spirv.Image" | "spirv.SignedImage" | "spirv.Type" => {
@@ -1660,9 +1752,6 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> From<Type<'ctx, B, C>>
             TypeKind::WasmExnRef => Self::WasmExnRef(t),
             TypeKind::TargetExt => {
                 Self::TargetExt(TargetExtType::new(t.slot_trusting_same_module(), m))
-            }
-            TypeKind::TypedPointer => {
-                Self::Pointer(PointerType::new(t.slot_trusting_same_module(), m))
             }
         }
     }

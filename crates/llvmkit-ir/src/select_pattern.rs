@@ -345,7 +345,9 @@ pub fn select_pattern(
 use crate::Branded;
 use crate::ap_float::ApFloatCmpResult;
 use crate::capability::{Capability, Mutable};
-use crate::constant::{Constant, ConstantData};
+use crate::constant::{
+    Constant, ConstantData, ConstantDataKind, ConstantKind, ConstantSequentialKind,
+};
 use crate::constants::{ConstantFloatValue, ConstantIntValue};
 use crate::float_kind::FloatDyn;
 use crate::fmf::FastMathFlags;
@@ -1224,23 +1226,39 @@ fn is_known_non_nan<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         ValueKindData::Constant(ConstantData::Float(_)) => {
             float_constant(value).is_some_and(|constant| !constant.is_nan())
         }
-        // Upstream's `ConstantDataVector` arm, plus its `ConstantAggregateZero`
-        // arm: llvmkit stores both as an aggregate of element constants.
-        ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-            // Upstream reads a `ConstantDataVector`, which has at least one
-            // element. An llvmkit vector constant has at least one too: its
-            // lane count is a `NonZeroU32`, and `VectorType::const_vector`
-            // takes one element per lane. So `all` below never runs over an
-            // empty list, and no empty-list guard is needed to keep it from
-            // answering "no lane is NaN" for a vector with no lanes.
-            if !value.ty().is_vector() {
+        // `if (auto *C = dyn_cast<ConstantDataVector>(V)) { if
+        // (!C->getElementType()->isFloatingPointTy()) return false; for (...)
+        // if (C->getElementAsAPFloat(I).isNaN()) return false; return true; }`
+        // A `ConstantDataVector` is the class `Constant::kind` gives an
+        // element list `getSequenceIfElementsMatch` keeps, or a splat of such
+        // an element; any other vector is a `ConstantVector`, which upstream
+        // answers `false` for.
+        ValueKindData::Constant(
+            data @ (ConstantData::Aggregate(_) | ConstantData::Splat { .. }),
+        ) if Constant::try_from(value).is_ok_and(|constant| {
+            matches!(
+                constant.kind(),
+                ConstantKind::Data(ConstantDataKind::Sequential(ConstantSequentialKind::Vector))
+            )
+        }) =>
+        {
+            // A `ConstantDataVector` has at least one element, and so does
+            // its llvmkit list or splat: a lane count is a `NonZeroU32`, and
+            // `VectorType::const_vector` takes one element per lane. So `all`
+            // below never runs over an empty list. Each splat lane is its one
+            // element, so `all` over that element is `all` over the lanes.
+            if !value.ty().scalar_type().is_floating_point() {
                 return false;
             }
-            elements.iter().all(|element| {
-                float_constant(value_from_slot(value, *element))
-                    .is_some_and(|constant| !constant.is_nan())
+            data.lane_slots().is_some_and(|elements| {
+                elements.iter().all(|element| {
+                    float_constant(value_from_slot(value, *element))
+                        .is_some_and(|constant| !constant.is_nan())
+                })
             })
         }
+        // `if (isa<ConstantAggregateZero>(V)) return true;`
+        ValueKindData::Constant(ConstantData::AggregateZero) => true,
         _ => false,
     }
 }
@@ -1263,28 +1281,35 @@ fn is_known_non_zero_float<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         ValueKindData::Constant(ConstantData::Float(_)) => {
             float_constant(value).is_some_and(|constant| !constant.is_zero())
         }
-        // Upstream's `ConstantDataVector` arm. llvmkit stores one as an
-        // aggregate of element constants, so upstream's
-        // `getElementType()->isFloatingPointTy()` guard becomes the per-element
-        // `Float` check, and its early `return false` on a zero element is the
-        // `all` below.
-        ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-            // Upstream reads a `ConstantDataVector`, which has at least one
-            // element. An llvmkit vector constant has at least one too: its
-            // lane count is a `NonZeroU32`, and `VectorType::const_vector`
-            // takes one element per lane. So `all` below never runs over an
-            // empty list, and no empty-list guard is needed to keep it from
-            // answering "every lane is non-zero" for a vector with no lanes.
-            if !value.ty().is_vector() {
+        // `if (auto *C = dyn_cast<ConstantDataVector>(V)) { if
+        // (!C->getElementType()->isFloatingPointTy()) return false; for (...)
+        // if (C->getElementAsAPFloat(I).isZero()) return false; return true; }`
+        // As in `is_known_non_nan`: a `ConstantDataVector` is the class
+        // `Constant::kind` gives a kept `getSequenceIfElementsMatch` list or a
+        // splat of such an element, and any other vector is a
+        // `ConstantVector`, answered `false`.
+        ValueKindData::Constant(
+            data @ (ConstantData::Aggregate(_) | ConstantData::Splat { .. }),
+        ) if Constant::try_from(value).is_ok_and(|constant| {
+            matches!(
+                constant.kind(),
+                ConstantKind::Data(ConstantDataKind::Sequential(ConstantSequentialKind::Vector))
+            )
+        }) =>
+        {
+            // A `ConstantDataVector` has at least one element, and so does
+            // its llvmkit list or splat: a lane count is a `NonZeroU32`, and
+            // `VectorType::const_vector` takes one element per lane. So `all`
+            // below never runs over an empty list. Each splat lane is its one
+            // element.
+            if !value.ty().scalar_type().is_floating_point() {
                 return false;
             }
-            // `float_constant` already answers `None` for any constant that is
-            // not a float, so it is the whole test -- upstream's
-            // `getElementType()->isFloatingPointTy()` guard and its
-            // `getElementAsAPFloat(I).isZero()` check in one.
-            elements.iter().all(|element| {
-                float_constant(value_from_slot(value, *element))
-                    .is_some_and(|constant| !constant.is_zero())
+            data.lane_slots().is_some_and(|elements| {
+                elements.iter().all(|element| {
+                    float_constant(value_from_slot(value, *element))
+                        .is_some_and(|constant| !constant.is_zero())
+                })
             })
         }
         _ => false,

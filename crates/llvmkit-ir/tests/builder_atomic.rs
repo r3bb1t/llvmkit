@@ -18,13 +18,13 @@ use llvmkit_ir::{
 fn fence_system_scope_orderings() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let void_ty = m.void_type();
-    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("instructions.atomics", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let _ = b.fence(AtomicOrdering::Acquire, SyncScope::System, "")?;
-    let _ = b.fence(AtomicOrdering::Release, SyncScope::System, "")?;
-    let _ = b.fence(AtomicOrdering::AcquireRelease, SyncScope::System, "")?;
+    let _ = b.fence(AtomicOrdering::Acquire, SyncScope::System, "");
+    let _ = b.fence(AtomicOrdering::Release, SyncScope::System, "");
+    let _ = b.fence(AtomicOrdering::AcquireRelease, SyncScope::System, "");
     let _ = b.ret_void()?;
     let text = format!("{m}");
     assert!(text.contains("fence acquire\n"), "got:\n{text}");
@@ -40,7 +40,7 @@ fn fence_system_scope_orderings() -> Result<(), IrError> {
 fn fence_singlethread_seq_cst() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let void_ty = m.void_type();
-    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -48,7 +48,7 @@ fn fence_singlethread_seq_cst() -> Result<(), IrError> {
         AtomicOrdering::SequentiallyConsistent,
         SyncScope::SingleThread,
         "",
-    )?;
+    );
     let _ = b.ret_void()?;
     let text = format!("{m}");
     assert!(
@@ -68,9 +68,9 @@ fn fence_singlethread_seq_cst() -> Result<(), IrError> {
 fn cmpxchg_no_align_monotonic_monotonic() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
-    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -104,9 +104,9 @@ fn cmpxchg_no_align_monotonic_monotonic() -> Result<(), IrError> {
 fn cmpxchg_weak_volatile_singlethread() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
-    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -148,9 +148,9 @@ fn cmpxchg_weak_volatile_singlethread() -> Result<(), IrError> {
 fn atomicrmw_xchg_monotonic() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
-    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -179,9 +179,9 @@ fn atomicrmw_xchg_monotonic() -> Result<(), IrError> {
 fn atomicrmw_volatile_min_monotonic() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
-    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -210,9 +210,9 @@ fn atomicrmw_volatile_min_monotonic() -> Result<(), IrError> {
 fn atomicrmw_umax_singlethread() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
-    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -244,9 +244,9 @@ fn atomicrmw_umax_singlethread() -> Result<(), IrError> {
 fn atomicrmw_fmaximum_monotonic() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let f32_ty = m.f32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
-    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -279,9 +279,9 @@ fn atomicrmw_fmaximum_monotonic() -> Result<(), IrError> {
 fn atomicrmw_fminimum_monotonic() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let f32_ty = m.f32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
-    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

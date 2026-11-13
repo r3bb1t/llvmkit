@@ -17,10 +17,6 @@
 //!   object changes every iteration — and llvmkit has no loop analysis, so the
 //!   phi is always looked through. That is also upstream's behaviour at its own
 //!   default of `LI == nullptr`.
-//! - `GlobalValue::isInterposable` also answers true when the module sets
-//!   semantic interposition and the value is not `dso_local`. llvmkit models
-//!   `dso_local` but not the module-level flag, so only the linkage half is
-//!   consulted.
 //! - [`find_inserted_value`] has no `InsertBefore`. Upstream's optional
 //!   parameter lets it *synthesise* `insertvalue` instructions to rebuild a
 //!   sub-aggregate; an analysis that edits the IR it is asked about has no
@@ -31,19 +27,23 @@
 //!   element width, or a zeroinitializer, are read. Declining to read narrows
 //!   coverage; it never reads the wrong bytes.
 
+use crate::addr_space::AddressSpace;
 use crate::attributes::{AttrIndex, AttrKind, AttributeStored};
 use crate::capability::{Capability, Mutable};
 use crate::constant::{
     Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode,
 };
+use crate::constant_fold::global_is_interposable;
+use crate::constant_folding::accumulate_constant_offset;
+use crate::constants::global_value_type;
 use crate::data_layout::DataLayout;
 use crate::gep_no_wrap_flags::GepNoWrapFlags;
-use crate::global_value::Linkage;
-use crate::instr_types::{GepInstData, Opcode};
+use crate::global_variable::GlobalVariable;
+use crate::instr_types::{CallBaseParts, GepInstData, Opcode};
 use crate::instruction::{InstructionKindData, InstructionView};
 use crate::intrinsics::descriptor_for_callee;
 use crate::module::{ModuleBrand, ModuleRef};
-use crate::r#type::{Type, TypeData, TypeKind, TypeSlot};
+use crate::r#type::{Type, TypeKind};
 use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use crate::value_tracking::{returned_arg_operand, value_from_slot};
 use crate::{ApInt, Branded};
@@ -73,16 +73,20 @@ const MAX_VISITED_AGGRESSIVE: usize = 8;
 /// at whatever it cannot peel, which may be a `load`, an argument, or `value`
 /// itself. [`underlying_objects_for_code_gen`] is the variant that insists
 /// on identifiability.
+///
+/// llvmkit's interned `ptr @g` constant *is* the global it names
+/// (`docs/divergences.md` D3), so the walk reads every value it reaches as that
+/// global, and that is what it answers with.
 pub fn underlying_object<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
     max_lookup: u32,
 ) -> Value<'ctx, B, C> {
-    let mut current = value;
+    let mut current = global_value_or_self(value);
     let mut count = 0u32;
     while max_lookup == 0 || count < max_lookup {
         count = count.saturating_add(1);
         match peel_one_layer(current) {
-            Some(next) => current = next,
+            Some(next) => current = global_value_or_self(next),
             None => return current,
         }
     }
@@ -97,7 +101,7 @@ fn peel_one_layer<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     // expression of the same name. Only a scalar pointer base peels — a vector
     // of pointers is where the walk stops.
     if let Some(gep) = GepOperator::of(value) {
-        return is_pointer(gep.pointer_operand.ty()).then_some(gep.pointer_operand);
+        return is_pointer(global_value_type(gep.pointer_operand)).then_some(gep.pointer_operand);
     }
 
     // `Operator::getOpcode(V) == BitCast || AddrSpaceCast`.
@@ -109,8 +113,7 @@ fn peel_one_layer<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }
 
     if let ValueKindData::GlobalAlias(alias) = &value.data().kind {
-        // Only the linkage half of `isInterposable`; see the module docs.
-        if is_interposable_linkage(alias.linkage.get()) {
+        if global_is_interposable(value.module(), value.slot_trusting_same_module()) {
             return None;
         }
         return Some(value_from_slot(value, alias.aliasee.get()));
@@ -293,35 +296,148 @@ pub fn pointer_base_with_constant_offset<'ctx, B: ModuleBrand + 'ctx, C: Capabil
     data_layout: &DataLayout,
     allow_non_inbounds: bool,
 ) -> (Value<'ctx, B, C>, i64) {
-    let index_bits = index_type_size_in_bits(pointer.ty(), data_layout);
-    let (base, offset) =
-        strip_and_accumulate_offset(pointer, index_bits, allow_non_inbounds, data_layout);
+    let index_bits = index_type_size_in_bits(global_value_type(pointer), data_layout);
+    let (base, offset) = strip_and_accumulate_constant_offsets(
+        pointer,
+        ApInt::zero(index_bits),
+        ConstantOffsetStrip {
+            allow_non_inbounds,
+            look_through_int_to_ptr: false,
+        },
+        data_layout,
+    );
     (base, offset.try_sext_i64().unwrap_or(0))
 }
 
-/// The base and accumulated offset [`pointer_base_with_constant_offset`]
-/// reports, kept as an `ApInt` for the in-crate callers that need the full
-/// width.
-fn strip_and_accumulate_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    pointer: Value<'ctx, B, C>,
-    index_bits: u32,
-    allow_non_inbounds: bool,
+/// What [`strip_and_accumulate_constant_offsets`] may step through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ConstantOffsetStrip {
+    /// `AllowNonInbounds`: a `getelementptr` without `inbounds` peels too.
+    pub(crate) allow_non_inbounds: bool,
+    /// `LookThroughIntToPtr`: `inttoptr (add (ptrtoint p), off)` peels. Asked
+    /// only with [`Self::allow_non_inbounds`], as upstream's arm reads both.
+    pub(crate) look_through_int_to_ptr: bool,
+}
+
+/// Ports `Value::stripAndAccumulateConstantOffsets` (`llvm/lib/IR/Value.cpp`).
+/// `offset` is what upstream takes by reference, and its width is the walk's;
+/// the base and the offset it belongs to come back as one pair. A caller whose
+/// offset is not at `DataLayout::getIndexTypeSizeInBits(V->getType())` is what
+/// upstream asserts on: the two public entries read that width or normalise to
+/// it.
+///
+/// Two parameters have no port because nothing here passes them. `ExternalAnalysis`
+/// is the Attributor's, and `AllowInvariantGroup` is the non-constant half of
+/// `simplifyLoadInst`, which `InstSimplifyPass` does not have
+/// ([`crate::inst_simplify`]).
+///
+/// As in [`strip_pointer_casts_and_offsets`], every value the walk reaches is
+/// read as the global its `ptr @g` constant names (`docs/divergences.md` D3).
+pub(crate) fn strip_and_accumulate_constant_offsets<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    offset: ApInt,
+    strip: ConstantOffsetStrip,
     data_layout: &DataLayout,
 ) -> (Value<'ctx, B, C>, ApInt) {
-    let mut offset = ApInt::zero(index_bits);
-    let mut current = pointer;
-    // Bounded the same way the underlying-object walk is; upstream relies on
-    // the operand graph being acyclic through GEP pointers instead.
-    for _ in 0..MAX_LOOKUP_SEARCH_DEPTH {
-        let Some((base, step)) =
-            peel_one_constant_offset(current, index_bits, allow_non_inbounds, data_layout)
-        else {
-            break;
-        };
-        offset = offset.wrapping_add(&step);
-        current = base;
+    // `if (!getType()->isPtrOrPtrVectorTy()) return this;`
+    if !global_value_type(value).is_ptr_or_ptr_vector() {
+        return (value, offset);
     }
-    (current, offset)
+    let mut offset = offset;
+    let bit_width = offset.bit_width();
+
+    // Even though we don't look through PHI nodes, we could be called on an
+    // instruction in an unreachable block, which may be on a cycle.
+    let mut current = global_value_or_self(value);
+    let mut visited: HashSet<ValueSlot> = HashSet::new();
+    visited.insert(current.slot_trusting_same_module());
+    loop {
+        let next = if let Some(gep) = GepOperator::of(current) {
+            // If in-bounds was requested, we do not strip non-in-bounds GEPs.
+            if !strip.allow_non_inbounds && !gep.is_in_bounds() {
+                return (current, offset);
+            }
+            // If one of the values we have visited is an addrspacecast, then
+            // the pointer type of this GEP may be different from the type of
+            // the Ptr parameter which was passed to this function. This means
+            // when we construct GEPOffset, we need to use the size of GEP's
+            // pointer type rather than the size of the original pointer type.
+            let index_bits = index_type_size_in_bits(current.ty(), data_layout);
+            let Some(gep_offset) = gep.accumulate_constant_offset(index_bits, data_layout) else {
+                return (current, offset);
+            };
+            // Stop traversal if the pointer offset wouldn't fit in the
+            // bit-width provided by the Offset argument. This can happen due
+            // to AddrSpaceCast stripping.
+            if gep_offset.significant_bits() > bit_width {
+                return (current, offset);
+            }
+            offset = offset.wrapping_add(&gep_offset.sext_or_trunc(bit_width));
+            gep.pointer_operand
+        } else if matches!(
+            operator_opcode(current),
+            Some(Opcode::BitCast | Opcode::AddrSpaceCast)
+        ) {
+            match operator_operand(current, 0) {
+                Some(source) => source,
+                None => return (current, offset),
+            }
+        } else if let ValueKindData::GlobalAlias(alias) = &current.data().kind {
+            if global_is_interposable(current.module(), current.slot_trusting_same_module()) {
+                current
+            } else {
+                value_from_slot(current, alias.aliasee.get())
+            }
+        } else if is_call_base(current) {
+            returned_arg_operand(current).unwrap_or(current)
+        } else if operator_opcode(current).is_some() {
+            // Try to accumulate across (inttoptr (add (ptrtoint p), off)).
+            let Some((pointer, addend)) = int_to_ptr_of_add(current, bit_width, strip) else {
+                return (current, offset);
+            };
+            offset = offset.wrapping_add(&addend);
+            pointer
+        } else {
+            current
+        };
+        current = global_value_or_self(next);
+        // `while (Visited.insert(V).second);`
+        if !visited.insert(current.slot_trusting_same_module()) {
+            return (current, offset);
+        }
+    }
+}
+
+/// `p` and `off` of `value`, when it is `inttoptr (add (ptrtoint p), off)` and
+/// the walk may look through it: the `Int2Ptr` arm of
+/// [`strip_and_accumulate_constant_offsets`].
+fn int_to_ptr_of_add<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    bit_width: u32,
+    strip: ConstantOffsetStrip,
+) -> Option<(Value<'ctx, B, C>, ApInt)> {
+    if !strip.allow_non_inbounds
+        || !strip.look_through_int_to_ptr
+        || operator_opcode(value) != Some(Opcode::IntToPtr)
+    {
+        return None;
+    }
+    let add = operator_operand(value, 0)?;
+    if add.ty().scalar_size_in_bits() != bit_width || operator_opcode(add) != Some(Opcode::Add) {
+        return None;
+    }
+    let ptr_to_int = operator_operand(add, 0)?;
+    if operator_opcode(ptr_to_int) != Some(Opcode::PtrToInt) {
+        return None;
+    }
+    let addend = operator_operand(add, 1)?;
+    let ValueKindData::Constant(ConstantData::Int(words)) = &addend.data().kind else {
+        return None;
+    };
+    Some((
+        operator_operand(ptr_to_int, 0)?,
+        ApInt::from_words(bit_width, words),
+    ))
 }
 
 /// The `alloca` `value` ultimately refers to, when there is exactly one.
@@ -663,23 +779,26 @@ pub fn constant_data_array_info<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     // Drill down through the pointer expression, ignoring intervening casts,
     // and identify the object it references.
     let global = underlying_object(value, MAX_LOOKUP_SEARCH_DEPTH);
-    let ValueKindData::GlobalVariable(data) = &global.data().kind else {
+    let Ok(global_variable) = GlobalVariable::try_from(global) else {
         return None;
     };
-    if !data.is_constant {
+    if !global_variable.is_constant() || !global_variable.has_definitive_initializer() {
         return None;
     }
-    // `hasDefinitiveInitializer`: an initializer the linker cannot replace.
-    let initializer = data.initializer.get()?;
-    if is_interposable_linkage(data.linkage.get()) || data.externally_initialized.get() {
-        return None;
-    }
-    let initializer = value_from_slot(global, initializer);
+    let initializer = global_variable.initializer()?.as_erased();
 
     // The offset from the global has to be a constant, and the walk has to land
     // on the global itself.
-    let index_bits = index_type_size_in_bits(value.ty(), data_layout);
-    let (base, byte_offset) = strip_and_accumulate_offset(value, index_bits, true, data_layout);
+    let index_bits = index_type_size_in_bits(global_value_type(value), data_layout);
+    let (base, byte_offset) = strip_and_accumulate_constant_offsets(
+        value,
+        ApInt::zero(index_bits),
+        ConstantOffsetStrip {
+            allow_non_inbounds: true,
+            look_through_int_to_ptr: false,
+        },
+        data_layout,
+    );
     if base.slot_trusting_same_module() != global.slot_trusting_same_module() {
         return None;
     }
@@ -694,10 +813,12 @@ pub fn constant_data_array_info<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }
     let offset = offset.checked_add(start_index / element_size_in_bytes)?;
 
-    let value_type = Type::new(data.value_type, module_ref(global));
+    let value_type = global_variable.value_type();
 
     if is_null_constant(initializer) {
-        let size_in_bytes = data_layout.type_store_size(value_type);
+        // `getFixedValue`, which asserts on a scalable global: an invalid one,
+        // but it parses, and it has no length to read.
+        let size_in_bytes = data_layout.type_store_size(value_type).fixed_value()?;
         let length = size_in_bytes / element_size_in_bytes;
         // An empty slice for an undersized constant, so callers can still fold
         // an otherwise-undefined library call into a well-defined expression.
@@ -926,7 +1047,7 @@ pub fn is_bytewise_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }
 
     // Poison for a zero-sized type.
-    if data_layout.type_store_size(value.ty()) == 0 {
+    if data_layout.type_store_size(value.ty()).known_min_value() == 0 {
         return Some(BytewiseValue::AnyByte);
     }
 
@@ -962,10 +1083,16 @@ pub fn is_bytewise_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             }
             splat_byte(&ApInt::from_words(bits, words)).map(BytewiseValue::Byte)
         }
-        // Every element has to agree, with undef matching anything.
-        ConstantData::Aggregate(elements) => {
+        // A scalable splat is upstream's `shufflevector` `ConstantExpr`, which
+        // only the `IntToPtr` arm admits: "Don't try to handle the handful of
+        // other constants."
+        ConstantData::Splat { .. } if value.ty().kind() == TypeKind::ScalableVector => None,
+        // Every element has to agree, with undef matching anything. A fixed
+        // splat's lanes are all its element, so merging it once is merging
+        // them all.
+        ConstantData::Aggregate(_) | ConstantData::Splat { .. } => {
             let mut merged = BytewiseValue::AnyByte;
-            for element in elements.iter() {
+            for element in constant.lane_slots().into_iter().flatten() {
                 let element = value_from_slot(value, *element);
                 merged = merge_bytewise(merged, is_bytewise_value(element, data_layout)?)?;
             }
@@ -1290,7 +1417,7 @@ pub(crate) fn strip_pointer_casts_and_aliases<'ctx, B: ModuleBrand + 'ctx, C: Ca
 
 /// The global an interned `ptr @g` constant names, or `value` itself — the
 /// D3 reading [`strip_pointer_casts_and_offsets`] applies at every step.
-fn global_value_or_self<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+pub(crate) fn global_value_or_self<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
 ) -> Value<'ctx, B, C> {
     match &value.data().kind {
@@ -1311,9 +1438,9 @@ fn is_opaque_pointer<'ctx, B: ModuleBrand + 'ctx, C: Capability>(ty: Type<'ctx, 
 /// instruction, a `getelementptr` constant expression, or llvmkit's compact
 /// `getelementptr inbounds (i8, ptr @g, i64 off)` (`ConstantData::GepOffset`),
 /// which stands for the constant expression of that spelling.
-struct GepOperator<'ctx, B: ModuleBrand, C: Capability> {
+pub(crate) struct GepOperator<'ctx, B: ModuleBrand, C: Capability> {
     /// `GEPOperator::getPointerOperand`.
-    pointer_operand: Value<'ctx, B, C>,
+    pub(crate) pointer_operand: Value<'ctx, B, C>,
     form: GepForm<'ctx>,
 }
 
@@ -1330,7 +1457,7 @@ enum GepForm<'ctx> {
 
 impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GepOperator<'ctx, B, C> {
     /// `dyn_cast<GEPOperator>(V)`.
-    fn of(value: Value<'ctx, B, C>) -> Option<Self> {
+    pub(crate) fn of(value: Value<'ctx, B, C>) -> Option<Self> {
         if let Some(InstructionKindData::Gep(data)) = instruction_kind(value) {
             return Some(Self {
                 pointer_operand: value_from_slot(value, data.ptr.get()),
@@ -1376,6 +1503,40 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GepOperator<'ctx, B, C> {
                 ConstantExprFlags::Gep(gep) if gep.no_wrap().contains(GepNoWrapFlags::IN_BOUNDS)
             ),
             GepForm::Compact { .. } => true,
+        }
+    }
+
+    /// `GEP->getOperand(1)`, when `GEP->getNumIndices() == 1` and
+    /// `GEP->getSourceElementType()->isIntegerTy(8)`, for a constant expression.
+    /// The compact form has no slot for its index, which is a `ConstantInt`.
+    pub(crate) fn sole_index_of_byte_gep_expr(&self) -> Option<ValueSlot> {
+        let GepForm::Expr(expr) = &self.form else {
+            return None;
+        };
+        let [_, index] = expr.operands.as_ref() else {
+            return None;
+        };
+        let source_ty = Type::new(expr.source_ty?, module_ref(self.pointer_operand));
+        matches!(source_ty.kind(), TypeKind::Integer { bits: 8 }).then_some(*index)
+    }
+
+    /// `GEPOperator::accumulateConstantOffset`, onto a zero of `index_bits`.
+    /// `None` is upstream's `false`.
+    pub(crate) fn accumulate_constant_offset(
+        &self,
+        index_bits: u32,
+        data_layout: &DataLayout,
+    ) -> Option<ApInt> {
+        match &self.form {
+            GepForm::Instruction(data) => {
+                gep_constant_offset(self.pointer_operand, data, index_bits, data_layout)
+            }
+            GepForm::Expr(expr) => {
+                let source_ty = Type::new(expr.source_ty?, module_ref(self.pointer_operand));
+                let (_, indices) = expr.operands.split_first()?;
+                accumulate_constant_offset(source_ty, indices, index_bits, data_layout)
+            }
+            GepForm::Compact { offset } => Some(signed_ap_int(*offset, index_bits)),
         }
     }
 }
@@ -1445,11 +1606,12 @@ fn is_identified_object<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         }
         _ => {}
     }
-    // `isNoAliasCall`: a call whose return carries `noalias`.
-    call_return_attrs(value).is_some_and(|attrs| {
-        attrs
-            .iter()
-            .any(|attr| matches!(attr, AttributeStored::Enum(AttrKind::NoAlias)))
+    // `isNoAliasCall(V)`: `if (const auto *Call = dyn_cast<CallBase>(V)) return
+    // Call->hasRetAttr(Attribute::NoAlias); return false;` — `hasRetAttr`
+    // reads the called function's declaration as well as the call site.
+    instruction_kind(value).is_some_and(|kind| {
+        CallBaseParts::of(value.module.context(), kind)
+            .is_some_and(|call| call.has_return_attribute(value.module, AttrKind::NoAlias))
     })
 }
 
@@ -1472,14 +1634,6 @@ fn argument_has_any_attribute<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                 .iter()
                 .any(|attr| matches!(attr, AttributeStored::Enum(kind) if wanted.contains(kind)))
         })
-}
-
-/// Ports `GlobalValue::isInterposableLinkage`.
-fn is_interposable_linkage(linkage: Linkage) -> bool {
-    matches!(
-        linkage,
-        Linkage::WeakAny | Linkage::LinkOnceAny | Linkage::Common | Linkage::ExternalWeak
-    )
 }
 
 /// Ports `Constant::isNullValue` for the constant forms llvmkit stores.
@@ -1596,22 +1750,6 @@ fn call_argument<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     Some(value_from_slot(call, args.get(index)?.get()))
 }
 
-/// The return-position attributes of a call/invoke/callbr.
-fn call_return_attrs<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    call: Value<'ctx, B, C>,
-) -> Option<&'ctx [AttributeStored]> {
-    let attrs = match instruction_kind(call)? {
-        InstructionKindData::Call(data) => data.attrs.get(),
-        InstructionKindData::Invoke(data) => data.attrs.get(),
-        InstructionKindData::CallBr(data) => data.attrs.get(),
-        _ => return None,
-    };
-    call.module
-        .call_attributes(attrs)
-        .return_attrs()
-        .get(AttrIndex::Return)
-}
-
 /// The base name of the intrinsic `call` invokes directly.
 fn called_intrinsic_name<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     call: Value<'ctx, B, C>,
@@ -1636,101 +1774,33 @@ fn gep_has_all_zero_indices<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         .all(|index| is_zero_constant_int(value_from_slot(anchor, index.get())))
 }
 
-/// One step of [`strip_and_accumulate_offset`]: the peeled base and the byte
-/// offset that step contributed.
-///
-/// Ports the instruction half of `Value::stripAndAccumulateConstantOffsets`
-/// (`llvm/lib/IR/Value.cpp`). `addrspacecast` is deliberately not peeled, for
-/// the reason upstream's own comment gives: crossing one can change the index
-/// width mid-walk, and this keeps a single width throughout.
-fn peel_one_constant_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    value: Value<'ctx, B, C>,
-    index_bits: u32,
-    allow_non_inbounds: bool,
-    data_layout: &DataLayout,
-) -> Option<(Value<'ctx, B, C>, ApInt)> {
-    if let Some(InstructionKindData::Gep(data)) = instruction_kind(value) {
-        if !allow_non_inbounds && !data.flags.contains(GepNoWrapFlags::IN_BOUNDS) {
-            return None;
-        }
-        let base = value_from_slot(value, data.ptr.get());
-        let offset = gep_constant_offset(value, data, index_bits, data_layout)?;
-        return Some((base, offset));
-    }
-    if operator_opcode(value) == Some(Opcode::BitCast) {
-        let source = operator_operand(value, 0)?;
-        return is_pointer(source.ty()).then_some((source, ApInt::zero(index_bits)));
-    }
-    if let ValueKindData::Constant(ConstantData::GepOffset { base_id, off }) = &value.data().kind {
-        // Always an `inbounds` GEP, so it peels regardless of the flag.
-        return Some((
-            value_from_slot(value, *base_id),
-            signed_ap_int(*off, index_bits),
-        ));
-    }
-    None
+/// `dyn_cast<CallBase>(V)`.
+fn is_call_base<'ctx, B: ModuleBrand + 'ctx, C: Capability>(value: Value<'ctx, B, C>) -> bool {
+    matches!(
+        instruction_kind(value),
+        Some(
+            InstructionKindData::Call(_)
+                | InstructionKindData::Invoke(_)
+                | InstructionKindData::CallBr(_)
+        )
+    )
 }
 
-/// The constant byte offset a `getelementptr` adds, or `None` when any index is
-/// not a constant or a type is not walkable.
+/// The constant byte offset a `getelementptr` adds, or `None` when
+/// `GEPOperator::accumulateConstantOffset` answers `false`.
 fn gep_constant_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     anchor: Value<'ctx, B, C>,
     data: &GepInstData,
     index_bits: u32,
     data_layout: &DataLayout,
 ) -> Option<ApInt> {
-    let module = module_ref(anchor);
-    let mut offset = ApInt::zero(index_bits);
-    let mut current = Type::new(data.source_ty, module);
-
-    for (position, index) in data.indices.iter().enumerate() {
-        let index = value_from_slot(anchor, index.get());
-        let ValueKindData::Constant(ConstantData::Int(words)) = &index.data().kind else {
-            return None;
-        };
-        let index_value = ApInt::from_words(index_bits, words).try_sext_i64()?;
-
-        if position == 0 {
-            // The leading index strides whole `source_ty`s.
-            let stride = i64::try_from(data_layout.type_alloc_size(current)).ok()?;
-            offset =
-                offset.wrapping_add(&signed_ap_int(index_value.checked_mul(stride)?, index_bits));
-            continue;
-        }
-
-        match current.kind() {
-            TypeKind::Struct => {
-                let field = usize::try_from(index_value).ok()?;
-                let byte = data_layout.struct_layout(current).element_offset(field);
-                offset = offset.wrapping_add(&signed_ap_int(i64::try_from(byte).ok()?, index_bits));
-                current = struct_field_type(current, field)?;
-            }
-            TypeKind::Array | TypeKind::FixedVector | TypeKind::ScalableVector => {
-                let element = element_type(current)?;
-                let stride = i64::try_from(data_layout.type_alloc_size(element)).ok()?;
-                offset = offset
-                    .wrapping_add(&signed_ap_int(index_value.checked_mul(stride)?, index_bits));
-                current = element;
-            }
-            _ => return None,
-        }
-    }
-    Some(offset)
-}
-
-fn struct_field_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    ty: Type<'ctx, B, C>,
-    field: usize,
-) -> Option<Type<'ctx, B, C>> {
-    let TypeData::Struct(data) = ty.data() else {
-        return None;
-    };
-    let slot: TypeSlot = data
-        .body
-        .borrow()
-        .as_ref()
-        .and_then(|body| body.elements.get(field).copied())?;
-    Some(Type::new(slot, module_ref_from_type(ty)))
+    let indices: Vec<ValueSlot> = data.indices.iter().map(|index| index.get()).collect();
+    accumulate_constant_offset(
+        Type::new(data.source_ty, module_ref(anchor)),
+        &indices,
+        index_bits,
+        data_layout,
+    )
 }
 
 fn element_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
@@ -1745,7 +1815,7 @@ fn element_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 }
 
 /// The index width `DataLayout::getIndexTypeSizeInBits` gives for `ty`.
-fn index_type_size_in_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+pub(crate) fn index_type_size_in_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     ty: Type<'ctx, B, C>,
     data_layout: &DataLayout,
 ) -> u32 {
@@ -1753,9 +1823,9 @@ fn index_type_size_in_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         TypeKind::Pointer { addr_space } => data_layout.index_size_in_bits(addr_space),
         TypeKind::FixedVector | TypeKind::ScalableVector => match element_type(ty) {
             Some(element) => index_type_size_in_bits(element, data_layout),
-            None => data_layout.index_size_in_bits(0),
+            None => data_layout.index_size_in_bits(AddressSpace::DEFAULT),
         },
-        _ => data_layout.index_size_in_bits(0),
+        _ => data_layout.index_size_in_bits(AddressSpace::DEFAULT),
     }
 }
 
@@ -1764,7 +1834,7 @@ fn signed_ap_int(value: i64, bits: u32) -> ApInt {
 }
 
 fn is_pointer<'ctx, B: ModuleBrand + 'ctx, C: Capability>(ty: Type<'ctx, B, C>) -> bool {
-    matches!(ty.kind(), TypeKind::Pointer { .. } | TypeKind::TypedPointer)
+    matches!(ty.kind(), TypeKind::Pointer { .. })
 }
 
 fn instruction_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(

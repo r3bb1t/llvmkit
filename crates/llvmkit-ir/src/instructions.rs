@@ -34,6 +34,7 @@ use super::basic_block::{BasicBlockLabel, IntoBasicBlockLabel, require_no_block_
 use super::calling_conv::CallingConv;
 use super::capability::{CanMutate, Capability, CapabilityOf, Mutable};
 use super::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
+use super::data_layout::DataLayout;
 use super::derived_types::FunctionType;
 use super::float_kind::FloatKind;
 use super::{IrError, IrResult};
@@ -50,7 +51,7 @@ use super::function_signature::{FunctionReturn, token::ValidatedCallResult};
 use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::instr_types::ShuffleMaskElem;
 use super::instr_types::TailCallKind;
-use super::instr_types::call_site_has_fn_attr;
+use super::instr_types::call_site_has_function_attribute;
 use super::instr_types::{
     AllocaInstData, AtomicCmpXchgInstData, AtomicRmwInstData, CallBrInstData, CallInstData,
     CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
@@ -140,11 +141,10 @@ macro_rules! decl_binop_handle {
                 InstructionView::from_parts(self.id, self.module)
             }
 
-            /// Widen to the erased [`Value`] handle.
-            ///
-            /// Borrows rather than consumes.
+            /// Widen to the erased [`Value`] handle. The handle is `Copy`,
+            /// so it stays usable afterwards.
             #[inline]
-            pub fn to_erased(&self) -> Value<'ctx, B, C> {
+            pub fn to_erased(self) -> Value<'ctx, B, C> {
                 Value::from_parts(self.id, self.module, self.ty)
             }
 
@@ -349,11 +349,10 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> BinaryOp<'ctx, B, C> {
     pub fn as_view(&self) -> InstructionView<'ctx, B, C> {
         InstructionView::from_parts(self.id, self.module)
     }
-    /// Widen to the erased [`Value`] handle (the result).
-    ///
-    /// Borrows rather than consumes.
+    /// Widen to the erased [`Value`] handle (the result). The handle is
+    /// `Copy`, so it stays usable afterwards.
     #[inline]
-    pub fn to_erased(&self) -> Value<'ctx, B, C> {
+    pub fn to_erased(self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 }
@@ -435,11 +434,10 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Cmp<'ctx, B, C> {
     pub fn as_view(&self) -> InstructionView<'ctx, B, C> {
         InstructionView::from_parts(self.id, self.module)
     }
-    /// Widen to the erased [`Value`] handle (the `i1`/vector result).
-    ///
-    /// Borrows rather than consumes.
+    /// Widen to the erased [`Value`] handle (the `i1`/vector result). The
+    /// handle is `Copy`, so it stays usable afterwards.
     #[inline]
-    pub fn to_erased(&self) -> Value<'ctx, B, C> {
+    pub fn to_erased(self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 }
@@ -470,11 +468,10 @@ macro_rules! decl_handle_scaffold {
                 InstructionView::from_parts(self.id, self.module)
             }
 
-            /// Widen to the erased [`Value`] handle.
-            ///
-            /// Borrows rather than consumes.
+            /// Widen to the erased [`Value`] handle. The handle is `Copy`,
+            /// so it stays usable afterwards.
             #[inline]
-            pub fn to_erased(&self) -> Value<'ctx, B, C> {
+            pub fn to_erased(self) -> Value<'ctx, B, C> {
                 Value::from_parts(self.id, self.module, self.ty)
             }
         }
@@ -593,7 +590,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> AllocaInst<'ctx, B, C> {
         self.payload().align.align()
     }
     /// Address space of the result pointer.
-    pub fn addr_space(self) -> u32 {
+    pub fn addr_space(self) -> crate::AddressSpace {
         self.payload().addr_space
     }
     /// `true` when this allocation carries the `inalloca` marker. Mirrors
@@ -854,11 +851,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> CallInst<'ctx,
         InstructionView::from_parts(self.id, self.module)
     }
 
-    /// Widen to the erased [`Value`] handle.
-    ///
-    /// Borrows rather than consumes.
+    /// Widen to the erased [`Value`] handle. The handle is `Copy`, so it
+    /// stays usable afterwards.
     #[inline]
-    pub fn to_erased(&self) -> Value<'ctx, B, C> {
+    pub fn to_erased(self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
@@ -954,7 +950,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> CallInst<'ctx,
     /// half (`hasFnAttrImpl(Attribute::NoBuiltin)`) reads.
     pub fn has_fn_attr(self, kind: AttrKind) -> bool {
         let payload = self.payload();
-        call_site_has_fn_attr(
+        call_site_has_function_attribute(
             self.module,
             payload.callee.get(),
             self.module.call_attributes(payload.attrs.get()),
@@ -1777,16 +1773,10 @@ fn phi_remove_incoming<'ctx, B: ModuleBrand + 'ctx, C: CanMutate>(
         incoming.swap_remove(slot).0.get()
     };
     // Deregister one phi-use of the removed value.
-    {
-        let core = module.module();
-        let mut uses = core.context().value_data(removed).use_list.borrow_mut();
-        if let Some(pos) = uses
-            .iter()
-            .position(|edge| *edge == ValueUse::Instruction(phi_id))
-        {
-            uses.remove(pos);
-        }
-    }
+    module
+        .module()
+        .context()
+        .remove_use(removed, ValueUse::Instruction(phi_id));
     let ty = module.module().context().value_data(removed).ty;
     Ok(Value::from_parts(removed, module, ty))
 }
@@ -1871,11 +1861,10 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx, C: Capability> PhiInst<'ctx, W, B
         InstructionView::from_parts(self.id, self.module)
     }
 
-    /// Widen to the erased [`Value`] handle.
-    ///
-    /// Borrows rather than consumes.
+    /// Widen to the erased [`Value`] handle. The handle is `Copy`, so it
+    /// stays usable afterwards.
     #[inline]
-    pub fn to_erased(&self) -> Value<'ctx, B, C> {
+    pub fn to_erased(self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
@@ -2035,8 +2024,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
             // Register the phi as a user of the incoming value.
             module
                 .context()
-                .value_data(value_id)
-                .add_use(ValueUse::Instruction(self.id));
+                .add_use(value_id, ValueUse::Instruction(self.id));
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
@@ -2144,11 +2132,10 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx, C: Capability> FpPhiInst<'ctx, K
         InstructionView::from_parts(self.id, self.module)
     }
 
-    /// Widen to the erased [`Value`] handle.
-    ///
-    /// Borrows rather than consumes.
+    /// Widen to the erased [`Value`] handle. The handle is `Copy`, so it
+    /// stays usable afterwards.
     #[inline]
-    pub fn to_erased(&self) -> Value<'ctx, B, C> {
+    pub fn to_erased(self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
@@ -2286,8 +2273,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
                 .push((core::cell::Cell::new(value_id), block_id));
             module
                 .context()
-                .value_data(value_id)
-                .add_use(ValueUse::Instruction(self.id));
+                .add_use(value_id, ValueUse::Instruction(self.id));
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
@@ -2368,11 +2354,10 @@ impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx, C: Capability> PointerPhiInst<'c
         InstructionView::from_parts(self.id, self.module)
     }
 
-    /// Widen to the erased [`Value`] handle.
-    ///
-    /// Borrows rather than consumes.
+    /// Widen to the erased [`Value`] handle. The handle is `Copy`, so it
+    /// stays usable afterwards.
     #[inline]
-    pub fn to_erased(&self) -> Value<'ctx, B, C> {
+    pub fn to_erased(self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
@@ -2505,8 +2490,7 @@ impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, A, B> {
                 .push((core::cell::Cell::new(value_id), block_id));
             module
                 .context()
-                .value_data(value_id)
-                .add_use(ValueUse::Instruction(self.id));
+                .add_use(value_id, ValueUse::Instruction(self.id));
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
@@ -3309,19 +3293,12 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> AtomicRmwInst<'ctx, B, C> {
         if old_id == value_id {
             return Ok(());
         }
-        {
-            let mut old_uses = module.context().value_data(old_id).use_list.borrow_mut();
-            if let Some(pos) = old_uses
-                .iter()
-                .position(|edge| *edge == ValueUse::Instruction(self.id))
-            {
-                old_uses.remove(pos);
-            }
-        }
         module
             .context()
-            .value_data(value_id)
-            .add_use(ValueUse::Instruction(self.id));
+            .remove_use(old_id, ValueUse::Instruction(self.id));
+        module
+            .context()
+            .add_use(value_id, ValueUse::Instruction(self.id));
         Ok(())
     }
     pub fn align(self) -> Option<Align> {
@@ -3589,15 +3566,11 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
             .borrow_mut()
             .push((core::cell::Cell::new(v_id), target_id));
         let context = self.module.module().context();
-        context
-            .value_data(v_id)
-            .add_use(ValueUse::Instruction(self.id));
+        context.add_use(v_id, ValueUse::Instruction(self.id));
         // `SwitchInst::addCase` grows the operand list by *two* — the case
         // value and its destination — so the block gets an edge as well.
         // Registered after the value, matching `[…, CaseVal, CaseDest]`.
-        context
-            .value_data(target_id)
-            .add_use(ValueUse::Instruction(self.id));
+        context.add_use(target_id, ValueUse::Instruction(self.id));
         self
     }
 }
@@ -3779,8 +3752,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, TermOpen, B> {
         self.module
             .module()
             .context()
-            .value_data(target_id)
-            .add_use(ValueUse::Instruction(self.id));
+            .add_use(target_id, ValueUse::Instruction(self.id));
         Ok(self)
     }
     /// Consume the open `indirectbr` and return its [`TermClosed`] view.
@@ -3848,11 +3820,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> InvokeInst<'ct
         InstructionView::from_parts(self.id, self.module)
     }
 
-    /// Widen to the erased [`Value`] handle.
-    ///
-    /// Borrows rather than consumes.
+    /// Widen to the erased [`Value`] handle. The handle is `Copy`, so it
+    /// stays usable afterwards.
     #[inline]
-    pub fn to_erased(&self) -> Value<'ctx, B, C> {
+    pub fn to_erased(self) -> Value<'ctx, B, C> {
         Value::from_parts(self.id, self.module, self.ty)
     }
     /// Re-tag the return marker. Crate-internal: both
@@ -3928,7 +3899,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> InvokeInst<'ct
     /// [`CallInst::has_fn_attr`] does.
     pub fn has_fn_attr(self, kind: AttrKind) -> bool {
         let payload = self.payload();
-        call_site_has_fn_attr(
+        call_site_has_function_attribute(
             self.module,
             payload.callee.get(),
             self.module.call_attributes(payload.attrs.get()),
@@ -4162,7 +4133,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> CallBrInst<'ctx, B, C> {
     /// [`CallInst::has_fn_attr`] does.
     pub fn has_fn_attr(self, kind: AttrKind) -> bool {
         let payload = self.payload();
-        call_site_has_fn_attr(
+        call_site_has_function_attribute(
             self.module,
             payload.callee.get(),
             self.module.call_attributes(payload.attrs.get()),
@@ -4521,8 +4492,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
             .push((LandingPadClauseKind::Catch, core::cell::Cell::new(v_id)));
         module
             .context()
-            .value_data(v_id)
-            .add_use(ValueUse::Instruction(self.id));
+            .add_use(v_id, ValueUse::Instruction(self.id));
         Ok(self)
     }
     /// Append a `filter <ty> <val>` clause.
@@ -4539,8 +4509,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
             .push((LandingPadClauseKind::Filter, core::cell::Cell::new(v_id)));
         module
             .context()
-            .value_data(v_id)
-            .add_use(ValueUse::Instruction(self.id));
+            .add_use(v_id, ValueUse::Instruction(self.id));
         Ok(self)
     }
     /// Consume the open landingpad and return its [`TermClosed`] view.
@@ -4855,8 +4824,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, TermOpen, B> {
         self.module
             .module()
             .context()
-            .value_data(handler_id)
-            .add_use(ValueUse::Instruction(self.id));
+            .add_use(handler_id, ValueUse::Instruction(self.id));
         Ok(self)
     }
     #[inline]
@@ -4950,15 +4918,8 @@ pub fn cast_is_valid<'ctx, B: ModuleBrand + 'ctx>(
             }
             let Some(src_space) = src_ptr else {
                 // Non-pointer: a no-op cast of type only, so the bit widths
-                // must match exactly. Upstream compares the two
-                // `getPrimitiveSizeInBits()` `TypeSize`s, whose equality
-                // includes scalability; `primitive_size_in_bits` is the known
-                // minimum, so the scalability is compared beside it.
-                let size = |elements: Option<ElementCount>, bits: u32| {
-                    (bits, elements.is_some_and(|count| count.scalable))
-                };
-                return size(src_elements, src.primitive_size_in_bits())
-                    == size(dst_elements, dst.primitive_size_in_bits());
+                // must match exactly, scalability included.
+                return src.primitive_size_in_bits() == dst.primitive_size_in_bits();
             };
             if Some(src_space) != dst_ptr {
                 return false;
@@ -4986,6 +4947,232 @@ pub fn cast_is_valid<'ctx, B: ModuleBrand + 'ctx>(
             }
             counts_agree
         }
+    }
+}
+
+/// One cell of [`CAST_RESULTS`], named for the `case` of upstream's `switch` it
+/// selects. The set is closed, so that `switch`'s `default:` has no input.
+#[derive(Clone, Copy)]
+enum CastPairCase {
+    C0,
+    C1,
+    C2,
+    C3,
+    C4,
+    C5,
+    C7,
+    C8,
+    C9,
+    C11,
+    C12,
+    C13,
+    C14,
+    C15,
+    C16,
+    C17,
+    C99,
+}
+
+/// `CastResults` in `CastInst::isEliminableCastPair`. The rows are `firstOp` and
+/// the columns `secondOp`, each in [`cast_results_index`]'s order.
+const CAST_RESULTS: [[CastPairCase; 14]; 14] = {
+    use CastPairCase::{
+        C0, C1, C2, C3, C4, C5, C7, C8, C9, C11, C12, C13, C14, C15, C16, C17, C99,
+    };
+    [
+        [C1, C0, C0, C99, C99, C0, C0, C99, C99, C99, C99, C0, C3, C0], // Trunc
+        [
+            C8, C1, C9, C99, C99, C2, C17, C99, C99, C99, C99, C2, C3, C0,
+        ], // ZExt
+        [C8, C0, C1, C99, C99, C0, C2, C99, C99, C99, C99, C0, C3, C0], // SExt
+        [C0, C0, C0, C99, C99, C0, C0, C99, C99, C99, C99, C0, C3, C0], // FPToUI
+        [C0, C0, C0, C99, C99, C0, C0, C99, C99, C99, C99, C0, C3, C0], // FPToSI
+        [
+            C99, C99, C99, C0, C0, C99, C99, C0, C0, C99, C99, C99, C4, C0,
+        ], // UIToFP
+        [
+            C99, C99, C99, C0, C0, C99, C99, C0, C0, C99, C99, C99, C4, C0,
+        ], // SIToFP
+        [
+            C99, C99, C99, C0, C0, C99, C99, C0, C0, C99, C99, C99, C4, C0,
+        ], // FPTrunc
+        [
+            C99, C99, C99, C2, C2, C99, C99, C8, C2, C99, C99, C99, C4, C0,
+        ], // FPExt
+        [C1, C0, C0, C99, C99, C0, C0, C99, C99, C99, C99, C7, C3, C0], // PtrToInt
+        [C0, C0, C0, C99, C99, C0, C0, C99, C99, C99, C99, C0, C3, C0], // PtrToAddr
+        [
+            C99, C99, C99, C99, C99, C99, C99, C99, C99, C11, C11, C99, C15, C0,
+        ], // IntToPtr
+        [C5, C5, C5, C0, C0, C5, C5, C0, C0, C16, C16, C5, C1, C14],    // BitCast
+        [C0, C0, C0, C0, C0, C0, C0, C0, C0, C0, C0, C0, C13, C12],     // AddrSpaceCast
+    ]
+};
+
+/// `firstOp-Instruction::CastOpsBegin`: an opcode's place in `Instruction.def`.
+const fn cast_results_index(opcode: CastOpcode) -> usize {
+    match opcode {
+        CastOpcode::Trunc => 0,
+        CastOpcode::Zext => 1,
+        CastOpcode::Sext => 2,
+        CastOpcode::FpToUi => 3,
+        CastOpcode::FpToSi => 4,
+        CastOpcode::UiToFp => 5,
+        CastOpcode::SiToFp => 6,
+        CastOpcode::FpTrunc => 7,
+        CastOpcode::FpExt => 8,
+        CastOpcode::PtrToInt => 9,
+        CastOpcode::PtrToAddr => 10,
+        CastOpcode::IntToPtr => 11,
+        CastOpcode::BitCast => 12,
+        CastOpcode::AddrSpaceCast => 13,
+    }
+}
+
+/// `Type::getPointerAddressSpace`: a pointer's or a vector of pointers' space.
+fn scalar_pointer_address_space<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
+) -> Option<crate::AddressSpace> {
+    ty.scalar_type().pointer_address_space()
+}
+
+/// Whether `firstOp SrcTy to MidTy` then `secondOp MidTy to DstTy` can be replaced
+/// by one cast, and that cast's opcode. Ports `CastInst::isEliminableCastPair`,
+/// where `None` is upstream's `0`.
+///
+/// Three places differ, each where upstream cannot be reached with a valid pair,
+/// and a public folder can be handed anything. Upstream's `case 99`
+/// `llvm_unreachable` and the `assert`s of `case 13`, `15` and `16` answer `None`.
+/// `DisableI2pP2iOpt` is an `opt` flag that defaults off, and llvmkit has no option
+/// surface, so `case 7` reads as it does off.
+pub fn is_eliminable_cast_pair<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    first_op: CastOpcode,
+    second_op: CastOpcode,
+    src_ty: Type<'ctx, B, C>,
+    mid_ty: Type<'ctx, B, C>,
+    dst_ty: Type<'ctx, B, C>,
+    data_layout: Option<&DataLayout>,
+) -> Option<CastOpcode> {
+    // If either of the casts are a bitcast from scalar to vector, disallow the
+    // merging. However, any pair of bitcasts are allowed.
+    let is_first_bitcast = first_op == CastOpcode::BitCast;
+    let is_second_bitcast = second_op == CastOpcode::BitCast;
+    let are_both_bitcasts = is_first_bitcast && is_second_bitcast;
+
+    // Check if any of the casts convert scalars <-> vectors.
+    if ((is_first_bitcast && src_ty.is_vector() != mid_ty.is_vector())
+        || (is_second_bitcast && mid_ty.is_vector() != dst_ty.is_vector()))
+        && !are_both_bitcasts
+    {
+        return None;
+    }
+
+    match CAST_RESULTS[cast_results_index(first_op)][cast_results_index(second_op)] {
+        // Categorically disallowed.
+        CastPairCase::C0 => None,
+        // Allowed, use first cast's opcode.
+        CastPairCase::C1 => Some(first_op),
+        // Allowed, use second cast's opcode.
+        CastPairCase::C2 => Some(second_op),
+        // No-op cast in second op implies firstOp as long as the DestTy is
+        // integer and we are not converting between a vector and a non-vector
+        // type.
+        CastPairCase::C3 => (!src_ty.is_vector() && dst_ty.is_integer()).then_some(first_op),
+        // No-op cast in second op implies firstOp as long as the DestTy matches
+        // MidTy.
+        CastPairCase::C4 => (dst_ty == mid_ty).then_some(first_op),
+        // No-op cast in first op implies secondOp as long as the SrcTy is an
+        // integer.
+        CastPairCase::C5 => src_ty.is_integer().then_some(second_op),
+        CastPairCase::C7 => {
+            // Cannot simplify if address spaces are different!
+            if src_ty != dst_ty {
+                return None;
+            }
+            // Cannot simplify if the intermediate integer size is smaller than
+            // the pointer size.
+            let mid_size = mid_ty.scalar_size_in_bits();
+            let pointer_size =
+                data_layout?.pointer_size_in_bits(scalar_pointer_address_space(src_ty)?);
+            (mid_size >= pointer_size).then_some(CastOpcode::BitCast)
+        }
+        CastPairCase::C8 => {
+            // ext, trunc -> bitcast,    if the SrcTy and DstTy are the same
+            // ext, trunc -> ext,        if sizeof(SrcTy) < sizeof(DstTy)
+            // ext, trunc -> trunc,      if sizeof(SrcTy) > sizeof(DstTy)
+            let src_size = src_ty.scalar_size_in_bits();
+            let dst_size = dst_ty.scalar_size_in_bits();
+            if src_ty == dst_ty {
+                return Some(CastOpcode::BitCast);
+            }
+            if src_size < dst_size {
+                return Some(first_op);
+            }
+            if src_size > dst_size {
+                return Some(second_op);
+            }
+            None
+        }
+        // zext, sext -> zext, because sext can't sign extend after zext
+        CastPairCase::C9 => Some(CastOpcode::Zext),
+        CastPairCase::C11 => {
+            // inttoptr, ptrtoint/ptrtoaddr -> integer cast
+            let data_layout = data_layout?;
+            let mid_space = scalar_pointer_address_space(mid_ty)?;
+            let mid_size = if second_op == CastOpcode::PtrToAddr {
+                data_layout.index_size_in_bits(mid_space)
+            } else {
+                data_layout.pointer_size_in_bits(mid_space)
+            };
+            let src_size = src_ty.scalar_size_in_bits();
+            let dst_size = dst_ty.scalar_size_in_bits();
+            // If the middle size is smaller than both source and destination,
+            // an additional masking operation would be required.
+            if mid_size < src_size && mid_size < dst_size {
+                return None;
+            }
+            if dst_size < src_size {
+                return Some(CastOpcode::Trunc);
+            }
+            if dst_size > src_size {
+                return Some(CastOpcode::Zext);
+            }
+            Some(CastOpcode::BitCast)
+        }
+        // addrspacecast, addrspacecast -> bitcast,       if SrcAS == DstAS
+        // addrspacecast, addrspacecast -> addrspacecast, if SrcAS != DstAS
+        CastPairCase::C12 => {
+            if scalar_pointer_address_space(src_ty) != scalar_pointer_address_space(dst_ty) {
+                return Some(CastOpcode::AddrSpaceCast);
+            }
+            Some(CastOpcode::BitCast)
+        }
+        // Allowed, use first cast's opcode.
+        CastPairCase::C13 => (src_ty.is_ptr_or_ptr_vector()
+            && mid_ty.is_ptr_or_ptr_vector()
+            && dst_ty.is_ptr_or_ptr_vector()
+            && scalar_pointer_address_space(src_ty) != scalar_pointer_address_space(mid_ty)
+            && scalar_pointer_address_space(mid_ty) == scalar_pointer_address_space(dst_ty))
+        .then_some(first_op),
+        // bitcast, addrspacecast -> addrspacecast
+        CastPairCase::C14 => Some(CastOpcode::AddrSpaceCast),
+        // Allowed, use first cast's opcode.
+        CastPairCase::C15 => (src_ty.is_int_or_int_vector()
+            && mid_ty.is_ptr_or_ptr_vector()
+            && dst_ty.is_ptr_or_ptr_vector()
+            && scalar_pointer_address_space(mid_ty) == scalar_pointer_address_space(dst_ty))
+        .then_some(first_op),
+        // Allowed, use second cast's opcode.
+        CastPairCase::C16 => (src_ty.is_ptr_or_ptr_vector()
+            && mid_ty.is_ptr_or_ptr_vector()
+            && dst_ty.is_int_or_int_vector()
+            && scalar_pointer_address_space(src_ty) == scalar_pointer_address_space(mid_ty))
+        .then_some(second_op),
+        // (sitofp (zext x)) -> (uitofp x)
+        CastPairCase::C17 => Some(CastOpcode::UiToFp),
+        // Cast combination can't happen (error in input). This is for all cases
+        // where the MidTy is not the same for the two cast instructions.
+        CastPairCase::C99 => None,
     }
 }
 
@@ -5076,7 +5263,7 @@ mod tests {
         let callee = m
             .add_typed_function::<i32, (), _>("callee", Linkage::External)?
             .as_function();
-        let caller_ty = m.function_type_no_parameters(m.i32_type());
+        let caller_ty = m.function_type_no_parameters(m.i32_type())?;
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = crate::IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

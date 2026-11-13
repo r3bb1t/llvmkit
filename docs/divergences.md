@@ -95,33 +95,6 @@ site that assumes `operand(i)` is first-class. Upstream's true order is
 `br` = `[cond, else, then]`, `switch` = `[cond, default, (val, dest)*]`,
 `invoke` = `[args…, normal, unwind, callee]`.
 
-### D2 — Constants wrapping a global register no operand use
-
-**Severity:** model-gap
-**Where:** `crates/llvmkit-ir/src/constant.rs` — `ConstantData::for_each_operand`
-
-**LLVM:** `DSOLocalEquivalent`, `NoCFIValue` and every `ConstantExpr` naming a
-global hold it as a `Use`.
-
-**llvmkit:** `for_each_operand` yields operands for `Expr`, `Aggregate`,
-`PtrAuth` and — since W12 — `BlockAddress`, whose `[Function, BasicBlock]`
-operands are what let a block be used from outside its own function.
-`GlobalValueRef`, `DsoLocalEquivalent`, `NoCfi`, `GepOffset`, `SymbolDelta`
-and `SymbolDeltaPlus` still yield nothing.
-
-**Why not fixed with the rest:** all six wrap a *global*, and yielding them
-would register the edge against llvmkit's interned wrapper rather than the
-global — see D3. That loses count instead of fixing it, so the two have to be
-closed together.
-
-**What it costs elsewhere:** upstream's `kw_no_cfi` arm can wrap a
-forward-reference placeholder immediately, because `NoCFIValue` is a real
-`User` and `handleOperandChange` re-interns it when the placeholder is RAUW'd.
-llvmkit's `NoCfi` is not, so nothing would rewrite it — the parser keeps a
-`pending_no_cfi` list and builds the wrapper after the `ForwardRefVals` sweep
-instead. Same messages, same positions, one extra end-of-module step; it goes
-away when D2/D3 close.
-
 ### D3 — `GlobalValueRef` is an interned wrapper LLVM does not have
 
 **Severity:** model-gap
@@ -135,21 +108,25 @@ three uses.
 **llvmkit:** a global object carries its *value* type, and a separate
 **interned** `ConstantData::GlobalValueRef` stands for `@g` where a constant
 is wanted. Because it is interned, every reference shares one node, so edges
-registered against the wrapper collapse to a single use.
+registered against the wrapper would collapse to a single use.
 
-**Partly fixed (W12):** `use_edge_target` unwraps the wrapper for
-`ValueUse::GlobalField` edges — alias, ifunc resolver, initializer,
-personality, prefix, prologue — so those now count per-reference as upstream
-does, and `rewrite_global_field_cell` re-interns the wrapper on RAUW.
+**The use list is fixed.** Every edge is added, removed and moved through
+`Context`'s use-list doors in `llvm_context.rs` (`add_use`, `remove_use`,
+`prepend_moved_uses`, `use_list_of`), which read the wrapper through
+`use_edge_target` to its global, and `Value`'s use-list queries read the same
+way. So a global has one list, as upstream's has: a global field, an
+instruction operand, a constant-expression operand, a metadata node and a
+debug record all land on it, and a wrapper's own list stays empty.
+`uselistorder ptr @f` covers a function's calls, `ptr @f` operands,
+initializers and constant expressions
+(`crates/llvmkit-asmparser/tests/parser_use_list.rs::a_function_called_and_named_by_constants_orders_every_use`),
+and the Verifier's port of `F.hasAddressTaken` (`function_address_is_taken`)
+sees a call that passes an intrinsic as an argument
+(`crates/llvmkit-ir/tests/verifier_basic.rs::intrinsic_declaration_used_as_non_callee_operand_is_rejected`).
+A cell may still hold the wrapper, so a reader asking "is this operand that
+global" compares through `use_edge_target`.
 
-**Still open:** the same unwrap is *not* applied to constant-expression
-operands. `@a` referenced from `getelementptr (… ptr @a …)` still records the
-use against the wrapper, so `@a`'s count is one regardless of how many
-expressions name it. Closing it needs `constant_with_replaced_operand` to
-match wrapper-held operands too, which is why it was not done with the
-global-field half.
-
-**Also open — the handles' narrowing does not read through the wrapper.**
+**Still open — the handles' narrowing does not read through the wrapper.**
 Upstream's `dyn_cast<GlobalVariable>(LI->getPointerOperand())` on
 `load i32, ptr @g` answers `@g`. llvmkit's `GlobalVariable::try_from` of that
 operand — the interned wrapper — answers
@@ -161,7 +138,13 @@ the `GlobalValueRef` arms in `constant_fold.rs` and `constant_folding.rs`);
 the public `TryFrom<Value>` impls of `GlobalVariable`, `GlobalAlias`,
 `GlobalIfunc` and `FunctionValue` match only the global's own kind. Fix: those
 impls unwrap a `GlobalValueRef` whose referent is their kind, as D3 says the
-wrapper *is* the global.
+wrapper *is* the global. The same narrowing, the other way round, refused a
+parse: `Constant::try_from` of a global variable fails, so the parser's
+`landingpad` clause check, its port of `isa<Constant>`, refused `catch ptr @g`
+as `clause argument must be a constant`. That check now asks about a global's
+own value category too
+(`crates/llvmkit-asmparser/tests/parser_use_list.rs::a_directive_on_an_invoked_function_parses`);
+`Constant::try_from` itself still matches only a `Constant` kind.
 
 ### D4 — Two uses by the same user are indistinguishable
 
@@ -173,9 +156,13 @@ wrapper *is* the global.
 user on `Use::getOperandNo()`.
 
 **llvmkit:** `ValueUse::Instruction(user)` records only the user, so
-`add i32 %x, %x` produces two identical edges. The tie-break has no
-counterpart; the comparator treats them as equal and the stable sort leaves
-their relative order alone.
+`add i32 %x, %x` produces two identical edges, and `ValueUse::Constant` is the
+same. For those the tie-break has no counterpart; the comparator treats them
+as equal and the stable sort leaves their relative order alone. A
+`ValueUse::GlobalField` edge names its cell, so `ValueUse::operand_number`
+answers for it and the tie-break between one function's personality, prefix
+and prologue is upstream's
+(`crates/llvmkit-asmparser/tests/parser_use_list.rs::function_operand_uses_survive_a_reversal_round_trip`).
 
 **Consequence:** for a value referenced twice by one user, the emitted
 `uselistorder` shuffle may differ from upstream's. Both are self-consistent —
@@ -189,6 +176,13 @@ paths that replace a single operand without knowing its index
 (`demanded_bits.rs`'s operand replacement holds a `Cell`, not a position).
 Blocked behind D1: the index is only meaningful once the two operand lists
 are one.
+
+**Guarded by:** nothing that can see it. The `parser_use_list.rs` round trips
+assert that print, re-parse, print gives the same text, and the printer prints
+two orders of this kind alike, so they pass whichever order the parse built.
+`verify-uselistorder`'s own check compares each value's use list, `(user,
+operand number)` by `(user, operand number)`, which needs a view of a use list
+with operand numbers: the index this fix adds.
 
 ### D4a — Call-family operand order puts the callee first
 
@@ -320,21 +314,25 @@ reader of a function-index attribute has to consult the group numbers too, as
 round 3) the three `CallBase::hasFnAttr` copies and the two
 `Function::hasFnAttribute` copies (`speculation.rs::callee_is_speculatable`,
 `assumptions.rs::enclosing_function_has_attribute`) that did not were
-replaced by one port that does (`instr_types::call_site_has_fn_attr`,
-`FunctionValue::has_fn_attribute`). Two readers still skip the groups — each
+replaced by one port that does (`instr_types::call_site_has_fn_attr`, renamed
+`call_site_has_function_attribute` in Task 1b of the crash-proofing plan,
+`FunctionValue::has_fn_attribute`). One reader still skips the groups. It
 reads a *payload*, so the fix is a port of `getFnAttribute`, not of
 `hasFnAttr`:
 
-- `speculation.rs::call_site_memory_effects` (`CallBase::getMemoryEffects`)
-  reads `memory(...)` from the call's inline attributes and the callee's
-  stored list only, so `attributes #0 = { memory(none) }` on either side reads
-  as unknown effects;
 - `value_tracking.rs::function_vscale_range` (`llvm::getVScaleRange`, via
   `F->getFnAttribute(Attribute::VScaleRange)`) reads the stored list only.
 
-Both fall back to upstream's own answer for a missing attribute (unknown
-effects, no range), so the direction is conservative: an analysis learns
-less, never something false. Found with
+It falls back to upstream's own answer for a missing attribute (no range), so
+the direction is conservative: an analysis learns less, never something
+false. A second such reader, `speculation.rs::call_site_memory_effects`, was
+replaced in Task 1b's second fix round of the crash-proofing plan by
+`CallBaseParts::memory_effects` in `instr_types.rs`, which reads each
+`memory(...)` through `merged_function_memory_effects`: the last named group
+carrying one, else the inline one, as `validateEndOfModule`'s `FnAttrs.merge(B)`
+leaves it
+(`crates/llvmkit-asmparser/tests/speculation.rs::a_memory_attribute_in_an_attribute_group_counts`).
+Found with
 `rg -n "\.attributes\.borrow\(\)|function_attrs\(\)" crates/llvmkit-ir/src/`
 on the commit that adds this paragraph (17 hits), reading each: besides these
 two, the hits read a parameter or return index, which a `#N` group cannot
@@ -692,7 +690,8 @@ type-constructor plan's Task 9).
 `crates/llvmkit-ir/tests/type_components.rs::demangling_a_struct_name_creates_no_struct`,
 and the agreement law
 `crates/llvmkit-asmparser/tests/type_validity.rs::the_builder_and_the_parser_agree_on_every_derived_type`,
-whose struct rows left `KNOWN_DISAGREEMENTS` with this change.
+whose struct rows left its list of cells allowed to disagree with this change
+(the list was deleted once the function-type rows left it too).
 
 <details>
 <summary>Evidence (2026-10-18, vendored llvmorg-22.1.4)</summary>
@@ -708,6 +707,620 @@ whose struct rows left `KNOWN_DISAGREEMENTS` with this change.
   `unwrap<StructType>(StructTy)->setBody(Tys, Packed != 0)`, unchecked.
 
 </details>
+
+### D20 — A typed pointer is no IR type, so no derived type holds one
+
+**Severity:** model-gap — no `.ll` text reaches it: the parser lowers a typed
+pointer's spelling (`i32*`) to an opaque `ptr`, and no textual syntax builds a
+`TypedPointerType`.
+**Where:** `crates/llvmkit-ir/src/typed_pointer_type.rs` (`TypedPointerType`,
+`TypedPointee`, `TypedPointerElement`), `crates/llvmkit-ir/src/llvm_context.rs`
+(the typed-pointer table beside the type arena).
+
+**LLVM:** `TypedPointerType` is a `Type` subclass (`TypedPointerTyID`) that the
+DXIL and SPIR-V backends build in their analyses
+(`lib/Target/DirectX/DirectXIRPasses/PointerTypeAnalysis.cpp`,
+`lib/Target/SPIRV/SPIRVGlobalRegistry.cpp`, among others), and derived types may
+contain one: `VectorType::isValidElementType` admits `TypedPointerTyID`, and
+`ArrayType`, `StructType` and `FunctionType` do not exclude it. Its header says
+"It is not legal to use this type, or derived types containing this type, in
+LLVM IR", and `Value::Value`'s `checkType` asserts "Cannot have values with
+typed pointer types" — both rules unchecked in a release build.
+
+**llvmkit:** a typed pointer is not an IR type at all. `TypedPointerType` does
+not implement `IrType` and has no route to `Type`, and it is interned in a
+table of its own, so no `Type`, no value and no vector, array, struct or
+function type can hold one; `TypedPointerType::of` builds one from a valid
+pointee (a typed pointer included) and cannot fail, and
+`Module::typed_pointer_type` checks a runtime `Type` pointee
+(`TypedPointerType::isValidElementType`, `IrError::InvalidTypeComponent`) after
+its module (`IrError::ForeignType`). It prints as `TypePrinting::print` prints
+one, `typedptr(<pointee>, <addrspace>)`.
+
+**Why:** llvmkit has no backends (code generation is out of scope), and the
+upstream header calls these types illegal in IR. The old model was a `Type`
+variant: it printed `i32*`, which re-parses as an opaque `ptr` — a different
+type — and `AnyTypeEnum::from` of one built a `PointerType` over the
+typed-pointer slot, whose `address_space` `expect`s a `Pointer` payload and
+would have panicked (derived by reading `derived_types.rs` at `8e8292c`, not
+run).
+
+**Fix:** none — deliberate. Reopen with the first DXIL or SPIR-V analysis that
+needs typed derived types, as an analysis-side type family rather than IR
+types.
+
+**Guarded by:** `crates/llvmkit-ir/tests/type_components.rs::upstream_typed_pointer_prints`,
+`crates/llvmkit-ir/tests/type_components.rs::a_typed_pointer_nests_and_keeps_its_address_space`,
+`crates/llvmkit-ir/tests/type_components.rs::an_erased_typed_pointer_refuses_an_invalid_pointee`,
+`crates/llvmkit-ir/tests/cross_module_handles.rs::the_typed_pointer_constructor_rejects_a_pointee_from_another_module`,
+and `crates/llvmkit-ir/tests/compile_fail/typed_pointer_is_not_an_ir_type.rs`
+(a typed pointer as a function parameter fails on `IrType`'s own message).
+
+<details>
+<summary>Evidence (2026-10-29, vendored llvmorg-22.1.4, tree over `8e8292c`)</summary>
+
+- `rg -n "not legal to use this type" llvm/include/llvm/IR/TypedPointerType.h`
+  → the class comment; `rg -n "Cannot have values with typed pointer types"
+  llvm/lib/IR/Value.cpp` → `checkType`'s assert.
+- `rg -n -A6 "^bool VectorType::isValidElementType" llvm/lib/IR/Type.cpp` →
+  `ElemTy->getTypeID() == TypedPointerTyID` among the admitted kinds.
+- `rg -l "TypedPointerType::get\(" llvm/lib/Target` → five files under
+  `DirectX/` and `SPIRV/`.
+- rust-analyzer findReferences before the change: `TypeData::TypedPointer` 20,
+  `TypeKind::TypedPointer` 6, `TypeKindLabel::TypedPointer` 4,
+  `Type::is_typed_pointer` 2, `Module::typed_pointer_type` 3 (each count
+  including the declaration); every arm was deleted with its variant.
+
+</details>
+
+### D21 — A malformed target type is refused on every request, not only the first
+
+**Severity:** model-gap — API only: the parser stops at the first refusal, so
+no `.ll` text asks twice.
+**Where:** `crates/llvmkit-ir/src/module.rs` — `ModuleRef::target_ext_type`,
+behind `Module::target_ext_type` / `ModuleView::target_ext_type`.
+
+**LLVM:** `TargetExtType::getOrError` (`lib/IR/Type.cpp`) interns the type
+first and runs `TargetExtType::checkParams` only when the lookup inserted it;
+on a hit — "The target type was found. Just return it." — it answers the
+interned type unchecked. So a second `getOrError` for the same malformed
+`target("aarch64.svcount", i32)` succeeds where the first failed, and the
+malformed type stays in the context.
+
+**llvmkit:** checks the counts (`TargetExtParameterRule::broken_by`, the
+branches of `checkParams` in order) before interning, so a malformed target
+type never enters the arena and every request is refused with
+`IrError::TargetExtTypeParameters`.
+
+**Why:** a type no parser reads back is what D10 forbids holding; refusing
+before interning is the only order that keeps none in the arena.
+
+**Fix:** none — deliberate.
+
+**Guarded by:** `crates/llvmkit-ir/tests/type_components.rs::a_target_type_checks_its_parameters_when_built`
+and `crates/llvmkit-ir/tests/type_components.rs::an_intrinsic_name_cannot_spell_an_invalid_target_type`
+(the intrinsic demangler applies the same rule).
+
+### D22 — A target type `getTargetTypeInfo` can only assert on has no layout
+
+**Severity:** model-gap — such a type parses, in llvmkit and in LLVM, because
+`TargetExtType::checkParams` looks at no parameter beyond three names' counts.
+What differs is the answer to a query about it.
+**Where:** `crates/llvmkit-ir/src/data_layout.rs` — `target_ext_layout_type`,
+read by `Type::is_sized`, `DataLayout`'s size and alignment queries, and
+`TargetExtType::has_property`.
+
+**LLVM:** `getTargetTypeInfo` (`lib/IR/Type.cpp`) builds the layout type and the
+properties together, so `hasProperty`, `getLayoutType` and `isSized` all pass
+through it. It asserts on five inputs: a `spirv.Type` without exactly three
+integer parameters; a `spirv.Padding` or `dx.Padding` without its size
+(`TargetExtType::getIntParameter`'s index assert); a `riscv.vector.tuple` whose
+first type parameter is no scalable vector (`cast<ScalableVectorType>`) or whose
+count is zero (`ScalableVectorType::get`'s `MinNumElts > 0`); and a `spirv.Type`
+whose alignment `IntegerType::get` refuses as wider than `MAX_INT_BITS`. An
+assertions build aborts on the first query. What a release build answers
+depends on the arm, and some arms read past the parameter array.
+
+**llvmkit:** `target_ext_layout_type` answers `None` for all five, so the type
+is unsized, `DataLayout` sizes it as 0 bits with an alignment of 1, and
+`has_property` answers `false` for every property.
+
+**Why:** a query that reads a malformed type must not abort or read out of
+bounds (Doctrine D10), and each of these layout types is one llvmkit cannot
+build. `checkParams` cannot refuse them instead: `llvm-as` accepts their text,
+so a refusal at construction would make `.ll` that LLVM reads unreadable here.
+
+**Fix:** none — this is hardening of an assert, as D17 and D18 are.
+
+**Guarded by:** `crates/llvmkit-ir/tests/type_components.rs::a_target_type_upstream_asserts_on_has_no_layout`,
+`crates/llvmkit-ir/tests/type_components.rs::a_zero_count_riscv_tuple_has_no_layout`.
+
+### D23 — A struct a schema holds cannot be renamed
+
+**Severity:** model-gap, by D19's reading of the table: the grades name *input*
+and this is an API call. No `.ll` text is involved, since `LLParser` never
+renames a struct it has named.
+**Where:** `crates/llvmkit-ir/src/module.rs` — `Module::set_struct_name`, on the
+`schema_held` mark `Context::hold_schema_struct` sets. Its doors are
+`ModuleRef::mint_struct_of`, `SchemaValue::try_new`, `IrBuilder::extract_field` and
+both `try_from_function`s in `crates/llvmkit-ir/src/function_signature.rs`.
+
+**LLVM:** `StructType::setName` (`lib/IR/Type.cpp`) renames any identified
+struct. LLVM has no schemas, so nothing rests on the name.
+
+**llvmkit:** refuses with `IrError::SchemaStructNameNotSettable` once a schema
+has minted the struct, or a whole check has confirmed a value, a typed signature
+or a field read against it, along with every struct it holds by value. A check
+that fails holds nothing, at any depth: `FieldLayout::matches_type` only reads,
+and each door marks after its own last check has passed.
+
+**Why:** a `StructOf` or a `SchemaValue` proves its value is `%S`, and the
+builds that take no `?` rest on that proof (Doctrine D10). A rename moved the
+struct out from under the name: `rect.build` then wrote an `%Old` into a `%Point`
+field, reaching `fold_field_insert`'s `unreachable!` through `ConstantFolder` and
+an invalid `insertvalue` through `NoFolder`. Checking at the panic would leave
+the proof false.
+
+**A read-only check marks too, and that overrides Doctrine D8 here.** D8 says a
+read-only route does not mutate, and this mark does change what a later
+`set_struct_name` answers. It stands because a proof made at `ReadOnly` reaches a
+mutable build by two routes, so an unmarked struct could be renamed under it:
+- A schema's value is a `FieldArg` at any capability, and `IrBuilder::read_field`
+  and `write_field` take a `SchemaValue` at any capability, so a `ReadOnly`
+  `PointValue` from `Module::as_view` goes straight into `rect.build`.
+- `with_typed_signature` answers with a `TypedFunctionId`, which carries no
+  capability, so a check on a verified module reaches a mutable view through
+  `Module::unverify`.
+The mark is no IR: it prints nowhere, and a verified module stays verified.
+
+**Fix:** none owed. Removing it needs a proof that does not rest on the name.
+
+**Guarded by:** `crates/llvmkit-ir/tests/derived_struct_schema.rs::renaming_a_schema_struct_is_refused_with_constant_folder`,
+`crates/llvmkit-ir/tests/derived_struct_schema.rs::renaming_a_schema_struct_is_refused_with_no_folder`,
+`crates/llvmkit-ir/tests/derived_struct_schema.rs::a_nested_schema_struct_keeps_its_name`,
+`crates/llvmkit-ir/tests/derived_struct_schema.rs::a_confirmed_struct_keeps_its_name_and_so_do_its_fields`,
+`crates/llvmkit-ir/tests/derived_struct_schema.rs::a_struct_a_schema_value_checked_keeps_its_name`,
+`crates/llvmkit-ir/tests/derived_struct_schema.rs::a_struct_a_typed_signature_checked_keeps_its_name`,
+`crates/llvmkit-ir/tests/derived_struct_schema.rs::a_struct_no_schema_holds_can_be_renamed`,
+`crates/llvmkit-ir/tests/derived_struct_schema.rs::a_read_only_proof_reaches_a_build_so_its_check_holds`,
+`crates/llvmkit-ir/tests/struct_schema.rs::a_refused_check_holds_no_struct`,
+`crates/llvmkit-ir/tests/struct_schema.rs::a_refused_signature_holds_no_struct`,
+`crates/llvmkit-ir/tests/struct_schema.rs::a_passing_signature_holds_every_struct_it_names`,
+`crates/llvmkit-ir/tests/struct_schema.rs::a_checked_field_read_holds_the_field_alone`.
+
+### D24 — A reader of a size that upstream cannot take on a scalable one declines
+
+**Severity:** model-gap, by D19's reading of the table: the query answers, and
+upstream's stops. No build of upstream answers: the `TypeSize` conversion below
+is a `reportFatalInternalError`, not an `assert`.
+**Where:** `crates/llvmkit-ir/src/constant_folding.rs` — `gep_index_for_offset` and
+`read_struct_data_from_global`; `crates/llvmkit-ir/src/value_tracking.rs` —
+`gep_known_bits_from_values`; `crates/llvmkit-ir/src/constant_fold.rs` —
+`global_pointer_alignment`; `crates/llvmkit-ir/src/pointer_analysis.rs` —
+`constant_data_array_info`.
+
+**LLVM:** `TypeSize::getFixedValue` asserts on a scalable size, and the implicit
+`uint64_t` conversion (`TypeSize::operator ScalarTy`) reports a fatal error. Each
+of these routines reads a size one of those two ways, and each can meet a scalable
+one. `DataLayout::getGEPIndexForOffset` compares an offset with
+`getSizeInBytes`, on a constant struct of scalable vectors.
+`computeKnownBitsFromOperator` assigns `getElementOffset` to a `uint64_t`, on a
+field of such a struct inside an array, which `Verifier::visitGetElementPtrInst`
+does not refuse because the source is not itself a struct.
+`DataLayout::getPreferredAlign` compares `getTypeSizeInBits` with 128, and
+`getConstantDataArrayInfo` reads a null initializer's size with `getFixedValue`,
+both on a scalable global, which the verifier refuses but the parser reads.
+`ReadDataFromGlobal` reads `getTypeAllocSize` on a field of a fixed-size struct,
+which `{ i32, [0 x <vscale x 4 x i32>] }` has, past a load that crosses into it.
+
+**llvmkit:** each takes the decline its routine already has: no index, unknown
+bits, no alignment, no slice, no bytes.
+
+**Why:** a query must not abort (Doctrine D10).
+
+**Fix:** none owed — this is hardening of a fatal error, as D17 and D18 are of
+asserts.
+
+**Guarded by:**
+`crates/llvmkit-ir/tests/constant_folding_analysis.rs::a_load_at_an_offset_into_a_scalable_struct_is_not_folded`,
+`crates/llvmkit-asmparser/tests/value_tracking_gep.rs::a_scalable_field_offset_is_unknown`,
+`crates/llvmkit-asmparser/tests/pointer_analysis.rs::a_scalable_global_has_no_fixed_size_to_read`.
+
+### D25 — A forward `dso_local_equivalent` that resolves to another address space is refused where upstream asserts
+
+**Severity:** wrong-message, against a release build of upstream; an assertions
+build aborts instead.
+**Where:** `crates/llvmkit-asmparser/src/ll_parser.rs` —
+`resolve_one_forward_ref_dso_local_equivalent`.
+
+**LLVM:** `LLParser::parseValID`'s `kw_dso_local_equivalent` arm makes its forward
+reference a `GlobalVariable` in `DataLayout::getDefaultGlobalsAddressSpace`, and
+`validateEndOfModule` replaces it with `DSOLocalEquivalent::get(GV)`, typed by the
+function's own address space. When `G` and `P` differ the two types differ, and
+`Value::doRAUW` asserts that they agree. A release build carries on.
+
+**llvmkit:** `replace_all_uses_with` refuses the mismatch, so the module is refused
+with `expected valid forward dso_local_equivalent: type mismatch: expected 'ptr
+addrspace(1)', got 'ptr'`, anchored at the token the parse stopped on.
+
+**Why:** a type mismatch on a use is invalid IR, and a replace that cannot be done
+must not abort (Doctrine D10).
+
+**Fix:** none owed — this is hardening of an assert, as D17 and D18 are. The text
+is llvmkit's, because upstream's assert has none a user would see.
+
+**Guarded by:** `crates/llvmkit-asmparser/tests/parser_constants.rs::a_forward_dso_local_equivalent_is_in_the_default_globals_space`.
+
+### D30 — A name or string that is not valid UTF-8 is refused
+
+**Severity:** rejects-valid
+**Where:** `crates/llvmkit-asmparser/src/ll_parser.rs`, at each `std::str::from_utf8`
+(`rg -n "from_utf8" crates/llvmkit-asmparser/src/ll_parser.rs`): `parse_string_constant`;
+`current_str_payload` and its callers (`rg -n "current_str_payload\(" crates/llvmkit-asmparser/src/ll_parser.rs`);
+`current_label_str`; `parse_comdat_definition`, `parse_global_or_function` and
+`parse_optional_function_suffix`; `parse_named_metadata`; `parse_named_metadata_attachment`
+and `skip_trailing_metadata`; `parse_addr_space_paren`; `parse_specialized_metadata_body`.
+Gap **G9** in `docs/fixture-coverage.md`.
+
+**LLVM:** a quoted name, a string constant, a quoted label and an escaped metadata name keep
+whatever bytes `UnEscapeLexed` makes of them (`LLLexer::LexVar`, `LexQuote`, `LexDollar`,
+`LexExclaim`); only a NUL in a name is refused. `LLParser` holds them in `std::string`, and
+`printLLVMNameWithoutPrefix` and `printEscapedString` print the bytes back escaped.
+
+**llvmkit:** the parser decodes each such token with `std::str::from_utf8`, and the IR
+holds names and strings as `String`, so a byte sequence that is not UTF-8 is refused. Probed
+with `target/release/examples/parse_file.exe` on 2026-11-05, over `ae636cd` plus the change
+later committed as `f2fcd22`, which touches none of these routines:
+
+| input | llvmkit answers |
+|---|---|
+| `@"\FF" = global i32 0` | `expected global identifier`, at the name |
+| `$"\FF" = comdat any` | `expected valid UTF-8 comdat name` |
+| `@g = global i32 0, section "\FF"` | `expected UTF-8 string constant`, at the string |
+| a block labelled `"\FF":` | `expected basic-block label` |
+
+The rest is read, not run. Every other `parse_string_constant` caller refuses with
+`expected UTF-8 string constant`: metadata strings, `partition`, `gc`, `source_filename`,
+the target triple and data layout, `module asm`, string attributes, operand-bundle tags,
+inline asm, `syncscope`. `current_str_payload` answers a non-UTF-8 `@` or `%` name as
+absent, so each caller reports its own `expected ...`. A named-metadata name refuses with
+`expected valid UTF-8 metadata name`, and an attachment name with `expected valid UTF-8
+metadata attachment name`. Two sites refuse what upstream refuses too, in other words: a
+symbolic address space (upstream `invalid symbolic addrspace '...'`) and a specialized
+metadata field name (upstream `invalid field '...'`). Three answer as upstream does, since
+no non-UTF-8 name matches there either: `parse_optional_code_model`, `parse_named_metadata`'s
+`DIExpression` / `DIArgList` lookup, and `parse_md_node_after_bang`'s `metadata type`.
+
+Before this entry, over `ae636cd`, `rg -n -i "utf"` over `docs/divergences.md`,
+`docs/future-work.md` and `docs/fixture-coverage.md` found only G9's row and its two fixture
+rows, and `non-UTF`, `byte string` and `arbitrary bytes` found nothing more.
+
+**Why:** names and strings are `String` through the IR, the printer and the public API; a
+byte string is a model change across all three, which needs its own plan.
+
+**Fix:** hold names and string payloads as bytes from the lexer through the IR, and print
+them as `printLLVMNameWithoutPrefix` and `printEscapedString` do.
+
+**Guarded by:** nothing. `test/Assembler/difile-escaped-chars.ll` and `named-metadata.ll`
+are the fixtures it blocks (`docs/fixture-coverage.md`, G9).
+
+### D31 — `computeKnownBits` knows nothing of an alias
+
+**Severity:** model-gap
+**Where:** `crates/llvmkit-ir/src/value_tracking.rs` — `compute_known_bits_inner`, its
+`ValueKindData::GlobalAlias` arm.
+
+**LLVM:** `computeKnownBits`, below its depth cutoff: "A weak GlobalAlias is totally
+unknown. A non-weak GlobalAlias has the bits of its aliasee." —
+`if (!GA->isInterposable()) computeKnownBits(GA->getAliasee(), Known, Q, Depth + 1); return;`.
+
+**llvmkit:** the arm answers `KnownBits::unknown` for every alias, interposable or not.
+`GlobalValue::isInterposable` is ported (`constant_fold.rs::global_is_interposable`, in
+`ae636cd`), so the arm has what it needs. Read, not run.
+
+**Why:** found porting `isInterposable`, whose readers upstream this is one of; left to the
+next plan's Task 19. Before this entry, `rg -n -i "computeKnownBits.*alias|alias arm" docs`
+printed nothing.
+
+**Fix:** port the arm in upstream's position: after the depth cutoff, before the operator walk.
+
+**Guarded by:** nothing. The first test that would show it: a known-bits query on
+`ptrtoint (ptr @a to i64)` with `@a = alias i8, inttoptr (i64 4096 to ptr)`, whose low 12
+bits upstream answers zero (`derived`), and the `g1` function of
+`test/Transforms/InstCombine/constant-fold-alias.ll`, which reads an alias's alignment.
+
+### D32 — `ConstantFoldBinaryOpOperands` has no `SymbolicallyEvaluateBinop`
+
+**Severity:** model-gap
+**Where:** `crates/llvmkit-ir/src/constant_folding.rs` —
+`constant_fold_binary_op_operands_trusting_same_module` (its `let _ = dl`).
+
+**LLVM:** `ConstantFoldBinaryOpOperands` (`lib/Analysis/ConstantFolding.cpp`) first asks
+`SymbolicallyEvaluateBinop` when either operand is a `ConstantExpr`: an `and` whose known
+bits already decide it answers one operand or a constant, and `(&GV+C1) - (&GV+C2)` answers
+`C1-C2` through two `IsConstantOffsetFromGlobal` calls. Then `ConstantExpr::get` for a
+desirable binary operator, and only then `ConstantFoldBinaryInstruction`.
+
+**llvmkit:** `ConstantFoldBinaryInstruction` first, then `constant_expr` for a supported
+opcode, with no symbolic step and the data layout unused. So the order is not upstream's, and
+neither fold happens. Read, not run.
+
+**Why:** `IsConstantOffsetFromGlobal` was ported whole in `ae636cd`, but its two callers in
+folding were not: this routine and `simplifyRelativeLoad` (`docs/future-work.md`). Left to the
+next plan's Task 19. Before this entry,
+`rg -n "SymbolicallyEvaluateBinop|symbolically_evaluate_binop" docs` printed nothing.
+
+**Fix:** port `ConstantFoldBinaryOpOperands` arm for arm, with `SymbolicallyEvaluateBinop`.
+
+**Guarded by:** nothing. The first tests that would show it:
+`ptrtoaddr_sub_consts_offset` and `ptrtoaddr_sub_consts_offset_addrsize` in
+`test/Transforms/InstSimplify/ptrtoaddr.ll`, which answer `42`, and which
+`crates/llvmkit-asmparser/tests/constant_fold_loads.rs::a_cast_of_a_constant_expression_folds_as_ptrtoaddr_ll_does`
+leaves out, its doc says why; then the `f2` function of
+`test/Transforms/InstCombine/constant-fold-alias.ll`, the `and` arm.
+
+### D33 — A forward-named personality, aliasee or resolver joins its target's use list last
+
+**Severity:** wrong-output (narrow)
+**Where:** `crates/llvmkit-asmparser/src/ll_parser.rs` — `parse_personality_fn`'s
+`ParsedPersonalityFn::ForwardName` and `resolve_deferred_personality_fns`;
+`parse_alias_or_ifunc`'s `forward_target` and `resolve_deferred_alias_targets`.
+
+**LLVM:** a name not yet defined is read through `getGlobalVal`, which makes a placeholder
+(`createGlobalFwdRef`), and the field is set over it at once; defining the name RAUWs the
+placeholder, which prepends its uses, reversed, to the definition's list.
+`predictValueUseListOrder`'s `GetsReversed` is written for that reversal.
+
+**llvmkit:** a forward-named personality, aliasee or ifunc resolver is not set over a
+placeholder. The parser keeps the name, sets a null or nothing, and sets the field at end of
+module, so the use joins its target's list after every use made by then, in the order the
+deferrals resolve. A count agrees; the order does not, so a `uselistorder` on the target
+names its uses in another order than upstream's (`derived`: for `@a1` and `@a2`, aliases of
+an `@f` defined after both, `@f`'s list reads `[a2, a1]` here and `[a1, a2]` upstream). A
+global's initializer and an instruction operand do go through a placeholder.
+
+**Why:** the deferrals predate use-list order (see `docs/future-work.md`, "Parser — deferred
+alias/ifunc targets"). Found in `f2fcd22`, porting `parseFunctionHeader`'s setter order,
+whose personality arm defers. Before this entry, `rg -n -i "deferred_personality|personality.*forward|forward.*personality" docs`
+printed nothing.
+
+**Fix:** set each field over `getGlobalVal`'s placeholder, as an initializer already is, and
+let the placeholder's RAUW put the use in place.
+
+**Guarded by:** nothing.
+
+### D34 — An operand change that makes a `ConstantDataSequential` is taken as in place
+
+**Severity:** wrong-output, latent: no input reaches it today (derived, see below).
+**Where:** `crates/llvmkit-ir/src/constants.rs` — `aggregate_with_replaced_operand` and
+`replace_constant_operand`.
+
+**LLVM:** `ConstantArray::handleOperandChangeImpl` and `ConstantVector::handleOperandChangeImpl`
+ask `getImpl` before `replaceOperandsInPlace`. When every new operand is a `ConstantInt` or a
+`ConstantFP` of a compatible type, `getImpl` answers a `ConstantDataArray` or
+`ConstantDataVector` from `getSequenceIfElementsMatch`. That is a different object, so
+`handleOperandChange` runs `replaceAllUsesWith` and `destroyConstant`. A
+`ConstantDataSequential` has no operands and no use list (`Value::hasUseList`).
+
+**llvmkit:** a `ConstantDataSequential` is the same stored list as a `ConstantArray` or
+`ConstantVector`, told apart by `Constant::kind`. So `getImpl`'s answer is a freshly interned
+list whose operands are the old ones with `From` replaced, and `replace_constant_operand`'s
+in-place test takes it as `replaceOperandsInPlace`'s update: the new list's edges take the old
+ones' places on its elements' lists, and its users keep their order instead of being moved by
+`replaceAllUsesWith`.
+
+**Why unobservable today (derived from the code, not run):** only an element's or a user's
+place on a use list differs. The elements are `ConstantInt`s or `ConstantFP`s, which are
+`ConstantData` and have no use list a `uselistorder` line can name, and the list itself is
+`ConstantData` by class (`Constant::is_constant_data`), so its own users have none to print
+either. Reaching the case at all needs a forward reference inside an array or vector resolved
+to a `ConstantInt` or `ConstantFP`; the parser resolves one inside a constant only to a global
+or a `blockaddress`, so only `ForwardRefValue::replace_all_uses_with` called by hand reaches it.
+
+**Fix:** Task 5 of the crash-proofing plan stores a `ConstantDataSequential` as bytes. That
+answer then has no operands, so the in-place test's operand-count comparison sends it down the
+replacement path, as it already sends a `ConstantAggregateZero` or an `undef`.
+
+**Guarded by:** nothing yet. Found in Task 1 of the crash-proofing plan
+(`task-1-report.md`, Concern 4), porting the `AllSame` arms.
+
+### D37 — An `insertvalue` into a zero array of 2^32 elements or more declines
+
+**Severity:** model-gap, and hardening where upstream asserts or answers a constant of the wrong
+type.
+**Where:** `crates/llvmkit-ir/src/constant_fold.rs` —
+`constant_fold_insert_value_instruction`, through `aggregate_elements_for_rebuild` and
+`aggregate_elements`, which declines a zero array whose length does not fit `unsigned`.
+
+**LLVM:** `ConstantFoldInsertValueInstruction` (`ConstantFold.cpp`) counts the aggregate's
+elements as `unsigned NumElts = cast<ArrayType>(...)->getNumElements()`, so for an array of 2^32
+elements or more it walks only the low 32 bits' worth and hands `ConstantArray::get` a list
+shorter than the type. `ConstantArray::getImpl` (`Constants.cpp`) answers that list in one of
+three ways:
+- an empty list, or one that is all `poison`, all `undef` or all null, gets the full type's
+  constant, which drops an insertion at an index past the short count;
+- a list of `ConstantInt`s or `ConstantFP`s gets `getSequenceIfElementsMatch`'s
+  `ConstantDataArray` of the list's own length, a constant of the wrong type;
+- any other list reaches the `ConstantArray` constructor's
+  `V.size() == T->getNumElements()` assert.
+
+All of this is derived from the routines and was not run.
+
+**llvmkit:** `aggregate_elements` refuses to walk a zero whose narrowed count differs from its
+length, so the fold answers `None` in all three cases. In the first case it answers `None`
+where upstream answers a constant, which is right only when no insertion was dropped.
+
+**Why:** the walk would have to build a list of 2^32 elements or more to answer as the type
+says, or answer as upstream's narrowed count says, which is either wrong or an assert. Before
+this entry,
+`rg -n "aggregate_elements|getAggregateElement|aggregate_element\b|2\^32|4294967304|insertvalue|InsertValue" docs/divergences.md docs/future-work.md`
+printed only unrelated lines: an `insertvalue` built through `NoFolder` in D23, an evidence
+block on the three index-type walks, and a fixture list in `future-work.md`.
+Fix round 3 of Task 1 of the crash-proofing plan ported `ConstantFoldExtractValueInstruction`'s
+one-element read. It answered an `extractvalue` of the same arrays through the same decline, and
+upstream answers it, so this is what remains of that decline.
+
+**Fix:** none owed for the second and third cases, which are hardening. The first stays
+declined: the cap on materialised elements (`MAX_EXPANDED_LANES`, D40) is far below 2^32, so a
+zero that long declines past it whatever its count. The cap also declines a zero, `undef` or
+`poison` array of 65537 to 2^32 − 1 elements, which upstream folds; that is D40's, not this
+entry's.
+
+**Guarded by:** nothing. The `extractvalue` side is pinned by
+`crates/llvmkit-ir/tests/constant_aggregate_zero.rs::extractvalue_reads_one_element_of_a_long_array`.
+
+### D38 — An intrinsic declared with no `memory(...)` reads its table's effects
+
+**Severity:** model-gap (narrower than upstream: a call is said to touch what the intrinsic
+table says, where upstream says it may touch anything).
+**Where:** `crates/llvmkit-ir/src/instr_types.rs` — `CallBaseParts::memory_effects`, its
+`Fn->getMemoryEffects()` half.
+
+**LLVM:** `CallBase::getMemoryEffects` (`Instructions.cpp`) reads `Fn->getMemoryEffects()`,
+which is the callee's `memory(...)` attribute or `MemoryEffects::unknown()`
+(`AttributeSetNode::getMemoryEffects`, `Attributes.cpp`). `Function::Function` (`Function.cpp`)
+gives an intrinsic its table attributes (`setAttributes(Intrinsic::getAttributes(...))`), but
+`LLParser::parseFunctionHeader` then calls `Fn->setAttributes(PAL)` with the attributes the
+`.ll` wrote, so a parsed `declare void @llvm.memcpy...(...)` with no attributes has no
+`memory(...)`, and its calls have unknown effects. (Read from the three sites, not run.)
+
+**llvmkit:** a callee that is an intrinsic and carries no `memory(...)` of its own (inline or
+through an `#N` group) answers `IntrinsicId::memory_effects`, the effects its table gives.
+
+**Why:** the fallback predates this entry (it was `speculation.rs::call_site_memory_effects`'s
+last arm). Removing it moves every analysis that asks a hand-written intrinsic declaration
+what it touches: dead-code elimination, `mayHaveNonDefUseDependency` and the assumption scan
+among them. llvmkit's own tests and fixtures write many intrinsic declarations bare. Before this
+entry, `rg -n -i "intrinsic table|descriptor.*memory|bare .declare|getMemoryEffects" docs/divergences.md docs/future-work.md`
+printed only D9's bullet on `call_site_memory_effects`, which was about attribute groups.
+
+**Fix:** drop the fallback, which makes a bare declaration's calls unknown as upstream's are, and
+re-bless what moves. Each moved answer is then a fixture that should carry the intrinsic's
+attributes, as `llvm-dis` output does.
+
+**Guarded by:** nothing pins the fallback's answer on its own.
+
+### D39 — A fixed splat of a value with a use list is one use of it, not one per lane
+
+**Severity:** wrong-output (narrow): a use count and a `uselistorder` shuffle.
+**Where:** `crates/llvmkit-ir/src/constant.rs` — `ConstantData::Splat` and its arm of
+`ConstantData::for_each_operand`; `crates/llvmkit-ir/src/llvm_context.rs` —
+`Context::intern_constant_splat`.
+
+**LLVM:** a fixed vector whose lanes are all one value that is no `ConstantInt` or `ConstantFP`
+of a `ConstantDataSequential` element type — `<2 x ptr> <ptr @g, ptr @g>`, or `splat (ptr @g)`
+— is a `ConstantVector` (`ConstantVector::getImpl`, `getSplat`'s `get(Elts)`), and each lane is
+an operand, so `@g` has one use per lane. A `ConstantDataVector` has no operands, and a
+scalable splat's `insertelement` uses the value once.
+
+**llvmkit:** every splat is stored as its one element (`ConstantData::Splat`, so that
+`<4294967295 x ptr> splat (ptr @g)` costs one constant), and it registers one use of that
+element. A scalable splat's operand is `getSplat`'s `insertelement`, which uses the element, as
+upstream's does, so only a fixed splat is in question here. For the `ConstantVector` case only,
+`@g`'s use list therefore holds one edge from the splat where upstream's holds one per lane, which changes `num_uses` and the `uselistorder`
+directive the printer predicts for `@g`.
+
+An operand change that makes a `ConstantVector` list's lanes all one value (a placeholder
+resolved to the other lane) updates it in place, as `replaceOperandsInPlace` does, so its users
+keep their order; the splat keeps one edge on the element's list, at the place of the list's
+first (`constants.rs::replace_constant_operand`, through `take_edge_place`).
+
+**Why:** an edge per lane would make the use list as long as the lane count, which is the
+allocation the storage exists to avoid. Before this entry, `rg -n -i "splat" docs/divergences.md`
+(run on `efbfa8a` with the uncommitted splat storage applied, the tree the commit that adds this entry starts from) printed no entry on use counts.
+
+**Fix:** none planned that keeps the storage bounded. A use edge carrying a lane multiplicity
+would let the count and the order be upstream's.
+
+**Guarded by:** `crates/llvmkit-ir/tests/constant_splat.rs::a_constant_vector_splat_is_one_use_of_its_element`
+pins the one edge, so a change to the storage's use registration fails there.
+
+### D40 — A fold declines to build more than 65536 lanes out of a splat, a zero, `undef` or `poison`
+
+**Severity:** wrong-output (narrow): a fold upstream performs is left as the instruction or
+constant expression, so the printed IR differs. Hardening.
+**Where:** `crates/llvmkit-ir/src/constant_fold.rs` — `MAX_EXPANDED_LANES`, `may_walk_lanes`,
+`lane_walk` (the `LaneWalk` witness), and their uses in `aggregate_elements`,
+`fixed_vector_elements_for_rebuild`, `aggregate_elements_for_rebuild`,
+`constant_fold_select_instruction` and `constant_matches_negative_zero_fp_pattern`;
+`crates/llvmkit-ir/src/constant_folding.rs` — the lane-changing arm of
+`fold_bitcast_with_layout`, and `fold_vector_to_scalar_bitcast`;
+`crates/llvmkit-ir/src/constant.rs` — `Constant::has_uniform_lanes` and `Constant::lanes_to_ask`,
+read by `value_tracking.rs` (`constant_int_predicate_matches`, `shift_amount_known_in_range`,
+`contains_undefined_element`, `contains_constant_expression`,
+`expression_shuffle_mask_has_poison_lane`) and `vector_utils.rs`
+(`constant_mask_lanes_satisfy`, `possibly_demanded_elements_in_mask`).
+
+**LLVM:** a fixed vector stores every lane (`ConstantDataVector`, `ConstantVector`), so a fold
+that walks the lanes (`ConstantFoldInsertElementInstruction`, the per-lane loops of
+`ConstantFoldBinaryInstruction`, `ConstantFoldCompareInstruction`,
+`ConstantFoldCastInstruction` and `ConstantFoldUnaryInstruction`, `ConstantFoldSelectInstruction`'s
+`ConstantVector` loop, and `FoldBitCast`'s lane-changing loops in `Analysis/ConstantFolding.cpp`)
+costs what the operand already cost to build.
+
+**llvmkit:** a splat is stored as its one element (`ConstantData::Splat`), and a zero, `undef`
+and `poison` store no lanes either, so `<4294967295 x i32> splat (i32 7)` is a few bytes of
+text and one constant. A fold that would build its answer lane by lane out of such an operand
+declines past `MAX_EXPANDED_LANES` (65536) lanes: `insertelement (<4294967295 x i32> splat (i32
+7), i32 1, i64 0)` stays that expression, where upstream builds 4294967295 lanes; a lane-changing
+`bitcast` of a long splat answers the `bitcast` expression, upstream's own answer for a lane it
+cannot merge. A fold one of whose operands stores its lanes (an element list) walks them, and
+builds an answer as long, at any length, since that costs what was stored: `add` of a stored
+70000-lane list and a long splat is folded, as upstream folds it. An elementwise fold (unary,
+binary, compare, same-lane cast) whose every operand stores one value for all its lanes (a splat,
+a zero, `undef`, `poison`) folds lane 0 once and splats the answer, at any length: every lane of
+upstream's loop folds the same inputs alike, and `ConstantVector::get` makes the repeated list
+that splat, so `add (<4294967295 x i32> undef, splat (i32 1))` is `undef`, as upstream answers. The same cap holds for an
+array that stores no elements: `ConstantFoldInsertValueInstruction` rebuilds every element of
+the aggregate it inserts into, so `insertvalue` into `[70000 x i32] zeroinitializer` (or an
+`undef` or `poison` array past 65536 elements) keeps the instruction, where upstream folds it. A
+struct's type stores its fields, so a zero struct of any width is walked and folded. An answer longer than its
+operand stores is held to the cap: a `bitcast` that splits a short list's lanes (`<2 x i65536>`
+to `<131072 x i1>`), or a scalar (`i131072` to `<131072 x i1>`, through the one-lane vector
+`FoldBitCast` wraps it in), into more than 65536 lanes answers the `bitcast` expression too.
+
+Folds that need only some lanes read only those, and answer as upstream does at any length:
+`extractelement` reads one lane through `getAggregateElement`, `shufflevector` one source lane
+per mask lane (and, for a uniform mask — `splat`, `zeroinitializer`, `undef`, `poison` — one
+source lane in all, answering the splat upstream's loop builds lane by lane,
+`constant_fold_shuffle_vector_with_mask_constant`), and `select` reads its condition's lanes one at a time, as upstream's loop does,
+so a lane that is no `ConstantInt` (and whose two arms differ) ends the walk there. A splat
+condition past the cap is not walked at all: the fold goes on to the checks after the loop, so
+where upstream's loop would have kept every lane (each lane's arms agreeing) the answer is the
+`V1 == V2` check's or none. Analyses that ask every lane, or any
+lane, one question (`cst_pred_ty`'s walk, `containsConstantExpression`, the mask tests of
+`VectorUtils`, the shift-amount range check of `canCreateUndefOrPoison`) ask a vector stored in
+one slot once (`Constant::lanes_to_ask`), which answers as the walk would.
+
+The walks were found by `rg -n "aggregate_elements\(|\.aggregate_element\(|for (lane|i|index|element|idx) in 0\.\.|const_vector\(\(0\.\." crates/llvmkit-ir/src`
+on `efbfa8a` with the uncommitted splat storage applied (the tree the commit that adds this entry
+starts from), then by inline reviews (code-review skill, high), the second of which found the
+vector-to-scalar `bitcast` (`fold_vector_to_scalar_bitcast` now holds to the cap too). A search
+is not a proof, so the reads are pinned instead: `crates/llvmkit-ir/tests/lane_read_drift.rs`
+lists every function in `crates/llvmkit-ir/src` that reads a constant's lanes through
+`aggregate_element` or `extract_lane`, or repeat-fills per lane in the files that build
+constants, how many times, and why each is bounded, and fails on one it does not list. A walk
+spelled any other way escapes it; the scan narrows the search, it does not end it. Costs that are
+proportional to a vector's lane count in upstream too (a demanded-lanes `APInt` one bit per lane,
+an instruction's mask) are outside D40.
+
+Two costs found to stay proportional to the lane count, as upstream's are: the printed form of a
+splat that is a `ConstantVector` (`writeConstantInternal` writes every lane), and a
+`shufflevector` instruction's mask, which stores one entry per lane
+(`shufflevector_mask_from_constant`, upstream `ShuffleVectorInst::ShuffleMask`), so
+`<4294967295 x i32> zeroinitializer` or `splat (i32 0)` as a mask still costs its lanes. The
+second is a model-gap of the instruction, not of the folds, and is recorded in
+`docs/future-work.md`.
+
+**Why:** without the cap a few bytes of `.ll` make a fold allocate tens of gigabytes. Before this
+entry, `rg -n -i "MAX_EXPANDED|expanded lanes|walk.*lanes" docs/divergences.md docs/future-work.md`
+(run on `efbfa8a` with the uncommitted splat storage applied, the tree the commit that adds this entry starts from) printed nothing.
+
+**Fix:** none owed; the cap is the hardening. A fold whose answer is periodic (a lane-merging
+`bitcast` of a splat is a splat) could answer upstream's constant without the walk.
+
+**Guarded by:** `crates/llvmkit-asmparser/tests/long_splat_folds.rs`, whose tests each fail
+(by exhausting memory, or by a one-minute deadline) if their fold walks a long splat's lanes.
 
 ---
 
@@ -1012,6 +1625,17 @@ hypothesis until one does)
   functions, but not aliases; and `visit_global_ifunc` ports the `!dbg` /
   `!prof` checks, the linkage check and the four resolver checks, but not the
   `visitMDNode` call. A module that fails only one of these verifies.
+- **The aliasee walk includes the interposable-alias check.** `visitAliaseeSubExpr`,
+  which `visitGlobalAlias` runs on each aliasee, checks `Check(!GA2->isInterposable(),
+  "Alias cannot point to an interposable alias", &GA)` when the aliasee is itself an
+  alias, beside "Alias must point to a definition" and "Aliases cannot form a cycle".
+  So `@test3_c = alias i32, ptr @test3_b` over `@test3_b = weak alias i32, ptr @test3_a`
+  verifies here (read, not run). The predicate is ported
+  (`constant_fold.rs::global_is_interposable`, behind `GlobalValue::is_interposable`, in
+  `ae636cd`), so the check waits only on the walk. Named 2026-11-05: before then,
+  `rg -n -i "interposable alias" docs` printed nothing. The first test that would show it
+  is `test/Verifier/alias.ll`, whose `CHECK: Alias cannot point to an interposable alias`
+  names `@test3_c`.
 - **Found:** 2026-10-04, porting `Verifier::visitGlobalIFunc`'s resolver and
   attachment checks (capability-typestate Task 4, fix round 2), whose first
   statement is `visitGlobalValue(GI)`.
@@ -1539,21 +2163,6 @@ Cited lines all check out exactly. crates/llvmkit-asmparser/src/ll_token.rs:88-1
 
 </details>
 
-### 44. `ptrtoint`/`ptrtoaddr` mid-width folding diverges on `pointer_size != index_size` layouts
-
-*constant folder* — crates/llvmkit-ir/src/constant_folding.rs (`fold_ptr_to_int_pair`)
-
-- **LLVM:** In `isEliminableCastPair`'s case-11 *declined* sub-case (`MidSize < SrcSize && MidSize < DstSize`), `ConstantFoldCastOperand` falls to its switch path, where `PtrToInt` takes `DL.getAddressType` and `PtrToAddr` takes `DL.getIntPtrType` — the inverse of each other. On `p:128:128:128:64`, `ptrtoaddr(inttoptr(i128 x)):i128` folds to `x`.
-- **llvmkit:** `fold_ptr_to_int_pair` always two-steps through the case-11 mid (`ptrtoint` to the pointer size, `ptrtoaddr` to the index/address size), so the same expression folds to `x mod 2^64` — the semantically correct address extraction, and a different constant from upstream's.
-- **Why:** Recorded as a deliberate, reasoned divergence awaiting an explicit decision: llvmkit's value is arguably the more correct side, and matching upstream would mean introducing a wrong mask to copy an upstream quirk, on layouts x86 and the `bin_lift` consumer never use.
-- **Fix:** Only if CHERI-like parity comes into scope: mirror the switch path's type choice (`getAddressType` for `PtrToInt`, `getIntPtrType` for `PtrToAddr`) in the declined case-11 sub-case, and port the upstream fixture that pins it so the quirk is documented as copied rather than invented.
-
-<details><summary>Verification evidence</summary>
-
-Confirmed real and unchanged. (1) llvmkit: crates/llvmkit-ir/src/constant_folding.rs:2432 `fold_ptr_to_int_pair`, lines 2462-2466, picks `mid_bits` as `PtrToInt => dl.pointer_size_in_bits(addr_space)`, `PtrToAddr => dl.index_size_in_bits(addr_space)`, then two-steps source -> mid_ty -> dest_ty via `fold_integer_cast_constant` (2467-2471). It is reached unconditionally from `constant_fold_cast_operand` (lines 307-311); `grep -rn "eliminable" --include=*.rs crates/` returns nothing, so llvmkit has no `isEliminableCastPair` accept/decline branch and never falls through to a different mid width. (2) Upstream: orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/Analysis/ConstantFolding.cpp:1508-1510 in `ConstantFoldCastOperand`'s switch uses `MidTy = Opcode == Instruction::PtrToInt ? DL.getAddressType(CE->getType()) : DL.getIntPtrType(CE->getType())` — and DataLayout.h:679 defines `getAddressType(PtrTy)` as `getIndexType(PtrTy)` (index size) while DataLayout.cpp:976-984 defines `getIntPtrType(Type*)` via `getPointerTypeSizeInBits`. That is exactly the inverse of llvmkit's mapping, and also the inverse of upstream's own case 11 at Instructions.cpp:2965-2967 (`secondOp == PtrToAddr ? DL->getAddressSizeInBits(MidTy) : DL->getPointerTypeSizeInBits(MidTy)`), so upstream's two sites disagree and the declined sub-case (`MidSize < SrcSize && MidSize < DstSize`, Instructions.cpp:2972-2973) is where it becomes observable. (3) Empirically, with a temporary integration test run on `cargo +1.96.0 test --release -p llvmkit-ir` (since deleted; `git status` on the tests dir is clean): on `e-p:128:128:128:64`, `ptrtoaddr(inttoptr(i128 0x1_0000_0000_0000_0001)) to i128` folds in llvmkit to `ApInt{bit_width:128, words:[1]}` i.e. `x mod 2^64`, whereas upstream's case 11 declines (MidSize 64 < 128 and < 128) and the fallback's `getIntPtrType` = i128 makes `ConstantFoldIntegerCast` a no-op, yielding `x` = `words:[1,1]`. The `ptrtoint` half diverges too, in the opposite direction: `ptrtoint(inttoptr(i256 x)) to i256` gives llvmkit `x mod 2^128` (pointer size) versus upstream's fallback `getAddressType` = i64 giving `x mod 2^64`. (4) The scoping in the claim checks out: when case 11 accepts, llvmkit's two-step is value-equivalent to upstream's direct trunc/zext/bitcast (truncation is transitive; zext-then-cast is identical), and when `pointer_size == index_size` the two mid widths coincide, so the divergence is confined to declined case-11 on `pointer_size != index_size` layouts. (5) llvmkit already knows about the gap but does not pin it: the doc comment on `crates/llvmkit-ir/tests/constant_folding_analysis.rs:78-84` calls out "the (unimplemented in llvmkit) index-size-based switch-fallback in `ConstantFoldCastOperand`", and neither of the two `p:128:128:128:64` tests there (lines 86, 116) reaches a declined case-11.
-
-</details>
-
 ### 45. DCE keeps calls and allocations upstream deletes
 
 *passes* — crates/llvmkit-ir/src/dce.rs (`is_trivially_dead`); crates/llvmkit-ir/src/value.rs (`Value::has_uses`)
@@ -1582,21 +2191,6 @@ crates/llvmkit-ir/src/dce.rs (is_trivially_dead, lines 48-75; cited 49-79 is min
 <details><summary>Verification evidence</summary>
 
 Read `C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-ir/src/constant_folding.rs:1600-1919`: `symbolically_evaluate_gep`'s doc comment enumerates the same four deferrals, and the body confirms them — early `return Ok(None)` on `in_range.is_some()` (1657), on a non-`Pointer` base type (1662), and on `is_null_or_inttoptr_nonzero_base(ptr)` (1706); the inbounds-inference site (1710-1711) is a bare comment with no code, and `build_canonical_i8_gep` still runs at 1718, so that path folds with weaker flags rather than declining. Caller at 2099-2116 falls back to `constant_fold_get_element_ptr` when the symbolic path returns `None`. Read upstream `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/Analysis/ConstantFolding.cpp:843-991`: `CastGEPIndices` (845-878) called at 890-892; `InRange->sextOrTrunc(BitWidth)` at 911-913 and the per-level `.subtract(Offset)`/`intersectWith` at 934-938; the `(Ptr->isNullValue() || BaseIntVal != 0) && !DL.mustNotIntroduceIntToPtr(...)` → `insertBits` → `getIntToPtr` block at 953-971; the `getPointerDereferenceableBytes` inbounds inference at 973-980. All four exist as described. Grepped the whole `crates/` tree for `cast_gep_indices`/`CastGEPIndices` — only two hits, both prose in the doc comment; no implementation. Same for a dereferenceable-bytes query — the only hit is the doc comment at 1640. Falsifying the recorded blockers: `grep "fn insert_bits"` hit `crates/llvmkit-ir/src/ap_int.rs:354` (read 345-365 — a working bit-copy loop, with an upstream-ported test at `tests/ap_int_upstream_bits.rs:406`). Read `orig_cpp/.../llvm/include/llvm/IR/DataLayout.h:450-452,479-482` for `mustNotIntroduceIntToPtr`'s definition, then read `crates/llvmkit-ir/src/data_layout.rs:510-527`, which carries `has_unstable_representation(addr_space)` and `has_external_state(addr_space)` — both components — each documented as mirroring its upstream counterpart. Read `crates/llvmkit-ir/src/constant.rs:130-171` for `ConstantExprInRange`: no range arithmetic beyond accessors, confirming the `in_range` blocker. `git log -- crates/llvmkit-ir/src/constant_folding.rs` shows the most recent touch is b9e5c97 (LLParser parity W2.1-2.2); nothing since has revisited this path, and the file is unmodified in the current working tree.
-
-</details>
-
-### 50. `possibly_demanded_elements_in_mask` answers exactly for a `zeroinitializer` mask
-
-*analysis / VectorUtils* — crates/llvmkit-ir/src/vector_utils.rs (`possibly_demanded_elements_in_mask`, whose doc comment records the reason)
-
-- **LLVM:** `llvm::possiblyDemandedEltsInMask` reaches its per-element loop only through `dyn_cast<ConstantVector>`. A `zeroinitializer` mask is a `ConstantAggregateZero`, not a `ConstantVector`, so the cast fails and upstream returns "every lane demanded" for a mask that demands none.
-- **llvmkit:** llvmkit stores `ConstantVector` and `ConstantAggregateZero` as one element list, so the loop runs for a `zeroinitializer` mask and the function returns the exact all-zero `ApInt`.
-- **Why:** Recorded at the call site: "Stronger than upstream, in a sound direction … Over-approximating fewer lanes is always safe for this query; the divergence can only make a caller more precise." It falls out of llvmkit's constant representation rather than being sought.
-- **Fix:** No fix wanted for correctness — but the port is no longer faithful, so any upstream fixture asserting the weak answer will diverge. Either gate the element loop on the constant actually being a spelled-out `ConstantVector` (restoring bug-for-bug parity and losing precision), or keep it and add an `UPSTREAM.md` row plus a test naming the divergence so a future parity sweep does not silently "fix" it back.
-
-<details><summary>Verification evidence</summary>
-
-CONFIRMED — real, accurate, and still present in the committed tree. Upstream (C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/Analysis/VectorUtils.cpp, `llvm::possiblyDemandedEltsInMask`) reads verbatim: APInt DemandedElts = APInt::getAllOnes(VWidth); if (auto *CV = dyn_cast<ConstantVector>(Mask)) for (unsigned i = 0; i < VWidth; i++) if (CV->getAggregateElement(i)->isNullValue()) DemandedElts.clearBit(i); return DemandedElts; The element loop is indeed gated on `dyn_cast<ConstantVector>` alone. That an all-zero i1 mask is not a `ConstantVector` is confirmed twice in llvm/lib/IR/Constants.cpp: `Constant::getNullValue` returns `ConstantAggregateZero::get(Ty)` for `FixedVectorTyID`, and `ConstantVector::getImpl` computes `isZero` over the element list and returns `ConstantAggregateZero::get(T)` before ever reaching `VectorConstants.getOrCreate`. So the dyn_cast fails and upstream returns all-ones for a mask that demands no lane. Scope refinement (does not contradict the claim, which already says "both spellings"): the collapse in `getImpl` means the written-out form `<4 x i1> <i1 0, i1 0, i1 0, i1 0>` is *also* a ConstantAggregateZero upstream, so the divergence covers every fully-zero mask, not only the literal `zeroinitializer` keyword. It does not leak wider than that — `ConstantDataSequential::isElementTypeCompatible` admits only i8/i16/i32/i64 and half/bfloat/float/double, so i1 never becomes a `ConstantDataVector`, and a mixed mask such as `<i1 0, i1 1>` stays a genuine `ConstantVector` where both implementations agree. All-undef/all-poison masks also fail upstream's dyn_cast, but llvmkit's `aggregate_element` hands back an undef/poison element whose `is_null_value()` is false, so those lanes stay demanded and the two agree there too. llvmkit side, C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-ir/src/vector_utils.rs:641-665: the gate is `if let ValueKindData::Constant(_) = &mask.data().kind` — any constant, not a ConstantVector-specific cast — then the loop clears each lane where `constant.aggregate_element(lane).is_some_and(Constant::is_null_value)`. The "one element list" premise checks out rather than being taken on trust. `ConstantData` (crates/llvmkit-ir/src/constant.rs:272-299) has no `ConstantAggregateZero`-equivalent variant; `Aggregate(Box<[ValueSlot]>)` covers "ConstantArray, ConstantStruct, or ConstantVector". `Constant::aggregate_element` (constant.rs:786-814) serves the `Aggregate` arm by handing the stored element back, and its own doc records the collapse ("ConstantAggregateZero and ConstantDataSequential both become an ordinary element list at construction"). The construction side confirms it: the parser's `zero_initializer_constant` (crates/llvmkit-asmparser/src/ll_parser.rs:7831-7844) materialises a fixed-vector `zeroinitializer` by pushing `len` zero elements into `t.const_vector(elements)`. So the loop runs for a zeroinitializer mask and returns the exact all-zero ApInt where upstream returns all-ones. Still present: `git status --porcelain crates/llvmkit-ir/src/vector_utils.rs` is empty (file clean, not among the working-tree modifications), last touched by commit 857ff39. Cited line numbers are exact: 634-640 is the "Stronger than upstream, in a sound direction" paragraph, 641 is the `pub fn` line. The soundness argument also holds — demanding fewer lanes is the conservative direction for this over-approximation, so the divergence can only make a caller more precise, never wrong.
 
 </details>
 
@@ -2240,7 +2834,15 @@ is a function": `crates/llvmkit-ir/src/verifier.rs` (the
   `isSafeToSpeculativelyExecute`'s `Call` arm against its port.
 - **Fix:** one crate port of `getCalledFunction` (callee is a function *and*
   its signature slot equals the call's `fn_ty`), called from all four sites,
-  with a mismatched-signature fixture per consequence.
+  with a mismatched-signature fixture per consequence. The port exists since
+  Task 1b of the crash-proofing plan: `crates/llvmkit-ir/src/instr_types.rs`'s
+  `called_function`. `CallBaseParts`'s `has_return_attribute`,
+  `has_parameter_attribute`, `range` and `return_no_fp_class` (the ports of
+  `CallBase::hasRetAttr`, `paramHasAttr`, `getRange` and `getRetNoFPClass`)
+  call it. The type check is pinned through `has_return_attribute` by
+  `crates/llvmkit-asmparser/tests/speculation.rs::can_create_poison_reads_every_annotation_and_arm`'s
+  `call i64 @h(i32 %x)` row. The four sites above do not call it yet, and this
+  entry stays open for them.
 
 ### 136. A renamed function keeps its intrinsic identity only when its signature matches the name
 

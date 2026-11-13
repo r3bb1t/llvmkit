@@ -19,6 +19,7 @@
 //! - `PointerNull` — `ptr null` / `null` for typed pointers.
 //! - `Aggregate(elements)` — `ConstantArray`, `ConstantStruct`,
 //!   `ConstantVector` element list.
+//! - `AggregateZero` — `ConstantAggregateZero`, which keeps no elements.
 //! - `Undef` / `Poison` — kind-erased markers.
 //!
 //! The represented LLVM 22.1.4 constant subset includes parser-needed
@@ -355,7 +356,42 @@ pub(crate) enum ConstantData {
     /// Aggregate constant — `ConstantArray`, `ConstantStruct`, or
     /// `ConstantVector`. Element categorisation is determined by the
     /// owning aggregate type.
+    ///
+    /// Never all null, all `undef` or all `poison` where upstream's
+    /// constructor would not keep the list: `intern_aggregate` turns those
+    /// into [`Self::AggregateZero`], [`Self::Undef`] and [`Self::Poison`], as
+    /// `ConstantArray::getImpl`, `ConstantStruct::get` and
+    /// `ConstantVector::getImpl` do. A vector list never has every lane equal
+    /// either, nor is any list scalable: those are [`Self::Splat`].
     Aggregate(Box<[ValueSlot]>),
+    /// `ConstantAggregateZero`: the null value of an array, struct or vector
+    /// type. It keeps no elements: `ConstantAggregateZero::getElementValue`
+    /// answers from the type, so its cost does not depend on the length.
+    AggregateZero,
+    /// A vector constant whose every lane is `element`, fixed or scalable, the
+    /// element being no null, `undef` or `poison` (those are
+    /// [`Self::AggregateZero`], [`Self::Undef`] and [`Self::Poison`]).
+    ///
+    /// Upstream has no such class. A fixed splat is a `ConstantDataVector` or
+    /// a `ConstantVector` that stores every lane, and a scalable one is
+    /// `ConstantVector::getSplat`'s `shufflevector (insertelement poison, V,
+    /// 0), poison, zeroinitializer`. Storing one element is hardening: the
+    /// cost no longer depends on the lane count, so `<4294967295 x i32> splat
+    /// (i32 1)` costs one slot. [`Constant::kind`] still answers the class
+    /// upstream's constructor leaves, and `intern_aggregate` turns an
+    /// all-equal vector list into this, so a splat and its written-out list
+    /// are one constant.
+    ///
+    /// `insert` is the `insertelement (poison, element, i64 0)` constant a
+    /// scalable splat's `shufflevector` takes as its operand upstream, and
+    /// `None` for a fixed splat. A scalable splat's one operand is that
+    /// expression, which uses `element`, so the use lists are upstream's:
+    /// `element` is used by the `insertelement`, and the `insertelement` by
+    /// the splat.
+    Splat {
+        element: ValueSlot,
+        insert: Option<ValueSlot>,
+    },
     /// A specialised byte-offset into a global, printed as the constant
     /// expression `getelementptr inbounds (i8, ptr @<base>, i64 <off>)`.
     /// `base_id` is the value-id of the host global/function; `off` is the byte
@@ -416,6 +452,19 @@ pub(crate) enum ConstantData {
 }
 
 impl ConstantData {
+    /// The element slots an every-lane or any-lane test over this element
+    /// list or splat must visit: a list's every element, and a splat's one
+    /// element, which each of its lanes is. `None` for any other storage.
+    /// Not the lanes themselves: a reader that needs lane `i`, or the count,
+    /// asks [`Constant::aggregate_element`] or the type.
+    pub(crate) fn lane_slots(&self) -> Option<&[ValueSlot]> {
+        match self {
+            Self::Aggregate(elements) => Some(elements),
+            Self::Splat { element, .. } => Some(core::slice::from_ref(element)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn for_each_operand<F>(&self, mut f: F)
     where
         F: FnMut(ValueSlot),
@@ -431,6 +480,12 @@ impl ConstantData {
                     f(element);
                 }
             }
+            // A scalable splat's operand is its `insertelement`, as upstream's
+            // `shufflevector`'s is. A fixed splat uses its element once,
+            // whatever the lane count: a `ConstantDataVector` keeps no use
+            // list, and a `ConstantVector`'s one use per lane is
+            // `docs/divergences.md` D39.
+            Self::Splat { element, insert } => f(insert.unwrap_or(*element)),
             Self::PtrAuth {
                 pointer,
                 key,
@@ -452,23 +507,27 @@ impl ConstantData {
                 f(*function);
                 f(*block);
             }
-            // The rest name no operand llvmkit can hand back. Note the ones
-            // that *should*: `GlobalValueRef`, `DsoLocalEquivalent`, `NoCfi`,
-            // `GepOffset` and the `SymbolDelta` pair all wrap a global, and
-            // upstream counts each as a use of it. Yielding them here would
-            // register the edge against llvmkit's *interned* wrapper rather
-            // than the global, which loses count rather than fixing it —
-            // see `docs/divergences.md` (D2/D3).
+            // `DSOLocalEquivalent` and `NoCFIValue` each hold their global as
+            // `Op<0>` (`Constants.cpp`).
+            Self::DsoLocalEquivalent { function } | Self::NoCfi { function } => f(*function),
+            // llvmkit's compact spellings of a `getelementptr` on a global and
+            // of `sub` / `add` over two `ptrtoint`s. Upstream's `getelementptr`
+            // is a user of its global; in the `sub`, each global's user is the
+            // `ptrtoint` naming it, which the compact form stands in for.
+            Self::GepOffset { base_id, .. } => f(*base_id),
+            Self::SymbolDelta { hi_id, lo_id } | Self::SymbolDeltaPlus { hi_id, lo_id, .. } => {
+                f(*hi_id);
+                f(*lo_id);
+            }
+            // `GlobalValueRef` *is* its global (`docs/divergences.md` D3): it
+            // is no user of it, so it yields nothing. The rest have no
+            // operands upstream.
             Self::Int(_)
             | Self::Float(_)
             | Self::GlobalValueRef { .. }
             | Self::PointerNull
             | Self::ForwardRefPlaceholder
-            | Self::GepOffset { .. }
-            | Self::SymbolDelta { .. }
-            | Self::SymbolDeltaPlus { .. }
-            | Self::DsoLocalEquivalent { .. }
-            | Self::NoCfi { .. }
+            | Self::AggregateZero
             | Self::TokenNone
             | Self::TargetExtNone
             | Self::Undef
@@ -683,6 +742,55 @@ impl UniqueConstant {
     }
 }
 
+/// The operands of `shufflevector (insertelement (Into, Element, Index),
+/// Other, Mask)`, the shape of the splat expression
+/// `ConstantVector::getSplat` builds for a scalable vector. Only the shape:
+/// `Constant::getSplatValue` (`constant_expression_splat_value`) and
+/// `getSplat`'s own expression (`constants.rs::scalable_get_splat_element`)
+/// each ask their own questions of the parts, so the one match serves both.
+pub(crate) struct SplatExpression<'d> {
+    /// The `insertelement` expression itself.
+    pub(crate) insert: &'d ConstantExprData,
+    pub(crate) into: ValueSlot,
+    pub(crate) element: ValueSlot,
+    pub(crate) index: ValueSlot,
+    pub(crate) other: ValueSlot,
+    pub(crate) mask: ValueSlot,
+}
+
+impl<'d> SplatExpression<'d> {
+    pub(crate) fn of(
+        context: &'d crate::llvm_context::Context,
+        shuffle: &ConstantExprData,
+    ) -> Option<Self> {
+        if shuffle.opcode != ConstantExprOpcode::ShuffleVector {
+            return None;
+        }
+        let [inserted, other, mask] = *shuffle.operands else {
+            return None;
+        };
+        let ValueKindData::Constant(ConstantData::Expr(insert)) =
+            &context.value_data(inserted).kind
+        else {
+            return None;
+        };
+        if insert.opcode != ConstantExprOpcode::InsertElement {
+            return None;
+        }
+        let [into, element, index] = *insert.operands else {
+            return None;
+        };
+        Some(Self {
+            insert,
+            into,
+            element,
+            index,
+            other,
+            mask,
+        })
+    }
+}
+
 /// The element at `slot` of an element list, minted as it is visited, so
 /// classifying a list allocates nothing.
 fn element_at<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
@@ -733,56 +841,184 @@ fn sequence_if_elements_match<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     matched.then_some(ConstantKind::Data(ConstantDataKind::Sequential(sequence)))
 }
 
-/// The classification half of `ConstantArray::getImpl`.
-fn array_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+/// The uniqued constant one of upstream's aggregate constructors returns in
+/// place of an element list: a `ConstantAggregateZero`, or the `UndefValue` or
+/// `PoisonValue` of the aggregate's type. [`canonical_aggregate`] answers
+/// `None` for a list the constructor keeps, which upstream builds as a
+/// `ConstantDataSequential` or a `ConstantAggregate` — one storage form here,
+/// told apart by [`Constant::kind`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CanonicalAggregate {
+    /// `ConstantAggregateZero::get(Ty)`.
+    Zero,
+    /// `UndefValue::get(Ty)` or `PoisonValue::get(Ty)`.
+    Undefined(Undefined),
+    /// A vector whose every lane is this element, which is none of the above:
+    /// [`ConstantData::Splat`]. Upstream keeps the lanes; llvmkit stores the
+    /// one element, as hardening.
+    Splat(ValueSlot),
+}
+
+/// What `ConstantVector::getSplat` builds from `element`, after its zero,
+/// `undef` and `poison` checks: the uniqued zero, the marker, or the splat.
+/// Total, so a splat never reaches a list of its lanes.
+///
+/// `getSplat`'s fixed branch returns `ConstantDataVector::getSplat` or
+/// `get(SmallVector<Constant *, 32>(N, V))`, and each canonicalises an
+/// all-null list to a `ConstantAggregateZero` and an all-`undef` or
+/// all-`poison` one to the marker before keeping it. Its scalable branch tests
+/// `V->isNullValue()`, then `isa<PoisonValue>(V)`, then `isa<UndefValue>(V)`.
+/// A constant is at most one of the three, so the order of the two is one
+/// answer.
+pub(crate) fn splat_canonical<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
+    element: ValueSlot,
+) -> CanonicalAggregate {
+    match UniqueConstant::of(element_at(module, element)) {
+        UniqueConstant::Null => CanonicalAggregate::Zero,
+        UniqueConstant::Undefined(undefined) => CanonicalAggregate::Undefined(undefined),
+        UniqueConstant::Other => CanonicalAggregate::Splat(element),
+    }
+}
+
+/// Which uniqued constant upstream's constructor for an aggregate of type
+/// `ty` builds from the element list `slots`, if it builds one:
+/// `ConstantArray::getImpl` for an array, `ConstantStruct::get` for a struct,
+/// `ConstantVector::getImpl` for a fixed vector, and `ConstantVector::getSplat`
+/// for a scalable one — upstream's only constructor for a scalable vector
+/// constant, which `VectorType::const_vector` mirrors by demanding that a
+/// scalable list's lanes agree, and which always answers here (a splat, a
+/// zero or a marker), so no scalable list is ever stored.
+///
+/// `intern_aggregate` asks this before it stores a list, so a stored list is
+/// never one of these, and [`Constant::kind`] reads the class off the storage
+/// rather than replaying the canonicalisation. Every caller passes an array,
+/// struct or vector type; any other is answered `None`.
+pub(crate) fn canonical_aggregate<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
+    ty: &TypeData,
+    slots: &[ValueSlot],
+) -> Option<CanonicalAggregate> {
+    match ty {
+        TypeData::Array { .. } => array_get_impl(module, slots),
+        TypeData::Struct(_) => struct_get(module, slots),
+        TypeData::FixedVector { .. } => vector_get_impl(module, slots),
+        TypeData::ScalableVector { .. } => Some(scalable_vector_get_splat(module, slots)),
+        _ => None,
+    }
+}
+
+/// An aggregate type's element count as upstream counts it, in `unsigned`:
+/// `ConstantAggregateZero::getElementCount().getKnownMinValue()`, and
+/// `UndefValue::getNumElements()`, which `PoisonValue` shares.
+///
+/// An array's length is the `uint64_t` `ArrayType::getNumElements` returns,
+/// and both routines convert it to `unsigned` (`ElementCount` is
+/// `FixedOrScalableQuantity<ElementCount, unsigned>`), which keeps its low 32
+/// bits: `[4294967304 x i8]` counts 8 elements and `[1099511627776 x i8]` none.
+/// A vector counts its (known minimum) lanes and a struct its fields, none for
+/// an opaque one. `None` for a type that is no array, struct or vector.
+pub(crate) fn aggregate_element_count(ty: &TypeData) -> Option<u32> {
+    if let Some((_, length)) = ty.as_array() {
+        let [b0, b1, b2, b3, ..] = length.to_le_bytes();
+        return Some(u32::from_le_bytes([b0, b1, b2, b3]));
+    }
+    if let Some((_, lanes, _)) = ty.as_vector() {
+        return Some(lanes.get());
+    }
+    let body = ty.as_struct()?.body.borrow();
+    Some(body.as_ref().map_or(0, |body| {
+        // `getStructNumElements` is `unsigned` too.
+        let [b0, b1, b2, b3, ..] = body.elements.len().to_le_bytes();
+        u32::from_le_bytes([b0, b1, b2, b3])
+    }))
+}
+
+/// The type of element `index` of an aggregate type: the element type of an
+/// array or a vector (`getSequentialElement`), the field type of a struct
+/// (`getStructElementType(Idx)`). `None` past a struct's fields.
+fn aggregate_element_type_slot(ty: &TypeData, index: u32) -> Option<TypeSlot> {
+    if let Some((element, _)) = ty.as_array() {
+        return Some(element);
+    }
+    if let Some((element, _, _)) = ty.as_vector() {
+        return Some(element);
+    }
+    let body = ty.as_struct()?.body.borrow();
+    body.as_ref()?
+        .elements
+        .get(usize::try_from(index).ok()?)
+        .copied()
+}
+
+/// The canonicalisations of `ConstantArray::getImpl`, in its order. Its last
+/// arm, `getSequenceIfElementsMatch<ConstantDataArray>`, answers a list —
+/// a `ConstantDataArray` is one here too — so it is [`Constant::kind`]'s.
+fn array_get_impl<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     module: ModuleRef<'ctx, B, C>,
     slots: &[ValueSlot],
-) -> ConstantKind<'ctx, B, C> {
+) -> Option<CanonicalAggregate> {
     // Empty arrays are canonicalized to ConstantAggregateZero.
     let Some(&first_slot) = slots.first() else {
-        return ConstantKind::Data(ConstantDataKind::AggregateZero);
+        return Some(CanonicalAggregate::Zero);
     };
-    let first = element_at(module, first_slot);
     // If this is an all-zero array, return a ConstantAggregateZero object. If
     // all undef, return an UndefValue, if "all simple", then return a
     // ConstantDataArray.
-    //
-    // Upstream asks `isa<PoisonValue>(C)`, then `isa<UndefValue>(C)`, then
-    // `C->isNullValue()`, each paired with the same `rangeOnlyContains(V, C)`.
-    // `C` is at most one of the three, so the arm its class names decides, and
-    // the list is scanned once.
-    let first_class = UniqueConstant::of(first);
-    let uniform = || {
+    let first = UniqueConstant::of(element_at(module, first_slot));
+    // `rangeOnlyContains(V.begin(), V.end(), C)`, where `C` is `V[0]`.
+    let range_only_contains_first = || {
         slots
             .iter()
-            .all(|slot| UniqueConstant::of(element_at(module, *slot)) == first_class)
+            .all(|slot| UniqueConstant::of(element_at(module, *slot)) == first)
     };
-    match first_class {
-        UniqueConstant::Undefined(undefined) if uniform() => {
-            return ConstantKind::Data(ConstantDataKind::Undef(undefined));
-        }
-        UniqueConstant::Null if uniform() => {
-            return ConstantKind::Data(ConstantDataKind::AggregateZero);
-        }
-        _ => {}
+    // `if (isa<PoisonValue>(C) && rangeOnlyContains(...)) return
+    // PoisonValue::get(Ty);`
+    if first == UniqueConstant::Undefined(Undefined::Poison) && range_only_contains_first() {
+        return Some(CanonicalAggregate::Undefined(Undefined::Poison));
     }
-    // Check to see if all of the elements are ConstantFP or ConstantInt and if
-    // the element type is compatible with ConstantDataVector. If so, use it.
-    if is_element_type_compatible(first.ty().data())
-        && let Some(kind) =
-            sequence_if_elements_match(module, first, slots, ConstantSequentialKind::Array)
-    {
-        return kind;
+    // `if (isa<UndefValue>(C) && rangeOnlyContains(...)) return
+    // UndefValue::get(Ty);` — `isa<UndefValue>` holds for a poison too.
+    if matches!(first, UniqueConstant::Undefined(_)) && range_only_contains_first() {
+        return Some(CanonicalAggregate::Undefined(Undefined::Undef));
     }
-    // Otherwise, we really do want to create a ConstantArray.
-    ConstantKind::Aggregate(ConstantAggregateKind::Array)
+    // `if (C->isNullValue() && rangeOnlyContains(...)) return
+    // ConstantAggregateZero::get(Ty);`
+    if first == UniqueConstant::Null && range_only_contains_first() {
+        return Some(CanonicalAggregate::Zero);
+    }
+    None
 }
 
-/// The classification half of `ConstantStruct::get`.
-fn struct_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+/// The class of a list `ConstantArray::getImpl` or `ConstantVector::getImpl`
+/// kept: their closing `getSequenceIfElementsMatch`, else the
+/// `ConstantArray` or `ConstantVector` their callers build.
+fn sequence_or_aggregate_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     module: ModuleRef<'ctx, B, C>,
     slots: &[ValueSlot],
+    sequence: ConstantSequentialKind,
+    aggregate: ConstantAggregateKind,
 ) -> ConstantKind<'ctx, B, C> {
+    // Check to see if all of the elements are ConstantFP or ConstantInt and if
+    // the element type is compatible with ConstantDataVector. If so, use it.
+    if let Some(&first_slot) = slots.first() {
+        let first = element_at(module, first_slot);
+        if is_element_type_compatible(first.ty().data())
+            && let Some(kind) = sequence_if_elements_match(module, first, slots, sequence)
+        {
+            return kind;
+        }
+    }
+    // Otherwise, we really do want to create a ConstantArray.
+    ConstantKind::Aggregate(aggregate)
+}
+
+/// The canonicalisations of `ConstantStruct::get`. What it does not
+/// canonicalise it builds as a `ConstantStruct`.
+fn struct_get<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
+    slots: &[ValueSlot],
+) -> Option<CanonicalAggregate> {
     // Create a ConstantAggregateZero value if all elements are zeros.
     let mut is_zero = true;
     let mut is_undef = false;
@@ -811,32 +1047,34 @@ fn struct_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         }
     }
     if is_zero {
-        return ConstantKind::Data(ConstantDataKind::AggregateZero);
+        return Some(CanonicalAggregate::Zero);
     }
     if is_poison {
-        return ConstantKind::Data(ConstantDataKind::Undef(Undefined::Poison));
+        return Some(CanonicalAggregate::Undefined(Undefined::Poison));
     }
     if is_undef {
-        return ConstantKind::Data(ConstantDataKind::Undef(Undefined::Undef));
+        return Some(CanonicalAggregate::Undefined(Undefined::Undef));
     }
-    ConstantKind::Aggregate(ConstantAggregateKind::Struct)
+    None
 }
 
-/// The classification half of `ConstantVector::getImpl`.
-fn fixed_vector_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+/// The canonicalisations of `ConstantVector::getImpl`, in its order. Its last
+/// arm, `getSequenceIfElementsMatch<ConstantDataVector>`, answers a list, so it
+/// is [`Constant::kind`]'s.
+fn vector_get_impl<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     module: ModuleRef<'ctx, B, C>,
     slots: &[ValueSlot],
-) -> ConstantKind<'ctx, B, C> {
-    // `assert(!V.empty() && "Vectors can't be empty")`. llvmkit's builder
-    // accepts a zero-lane vector type (only the parser refuses `<0 x T>`), so
-    // an empty list answers as `ConstantArray::getImpl` answers an empty array.
+) -> Option<CanonicalAggregate> {
+    // `assert(!V.empty() && "Vectors can't be empty")`. A vector type's lane
+    // count is a `NonZeroU32` and `VectorType::const_vector` takes one element
+    // per lane, so no list is empty; one would answer as
+    // `ConstantArray::getImpl` answers an empty array, rather than assert.
     let Some(&first_slot) = slots.first() else {
-        return ConstantKind::Data(ConstantDataKind::AggregateZero);
+        return Some(CanonicalAggregate::Zero);
     };
-    let first = element_at(module, first_slot);
     // If this is an all-undef or all-zero vector, return a
     // ConstantAggregateZero or UndefValue.
-    let first_class = UniqueConstant::of(first);
+    let first_class = UniqueConstant::of(element_at(module, first_slot));
     let mut is_zero = first_class == UniqueConstant::Null;
     let mut is_undef = matches!(first_class, UniqueConstant::Undefined(_));
     let mut is_poison = first_class == UniqueConstant::Undefined(Undefined::Poison);
@@ -844,6 +1082,9 @@ fn fixed_vector_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     // hidden `-use-constant-fp-for-fixed-length-splat` and
     // `-use-constant-int-for-fixed-length-splat` options. Both default to
     // `false` and llvmkit has no option surface, so neither arm can run.
+    //
+    // `V[i] != C` compares uniqued pointers, which is comparing each element's
+    // `UniqueConstant` with `C`'s.
     if (is_zero || is_undef)
         && slots
             .iter()
@@ -855,52 +1096,45 @@ fn fixed_vector_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         is_poison = false;
     }
     if is_zero {
-        return ConstantKind::Data(ConstantDataKind::AggregateZero);
+        return Some(CanonicalAggregate::Zero);
     }
     if is_poison {
-        return ConstantKind::Data(ConstantDataKind::Undef(Undefined::Poison));
+        return Some(CanonicalAggregate::Undefined(Undefined::Poison));
     }
     if is_undef {
-        return ConstantKind::Data(ConstantDataKind::Undef(Undefined::Undef));
+        return Some(CanonicalAggregate::Undefined(Undefined::Undef));
     }
-    // Check to see if all of the elements are ConstantFP or ConstantInt and if
-    // the element type is compatible with ConstantDataVector. If so, use it.
-    if is_element_type_compatible(first.ty().data())
-        && let Some(kind) =
-            sequence_if_elements_match(module, first, slots, ConstantSequentialKind::Vector)
-    {
-        return kind;
+    // Not upstream's: a list whose lanes are all one constant is stored as
+    // that constant (`ConstantData::Splat`), where upstream's
+    // `getSequenceIfElementsMatch` / `ConstantVector` keeps every lane.
+    // Constants are uniqued, so "every lane is `V[0]`" is slot equality.
+    if slots.iter().all(|slot| *slot == first_slot) {
+        return Some(CanonicalAggregate::Splat(first_slot));
     }
-    // Otherwise, the element type isn't compatible with ConstantDataVector, or
-    // the operand list contains a ConstantExpr or something else strange.
-    ConstantKind::Aggregate(ConstantAggregateKind::Vector)
+    None
 }
 
-/// The classification half of `ConstantVector::getSplat`'s scalable branch.
+/// The canonicalisations of `ConstantVector::getSplat`'s scalable branch.
 /// `VectorType::const_vector` demands a scalable list's lanes agree, so the
-/// list is a splat of its first element.
-fn scalable_vector_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+/// list is a splat of its first element, stored as [`ConstantData::Splat`]
+/// unless it is a zero or a marker.
+fn scalable_vector_get_splat<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     module: ModuleRef<'ctx, B, C>,
     slots: &[ValueSlot],
-) -> ConstantKind<'ctx, B, C> {
+) -> CanonicalAggregate {
     // Upstream first tries the hidden `-use-constant-int-for-scalable-splat`
     // and `-use-constant-fp-for-scalable-splat` options; both default to
     // `false` and llvmkit has no option surface, so neither arm can run. An
-    // empty list answers as `fixed_vector_kind` answers one.
+    // empty list answers as `vector_get_impl` answers one.
     let Some(&splat_slot) = slots.first() else {
-        return ConstantKind::Data(ConstantDataKind::AggregateZero);
+        return CanonicalAggregate::Zero;
     };
-    // `isNullValue`, then `isa<PoisonValue>`, then `isa<UndefValue>`; a
-    // constant is at most one of the three.
-    match UniqueConstant::of(element_at(module, splat_slot)) {
-        UniqueConstant::Null => ConstantKind::Data(ConstantDataKind::AggregateZero),
-        UniqueConstant::Undefined(undefined) => {
-            ConstantKind::Data(ConstantDataKind::Undef(undefined))
-        }
-        // Upstream builds the splat as
-        // `shufflevector (insertelement poison, V, 0), poison, zeroinitializer`.
-        UniqueConstant::Other => ConstantKind::Expr(ConstantExprOpcode::ShuffleVector),
-    }
+    // `if (V->isNullValue())`, then `isa<PoisonValue>(V)`, then
+    // `isa<UndefValue>(V)`. Upstream builds anything else as
+    // `shufflevector (insertelement poison, V, 0), poison, zeroinitializer`;
+    // llvmkit stores the splat, which `Constant::kind` classifies as that
+    // expression.
+    splat_canonical(module, splat_slot)
 }
 
 // --------------------------------------------------------------------------
@@ -963,10 +1197,13 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Constant<'ctx, B, C> {
     ///
     /// Two of upstream's arms are unreachable rather than missing: the
     /// vector-typed `ConstantInt` and `ConstantFP` splat forms have no llvmkit
-    /// representation, because a vector constant is always an element list.
-    /// The constant-*expression* splat form is handled, in a private helper
-    /// below — though only a *scalable* vector ever reaches it, because the
-    /// folder materialises a fixed one into an element list at construction.
+    /// representation. A splat, fixed or scalable, is stored as its one
+    /// element and answers it directly, `getSplat`'s scalable `shufflevector`
+    /// expression included. The constant-*expression* splat form is handled
+    /// in a private helper below for the expressions that are no such splat:
+    /// a scalable `shufflevector` of an `insertelement` written with an index
+    /// type other than `i64`, which upstream also keeps as an expression (a
+    /// fixed one folds to a splat).
     pub fn splat_value(self, allow_poison: bool) -> Option<Constant<'ctx, B, C>> {
         let (element_ty, _, _) = self.ty().data().as_vector()?;
         let element_ty = Type::new(element_ty, self.module);
@@ -975,10 +1212,20 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Constant<'ctx, B, C> {
             ValueKindData::Constant(ConstantData::Poison) => {
                 return Some(element_ty.poison().as_constant());
             }
-            // `isa<ConstantAggregateZero>`: llvmkit spells a zeroinitializer
-            // as an aggregate of zeros, so this arm catches only the
-            // whole-vector null form.
+            // `if (isa<ConstantAggregateZero>(this)) return
+            // getNullValue(cast<VectorType>(getType())->getElementType());`
+            ValueKindData::Constant(ConstantData::AggregateZero) => {
+                return element_ty.null_value();
+            }
+            // `dyn_cast<ConstantDataVector>` and `dyn_cast<ConstantVector>`,
+            // one element list here; the loop below is their `getSplatValue`.
             ValueKindData::Constant(ConstantData::Aggregate(_)) => {}
+            // Every lane is the element, which is no `poison`: both
+            // `getSplatValue`s answer it whatever `AllowPoison` says, and so
+            // does the constant-expression form a scalable splat is upstream.
+            ValueKindData::Constant(ConstantData::Splat { element, .. }) => {
+                return Some(element_at(self.module, *element));
+            }
             // The constant-expression splat `ConstantVector::getSplat` builds.
             ValueKindData::Constant(ConstantData::Expr(_)) => {
                 return self.constant_expression_splat_value();
@@ -1064,30 +1311,11 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Constant<'ctx, B, C> {
         else {
             return None;
         };
-        if shuffle.opcode != ConstantExprOpcode::ShuffleVector {
+        let parts = SplatExpression::of(module.module().context(), shuffle)?;
+        if !is_undefined(at(parts.other)) || !is_undefined(at(parts.into)) {
             return None;
         }
-        let [shuffle_source, shuffle_other, shuffle_mask] = *shuffle.operands else {
-            return None;
-        };
-        if !is_undefined(at(shuffle_other)) {
-            return None;
-        }
-
-        let inserted = at(shuffle_source);
-        let ValueKindData::Constant(ConstantData::Expr(insert)) = &inserted.as_erased().data().kind
-        else {
-            return None;
-        };
-        if insert.opcode != ConstantExprOpcode::InsertElement {
-            return None;
-        }
-        let [insert_into, splat, index] = *insert.operands else {
-            return None;
-        };
-        if !is_undefined(at(insert_into)) {
-            return None;
-        }
+        let (index, shuffle_mask, splat) = (parts.index, parts.mask, parts.element);
 
         // `Index && Index->getValue() == 0`.
         let ValueKindData::Constant(ConstantData::Int(words)) = &at(index).as_erased().data().kind
@@ -1111,15 +1339,15 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Constant<'ctx, B, C> {
     /// Which upstream `Constant` class this is. Mirrors `Value::getValueID`
     /// and each class's `classof`.
     ///
-    /// llvmkit stores every element list — `zeroinitializer` included — in
-    /// one form, where upstream canonicalises the list when it builds it. So
-    /// an element list is classified by replaying that canonicalisation:
-    /// `ConstantArray::getImpl` for an array, `ConstantStruct::get` for a
-    /// struct, `ConstantVector::getImpl` for a fixed vector, and
-    /// `ConstantVector::getSplat` for a scalable one — upstream's only
-    /// constructor for a scalable vector constant, which
-    /// `VectorType::const_vector` mirrors by demanding that a scalable list's
-    /// lanes agree.
+    /// The zero, `undef` and `poison` an aggregate constructor canonicalises
+    /// a list to are stored as such (`intern_aggregate` canonicalises before
+    /// it stores a list), so they are read off the storage. What
+    /// is left is one storage form for upstream's `ConstantDataSequential`
+    /// and `ConstantAggregate` classes, told apart by the closing
+    /// `getSequenceIfElementsMatch` of `ConstantArray::getImpl` and
+    /// `ConstantVector::getImpl`. A splat (stored as its one element) is
+    /// classified as its lanes would be, and a scalable one is the
+    /// `shufflevector` expression `ConstantVector::getSplat` builds.
     pub fn kind(self) -> ConstantKind<'ctx, B, C> {
         // Matched exhaustively on purpose: a new constant kind has to be
         // classified against upstream's hierarchy, not defaulted.
@@ -1158,6 +1386,13 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Constant<'ctx, B, C> {
             ConstantData::TokenNone => ConstantKind::Data(ConstantDataKind::TokenNone),
             ConstantData::TargetExtNone => ConstantKind::Data(ConstantDataKind::TargetNone),
             ConstantData::Aggregate(elements) => self.element_list_kind(elements),
+            // A splat is classified as its lanes would be: every lane is
+            // `element`, so `getSequenceIfElementsMatch` over the lanes is its
+            // answer over the one element.
+            ConstantData::Splat { element, .. } => {
+                self.element_list_kind(core::slice::from_ref(element))
+            }
+            ConstantData::AggregateZero => ConstantKind::Data(ConstantDataKind::AggregateZero),
             ConstantData::Expr(expr) => ConstantKind::Expr(expr.opcode),
             // llvmkit's compact forms, each printed as the constant expression
             // its variant's doc comment names, and classified as upstream's
@@ -1182,19 +1417,35 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Constant<'ctx, B, C> {
         }
     }
 
-    /// The class upstream's constructor returns for this element list. See
-    /// [`Self::kind`]. Each element is asked through its own `kind`, because
-    /// a nested list is stored uncanonicalised too.
+    /// The class of a stored element list. See [`Self::kind`]. A struct list
+    /// is a `ConstantStruct`, even an all-null one: only
+    /// `ConstantStruct::handleOperandChangeImpl`'s in-place update leaves such a
+    /// list, and upstream leaves that `ConstantStruct` too.
     fn element_list_kind(self, slots: &[ValueSlot]) -> ConstantKind<'ctx, B, C> {
         let module = self.module;
         match self.ty().data() {
-            TypeData::Array { .. } => array_kind(module, slots),
-            TypeData::Struct(_) => struct_kind(module, slots),
-            TypeData::FixedVector { .. } => fixed_vector_kind(module, slots),
-            TypeData::ScalableVector { .. } => scalable_vector_kind(module, slots),
+            TypeData::Array { .. } => sequence_or_aggregate_kind(
+                module,
+                slots,
+                ConstantSequentialKind::Array,
+                ConstantAggregateKind::Array,
+            ),
+            TypeData::Struct(_) => ConstantKind::Aggregate(ConstantAggregateKind::Struct),
+            TypeData::FixedVector { .. } => sequence_or_aggregate_kind(
+                module,
+                slots,
+                ConstantSequentialKind::Vector,
+                ConstantAggregateKind::Vector,
+            ),
+            // `ConstantVector::getSplat` builds the splat of a value that is no
+            // null, `undef` or `poison` as
+            // `shufflevector (insertelement poison, V, 0), poison, zeroinitializer`.
+            TypeData::ScalableVector { .. } => {
+                ConstantKind::Expr(ConstantExprOpcode::ShuffleVector)
+            }
             _ => unreachable!(
-                "an element list is interned only by `intern_aggregate`, whose callers pass an \
-                 array, struct or vector type"
+                "an element list is interned only by `intern_element_list` and the struct arm of \
+                 `aggregate_with_replaced_operand`, each at an array, struct or vector type"
             ),
         }
     }
@@ -1218,10 +1469,12 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Constant<'ctx, B, C> {
     }
 
     /// Whether this constant is the all-zero value of its type: `0`, `+0.0`,
-    /// `null`, `token none`, `target(...) none`, or an element list of those
-    /// (upstream's `ConstantAggregateZero`). Ports `Constant::isNullValue`;
-    /// constant expressions, `blockaddress`, global values and the
-    /// symbol-relative payloads are never null, as upstream answers too.
+    /// `null`, `token none`, `target(...) none`, or a `ConstantAggregateZero`.
+    /// Ports `Constant::isNullValue`; constant expressions, `blockaddress`,
+    /// global values, the symbol-relative payloads and element lists are never
+    /// null, as upstream answers too — a list of nulls is a
+    /// `ConstantAggregateZero` from its constructor on, but for the
+    /// `ConstantStruct` an in-place operand change can leave.
     pub fn is_null_value(self) -> bool {
         crate::constants::constant_id_is_null_value(self.module.module(), self.id)
     }
@@ -1231,9 +1484,9 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Constant<'ctx, B, C> {
     /// Ports `Constant::isAllOnesValue`, whose three arms this follows: an
     /// integer equal to `-1`, a float whose bit pattern is all ones, and a
     /// vector that splats either. Note the asymmetry with
-    /// [`Self::is_null_value`], which walks an aggregate element by element —
-    /// upstream routes this one through `getSplatValue` instead, so a vector
-    /// of all-ones lanes qualifies only where that recognises a splat.
+    /// [`Self::is_null_value`], which asks the class: upstream routes this one
+    /// through `getSplatValue`, so a vector of all-ones lanes qualifies only
+    /// where that recognises a splat.
     pub fn is_all_ones_value(self) -> bool {
         let value = self.as_erased();
         match (&value.data().kind, self.ty().kind()) {
@@ -1272,22 +1525,34 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Constant<'ctx, B, C> {
     /// upstream's `nullptr`: an out-of-range index, a shape that keeps no
     /// element list, or the scalable-vector bail-out upstream marks `FIXME`.
     ///
-    /// Upstream reaches the answer through five `dyn_cast` arms; three of them
-    /// collapse here. `ConstantAggregateZero` and `ConstantDataSequential`
-    /// both become an ordinary element list at construction, so they arrive at
-    /// the stored-element-list arm. The vector-typed `ConstantInt` and
-    /// `ConstantFP` splat forms have no llvmkit representation at all — a
-    /// vector constant is always an element list — so those arms are
-    /// unreachable rather than missing.
+    /// Upstream reaches the answer through seven `dyn_cast` arms and a
+    /// scalable-vector bail-out, taken here in its order.
+    /// `ConstantDataSequential` is an ordinary element list here, so it
+    /// arrives at the stored-element-list arm, which it may: a
+    /// `ConstantDataSequential` is never scalable. A fixed
+    /// splat (one stored element) is a `ConstantDataVector` or a `ConstantVector`
+    /// and answers from the same arm; a *scalable* one stands for the
+    /// `shufflevector` splat expression `ConstantVector::getSplat` builds,
+    /// which no `dyn_cast` admits, so it reaches the bail-out. The
+    /// vector-typed `ConstantInt` and `ConstantFP`
+    /// splat forms have no llvmkit representation at all, so those two arms
+    /// are unreachable rather than missing.
+    ///
+    /// The bounds are upstream's `unsigned` counts, so past 2^32 elements an
+    /// array answers as its length's low 32 bits say: `[4294967304 x i8]` has
+    /// elements 0 to 7, and `[1099511627776 x i8]` none.
     pub fn aggregate_element(self, index: u32) -> Option<Constant<'ctx, B, C>> {
         let value = self.as_erased();
         let ValueKindData::Constant(constant) = &value.data().kind else {
             return None;
         };
+        let data = self.ty().data();
+        let scalable = matches!(data, TypeData::ScalableVector { .. });
         match constant {
-            // `dyn_cast<ConstantAggregate>`: the element is stored, so it is
-            // handed back rather than rebuilt.
-            ConstantData::Aggregate(elements) => {
+            // `if (const auto *CC = dyn_cast<ConstantAggregate>(this)) return
+            // Elt < CC->getNumOperands() ? CC->getOperand(Elt) : nullptr;`
+            // The element is stored, so it is handed back rather than rebuilt.
+            ConstantData::Aggregate(elements) if !scalable => {
                 let slot = *elements.get(usize::try_from(index).ok()?)?;
                 let module = self.module;
                 Some(Constant::from_parts(Value::from_parts(
@@ -1296,43 +1561,93 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Constant<'ctx, B, C> {
                     module.value_data(slot).ty,
                 )))
             }
-            // `dyn_cast<PoisonValue>` and `dyn_cast<UndefValue>`, which answer
-            // the same marker one type down. Upstream's
-            // `isa<ScalableVectorType>` bail-out sits *above* these two, so a
-            // scalable `undef` answers nothing — that ordering is what
-            // [`Self::aggregate_element_type`] reproduces.
-            ConstantData::Undef => Some(self.aggregate_element_type(index)?.undef().as_constant()),
-            ConstantData::Poison => {
-                Some(self.aggregate_element_type(index)?.poison().as_constant())
+            // The same arm for a fixed splat, a `ConstantDataVector` or a
+            // `ConstantVector` upstream: every lane is the element. A scalable
+            // splat is upstream's `shufflevector` expression and reaches the
+            // bail-out below.
+            ConstantData::Splat { element, .. } if !scalable => {
+                if index >= aggregate_element_count(data)? {
+                    return None;
+                }
+                Some(element_at(self.module, *element))
             }
+            // `if (const auto *CAZ = dyn_cast<ConstantAggregateZero>(this))
+            // return Elt < CAZ->getElementCount().getKnownMinValue() ?
+            // CAZ->getElementValue(Elt) : nullptr;` — above the bail-out, so a
+            // scalable zero answers. `getElementValue` is the element type's
+            // null value for an array or a vector (`getSequentialElement`) and
+            // the field's for a struct (`getStructElement`). A type with no
+            // null value answers `None`, where upstream's
+            // `ConstantTargetNone::get` asserts.
+            ConstantData::AggregateZero => {
+                if index >= aggregate_element_count(data)? {
+                    return None;
+                }
+                Type::new(aggregate_element_type_slot(data, index)?, self.module).null_value()
+            }
+            // `// FIXME: getNumElements() will fail for non-fixed vector types.
+            // if (isa<ScalableVectorType>(getType())) return nullptr;`
+            _ if scalable => None,
+            // `if (const auto *PV = dyn_cast<PoisonValue>(this)) return Elt <
+            // PV->getNumElements() ? PV->getElementValue(Elt) : nullptr;`
+            ConstantData::Poison => {
+                Some(self.undefined_element_type(index)?.poison().as_constant())
+            }
+            // The same for `dyn_cast<UndefValue>`.
+            ConstantData::Undef => Some(self.undefined_element_type(index)?.undef().as_constant()),
             _ => None,
         }
     }
 
-    /// The element type [`Self::aggregate_element`] hands an `undef` or
-    /// `poison` marker back at, or `None` when `index` is past the end.
+    /// How many lanes of a fixed vector of `lanes` lanes a walk that asks
+    /// every lane one question (an every-lane or any-lane test) has to ask:
+    /// one when [`Self::has_uniform_lanes`] says every lane is one constant, all of
+    /// them otherwise. A lane walk over a constant goes through this, so a
+    /// splat, a zero, `undef` or `poison` of 2^32 lanes costs one
+    /// (`docs/divergences.md` D40).
+    pub(crate) fn lanes_to_ask(self, lanes: u32) -> u32 {
+        if self.has_uniform_lanes() { 1 } else { lanes }
+    }
+
+    /// Whether every lane of this fixed vector is one constant, read off its
+    /// storage alone: a splat, a zero, `undef` or `poison`.
+    /// [`Self::aggregate_element`] answers that constant for each lane, so a
+    /// walk that asks every lane the same question (an every-lane or
+    /// any-lane test) may ask it of lane 0 once and answer as the walk would:
+    /// a fixed vector has at least one lane. `false` for an element list, a
+    /// constant expression, a scalable vector and anything that is no vector.
     ///
-    /// Ports the `getNumElements` / `getElementValue` pair that
-    /// `UndefValue` and `PoisonValue` share, plus the `isa<ScalableVectorType>`
-    /// bail-out that guards them.
-    fn aggregate_element_type(self, index: u32) -> Option<Type<'ctx, B, C>> {
-        let module = self.module;
+    /// No upstream counterpart: upstream stores every lane of a fixed vector
+    /// and walks them. llvmkit stores these four in one slot, and a walk over
+    /// their lanes would cost the lane count (`docs/divergences.md` D40).
+    pub(crate) fn has_uniform_lanes(self) -> bool {
+        matches!(self.ty().data(), TypeData::FixedVector { .. })
+            && matches!(
+                &self.as_erased().data().kind,
+                ValueKindData::Constant(
+                    ConstantData::Splat { .. }
+                        | ConstantData::AggregateZero
+                        | ConstantData::Undef
+                        | ConstantData::Poison
+                )
+            )
+    }
+
+    /// The element type [`Self::aggregate_element`] hands an `undef` or
+    /// `poison` marker back at, or `None` when `index` is past the end:
+    /// `Elt < UV->getNumElements()` (an `unsigned`, [`aggregate_element_count`])
+    /// and the type `UndefValue::getElementValue(Elt)` builds its marker at.
+    /// The caller has taken the scalable bail-out already, as upstream's
+    /// `getNumElements` needs.
+    fn undefined_element_type(self, index: u32) -> Option<Type<'ctx, B, C>> {
         let data = self.ty().data();
-        let slot = if let Some((element, lanes, scalable)) = data.as_vector() {
-            if scalable || index >= lanes.get() {
-                return None;
-            }
-            element
-        } else if let Some((element, lanes)) = data.as_array() {
-            if u64::from(index) >= lanes {
-                return None;
-            }
-            element
-        } else {
-            let body = data.as_struct()?.body.borrow();
-            *body.as_ref()?.elements.get(usize::try_from(index).ok()?)?
-        };
-        Some(Type::new(slot, module))
+        if index >= aggregate_element_count(data)? {
+            return None;
+        }
+        Some(Type::new(
+            aggregate_element_type_slot(data, index)?,
+            self.module,
+        ))
     }
 
     /// Widen to the erased [`Value`] handle, at the same capability.

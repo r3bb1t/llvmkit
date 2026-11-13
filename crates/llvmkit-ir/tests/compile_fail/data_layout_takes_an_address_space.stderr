@@ -1,0 +1,17 @@
+error[E0308]: mismatched types
+  --> tests/compile_fail/data_layout_takes_an_address_space.rs:10:56
+   |
+10 |     let _ = DataLayout::default().pointer_size_in_bits(1);
+   |                                   -------------------- ^ expected `AddressSpace`, found integer
+   |                                   |
+   |                                   arguments to this method are incorrect
+   |
+note: method defined here
+  --> src/data_layout.rs
+   |
+   |     pub fn pointer_size_in_bits(&self, addr_space: AddressSpace) -> u32 {
+   |            ^^^^^^^^^^^^^^^^^^^^
+help: call `Into::into` on this expression to convert `{integer}` into `AddressSpace`
+   |
+10 |     let _ = DataLayout::default().pointer_size_in_bits(1.into());
+   |                                                         +++++++

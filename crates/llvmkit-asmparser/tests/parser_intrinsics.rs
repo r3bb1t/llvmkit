@@ -29,6 +29,25 @@ fn assert_expected_error(src: &str, expected: &str) {
     }
 }
 
+/// `LLParser::parseFunctionHeader` reads an unwritten `addrspace` as
+/// `parseOptionalProgramAddrSpace`'s default, so in a `P1` module a plain
+/// `declare @llvm.trap()` is in address space 1 and is no modifier. llvmkit's
+/// intrinsic-declaration guard compared against a literal 0 and refused it, a
+/// rejects-valid. llvmkit-specific regression: that guard is llvmkit's own
+/// (`docs/divergences.md`, the `intrinsic declaration modifier` entry), and
+/// upstream has no test of a non-zero program address space on an intrinsic.
+#[test]
+fn a_default_intrinsic_declaration_takes_the_program_address_space() {
+    let text = parse_and_render(
+        "target datalayout = \"P1\"\n\
+         declare void @llvm.trap()\n",
+    );
+    assert!(
+        text.contains("declare void @llvm.trap() addrspace(1)"),
+        "{text}"
+    );
+}
+
 /// Mirrors `llvm/include/llvm/IR/Intrinsics.td::int_lifetime_start` and
 /// `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCall`: known direct
 /// intrinsic callees may be declared from the callsite.

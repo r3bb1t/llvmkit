@@ -2,10 +2,42 @@
 //! them, and the erased routes that refuse to.
 
 use llvmkit_ir::{
-    ArrLenDyn, ArrayType, ConstantFolder, Dyn, ElemDyn, IntrinsicId, IrBuilder, IrBuilderFolder,
-    IrError, LenDyn, Linkage, Module, ShuffleMaskElem, TypeKindLabel, TypePosition, VectorType,
+    AddressSpace, ArrLenDyn, ArrayType, CastOpcode, ConstantFolder, DataLayout, Dyn, ElemDyn,
+    IntrinsicId, IrBuilder, IrBuilderFolder, IrError, LenDyn, Linkage, MAX_INT_BITS, Module,
+    ShuffleMaskElem, TargetExtParameterRule, TargetExtProperty, Type, TypeKindLabel, TypePosition,
+    TypeSize, TypedPointee, TypedPointerType, VectorType, address_space, cast_is_valid,
     constant_fold_shuffle_vector_instruction, lanes,
 };
+
+/// Mirrors the `BitCast` arm of `CastInst::castIsValid`, which compares two
+/// `getPrimitiveSizeInBits` `TypeSize`s, and `Type::getPrimitiveSizeInBits`,
+/// which multiplies in 64 bits. `<536870912 x i64>` is 2^35 bits and
+/// `<1073741824 x i64>` 2^36: they differ, so the bitcast is invalid.
+/// llvmkit-specific (rule anchor): upstream has no vector this wide in a test.
+/// llvmkit's `u32` size saturated, both read `u32::MAX`, and the cast passed.
+#[test]
+fn a_bitcast_compares_sizes_past_32_bits() {
+    let m = Module::dynamic("components");
+    let i64_ty = m.i64_type();
+    let narrower = m
+        .vector_type(i64_ty, lanes::<536_870_912>())
+        .expect("i64 is a valid element")
+        .as_type();
+    let wider = m
+        .vector_type(i64_ty, lanes::<1_073_741_824>())
+        .expect("i64 is a valid element")
+        .as_type();
+    assert_eq!(
+        narrower.primitive_size_in_bits(),
+        TypeSize::fixed(34_359_738_368)
+    );
+    assert_eq!(
+        wider.primitive_size_in_bits(),
+        TypeSize::fixed(68_719_476_736)
+    );
+    assert!(!cast_is_valid(CastOpcode::BitCast, narrower, wider));
+    assert!(cast_is_valid(CastOpcode::BitCast, narrower, narrower));
+}
 
 /// `VectorType::of` keeps the element marker and builds in the element's own
 /// module. llvmkit-specific (D3): the typed route `FixedVectorType::get`'s
@@ -96,12 +128,89 @@ fn a_zero_count_riscv_tuple_has_no_layout() {
     let part = VectorType::scalable_of(m.i8_type(), lanes::<8>()).as_type();
     let zero = m
         .target_ext_type("riscv.vector.tuple", [part], [0])
+        .expect("valid target type")
         .as_type();
     assert!(!zero.is_sized());
     let two = m
         .target_ext_type("riscv.vector.tuple", [part], [2])
+        .expect("valid target type")
         .as_type();
     assert!(two.is_sized());
+}
+
+/// Each target type `getTargetTypeInfo` (`lib/IR/Type.cpp`) can only assert on
+/// has no layout and no properties: a `spirv.Type` without its three integer
+/// parameters, a `spirv.Padding` or `dx.Padding` without its size, a
+/// `riscv.vector.tuple` over a non-scalable part, and a `spirv.Type` whose
+/// alignment `IntegerType::get` refuses. `checkParams` admits them all and they
+/// parse, so they exist; what upstream cannot do is lay them out. The tuple's
+/// `HasZeroInit`, which the name alone would answer, is refused with its layout.
+/// llvmkit-specific regression (D10): these got a pointer, a `[0 x i8]`, a
+/// `void`, and an integer no parser reads; `docs/divergences.md` D22 records
+/// the difference. The well-formed spelling of each is the positive control.
+#[test]
+fn a_target_type_upstream_asserts_on_has_no_layout() {
+    let m = Module::dynamic("components");
+    let dl = DataLayout::default();
+    let no_types = Vec::<Type<'_, _>>::new();
+    let part = VectorType::scalable_of(m.i8_type(), lanes::<8>()).as_type();
+    for (name, types, ints) in [
+        ("spirv.Type", no_types.clone(), vec![0, 4]),
+        ("spirv.Type", no_types.clone(), vec![0, 4, 32, 1]),
+        ("spirv.Type", no_types.clone(), vec![0, 1, MAX_INT_BITS + 1]),
+        ("spirv.Padding", no_types.clone(), vec![]),
+        ("dx.Padding", no_types.clone(), vec![]),
+        ("riscv.vector.tuple", vec![m.i32_type().as_type()], vec![2]),
+    ] {
+        let ty = m
+            .target_ext_type(name, types, ints.clone())
+            .expect("`checkParams` admits it");
+        assert!(!ty.as_type().is_sized(), "{name} {ints:?}");
+        assert_eq!(
+            dl.type_size_in_bits(ty.as_type()),
+            TypeSize::fixed(0),
+            "{name} {ints:?}"
+        );
+        for property in [
+            TargetExtProperty::HasZeroInit,
+            TargetExtProperty::CanBeGlobal,
+            TargetExtProperty::CanBeLocal,
+        ] {
+            assert!(!ty.has_property(property), "{name} {ints:?} {property:?}");
+        }
+    }
+    for (name, types, ints) in [
+        ("spirv.Type", no_types.clone(), vec![0, 4, 32]),
+        ("spirv.Type", no_types.clone(), vec![0, 1, MAX_INT_BITS]),
+        ("spirv.Padding", no_types.clone(), vec![4]),
+        ("dx.Padding", no_types.clone(), vec![4]),
+        ("riscv.vector.tuple", vec![part], vec![2]),
+    ] {
+        let ty = m
+            .target_ext_type(name, types, ints.clone())
+            .expect("`checkParams` admits it");
+        assert!(ty.as_type().is_sized(), "{name} {ints:?}");
+    }
+}
+
+/// `getTargetTypeInfo`'s `spirv.Type` arm computes `Size * 8 / Alignment` on
+/// `unsigned`s (`TargetExtType::getIntParameter` returns one), so the product
+/// wraps at 32 bits before the division: a size of `1 << 29` is an empty array.
+/// llvmkit-specific regression: the port widened the product to `u64`, which
+/// answers `1 << 32` bits. No upstream test reaches the wrap. A size below it
+/// is the positive control.
+#[test]
+fn a_spirv_type_layout_multiplies_as_upstream_does() {
+    let m = Module::dynamic("components");
+    let dl = DataLayout::default();
+    let size_of = |size: u32| {
+        let ty = m
+            .target_ext_type("spirv.Type", Vec::<Type<'_, _>>::new(), [0, size, 8])
+            .expect("three integer parameters");
+        dl.type_size_in_bits(ty.as_type())
+    };
+    assert_eq!(size_of(1 << 29), TypeSize::fixed(0));
+    assert_eq!(size_of(4), TypeSize::fixed(32));
 }
 
 /// An intrinsic name whose overload suffix spells a zero-lane vector, or a
@@ -168,7 +277,7 @@ fn an_erased_array_refuses_an_invalid_element() {
             "{refused:?}"
         );
     }
-    m.array_type(m.ptr_type(0), 2)
+    m.array_type(m.ptr_type_in::<0>(), 2)
         .expect("a pointer is an array element");
 
     assert_eq!(
@@ -193,7 +302,7 @@ fn an_erased_array_refuses_an_invalid_element() {
             "{refused:?}"
         );
     }
-    view.array_type(view.ptr_type(0), 2)
+    view.array_type(view.ptr_type_in::<0>(), 2)
         .expect("a pointer is an array element");
 }
 
@@ -220,6 +329,145 @@ fn an_intrinsic_name_cannot_spell_an_invalid_array() {
     }
     m.get_or_insert_intrinsic_declaration_by_name("llvm.ssa.copy.a2i32")
         .expect("`[2 x i32]` is an overload of `llvm.ssa.copy`");
+}
+
+/// An intrinsic name whose overload suffix spells a target type with
+/// parameter counts `TargetExtType::checkParams` refuses does not demangle.
+/// Upstream's `getMangledTypeStr` (`lib/IR/Intrinsics.cpp`) spells only types
+/// that exist — `"t" + name`, then `"_" + param` per type and integer
+/// parameter, then `"t"` — and `TargetExtType::get` would not build these.
+/// llvmkit-specific regression (D10): the demangler interned the target type
+/// with no count check. `tamdgcn.named.barrier_0t` is the positive control.
+#[test]
+fn an_intrinsic_name_cannot_spell_an_invalid_target_type() {
+    let m = Module::dynamic("components");
+    for name in [
+        "llvm.ssa.copy.taarch64.svcount_i32t",
+        "llvm.ssa.copy.triscv.vector.tuple_2t",
+        "llvm.ssa.copy.tamdgcn.named.barriert",
+    ] {
+        let refused = m.get_or_insert_intrinsic_declaration_by_name(name);
+        assert!(
+            matches!(refused, Err(IrError::IntrinsicSignatureMismatch { .. })),
+            "{name}: {refused:?}"
+        );
+    }
+    m.get_or_insert_intrinsic_declaration_by_name("llvm.ssa.copy.tamdgcn.named.barrier_0t")
+        .expect("`target(\"amdgcn.named.barrier\", 0)` is an overload of `llvm.ssa.copy`");
+}
+
+/// An intrinsic name whose overload suffix spells a function type
+/// `FunctionType::FunctionType` asserts against does not demangle.
+/// Upstream's `getMangledTypeStr` (`lib/IR/Intrinsics.cpp`) spells a function
+/// type `"f_"` + its result + its parameters + `"f"` from a type that exists,
+/// so no upstream name reads `f_i32isVoidf` or `f_Metadataf`. llvmkit-specific
+/// regression (D10): the demangler built `i32 (void)` straight into the arena.
+/// `llvm.ssa.copy.i32` is the positive control; the `f_` arm's valid spellings
+/// are `every_mangled_type_demangles_to_itself`'s.
+#[test]
+fn an_intrinsic_name_cannot_spell_an_invalid_function_type() {
+    let m = Module::dynamic("components");
+    for name in ["llvm.ssa.copy.f_i32isVoidf", "llvm.ssa.copy.f_Metadataf"] {
+        let refused = m.get_or_insert_intrinsic_declaration_by_name(name);
+        assert!(
+            matches!(refused, Err(IrError::IntrinsicSignatureMismatch { .. })),
+            "{name}: {refused:?}"
+        );
+    }
+    m.get_or_insert_intrinsic_declaration_by_name("llvm.ssa.copy.i32")
+        .expect("`i32` is an overload of `llvm.ssa.copy`");
+}
+
+/// An overload that makes the intrinsic's own signature invalid declares
+/// nothing: `llvm.ssa.copy` is `T (T)`, and `Intrinsic::getType`
+/// (`lib/IR/Intrinsics.cpp`) hands the decoded types to `FunctionType::get`,
+/// whose constructor asserts `isValidReturnType` and `isValidArgumentType`.
+/// llvmkit-specific regression (D10): `metadata (metadata)` was declared, and
+/// printed a `declare` no parser reads back. `i32` is the positive control.
+#[test]
+fn an_overload_cannot_make_an_intrinsic_signature_invalid() {
+    let m = Module::dynamic("components");
+    let ssa_copy = IntrinsicId::lookup("llvm.ssa.copy").expect("`llvm.ssa.copy` is an intrinsic");
+    let function = m
+        .function_type_no_parameters(m.i32_type())
+        .expect("a valid function type")
+        .as_type();
+    let opaque = m.opaque_struct("Opaque").expect("fresh name").as_type();
+    for overload in [
+        m.metadata_type().as_type(),
+        m.label_type().as_type(),
+        function,
+        opaque,
+    ] {
+        let refused = m.get_or_insert_intrinsic_declaration_by_id(ssa_copy, [overload]);
+        assert!(refused.is_err(), "{overload}: {refused:?}");
+    }
+    let refused = m.get_or_insert_intrinsic_declaration_by_name("llvm.ssa.copy.Metadata");
+    assert!(
+        matches!(refused, Err(IrError::IntrinsicSignatureMismatch { .. })),
+        "{refused:?}"
+    );
+    m.get_or_insert_intrinsic_declaration_by_id(ssa_copy, [m.i32_type().as_type()])
+        .expect("`i32 (i32)` is a valid signature");
+}
+
+/// An intrinsic name whose overload suffix spells an integer outside
+/// `MIN_INT_BITS..=MAX_INT_BITS` does not demangle: `getMangledTypeStr`
+/// (`lib/IR/Intrinsics.cpp`) spells only integers that exist, and
+/// `IntegerType::get` asserts both bounds. llvmkit-specific regression (D10):
+/// the demangler built `i16777216`, whose printed `declare` no lexer reads
+/// back. `MAX_INT_BITS` itself is the positive control.
+#[test]
+fn an_intrinsic_name_cannot_spell_an_integer_llvm_has_no_width_for() {
+    let m = Module::dynamic("components");
+    let refused = m.get_or_insert_intrinsic_declaration_by_name(format!(
+        "llvm.ssa.copy.i{}",
+        MAX_INT_BITS + 1
+    ));
+    assert!(
+        matches!(refused, Err(IrError::IntrinsicSignatureMismatch { .. })),
+        "{refused:?}"
+    );
+    m.get_or_insert_intrinsic_declaration_by_name(format!("llvm.ssa.copy.i{MAX_INT_BITS}"))
+        .expect("`MAX_INT_BITS` is a legal width");
+}
+
+/// An intrinsic name whose overload suffix spells an address space past 24 bits
+/// does not demangle: `getMangledTypeStr` (`lib/IR/Intrinsics.cpp`) spells
+/// `"p" + utostr(AddressSpace)` from a pointer that exists, and
+/// `Type::setSubclassData` asserts the space fits. llvmkit-specific regression
+/// (D10): the demangler built `ptr addrspace(16777216)`. The largest space is
+/// the positive control.
+#[test]
+fn an_intrinsic_name_cannot_spell_an_address_space_past_24_bits() {
+    let m = Module::dynamic("components");
+    let refused = m.get_or_insert_intrinsic_declaration_by_name("llvm.ssa.copy.p16777216");
+    assert!(
+        matches!(refused, Err(IrError::IntrinsicSignatureMismatch { .. })),
+        "{refused:?}"
+    );
+    m.get_or_insert_intrinsic_declaration_by_name("llvm.ssa.copy.p16777215")
+        .expect("the largest address space is an overload of `llvm.ssa.copy`");
+}
+
+/// A signature that doubles an overload's integer past `MAX_INT_BITS` does not
+/// fit: `Type::getExtendedType` (`include/llvm/IR/DerivedTypes.h`) reaches
+/// `IntegerType::get`, which asserts the bound. `llvm.aarch64.neon.sqxtn` takes
+/// `LLVMExtendedType<0>`. llvmkit-specific regression (D10): the decoder built
+/// an integer twice `MAX_INT_BITS` wide. An overload half that wide is the
+/// positive control.
+#[test]
+fn an_extended_integer_overload_stays_inside_the_width_limit() {
+    let m = Module::dynamic("components");
+    let refused = m.get_or_insert_intrinsic_declaration_by_name(format!(
+        "llvm.aarch64.neon.sqxtn.i{MAX_INT_BITS}"
+    ));
+    assert!(refused.is_err(), "{refused:?}");
+    m.get_or_insert_intrinsic_declaration_by_name(format!(
+        "llvm.aarch64.neon.sqxtn.i{}",
+        MAX_INT_BITS / 2
+    ))
+    .expect("doubling half of `MAX_INT_BITS` lands on it");
 }
 
 /// An intrinsic name whose overload suffix spells a zero-length array
@@ -336,7 +584,9 @@ fn a_struct_refuses_an_invalid_element() {
         (view.label_type().as_type(), TypeKindLabel::Label),
         (view.metadata_type().as_type(), TypeKindLabel::Metadata),
         (
-            view.function_type_no_parameters(view.void_type()).as_type(),
+            view.function_type_no_parameters(view.void_type())
+                .expect("valid function type")
+                .as_type(),
             TypeKindLabel::Function,
         ),
         (view.token_type().as_type(), TypeKindLabel::Token),
@@ -361,6 +611,376 @@ fn a_struct_refuses_an_invalid_element() {
         .expect("x86_amx is a struct element");
 }
 
+/// `target_ext_type` refuses a parameter count `TargetExtType::checkParams`
+/// refuses, with upstream's exact message, at construction — as
+/// `TargetExtType::getOrError` does (`lib/IR/Type.cpp`). llvmkit-specific
+/// (D10): upstream's `TargetExtType::get` wraps the check in `cantFail`.
+#[test]
+fn a_target_type_checks_its_parameters_when_built() {
+    let m = Module::dynamic("components");
+    let i32_ty = m.i32_type().as_type();
+    let no_types = Vec::<Type<'_, _>>::new();
+    for (name, types, ints, rule, message) in [
+        (
+            "aarch64.svcount",
+            vec![i32_ty],
+            vec![],
+            TargetExtParameterRule::Aarch64Svcount,
+            "target extension type aarch64.svcount should have no parameters",
+        ),
+        (
+            "riscv.vector.tuple",
+            no_types.clone(),
+            vec![2],
+            TargetExtParameterRule::RiscvVectorTuple,
+            "target extension type riscv.vector.tuple should have one type parameter and one integer parameter",
+        ),
+        (
+            "amdgcn.named.barrier",
+            no_types.clone(),
+            vec![],
+            TargetExtParameterRule::AmdgcnNamedBarrier,
+            "target extension type amdgcn.named.barrier should have no type parameters and one integer parameter",
+        ),
+    ] {
+        let refused = m.target_ext_type(name, types, ints);
+        assert!(
+            matches!(refused, Err(IrError::TargetExtTypeParameters { rule: r }) if r == rule),
+            "{name}: {refused:?}"
+        );
+        assert_eq!(refused.expect_err("refused above").to_string(), message);
+    }
+    m.target_ext_type("amdgcn.named.barrier", no_types, [0])
+        .expect("one integer parameter");
+}
+
+/// Port of `unittests/IR/TypesTest.cpp::TEST(TypesTest, StructType)`. PR13522:
+/// the new name is a piece of the old one, so reading it across the rename has
+/// to stay sound. `getName` is `StructType::name`, whose `None` is both of
+/// upstream's answers for a struct with no name: an empty `getName` and a
+/// false `hasName`.
+#[test]
+fn upstream_struct_type() {
+    let m = Module::dynamic("TypesTest");
+
+    // PR13522
+    let st = m.get_or_insert_named_struct("FooBar");
+    assert_eq!(st.name(), Some("FooBar"));
+    let name = st.name().expect("named above");
+    m.set_struct_name(st, &name[..3])
+        .expect("an identified one");
+    assert_eq!(st.name(), Some("Foo"));
+    m.set_struct_name(st, "").expect("an identified one");
+    assert!(st.name().unwrap_or_default().is_empty());
+    assert!(st.name().is_none());
+}
+
+/// Port of `unittests/IR/TypesTest.cpp::TEST(TypesTest, LayoutIdenticalEmptyStructs)`.
+#[test]
+fn upstream_layout_identical_empty_structs() {
+    let m = Module::dynamic("TypesTest");
+
+    let foo = m.get_or_insert_named_struct("Foo");
+    let bar = m.get_or_insert_named_struct("Bar");
+    assert!(foo.is_layout_identical(bar));
+}
+
+/// Port of `unittests/IR/TypesTest.cpp::TEST(TypesTest, TargetExtType)`.
+/// `TargetExtType::get` is `Module::target_ext_type`; `StructType::create` with
+/// elements is `get_or_insert_named_struct` then `set_struct_body_dyn`; and
+/// `print` is the type's `Display`.
+#[test]
+fn upstream_target_ext_type() {
+    let m = Module::dynamic("TypesTest");
+    let no_types = Vec::<Type<'_, _>>::new;
+
+    let a = m
+        .target_ext_type("typea", no_types(), [])
+        .expect("no rule names `typea`")
+        .as_type();
+    let aparam = m
+        .target_ext_type("typea", no_types(), [0, 1])
+        .expect("no rule names `typea`")
+        .as_type();
+    let aparam2 = m
+        .target_ext_type("typea", no_types(), [0, 1])
+        .expect("no rule names `typea`")
+        .as_type();
+
+    // Opaque types with same parameters are identical...
+    assert_eq!(aparam, aparam2);
+    // ... but just having the same name is not enough.
+    assert_ne!(a, aparam);
+
+    // ensure struct types in targest extension types
+    // only show the struct name, not the struct body
+    let int32_type = m.i32_type().as_type();
+    let float_type = m.f32_type().as_type();
+    let elements = [int32_type, float_type];
+
+    let st = m.get_or_insert_named_struct("MyStruct");
+    m.set_struct_body_dyn(st, elements, false)
+        .expect("a valid body");
+    let target_extension_type = m
+        .target_ext_type("structTET", [st], [0, 1])
+        .expect("no rule names `structTET`")
+        .as_type();
+
+    assert_eq!(
+        target_extension_type.to_string(),
+        "target(\"structTET\", %MyStruct, 0, 1)"
+    );
+
+    // ensure that literal structs in the target extension type print the struct
+    // body
+    let st = m.struct_type(st.fields()).expect("a valid body");
+
+    let target_extension_type = m
+        .target_ext_type("structTET", [st], [0, 1])
+        .expect("no rule names `structTET`")
+        .as_type();
+
+    assert_eq!(
+        target_extension_type.to_string(),
+        "target(\"structTET\", { i32, float }, 0, 1)"
+    );
+}
+
+/// Each arm of `StructType::setName` (`lib/IR/Type.cpp`) past the two its
+/// upstream test reaches: the same name changes nothing; a name in use takes a
+/// `.N` suffix from one counter that only ever rises; the old name is free
+/// again; and a struct whose name is removed prints by number. A literal struct
+/// has no name to set: upstream's header says not to call it on one, and
+/// llvmkit refuses. llvmkit-specific (rule anchor): the upstream test renames
+/// one struct, with no collision.
+#[test]
+fn renaming_a_struct_follows_set_name() {
+    let m = Module::dynamic("TypesTest");
+    let foo = m.get_or_insert_named_struct("Foo");
+    let bar = m.get_or_insert_named_struct("Bar");
+    let baz = m.get_or_insert_named_struct("Baz");
+
+    m.set_struct_name(foo, "Foo").expect("an identified one");
+    assert_eq!(foo.name(), Some("Foo"));
+
+    m.set_struct_name(bar, "Foo").expect("an identified one");
+    assert_eq!(bar.name(), Some("Foo.0"));
+    m.set_struct_name(baz, "Foo").expect("an identified one");
+    assert_eq!(baz.name(), Some("Foo.1"));
+    assert_eq!(
+        m.named_struct("Foo.0").map(|s| s.as_type()),
+        Some(bar.as_type())
+    );
+
+    assert!(m.named_struct("Bar").is_none());
+    let new_bar = m.get_or_insert_named_struct("Bar");
+    assert_ne!(new_bar.as_type(), bar.as_type());
+
+    m.set_struct_name(foo, "").expect("an identified one");
+    assert!(m.named_struct("Foo").is_none());
+    assert_eq!(foo.as_type().to_string(), "%0");
+    assert!(m.to_string().contains("%0 = type opaque\n"), "{m}");
+    assert!(m.to_string().contains("%Foo.0 = type opaque\n"), "{m}");
+
+    let literal = m.struct_type([m.i32_type()]).expect("a valid body");
+    assert_eq!(
+        m.set_struct_name(literal, "Named"),
+        Err(IrError::LiteralStructNameNotSettable)
+    );
+    assert!(m.named_struct("Named").is_none());
+}
+
+/// Each arm of `StructType::isLayoutIdentical` (`lib/IR/Type.cpp`): the same
+/// struct, a packed flag that differs, elements that differ, and two different
+/// structs of one layout. llvmkit-specific (rule anchor): the upstream test
+/// reaches only the last, with two empty ones.
+#[test]
+fn layout_identity_follows_is_layout_identical() {
+    let m = Module::dynamic("TypesTest");
+    let i32_ty = m.i32_type().as_type();
+    let f32_ty = m.f32_type().as_type();
+
+    let literal = m.struct_type([i32_ty, f32_ty]).expect("a valid body");
+    let packed = m
+        .packed_struct_type([i32_ty, f32_ty])
+        .expect("a valid body");
+    let other = m.struct_type([f32_ty, i32_ty]).expect("a valid body");
+    let named = m.get_or_insert_named_struct("Named");
+    m.set_struct_body_dyn(named, [i32_ty, f32_ty], false)
+        .expect("a valid body");
+
+    assert!(literal.is_layout_identical(literal));
+    assert!(!literal.is_layout_identical(packed));
+    assert!(!literal.is_layout_identical(other));
+    assert!(literal.is_layout_identical(named));
+}
+
+/// Port of `unittests/IR/TypesTest.cpp::TEST(TypedPointerType, PrintTest)`.
+#[test]
+fn upstream_typed_pointer_prints() {
+    let m = Module::dynamic("components");
+    let i8_ptr = TypedPointerType::of(m.i8_type(), AddressSpace::DEFAULT);
+    assert_eq!(i8_ptr.to_string(), "typedptr(i8, 0)");
+}
+
+/// A typed pointer nests, as `TypedPointerType::isValidElementType` allows,
+/// and keeps its pointee and its address space. llvmkit-specific: upstream's
+/// `TEST(TypedPointerType, PrintTest)` prints one level in address space 0.
+#[test]
+fn a_typed_pointer_nests_and_keeps_its_address_space() {
+    let m = Module::dynamic("components");
+    let inner = TypedPointerType::of(m.i32_type(), AddressSpace::DEFAULT);
+    assert_eq!(inner.to_string(), "typedptr(i32, 0)");
+    let outer = TypedPointerType::of(inner, address_space::<3>());
+    assert_eq!(outer.to_string(), "typedptr(typedptr(i32, 0), 3)");
+    assert!(matches!(outer.pointee(), TypedPointee::Typed(p) if p == inner));
+    assert_eq!(outer.address_space(), 3);
+}
+
+/// The erased constructor refuses a pointee `TypedPointerType::isValidElementType`
+/// refuses (`void`, `label`, `metadata`, `token`, `x86_amx`), mirroring the
+/// `assert` in `TypedPointerType::get` (`lib/IR/TypedPointerType.cpp`).
+/// llvmkit-specific (D10).
+#[test]
+fn an_erased_typed_pointer_refuses_an_invalid_pointee() {
+    let m = Module::dynamic("components");
+    assert!(matches!(
+        m.typed_pointer_type(m.void_type(), AddressSpace::DEFAULT),
+        Err(IrError::InvalidTypeComponent {
+            position: TypePosition::PointerElement,
+            kind: TypeKindLabel::Void,
+        })
+    ));
+    let ok = m
+        .typed_pointer_type(m.i32_type(), AddressSpace::DEFAULT)
+        .expect("an integer pointee is valid");
+    assert_eq!(
+        ok,
+        TypedPointerType::of(m.i32_type(), AddressSpace::DEFAULT)
+    );
+
+    let view = m.as_view();
+    for (pointee, kind) in [
+        (view.void_type().as_type(), TypeKindLabel::Void),
+        (view.label_type().as_type(), TypeKindLabel::Label),
+        (view.metadata_type().as_type(), TypeKindLabel::Metadata),
+        (view.token_type().as_type(), TypeKindLabel::Token),
+        (view.x86_amx_type(), TypeKindLabel::X86Amx),
+    ] {
+        let refused = view.typed_pointer_type(pointee, AddressSpace::DEFAULT);
+        assert!(
+            matches!(
+                refused,
+                Err(IrError::InvalidTypeComponent {
+                    position: TypePosition::PointerElement,
+                    kind: k,
+                }) if k == kind
+            ),
+            "{refused:?}"
+        );
+    }
+    view.typed_pointer_type(view.ptr_type_in::<1>(), address_space::<2>())
+        .expect("a pointer pointee is valid");
+}
+
+/// The function-type constructors refuse a result `FunctionType::isValidReturnType`
+/// refuses and a parameter `isValidArgumentType` refuses, naming the
+/// parameter. Mirrors the two `assert`s in `FunctionType::FunctionType`
+/// (`lib/IR/Type.cpp`), which check the result first, then each parameter in
+/// order; llvmkit-specific (D10).
+///
+/// The second half runs every refused result and parameter kind through the
+/// four constructors on the `ModuleView` receiver, as
+/// `a_struct_refuses_an_invalid_element` does for structs.
+#[test]
+fn a_function_type_refuses_an_invalid_result_or_parameter() {
+    let m = Module::dynamic("components");
+    let i32_ty = m.i32_type().as_type();
+    assert!(matches!(
+        m.function_type_no_parameters(m.label_type()),
+        Err(IrError::InvalidTypeComponent {
+            position: TypePosition::FunctionReturn,
+            kind: TypeKindLabel::Label,
+        })
+    ));
+    let refused = m.function_type(m.void_type(), [i32_ty, m.void_type().as_type()]);
+    assert!(matches!(
+        refused,
+        Err(IrError::InvalidTypeComponent {
+            position: TypePosition::FunctionParameter { index: 1 },
+            kind: TypeKindLabel::Void,
+        })
+    ));
+    assert_eq!(
+        refused.expect_err("refused above").to_string(),
+        "invalid type for function argument (parameter 1): void"
+    );
+    // The result is checked before any parameter.
+    assert!(matches!(
+        m.variadic_function_type(m.metadata_type(), [m.label_type().as_type()]),
+        Err(IrError::InvalidTypeComponent {
+            position: TypePosition::FunctionReturn,
+            kind: TypeKindLabel::Metadata,
+        })
+    ));
+    m.function_type(m.token_type(), [m.metadata_type().as_type()])
+        .expect("token results and metadata parameters are valid");
+
+    let view = m.as_view();
+    let view_i32 = view.i32_type().as_type();
+    let function = view
+        .function_type_no_parameters(view.void_type())
+        .expect("a void function type")
+        .as_type();
+    for (result, kind) in [
+        (function, TypeKindLabel::Function),
+        (view.label_type().as_type(), TypeKindLabel::Label),
+        (view.metadata_type().as_type(), TypeKindLabel::Metadata),
+    ] {
+        for refused in [
+            view.function_type(result, [view_i32]).map(|_| ()),
+            view.variadic_function_type(result, [view_i32]).map(|_| ()),
+            view.function_type_no_parameters(result).map(|_| ()),
+            view.variadic_function_type_no_parameters(result)
+                .map(|_| ()),
+        ] {
+            assert!(
+                matches!(
+                    refused,
+                    Err(IrError::InvalidTypeComponent {
+                        position: TypePosition::FunctionReturn,
+                        kind: k,
+                    }) if k == kind
+                ),
+                "{refused:?}"
+            );
+        }
+    }
+    for (parameter, kind) in [
+        (view.void_type().as_type(), TypeKindLabel::Void),
+        (view.label_type().as_type(), TypeKindLabel::Label),
+        (function, TypeKindLabel::Function),
+    ] {
+        for refused in [
+            view.function_type(view.void_type(), [view_i32, parameter])
+                .map(|_| ()),
+            view.variadic_function_type(view.void_type(), [view_i32, parameter])
+                .map(|_| ()),
+        ] {
+            assert!(
+                matches!(
+                    refused,
+                    Err(IrError::InvalidTypeComponent {
+                        position: TypePosition::FunctionParameter { index: 1 },
+                        kind: k,
+                    }) if k == kind
+                ),
+                "{refused:?}"
+            );
+        }
+    }
+}
+
 /// The builder's `shuffle_vector` refuses an empty mask, whose result would be
 /// a zero-lane vector, with `IrError::InvalidShuffleMaskLength`: the
 /// `ShuffleVectorInst` constructor computes its type as
@@ -371,7 +991,7 @@ fn a_struct_refuses_an_invalid_element() {
 fn the_builder_refuses_a_shuffle_with_an_empty_mask() -> Result<(), IrError> {
     let m = Module::dynamic("components");
     let vec_ty = VectorType::of(m.i32_type(), lanes::<2>());
-    let fn_ty = m.function_type(m.void_type(), [vec_ty.as_type(), vec_ty.as_type()]);
+    let fn_ty = m.function_type(m.void_type(), [vec_ty.as_type(), vec_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -444,7 +1064,7 @@ fn constant_folding_a_shuffle_with_an_empty_mask_does_not_fold() -> Result<(), I
 #[test]
 fn a_splat_of_a_non_vector_element_is_refused() -> Result<(), IrError> {
     let m = Module::dynamic("components");
-    let fn_ty = m.function_type_no_parameters(m.void_type());
+    let fn_ty = m.function_type_no_parameters(m.void_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

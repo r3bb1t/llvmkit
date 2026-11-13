@@ -8,10 +8,49 @@
 //! reason string; rows are marked `llvmkit-specific subset` when that string
 //! intentionally differs from upstream `FailedWithMessage` text.
 
-use llvmkit_ir::{Align, DataLayout, DataLayoutError, ManglingMode, MaybeAlign, module_new};
+use llvmkit_ir::{
+    Align, ArrayType, DataLayout, DataLayoutError, ManglingMode, MaybeAlign, Module, TypeSize,
+    VectorType, address_space, lanes, module_new,
+};
 
 fn parse(s: &str) -> DataLayout {
     DataLayout::parse(s).unwrap_or_else(|e| panic!("parse {s:?}: {e:?}"))
+}
+
+/// Port of `unittests/IR/DataLayoutTest.cpp::TEST(DataLayoutTest, GlobalsAddressSpace)`.
+/// `new GlobalVariable(*M, Int32, false, ExternalLinkage, nullptr)` is
+/// `global_builder("", int32).build()`, whose defaults are those arguments.
+#[test]
+fn upstream_globals_address_space() {
+    // When not explicitly defined the globals address space should be zero:
+    assert_eq!(parse("").default_globals_addr_space(), 0);
+    assert_eq!(parse("P1-A2").default_globals_addr_space(), 0);
+    assert_eq!(parse("G2").default_globals_addr_space(), 2);
+    // Check that creating a GlobalVariable without an explicit address space
+    // in a module with a default globals address space respects that default:
+    let m = Module::dynamic("MyModule");
+    // Default is globals in address space zero:
+    let int32 = m.i32_type();
+    let default_global1 = m.global_builder("", int32).build().expect("unnamed");
+    assert_eq!(m.view(default_global1).address_space(), 0);
+    let explicit_global1 = m
+        .global_builder("", int32)
+        .address_space(address_space::<123>())
+        .build()
+        .expect("unnamed");
+    assert_eq!(m.view(explicit_global1).address_space(), 123);
+
+    // When using a datalayout with the global address space set to 200, global
+    // variables should default to 200
+    m.set_data_layout(parse("G200"));
+    let default_global2 = m.global_builder("", int32).build().expect("unnamed");
+    assert_eq!(m.view(default_global2).address_space(), 200);
+    let explicit_global2 = m
+        .global_builder("", int32)
+        .address_space(address_space::<123>())
+        .build()
+        .expect("unnamed");
+    assert_eq!(m.view(explicit_global2).address_space(), 123);
 }
 
 fn parse_err(s: &str) -> String {
@@ -215,6 +254,36 @@ fn parse_addr_space_rejects_bad_value() {
     }
 }
 
+/// `parseAddrSpace`, `parseSize`, `parseAlignment` and the aggregate spec each
+/// read a number with `to_integer(Str, N, 10)`, and its
+/// `consumeUnsignedInteger` (`lib/Support/StringRef.cpp`) has no sign arm, so a
+/// leading `+` is a byte it cannot consume. llvmkit's `str::parse` takes one.
+/// llvmkit-specific (rule anchor): `TEST(DataLayout, ...)` has no signed number.
+#[test]
+fn a_layout_number_takes_no_sign() {
+    let cases = [
+        ("P+5", "address space must be a 24-bit integer"),
+        ("A+5", "address space must be a 24-bit integer"),
+        ("G+5", "address space must be a 24-bit integer"),
+        ("p+1:64:64", "address space must be a 24-bit integer"),
+        ("ni:+1", "address space must be a 24-bit integer"),
+        ("i+8:8", "size must be a non-zero 24-bit integer"),
+        ("p:+64:64", "pointer size must be a non-zero 24-bit integer"),
+        ("a+0:8", "size must be zero"),
+        ("i8:+8", "ABI alignment must be a 16-bit integer"),
+        ("S+8", "stack natural alignment must be a 16-bit integer"),
+    ];
+    let accepted: Vec<&str> = cases
+        .iter()
+        .map(|(s, _)| *s)
+        .filter(|s| DataLayout::parse(s).is_ok())
+        .collect();
+    assert!(accepted.is_empty(), "accepted {accepted:?}");
+    for (s, expected) in cases {
+        assert_parse_err_eq(s, expected);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Function-pointer spec
 // ---------------------------------------------------------------------------
@@ -385,9 +454,21 @@ fn get_pointer_size_in_bits_table() {
     ];
     for (s, v0, v1, v2) in cases {
         let dl = parse(s);
-        assert_eq!(dl.pointer_size_in_bits(0), *v0, "{s} AS 0");
-        assert_eq!(dl.pointer_size_in_bits(1), *v1, "{s} AS 1");
-        assert_eq!(dl.pointer_size_in_bits(2), *v2, "{s} AS 2");
+        assert_eq!(
+            dl.pointer_size_in_bits(address_space::<0>()),
+            *v0,
+            "{s} AS 0"
+        );
+        assert_eq!(
+            dl.pointer_size_in_bits(address_space::<1>()),
+            *v1,
+            "{s} AS 1"
+        );
+        assert_eq!(
+            dl.pointer_size_in_bits(address_space::<2>()),
+            *v2,
+            "{s} AS 2"
+        );
     }
 }
 
@@ -403,9 +484,9 @@ fn get_pointer_size_table() {
     ];
     for (s, v0, v1, v2) in cases {
         let dl = parse(s);
-        assert_eq!(dl.pointer_size(0), *v0, "{s} AS 0");
-        assert_eq!(dl.pointer_size(1), *v1, "{s} AS 1");
-        assert_eq!(dl.pointer_size(2), *v2, "{s} AS 2");
+        assert_eq!(dl.pointer_size(address_space::<0>()), *v0, "{s} AS 0");
+        assert_eq!(dl.pointer_size(address_space::<1>()), *v1, "{s} AS 1");
+        assert_eq!(dl.pointer_size(address_space::<2>()), *v2, "{s} AS 2");
     }
 }
 
@@ -421,9 +502,9 @@ fn get_index_size_in_bits_table() {
     ];
     for (s, v0, v1, v2) in cases {
         let dl = parse(s);
-        assert_eq!(dl.index_size_in_bits(0), *v0, "{s} AS 0");
-        assert_eq!(dl.index_size_in_bits(1), *v1, "{s} AS 1");
-        assert_eq!(dl.index_size_in_bits(2), *v2, "{s} AS 2");
+        assert_eq!(dl.index_size_in_bits(address_space::<0>()), *v0, "{s} AS 0");
+        assert_eq!(dl.index_size_in_bits(address_space::<1>()), *v1, "{s} AS 1");
+        assert_eq!(dl.index_size_in_bits(address_space::<2>()), *v2, "{s} AS 2");
     }
 }
 
@@ -439,9 +520,9 @@ fn get_index_size_table() {
     ];
     for (s, v0, v1, v2) in cases {
         let dl = parse(s);
-        assert_eq!(dl.index_size(0), *v0, "{s} AS 0");
-        assert_eq!(dl.index_size(1), *v1, "{s} AS 1");
-        assert_eq!(dl.index_size(2), *v2, "{s} AS 2");
+        assert_eq!(dl.index_size(address_space::<0>()), *v0, "{s} AS 0");
+        assert_eq!(dl.index_size(address_space::<1>()), *v1, "{s} AS 1");
+        assert_eq!(dl.index_size(address_space::<2>()), *v2, "{s} AS 2");
     }
 }
 
@@ -457,9 +538,21 @@ fn get_pointer_abi_alignment_table() {
     ];
     for (s, v0, v1, v2) in cases {
         let dl = parse(s);
-        assert_eq!(dl.pointer_abi_align(0).value(), *v0, "{s} AS 0");
-        assert_eq!(dl.pointer_abi_align(1).value(), *v1, "{s} AS 1");
-        assert_eq!(dl.pointer_abi_align(2).value(), *v2, "{s} AS 2");
+        assert_eq!(
+            dl.pointer_abi_align(address_space::<0>()).value(),
+            *v0,
+            "{s} AS 0"
+        );
+        assert_eq!(
+            dl.pointer_abi_align(address_space::<1>()).value(),
+            *v1,
+            "{s} AS 1"
+        );
+        assert_eq!(
+            dl.pointer_abi_align(address_space::<2>()).value(),
+            *v2,
+            "{s} AS 2"
+        );
     }
 }
 
@@ -475,9 +568,21 @@ fn get_pointer_pref_alignment_table() {
     ];
     for (s, v0, v1, v2) in cases {
         let dl = parse(s);
-        assert_eq!(dl.pointer_pref_align(0).value(), *v0, "{s} AS 0");
-        assert_eq!(dl.pointer_pref_align(1).value(), *v1, "{s} AS 1");
-        assert_eq!(dl.pointer_pref_align(2).value(), *v2, "{s} AS 2");
+        assert_eq!(
+            dl.pointer_pref_align(address_space::<0>()).value(),
+            *v0,
+            "{s} AS 0"
+        );
+        assert_eq!(
+            dl.pointer_pref_align(address_space::<1>()).value(),
+            *v1,
+            "{s} AS 1"
+        );
+        assert_eq!(
+            dl.pointer_pref_align(address_space::<2>()).value(),
+            *v2,
+            "{s} AS 2"
+        );
     }
 }
 
@@ -485,32 +590,166 @@ fn get_pointer_pref_alignment_table() {
 #[test]
 fn address_space_name() {
     let dl = parse("p:16:32-p1(foo):16:32-p10(bar):16:16");
-    assert_eq!(dl.address_space_name(0), "");
-    assert_eq!(dl.address_space_name(1), "foo");
-    assert_eq!(dl.address_space_name(10), "bar");
-    assert_eq!(dl.address_space_name(3), "");
-    assert_eq!(dl.named_address_space("foo"), Some(1));
-    assert_eq!(dl.named_address_space("bar"), Some(10));
+    assert_eq!(dl.address_space_name(address_space::<0>()), "");
+    assert_eq!(dl.address_space_name(address_space::<1>()), "foo");
+    assert_eq!(dl.address_space_name(address_space::<10>()), "bar");
+    assert_eq!(dl.address_space_name(address_space::<3>()), "");
+    assert_eq!(
+        dl.named_address_space("foo"),
+        llvmkit_ir::AddressSpace::new(1)
+    );
+    assert_eq!(
+        dl.named_address_space("bar"),
+        llvmkit_ir::AddressSpace::new(10)
+    );
     assert_eq!(dl.named_address_space("missing"), None);
 }
 
-/// Mirrors `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, IsNonIntegralAddressSpace)`.
+/// Port of `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, IsNonIntegralAddressSpace)`,
+/// whole and in order.
 #[test]
 fn is_non_integral_address_space() {
+    let two = address_space::<2>();
+    let top = address_space::<16777215>();
+    let spaces = |dl: &DataLayout| dl.non_standard_address_spaces().collect::<Vec<_>>();
+
     let default = DataLayout::default();
-    assert!(default.non_standard_address_spaces().next().is_none());
-    assert!(!default.is_non_integral_address_space(0));
-    assert!(!default.is_non_integral_address_space(1));
+    assert!(spaces(&default).is_empty());
+    assert!(!default.is_non_integral_address_space(address_space::<0>()));
+    assert!(!default.is_non_integral_address_space(address_space::<1>()));
 
     let custom = parse("ni:2:16777215");
+    assert_eq!(spaces(&custom), [two, top]);
+    assert!(!custom.is_non_integral_address_space(address_space::<0>()));
+    assert!(!custom.is_non_integral_address_space(address_space::<1>()));
+    assert!(custom.is_non_integral_address_space(two));
+    assert!(custom.must_not_introduce_int_to_ptr(two));
+    assert!(custom.must_not_introduce_ptr_to_int(two));
+    assert!(custom.is_non_integral_address_space(top));
+    assert!(custom.must_not_introduce_int_to_ptr(top));
+    assert!(custom.must_not_introduce_ptr_to_int(top));
+
+    // Pointers are marked as non-integral if the address size != total size
+    for layout in ["p2:64:64:64:32", "p2:128:64:64:64"] {
+        let dl = parse(layout);
+        assert!(dl.is_non_integral_address_space(two), "{layout}");
+        assert!(!dl.has_unstable_representation(two), "{layout}");
+        assert!(!dl.has_external_state(two), "{layout}");
+        assert!(!dl.must_not_introduce_int_to_ptr(two), "{layout}");
+        assert!(!dl.must_not_introduce_ptr_to_int(two), "{layout}");
+        assert_eq!(spaces(&dl), [two], "{layout}");
+    }
+    // Pointers can be marked as unstable using 'pu'
+    for layout in ["pu2:64:64:64:64", "pu2:64:64:64:32"] {
+        let dl = parse(layout);
+        // Note: isNonIntegralAddressSpace returns true for even with index ==
+        assert!(dl.is_non_integral_address_space(two), "{layout}");
+        assert!(dl.has_unstable_representation(two), "{layout}");
+        assert!(!dl.has_external_state(two), "{layout}");
+        assert!(dl.must_not_introduce_ptr_to_int(two), "{layout}");
+        assert!(dl.must_not_introduce_int_to_ptr(two), "{layout}");
+        assert_eq!(spaces(&dl), [two], "{layout}");
+    }
+
+    // Non-integral pointers with external state ('e' flag).
+    for layout in ["pe2:64:64:64:32", "pe2:64:64:64:64"] {
+        let dl = parse(layout);
+        assert!(dl.is_non_integral_address_space(two), "{layout}");
+        assert!(dl.has_external_state(two), "{layout}");
+        assert!(dl.must_not_introduce_int_to_ptr(two), "{layout}");
+        assert!(!dl.must_not_introduce_ptr_to_int(two), "{layout}");
+        assert!(!dl.has_unstable_representation(two), "{layout}");
+        assert_eq!(spaces(&dl), [two], "{layout}");
+    }
+
+    // It is also possible to have both unstable representation and external state
+    for layout in ["peu2:64:64:64:32", "pue2:128:64:64:64"] {
+        let dl = parse(layout);
+        assert!(dl.is_non_integral_address_space(two), "{layout}");
+        assert!(dl.has_external_state(two), "{layout}");
+        assert!(custom.must_not_introduce_int_to_ptr(two), "{layout}");
+        assert!(custom.must_not_introduce_ptr_to_int(two), "{layout}");
+        assert!(dl.has_unstable_representation(two), "{layout}");
+        assert_eq!(spaces(&dl), [two], "{layout}");
+    }
+
+    // For backwards compatibility, the ni DataLayout part overrides any
+    // p[e][u].
+    for layout in [
+        "ni:2-p2:64:64:64:32",
+        "ni:2-pu2:64:64:64:32",
+        "ni:2-pu2:64:64:64:32",
+        "p2:64:64:64:32-ni:2",
+        "pu2:64:64:64:32-ni:2",
+        "pe2:64:64:64:32-ni:2",
+        "peeee2:64:64:64:32-pu2:64:64:64:32-ni:2",
+    ] {
+        let dl = parse(layout);
+        assert!(dl.is_non_integral_address_space(two), "{layout}");
+        assert!(dl.has_unstable_representation(two), "{layout}");
+        // The external state property is new and not expected for existing uses of
+        // non-integral pointers, so existing :ni data layouts should not set it.
+        assert!(!dl.has_external_state(two), "{layout}");
+        assert_eq!(spaces(&dl), [two], "{layout}");
+    }
+}
+
+/// Port of `unittests/IR/DataLayoutTest.cpp::TEST(DataLayout, NonIntegralHelpers)`.
+/// `mustNotIntroduceIntToPtr(Type *)` and `mustNotIntroducePtrToInt(Type *)` are the
+/// `_for_type` forms, because Rust has no overload. Upstream's `Ctx` is a module
+/// here, which is what mints a type.
+#[test]
+fn non_integral_helpers() {
+    let dl = parse("p1:128:128:128:64-pu2:32:32:32:32-pu3:64:64:64:32-pe4:64:64:64:32");
     assert_eq!(
-        custom.non_integral_address_spaces().collect::<Vec<_>>(),
-        vec![2u32, 16777215u32]
+        dl.non_standard_address_spaces().collect::<Vec<_>>(),
+        [
+            address_space::<1>(),
+            address_space::<2>(),
+            address_space::<3>(),
+            address_space::<4>(),
+        ]
     );
-    assert!(!custom.is_non_integral_address_space(0));
-    assert!(!custom.is_non_integral_address_space(1));
-    assert!(custom.is_non_integral_address_space(2));
-    assert!(custom.is_non_integral_address_space(16777215));
+    let m = module_new!("m").expect("fresh module");
+    for (space, non_integral, unstable, external_state, _size) in [
+        (address_space::<0>(), false, false, false, 64),
+        (address_space::<1>(), true, false, false, 128),
+        (address_space::<2>(), true, true, false, 32),
+        (address_space::<3>(), true, true, false, 64),
+        (address_space::<4>(), true, false, true, 64),
+    ] {
+        assert_eq!(non_integral, dl.is_non_integral_address_space(space));
+        assert_eq!(unstable, dl.has_unstable_representation(space));
+        assert_eq!(external_state, dl.has_external_state(space));
+        let avoid_int_to_ptr = unstable || external_state;
+        assert_eq!(avoid_int_to_ptr, dl.must_not_introduce_int_to_ptr(space));
+        let avoid_ptr_to_int = unstable;
+        assert_eq!(avoid_ptr_to_int, dl.must_not_introduce_ptr_to_int(space));
+        let ptr_ty = m.ptr_type(space);
+        for ty in [
+            ptr_ty.as_type(),
+            VectorType::of(ptr_ty, lanes::<2>()).as_type(),
+            VectorType::scalable_of(ptr_ty, lanes::<1>()).as_type(),
+        ] {
+            assert_eq!(
+                avoid_ptr_to_int,
+                dl.must_not_introduce_ptr_to_int_for_type(ty)
+            );
+            assert_eq!(
+                avoid_int_to_ptr,
+                dl.must_not_introduce_int_to_ptr_for_type(ty)
+            );
+            // The old API should return true for both unstable and non-integral.
+            assert_eq!(
+                unstable || non_integral,
+                dl.is_non_integral_pointer_type(ty)
+            );
+        }
+        // Both helpers gracefully handle non-pointer, non-vector-of-pointers:
+        let i1_ty = m.bool_type().as_type();
+        assert!(!dl.must_not_introduce_ptr_to_int_for_type(i1_ty));
+        assert!(!dl.must_not_introduce_int_to_ptr_for_type(i1_ty));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -530,8 +769,8 @@ fn x86_64_linux_round_trip() {
     assert_eq!(dl.string_representation(), s);
     assert!(dl.is_little_endian());
     assert_eq!(dl.mangling_mode(), ManglingMode::Elf);
-    assert_eq!(dl.pointer_size_in_bits(0), 64);
-    assert_eq!(dl.pointer_size_in_bits(270), 32);
+    assert_eq!(dl.pointer_size_in_bits(address_space::<0>()), 64);
+    assert_eq!(dl.pointer_size_in_bits(address_space::<270>()), 32);
     assert!(dl.is_legal_integer(64));
     assert_eq!(dl.stack_alignment(), Some(Align::new(16).expect("a")));
 }
@@ -555,10 +794,10 @@ fn wasm32_round_trip() {
     let s = "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-n32:64-S128-ni:1:10:20";
     let dl = parse(s);
     assert_eq!(format!("{dl}"), s);
-    assert_eq!(dl.pointer_size_in_bits(0), 32);
-    assert!(dl.is_non_integral_address_space(1));
-    assert!(dl.is_non_integral_address_space(10));
-    assert!(dl.is_non_integral_address_space(20));
+    assert_eq!(dl.pointer_size_in_bits(address_space::<0>()), 32);
+    assert!(dl.is_non_integral_address_space(address_space::<1>()));
+    assert!(dl.is_non_integral_address_space(address_space::<10>()));
+    assert!(dl.is_non_integral_address_space(address_space::<20>()));
 }
 
 // ---------------------------------------------------------------------------
@@ -615,15 +854,19 @@ fn module_emits_module_asm_directive() {
 fn type_size_in_bits_basic_types() {
     let m = module_new!("m").expect("fresh module");
     let dl = DataLayout::default();
-    assert_eq!(dl.type_size_in_bits(m.bool_type().as_type()), 1);
-    assert_eq!(dl.type_size_in_bits(m.i8_type().as_type()), 8);
-    assert_eq!(dl.type_size_in_bits(m.i32_type().as_type()), 32);
-    assert_eq!(dl.type_size_in_bits(m.i64_type().as_type()), 64);
-    assert_eq!(dl.type_size_in_bits(m.half_type().as_type()), 16);
-    assert_eq!(dl.type_size_in_bits(m.f32_type().as_type()), 32);
-    assert_eq!(dl.type_size_in_bits(m.f64_type().as_type()), 64);
-    assert_eq!(dl.type_size_in_bits(m.fp128_type().as_type()), 128);
-    assert_eq!(dl.type_size_in_bits(m.x86_fp80_type().as_type()), 80);
+    for (ty, bits) in [
+        (m.bool_type().as_type(), 1),
+        (m.i8_type().as_type(), 8),
+        (m.i32_type().as_type(), 32),
+        (m.i64_type().as_type(), 64),
+        (m.half_type().as_type(), 16),
+        (m.f32_type().as_type(), 32),
+        (m.f64_type().as_type(), 64),
+        (m.fp128_type().as_type(), 128),
+        (m.x86_fp80_type().as_type(), 80),
+    ] {
+        assert_eq!(dl.type_size_in_bits(ty), TypeSize::fixed(bits), "{ty}");
+    }
 }
 
 /// `llvmkit-specific`: mirrors `DataLayout::getTypeStoreSize` for
@@ -633,8 +876,11 @@ fn type_store_size_non_power_of_two() {
     let m = module_new!("m").expect("fresh module");
     let dl = DataLayout::default();
     let i36 = m.custom_width_int_type(36).expect("i36");
-    assert_eq!(dl.type_store_size(i36.as_type()), 5);
-    assert_eq!(dl.type_store_size(m.x86_fp80_type().as_type()), 10);
+    assert_eq!(dl.type_store_size(i36.as_type()), TypeSize::fixed(5));
+    assert_eq!(
+        dl.type_store_size(m.x86_fp80_type().as_type()),
+        TypeSize::fixed(10)
+    );
 }
 
 /// `llvmkit-specific`: mirrors `DataLayout::getTypeAllocSize` for the
@@ -646,7 +892,10 @@ fn type_alloc_size_i64_default() {
     let dl = DataLayout::default();
     // Default i64 spec is `i64:32:64` (ABI=4, pref=8). So an i64
     // alloc-size rounds 8 up to 4-byte alignment -- still 8.
-    assert_eq!(dl.type_alloc_size(m.i64_type().as_type()), 8);
+    assert_eq!(
+        dl.type_alloc_size(m.i64_type().as_type()),
+        TypeSize::fixed(8)
+    );
 }
 
 /// `llvmkit-specific`: mirrors `DataLayout::getABITypeAlign` for
@@ -685,10 +934,10 @@ fn struct_layout_simple() {
         .struct_type([i32_ty.as_type(), i64_ty.as_type()])
         .expect("valid struct elements");
     let layout = dl.struct_layout(st.as_type());
-    assert_eq!(layout.element_offset(0), 0);
+    assert_eq!(layout.element_offset(0), TypeSize::fixed(0));
     // i64 default ABI alignment is 4, so i64 placed at offset 4.
-    assert_eq!(layout.element_offset(1), 4);
-    assert_eq!(layout.size_in_bytes(), 12);
+    assert_eq!(layout.element_offset(1), TypeSize::fixed(4));
+    assert_eq!(layout.size_in_bytes(), TypeSize::fixed(12));
 }
 
 /// `llvmkit-specific`: mirrors `StructLayout::StructLayout` packed
@@ -703,9 +952,93 @@ fn struct_layout_packed() {
         .packed_struct_type([i8_ty.as_type(), i32_ty.as_type()])
         .expect("valid struct elements");
     let layout = dl.struct_layout(st.as_type());
-    assert_eq!(layout.element_offset(0), 0);
-    assert_eq!(layout.element_offset(1), 1);
-    assert_eq!(layout.size_in_bytes(), 5);
+    assert_eq!(layout.element_offset(0), TypeSize::fixed(0));
+    assert_eq!(layout.element_offset(1), TypeSize::fixed(1));
+    assert_eq!(layout.size_in_bytes(), TypeSize::fixed(5));
+}
+
+/// Mirrors `StructLayout::getElementOffset`, a `TypeSize`, and
+/// `StructLayout::getElementContainingOffset`. The upstream comment there is the
+/// fixed case: "in { i32, [0 x i32], i32 }, searching for offset 4 will stop at
+/// the i32 in the end". The scalable half has **no upstream counterpart**: upstream
+/// asserts "Cannot get element at offset for structure containing scalable
+/// vector types", and llvmkit answers `None`. A field of a scalable struct has
+/// a scalable offset, so reading it as a number takes a decision.
+#[test]
+fn a_struct_field_offset_says_whether_it_scales() {
+    let m = module_new!("m").expect("fresh module");
+    let dl = DataLayout::default();
+    let i32_ty = m.i32_type();
+    let fixed = m
+        .struct_type([
+            i32_ty.as_type(),
+            ArrayType::of(i32_ty, 0).as_type(),
+            i32_ty.as_type(),
+        ])
+        .expect("valid struct elements");
+    let fixed_layout = dl.struct_layout(fixed.as_type());
+    assert_eq!(fixed_layout.element_containing_offset(4), Some(2));
+    assert_eq!(fixed_layout.element_containing_offset(0), Some(0));
+    assert_eq!(fixed_layout.element_containing_offset(8), None);
+
+    let scalable_field = VectorType::scalable_of(i32_ty, lanes::<4>()).as_type();
+    let scalable = m
+        .struct_type([scalable_field, scalable_field])
+        .expect("valid struct elements");
+    let scalable_layout = dl.struct_layout(scalable.as_type());
+    assert_eq!(scalable_layout.element_offset(1), TypeSize::scalable(16));
+    assert_eq!(
+        scalable_layout.element_offset_in_bits(1),
+        TypeSize::scalable(128)
+    );
+    assert_eq!(scalable_layout.element_containing_offset(4), None);
+}
+
+/// Mirrors `DataLayout::getTypeSizeInBits`, `getTypeAllocSize` and the
+/// `StructLayout` constructor: scalability survives an array's multiplication
+/// (`operator*`) and a homogeneous struct's sum (`if (i == 0 &&
+/// Ty->isScalableTy()) StructSize = TypeSize::getScalable(0)`, then
+/// `operator+=`). llvmkit-specific (rule anchor): no upstream test reads either.
+#[test]
+fn a_scalable_size_stays_scalable_through_an_array_and_a_struct() {
+    let m = module_new!("m").expect("fresh module");
+    let dl = DataLayout::default();
+    let vector = VectorType::scalable_of(m.i32_type(), lanes::<4>()).as_type();
+    assert_eq!(dl.type_size_in_bits(vector), TypeSize::scalable(128));
+
+    let array = m.array_type(vector, 2).expect("a valid element").as_type();
+    assert_eq!(dl.type_size_in_bits(array), TypeSize::scalable(256));
+    assert_eq!(dl.type_alloc_size(array), TypeSize::scalable(32));
+    assert_eq!(dl.type_store_size(array), TypeSize::scalable(32));
+
+    let tuple = m
+        .struct_type([vector, vector])
+        .expect("valid struct elements")
+        .as_type();
+    assert_eq!(dl.type_size_in_bits(tuple), TypeSize::scalable(256));
+    assert_eq!(dl.type_alloc_size(tuple), TypeSize::scalable(32));
+    let layout = dl.struct_layout(tuple);
+    assert_eq!(layout.size_in_bytes(), TypeSize::scalable(32));
+    assert_eq!(layout.size_in_bits(), TypeSize::scalable(256));
+    assert!(!layout.is_padded());
+
+    // `operator+=` alone takes a non-zero field's scalability. A first field of
+    // size zero is what `getScalable(0)` is for.
+    let empty_array = m.array_type(vector, 0).expect("a valid element").as_type();
+    let empty_tuple = m
+        .struct_type([empty_array])
+        .expect("valid struct elements")
+        .as_type();
+    assert_eq!(
+        dl.struct_layout(empty_tuple).size_in_bytes(),
+        TypeSize::scalable(0)
+    );
+
+    let i64_array = m.array_type(m.i64_type(), 2).expect("a valid element");
+    assert_eq!(
+        dl.type_size_in_bits(i64_array.as_type()),
+        TypeSize::fixed(128)
+    );
 }
 
 // ---------------------------------------------------------------------------

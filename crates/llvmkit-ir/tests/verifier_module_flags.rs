@@ -537,7 +537,7 @@ fn add_cg_profile_flag<B: ModuleBrand>(
     m: &Module<B>,
     entries: &[MetadataId<B>],
 ) -> Result<(MetadataId<B>, MetadataId<B>), IrError> {
-    let void_fn = m.function_type_no_parameters(m.void_type());
+    let void_fn = m.function_type_no_parameters(m.void_type())?;
     let a = m.add_function_dyn("a", void_fn, Linkage::External)?;
     let b = m.add_function_dyn("b", void_fn, Linkage::External)?;
     let a_ptr = m.metadata_constant(m.view(a).as_global_constant_ptr())?;
@@ -555,7 +555,7 @@ fn add_cg_profile_flag<B: ModuleBrand>(
 #[test]
 fn cg_profile_valid_entry_verifies() -> Result<(), IrError> {
     let m = module_new!("m")?;
-    let void_fn = m.function_type_no_parameters(m.void_type());
+    let void_fn = m.function_type_no_parameters(m.void_type())?;
     let a = m.add_function_dyn("a", void_fn, Linkage::External)?;
     let b = m.add_function_dyn("b", void_fn, Linkage::External)?;
     let a_ptr = m.metadata_constant(m.view(a).as_global_constant_ptr())?;
@@ -575,7 +575,7 @@ fn cg_profile_valid_entry_verifies() -> Result<(), IrError> {
 #[test]
 fn cg_profile_entry_must_have_three_operands() -> Result<(), IrError> {
     let m = module_new!("m")?;
-    let void_fn = m.function_type_no_parameters(m.void_type());
+    let void_fn = m.function_type_no_parameters(m.void_type())?;
     let a = m.add_function_dyn("a", void_fn, Linkage::External)?;
     let b = m.add_function_dyn("b", void_fn, Linkage::External)?;
     let a_ptr = m.metadata_constant(m.view(a).as_global_constant_ptr())?;
@@ -616,7 +616,7 @@ fn cg_profile_string_entry_is_rejected() -> Result<(), IrError> {
 #[test]
 fn cg_profile_four_operand_entry_is_rejected() -> Result<(), IrError> {
     let m = module_new!("m")?;
-    let void_fn = m.function_type_no_parameters(m.void_type());
+    let void_fn = m.function_type_no_parameters(m.void_type())?;
     let a = m.add_function_dyn("a", void_fn, Linkage::External)?;
     let b = m.add_function_dyn("b", void_fn, Linkage::External)?;
     let a_ptr = m.metadata_constant(m.view(a).as_global_constant_ptr())?;
@@ -641,7 +641,7 @@ fn cg_profile_four_operand_entry_is_rejected() -> Result<(), IrError> {
 #[test]
 fn cg_profile_caller_must_be_a_function_or_null() -> Result<(), IrError> {
     let m = module_new!("m")?;
-    let void_fn = m.function_type_no_parameters(m.void_type());
+    let void_fn = m.function_type_no_parameters(m.void_type())?;
     let b = m.add_function_dyn("b", void_fn, Linkage::External)?;
     let b_ptr = m.metadata_constant(m.view(b).as_global_constant_ptr())?;
     let a_string = m.metadata_string("a");
@@ -665,7 +665,7 @@ fn cg_profile_caller_must_be_a_function_or_null() -> Result<(), IrError> {
 #[test]
 fn cg_profile_callee_must_be_a_function_or_null() -> Result<(), IrError> {
     let m = module_new!("m")?;
-    let void_fn = m.function_type_no_parameters(m.void_type());
+    let void_fn = m.function_type_no_parameters(m.void_type())?;
     let a = m.add_function_dyn("a", void_fn, Linkage::External)?;
     let a_ptr = m.metadata_constant(m.view(a).as_global_constant_ptr())?;
     let b_string = m.metadata_string("b");
@@ -689,7 +689,7 @@ fn cg_profile_callee_must_be_a_function_or_null() -> Result<(), IrError> {
 #[test]
 fn cg_profile_count_must_be_an_integer_constant() -> Result<(), IrError> {
     let m = module_new!("m")?;
-    let void_fn = m.function_type_no_parameters(m.void_type());
+    let void_fn = m.function_type_no_parameters(m.void_type())?;
     let a = m.add_function_dyn("a", void_fn, Linkage::External)?;
     let b = m.add_function_dyn("b", void_fn, Linkage::External)?;
     let a_ptr = m.metadata_constant(m.view(a).as_global_constant_ptr())?;
@@ -715,7 +715,7 @@ fn cg_profile_count_must_be_an_integer_constant() -> Result<(), IrError> {
 #[test]
 fn cg_profile_null_count_is_rejected() -> Result<(), IrError> {
     let m = module_new!("m")?;
-    let void_fn = m.function_type_no_parameters(m.void_type());
+    let void_fn = m.function_type_no_parameters(m.void_type())?;
     let a = m.add_function_dyn("a", void_fn, Linkage::External)?;
     let b = m.add_function_dyn("b", void_fn, Linkage::External)?;
     let a_ptr = m.metadata_constant(m.view(a).as_global_constant_ptr())?;

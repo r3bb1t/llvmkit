@@ -383,6 +383,279 @@ define float @test(i1 %cond) {
     assert_eq!(known.sign_bit(), None);
 }
 
+/// `computeKnownFPClass` of the instruction named `%A`, with no context.
+fn known_class_of_a(module: &Module<DynBrand, Unverified>) -> (FpClassTest, Option<bool>) {
+    let data_layout = module.data_layout();
+    let query: ValueTrackingQuery<'_, '_, DynBrand> = ValueTrackingQuery::new(&data_layout);
+    let known = compute_known_fp_class_all(named(module, "A"), &query);
+    (known.classes(), known.sign_bit())
+}
+
+/// `nnan` on a `select` rules NaN out: the `KnownNotFromFlags` step reads the
+/// flags of any `FPMathOperator`, and a `select` of floating-point type is one.
+///
+/// Ports `ComputeKnownFPClassTest.SelectNNaN`
+/// (`llvm/unittests/Analysis/ValueTrackingTest.cpp`). Upstream's string runs the
+/// `select` line into the `ret` with no newline between them; one is written
+/// here, as for the other `Select*` ports.
+#[test]
+fn select_nnan() {
+    let module = parse(
+        r"
+define float @test(i1 %cond, float %arg0, float %arg1) {
+  %A = select nnan i1 %cond, float %arg0, float %arg1
+  ret float %A
+}
+",
+    );
+    assert_eq!(
+        known_class_of_a(&module),
+        (FpClassTest::NAN.complement(), None)
+    );
+}
+
+/// Ports `ComputeKnownFPClassTest.SelectNInf` (same file), as
+/// [`select_nnan`].
+#[test]
+fn select_ninf() {
+    let module = parse(
+        r"
+define float @test(i1 %cond, float %arg0, float %arg1) {
+  %A = select ninf i1 %cond, float %arg0, float %arg1
+  ret float %A
+}
+",
+    );
+    assert_eq!(
+        known_class_of_a(&module),
+        (FpClassTest::INFINITY.complement(), None)
+    );
+}
+
+/// Ports `ComputeKnownFPClassTest.SelectNNaNNInf` (same file), as
+/// [`select_nnan`].
+#[test]
+fn select_nnan_ninf() {
+    let module = parse(
+        r"
+define float @test(i1 %cond, float %arg0, float %arg1) {
+  %A = select nnan ninf i1 %cond, float %arg0, float %arg1
+  ret float %A
+}
+",
+    );
+    assert_eq!(
+        known_class_of_a(&module),
+        (
+            FpClassTest::NAN.union(FpClassTest::INFINITY).complement(),
+            None
+        )
+    );
+}
+
+/// A call site's own `nofpclass(nan)` rules NaN out: `KnownNotFromFlags` opens
+/// with `CB->getRetNoFPClass()`, which is the call site's mask ORed with the
+/// callee's.
+///
+/// Ports `ComputeKnownFPClassTest.SelectNoFPClassCallSiteNoNan` (same file).
+#[test]
+fn select_no_fp_class_call_site_no_nan() {
+    let module = parse(
+        r"
+declare float @func()
+define float @test() {
+  %A = call nofpclass(nan) float @func()
+  ret float %A
+}
+",
+    );
+    assert_eq!(
+        known_class_of_a(&module),
+        (FpClassTest::NAN.complement(), None)
+    );
+}
+
+/// Ports `ComputeKnownFPClassTest.SelectNoFPClassCallSiteNoZeros` (same file),
+/// as [`select_no_fp_class_call_site_no_nan`].
+#[test]
+fn select_no_fp_class_call_site_no_zeros() {
+    let module = parse(
+        r"
+declare float @func()
+define float @test() {
+  %A = call nofpclass(zero) float @func()
+  ret float %A
+}
+",
+    );
+    assert_eq!(
+        known_class_of_a(&module),
+        (FpClassTest::ZERO.complement(), None)
+    );
+}
+
+/// The callee's declared `nofpclass(nan)` rules NaN out through
+/// `getRetNoFPClass`'s `getCalledFunction()` half.
+///
+/// Ports `ComputeKnownFPClassTest.SelectNoFPClassDeclarationNoNan` (same file).
+#[test]
+fn select_no_fp_class_declaration_no_nan() {
+    let module = parse(
+        r"
+declare nofpclass(nan) float @no_nans()
+define float @test() {
+  %A = call float @no_nans()
+  ret float %A
+}
+",
+    );
+    assert_eq!(
+        known_class_of_a(&module),
+        (FpClassTest::NAN.complement(), None)
+    );
+}
+
+/// The callee's `nofpclass(nan)` rules NaN out when the callee is declared
+/// *after* the call.
+///
+/// **No upstream counterpart**: `select_no_fp_class_declaration_no_nan`'s
+/// fixture with the declaration moved below the function, where clang writes
+/// it. `getRetNoFPClass`'s `getCalledFunction()` sees the same `Function`
+/// whichever comes first, so the answer must not change.
+#[test]
+fn select_no_fp_class_declaration_after_the_call_no_nan() {
+    let module = parse(
+        r"
+define float @test() {
+  %A = call float @no_nans()
+  ret float %A
+}
+declare nofpclass(nan) float @no_nans()
+",
+    );
+    assert_eq!(
+        known_class_of_a(&module),
+        (FpClassTest::NAN.complement(), None)
+    );
+}
+
+/// "Check nofpclass + ninf works on a callsite": the call site's mask and the
+/// call's `ninf` flag join.
+///
+/// Ports `ComputeKnownFPClassTest.SelectNoFPClassCallSiteNoZerosNInfFlags`
+/// (same file).
+#[test]
+fn select_no_fp_class_call_site_no_zeros_ninf_flags() {
+    let module = parse(
+        r"
+declare float @func()
+define float @test() {
+  %A = call ninf nofpclass(zero) float @func()
+  ret float %A
+}
+",
+    );
+    assert_eq!(
+        known_class_of_a(&module),
+        (
+            FpClassTest::ZERO.union(FpClassTest::INFINITY).complement(),
+            None
+        )
+    );
+}
+
+/// The `KnownNotFromFlags` step on the `FPMathOperator`s the upstream tests do
+/// not reach, and `getRetNoFPClass` on an `invoke` and on both masks at once.
+///
+/// **No upstream counterpart.** The oracles are `computeKnownFPClass`'s
+/// `if (const FPMathOperator *FPOp = dyn_cast_or_null<FPMathOperator>(Op))`
+/// step, with `FPMathOperator::classof` admitting `fpext` and `fptrunc` always
+/// and a `phi` of floating-point type, and `CallBase::getRetNoFPClass`
+/// (`Instructions.cpp`), `Attrs.getRetNoFPClass()` ORed with
+/// `getCalledFunction()`'s, for every `CallBase`. Each flagged value has an
+/// unflagged twin as its control.
+#[test]
+fn flags_and_return_masks_rule_classes_out_on_every_kind_that_carries_them() {
+    let module = parse(
+        r"
+declare nofpclass(nan) float @no_nans()
+declare float @func()
+declare i32 @personality(...)
+
+define float @test(i1 %cond, float %x, double %d) personality ptr @personality {
+entry:
+  %fpext.nnan = fpext nnan float %x to double
+  %fpext.plain = fpext float %x to double
+  %fptrunc.ninf = fptrunc ninf double %d to float
+  %fptrunc.plain = fptrunc double %d to float
+  %both = call nofpclass(zero) float @no_nans()
+  %invoked = invoke nofpclass(nan) float @func() to label %next unwind label %cleanup
+
+next:
+  %phi.ninf = phi ninf float [ %x, %entry ]
+  %phi.plain = phi float [ %x, %entry ]
+  ret float %phi.ninf
+
+cleanup:
+  %pad = landingpad { ptr, i32 } cleanup
+  ret float %x
+}
+",
+    );
+    let data_layout = module.data_layout();
+    let query: ValueTrackingQuery<'_, '_, DynBrand> = ValueTrackingQuery::new(&data_layout);
+    let classes = |name: &str| compute_known_fp_class_all(named(&module, name), &query).classes();
+
+    assert!(!classes("fpext.nnan").contains(FpClassTest::NAN));
+    assert!(classes("fpext.plain").contains(FpClassTest::NAN));
+    assert!(!classes("fptrunc.ninf").contains(FpClassTest::INFINITY));
+    assert!(classes("fptrunc.plain").contains(FpClassTest::INFINITY));
+    assert!(!classes("phi.ninf").contains(FpClassTest::INFINITY));
+    assert!(classes("phi.plain").contains(FpClassTest::INFINITY));
+    assert_eq!(
+        classes("both"),
+        FpClassTest::NAN.union(FpClassTest::ZERO).complement(),
+        "the call site's mask and the declaration's are ORed"
+    );
+    assert_eq!(classes("invoked"), FpClassTest::NAN.complement());
+}
+
+/// `nsz` / `nnan` on a `select` user lets the sign of a zero / of a NaN be
+/// ignored: both predicates open by asking the user, as an `FPMathOperator`,
+/// for the flag.
+///
+/// **No upstream counterpart.** The oracles are the openings of
+/// `canIgnoreSignBitOfZero` and `canIgnoreSignBitOfNaN` (`ValueTracking.cpp`),
+/// `if (auto *FPOp = dyn_cast<FPMathOperator>(User)) if (FPOp->hasNoSignedZeros())
+/// return true;` and the same with `hasNoNaNs()`. A `select` of floating-point
+/// type is an `FPMathOperator`, and without the flag each predicate's `switch`
+/// answers `false` for a `select`, so the unflagged `select` is the control.
+#[test]
+fn a_select_user_s_flags_let_the_sign_of_a_zero_or_a_nan_be_ignored() {
+    let module = parse(
+        r"
+define void @test(i1 %cond, float %x, float %y) {
+  %nsz = select nsz i1 %cond, float %x, float %y
+  %nnan = select nnan i1 %cond, float %x, float %y
+  %plain = select i1 %cond, float %x, float %y
+  ret void
+}
+",
+    );
+    // The `select`'s operand edge from `%x`, its second operand.
+    let use_of_x = |name: &str| {
+        <InstructionView<'_, DynBrand, llvmkit_ir::ReadOnly> as llvmkit_ir::User<'_, DynBrand>>::operand_use(
+            instruction(&module, name),
+            1,
+        )
+        .expect("a select has three operands")
+    };
+    assert!(can_ignore_sign_bit_of_zero(use_of_x("nsz")));
+    assert!(!can_ignore_sign_bit_of_zero(use_of_x("plain")));
+    assert!(can_ignore_sign_bit_of_nan(use_of_x("nnan")));
+    assert!(!can_ignore_sign_bit_of_nan(use_of_x("plain")));
+}
+
 /// The select arm's *condition* refinement: the true arm is reached only when
 /// the condition holds, so the value is known ordered there even though nothing
 /// is known about it on its own.

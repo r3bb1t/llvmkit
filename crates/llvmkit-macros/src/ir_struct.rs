@@ -1,6 +1,7 @@
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote};
+use syn::ext::IdentExt;
 use syn::{Data, DeriveInput, Error, Fields, Ident, LitStr, Path, Result, parse_macro_input};
 
 pub(crate) fn derive(input: TokenStream) -> TokenStream {
@@ -17,13 +18,6 @@ struct Config {
     crate_path: TokenStream2,
 }
 
-struct BuildStepContext<'a> {
-    ir: &'a TokenStream2,
-    module_param: &'a Ident,
-    builder_param: &'a Ident,
-    base_name_ident: &'a Ident,
-}
-
 fn expand(input: DeriveInput) -> Result<TokenStream2> {
     if !input.generics.params.is_empty() || input.generics.where_clause.is_some() {
         return Err(Error::new_spanned(
@@ -35,7 +29,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
     let ident = input.ident;
     let vis = input.vis;
     let mut config = Config {
-        llvm_name: ident.to_string(),
+        llvm_name: ident.unraw().to_string(),
         packed: false,
         crate_path: default_crate_path(),
     };
@@ -71,6 +65,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
     }
 
     let value_ident = format_ident!("{}Value", ident);
+    let build_trait = format_ident!("{}Build", ident);
     let ir = config.crate_path;
     let llvm_name = config.llvm_name;
     let packed = config.packed;
@@ -82,107 +77,175 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
         )
     })?)
         .collect();
+    // The generated items' generic parameters, and the capability one below.
+    // `mixed_site` is hygienic for locals, not for type parameters, so the
+    // reserved names do the work: a field whose type is spelled `B` or `Name` is
+    // the user's own, and a parameter of that name would shadow it, and then
+    // fail with an error about the derive's internals.
+    let brand_param = Ident::new("__LlvmkitBrand", Span::mixed_site());
+    let folder_param = Ident::new("__LlvmkitFolder", Span::mixed_site());
+    let return_param = Ident::new("__LlvmkitReturn", Span::mixed_site());
+    let name_generic = Ident::new("__LlvmkitName", Span::mixed_site());
     let build_generics: Vec<Ident> = indices
         .iter()
-        .map(|idx| format_ident!("Field{}", idx))
+        .map(|idx| Ident::new(&format!("__LlvmkitField{idx}"), Span::mixed_site()))
         .collect();
-    let module_param = Ident::new("__llvmkit_module", Span::mixed_site());
     let builder_param = Ident::new("__llvmkit_builder", Span::mixed_site());
     let name_param = Ident::new("__llvmkit_name", Span::mixed_site());
     let base_name_ident = Ident::new("__llvmkit_base_name", Span::mixed_site());
-    // Hygienic, so a field whose type is spelled `C` is not shadowed by the
-    // capability parameter of the generated `matches_fields`.
+    let aggregate_ident = Ident::new("__llvmkit_aggregate", Span::mixed_site());
+    // The value type's one field: the llvmkit-owned carrier, which only
+    // llvmkit mints after checking a value against the schema — so code that
+    // spells the field still cannot put a value of another type in it.
+    let schema_value_field = Ident::new("__llvmkit_schema_value", Span::mixed_site());
     let capability_param = Ident::new("__LlvmkitCapability", Span::mixed_site());
-    let value_steps = build_value_steps(
-        &ident,
-        &field_idents,
-        &field_tys,
-        &indices,
-        BuildStepContext {
-            ir: &ir,
-            module_param: &module_param,
-            builder_param: &builder_param,
-            base_name_ident: &base_name_ident,
-        },
-    );
-    let build_return = if field_count == 0 {
-        quote! {
-            let __llvmkit_ty = <#ident as #ir::StructSchema>::ir_type(#module_param)?;
-            let __llvmkit_raw = <#ir::StructValue<'ctx, B> as ::core::convert::TryFrom<#ir::Constant<'ctx, B>>>::try_from(
-                __llvmkit_ty.as_type().poison().as_constant(),
-            )?;
-            Ok(Self { raw: __llvmkit_raw })
-        }
+    // Each field's instruction name: `base.field`, or `field` when the base
+    // name is empty. With no field there is no instruction to name.
+    let base_name = if field_count == 0 {
+        quote! { let _ = #name_param; }
     } else {
-        let last = Ident::new(
-            &format!("__llvmkit_value_{}", field_count - 1),
-            Span::mixed_site(),
-        );
-        quote! {
-            #(#value_steps)*
-            Ok(#last)
-        }
+        quote! { let #base_name_ident = ::core::convert::AsRef::<str>::as_ref(&#name_param); }
     };
+    let field_names: Vec<TokenStream2> = field_idents
+        .iter()
+        .map(|field_ident| {
+            // `.unraw()`, as `try_ident` below: a field spelled `r#type` names
+            // its instruction `type`, and `r#` is Rust's, not the IR's.
+            let field_name = field_ident.unraw().to_string();
+            quote! {
+                if #base_name_ident.is_empty() {
+                    ::std::string::String::from(#field_name)
+                } else {
+                    ::std::format!("{}.{}", #base_name_ident, #field_name)
+                }
+            }
+        })
+        .collect();
+    let write_steps = field_idents
+        .iter()
+        .zip(indices.iter())
+        .zip(field_names.iter())
+        .map(|((field_ident, idx), field_name)| {
+            quote! {
+                let #aggregate_ident = #builder_param.write_field::<#ident, #idx, _, _>(
+                    #aggregate_ident,
+                    #field_ident,
+                    #field_name,
+                );
+            }
+        });
+    let insert_steps = field_idents
+        .iter()
+        .zip(field_tys.iter())
+        .zip(indices.iter())
+        .zip(field_names.iter())
+        .map(|(((field_ident, ty), idx), field_name)| {
+            quote! {
+                let #aggregate_ident = #builder_param.insert_field::<#ident, #ty, _, _, _>(
+                    #aggregate_ident,
+                    #field_ident,
+                    #idx,
+                    #field_name,
+                )?;
+            }
+        });
+    let build_doc = format!(
+        "Build a `{ident}` value — `poison` of `%{llvm_name}` and one `insertvalue` per field, \
+         folded by the builder's folder — with no `Result`, on a `UniqueBrand` module with \
+         llvmkit's own folder. Each argument is a view handle of its field's type or a Rust \
+         scalar literal (`FieldArg`). Any brand, any folder and a storable id build with \
+         `try_build`; a `SpaceDyn` pointer is narrowed first with `PointerValue::try_from`."
+    );
+    let try_build_doc = format!(
+        "Build a `{ident}` value on any brand, through any folder, from any argument a field \
+         admits (`IntoIrField`, ids included): each is admitted at the builder's module and \
+         checked against its field. A `Ptr<AS>` field admits a pointer known to be in `AS`, so \
+         a `SpaceDyn` pointer is narrowed first with `PointerValue::try_from`."
+    );
 
     let accessors = field_idents
         .iter()
         .zip(field_tys.iter())
         .zip(indices.iter())
         .map(|((field_ident, ty), idx)| {
-            let field_name = field_ident.to_string();
+            let field_name = field_ident.unraw().to_string();
+            let try_ident = format_ident!("try_{}", field_ident.unraw());
+            let read_doc = format!(
+                "Read field `{field_name}` — no `Result` on a `UniqueBrand` module with \
+                 llvmkit's own folder. Any brand and any folder read with `{try_ident}`."
+            );
+            let try_doc = format!(
+                "Read field `{field_name}` on any brand, through any folder: the value is \
+                 admitted at the builder's module and the folder's answer is checked."
+            );
             quote! {
+                #[doc = #read_doc]
                 #[inline]
-                #vis fn #field_ident<'m, F, R>(
+                #vis fn #field_ident<'m, #folder_param, #return_param>(
                     self,
-                    builder: &#ir::IrBuilder<'m, 'ctx, B, F, #ir::Positioned, R>,
-                ) -> #ir::IrResult<<#ty as #ir::IrField>::Value<'ctx, B, #ir::Mutable>>
+                    builder: &#ir::IrBuilder<'m, 'ctx, #brand_param, #folder_param, #ir::Positioned, #return_param>,
+                ) -> <#ty as #ir::IrField>::Value<'ctx, #brand_param, #ir::Mutable>
                 where
-                    F: #ir::IrBuilderFolder<'ctx, B>,
-                    R: #ir::ReturnMarker,
-                    #ty: #ir::IrField,
+                    #brand_param: #ir::UniqueBrand,
+                    #folder_param: #ir::TrustedFolder<'ctx, #brand_param>,
+                    #return_param: #ir::ReturnMarker,
+                {
+                    builder.read_field::<#ident, #idx, _>(self.#schema_value_field, #field_name)
+                }
+
+                #[doc = #try_doc]
+                #[inline]
+                #vis fn #try_ident<'m, #folder_param, #return_param>(
+                    self,
+                    builder: &#ir::IrBuilder<'m, 'ctx, #brand_param, #folder_param, #ir::Positioned, #return_param>,
+                ) -> #ir::IrResult<<#ty as #ir::IrField>::Value<'ctx, #brand_param, #ir::Mutable>>
+                where
+                    #folder_param: #ir::IrBuilderFolder<'ctx, #brand_param>,
+                    #return_param: #ir::ReturnMarker,
                 {
                     builder.extract_field::<#ident, #ty, _, _>(self, #idx, #field_name)
                 }
             }
         });
 
-    let matches_terms = field_tys
-        .iter()
-        .zip(indices.iter())
-        .map(|(ty, idx)| {
-            let idx_usize = usize::try_from(*idx).map_err(|_| {
-                Error::new(Span::call_site(), "IrStruct field index does not fit usize")
-            })?;
-            Ok(quote! { <#ty as #ir::IrField>::matches_ir_type(fields[#idx_usize]) })
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    let build_params = field_idents
+    let build_params: Vec<TokenStream2> = field_idents
         .iter()
         .zip(build_generics.iter())
-        .map(|(field_ident, generic)| quote! { #field_ident: #generic });
-    let build_bounds = build_generics
+        .map(|(field_ident, generic)| quote! { #field_ident: #generic })
+        .collect();
+    // `build` takes what lowers to the field's layout with no check;
+    // `try_build` takes what a field admits, checked.
+    let build_bounds: Vec<TokenStream2> = build_generics
         .iter()
         .zip(field_tys.iter())
-        .map(|(generic, ty)| quote! { #generic: #ir::IntoIrField<'ctx, #ty, B> });
+        .map(|(generic, ty)| {
+            quote! { #generic: #ir::FieldArg<'ctx, <#ty as #ir::IrField>::Layout, #brand_param> }
+        })
+        .collect();
+    let try_build_bounds: Vec<TokenStream2> = build_generics
+        .iter()
+        .zip(field_tys.iter())
+        .map(|(generic, ty)| quote! { #generic: #ir::IntoIrField<'ctx, #ty, #brand_param> })
+        .collect();
 
     Ok(quote! {
         /// The value of a struct of this schema, at the capability of the
-        /// struct value it wraps (D8).
+        /// struct value it wraps (D8). It holds an llvmkit-checked
+        /// `SchemaValue`, so it is valid for the schema by construction.
         #vis struct #value_ident<
             'ctx,
-            B: #ir::ModuleBrand,
+            #brand_param: #ir::ModuleBrand,
             #capability_param: #ir::Capability = #ir::Mutable,
         > {
-            raw: #ir::StructValue<'ctx, B, #capability_param>,
+            #schema_value_field: #ir::SchemaValue<'ctx, #ident, #brand_param, #capability_param>,
         }
 
         // Bound-free std impls, spelled out instead of derived: a std derive
         // would demand `B: Clone`/`Debug`/… of the brand, and brands are bare
         // unit structs. Mirrors the `Branded` derive's output for this shape.
         #[automatically_derived]
-        impl<'ctx, B: #ir::ModuleBrand, #capability_param: #ir::Capability> ::core::clone::Clone
-            for #value_ident<'ctx, B, #capability_param>
+        impl<'ctx, #brand_param: #ir::ModuleBrand, #capability_param: #ir::Capability> ::core::clone::Clone
+            for #value_ident<'ctx, #brand_param, #capability_param>
         {
             #[inline]
             fn clone(&self) -> Self {
@@ -190,211 +253,275 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
             }
         }
         #[automatically_derived]
-        impl<'ctx, B: #ir::ModuleBrand, #capability_param: #ir::Capability> ::core::marker::Copy
-            for #value_ident<'ctx, B, #capability_param>
+        impl<'ctx, #brand_param: #ir::ModuleBrand, #capability_param: #ir::Capability> ::core::marker::Copy
+            for #value_ident<'ctx, #brand_param, #capability_param>
         {
         }
         #[automatically_derived]
-        impl<'ctx, B: #ir::ModuleBrand, #capability_param: #ir::Capability> ::core::fmt::Debug
-            for #value_ident<'ctx, B, #capability_param>
+        impl<'ctx, #brand_param: #ir::ModuleBrand, #capability_param: #ir::Capability> ::core::fmt::Debug
+            for #value_ident<'ctx, #brand_param, #capability_param>
         {
             fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
                 f.debug_struct(::core::stringify!(#value_ident))
-                    .field("raw", &self.raw)
+                    .field("schema_value", &self.#schema_value_field)
                     .finish()
             }
         }
         #[automatically_derived]
-        impl<'ctx, B: #ir::ModuleBrand, #capability_param: #ir::Capability> ::core::cmp::PartialEq
-            for #value_ident<'ctx, B, #capability_param>
+        impl<'ctx, #brand_param: #ir::ModuleBrand, #capability_param: #ir::Capability> ::core::cmp::PartialEq
+            for #value_ident<'ctx, #brand_param, #capability_param>
         {
             #[inline]
             fn eq(&self, other: &Self) -> bool {
-                self.raw == other.raw
+                self.#schema_value_field == other.#schema_value_field
             }
         }
         #[automatically_derived]
-        impl<'ctx, B: #ir::ModuleBrand, #capability_param: #ir::Capability> ::core::cmp::Eq
-            for #value_ident<'ctx, B, #capability_param>
+        impl<'ctx, #brand_param: #ir::ModuleBrand, #capability_param: #ir::Capability> ::core::cmp::Eq
+            for #value_ident<'ctx, #brand_param, #capability_param>
         {
         }
         #[automatically_derived]
-        impl<'ctx, B: #ir::ModuleBrand, #capability_param: #ir::Capability> ::core::hash::Hash
-            for #value_ident<'ctx, B, #capability_param>
+        impl<'ctx, #brand_param: #ir::ModuleBrand, #capability_param: #ir::Capability> ::core::hash::Hash
+            for #value_ident<'ctx, #brand_param, #capability_param>
         {
             #[inline]
             fn hash<__H: ::core::hash::Hasher>(&self, state: &mut __H) {
-                ::core::hash::Hash::hash(&self.raw, state);
+                ::core::hash::Hash::hash(&self.#schema_value_field, state);
             }
         }
         #[automatically_derived]
-        impl<'ctx, B: #ir::ModuleBrand, #capability_param: #ir::Capability> #ir::CapabilityOf
-            for #value_ident<'ctx, B, #capability_param>
+        impl<'ctx, #brand_param: #ir::ModuleBrand, #capability_param: #ir::Capability> #ir::CapabilityOf
+            for #value_ident<'ctx, #brand_param, #capability_param>
         {
             type Capability = #capability_param;
         }
 
-        impl<'ctx, B, #capability_param> #value_ident<'ctx, B, #capability_param>
+        impl<'ctx, #brand_param, #capability_param> #value_ident<'ctx, #brand_param, #capability_param>
         where
-            B: #ir::ModuleBrand + 'ctx,
+            #brand_param: #ir::ModuleBrand + 'ctx,
             #capability_param: #ir::Capability,
         {
             #[inline]
-            #vis fn as_struct_value(self) -> #ir::StructValue<'ctx, B, #capability_param> {
-                self.raw
+            #vis fn as_struct_value(self) -> #ir::StructValue<'ctx, #brand_param, #capability_param> {
+                self.#schema_value_field.as_struct_value()
             }
 
             #[inline]
-            #vis fn as_erased(self) -> #ir::Value<'ctx, B, #capability_param> {
-                self.raw.as_erased()
+            #vis fn as_erased(self) -> #ir::Value<'ctx, #brand_param, #capability_param> {
+                self.#schema_value_field.as_erased()
             }
 
             #(#accessors)*
         }
 
-        impl<'ctx, B> #value_ident<'ctx, B>
+        /// The builds of this schema's value, from the struct type
+        /// `get_or_insert_struct_of` answers: an extension of
+        /// `StructOf<Self>`, which holds the proof that the type exists with
+        /// this schema's body.
+        #vis trait #build_trait<'ctx, #brand_param: #ir::ModuleBrand + 'ctx>: ::core::marker::Sized {
+            #[doc = #build_doc]
+            fn build<'m, #folder_param, #return_param, #name_generic, #(#build_generics,)*>(
+                self,
+                #builder_param: &#ir::IrBuilder<'m, 'ctx, #brand_param, #folder_param, #ir::Positioned, #return_param>,
+                #(#build_params,)*
+                #name_param: #name_generic,
+            ) -> #value_ident<'ctx, #brand_param>
+            where
+                #brand_param: #ir::UniqueBrand,
+                #folder_param: #ir::TrustedFolder<'ctx, #brand_param>,
+                #return_param: #ir::ReturnMarker,
+                #name_generic: ::core::convert::AsRef<str>,
+                #(#build_bounds,)*;
+
+            #[doc = #try_build_doc]
+            ///
+            /// # Errors
+            ///
+            /// `IrError::ForeignType` when another module minted the struct
+            /// type, and each field's admission error — `IrError::ForeignValueId`
+            /// for another module's value, a type mismatch for a value of
+            /// another type.
+            fn try_build<'m, #folder_param, #return_param, #name_generic, #(#build_generics,)*>(
+                self,
+                #builder_param: &#ir::IrBuilder<'m, 'ctx, #brand_param, #folder_param, #ir::Positioned, #return_param>,
+                #(#build_params,)*
+                #name_param: #name_generic,
+            ) -> #ir::IrResult<#value_ident<'ctx, #brand_param>>
+            where
+                #folder_param: #ir::IrBuilderFolder<'ctx, #brand_param>,
+                #return_param: #ir::ReturnMarker,
+                #name_generic: ::core::convert::AsRef<str>,
+                #(#try_build_bounds,)*;
+        }
+
+        impl<'ctx, #brand_param, #capability_param> #build_trait<'ctx, #brand_param>
+            for #ir::StructOf<'ctx, #ident, #brand_param, #capability_param>
         where
-            B: #ir::ModuleBrand + 'ctx,
+            #brand_param: #ir::ModuleBrand + 'ctx,
+            #capability_param: #ir::Capability,
         {
             #[inline]
-            #vis fn build<'m, F, R, Name, #(#build_generics,)*>(
-                #module_param: #ir::ModuleView<'ctx, B>,
-                #builder_param: &#ir::IrBuilder<'m, 'ctx, B, F, #ir::Positioned, R>,
+            fn build<'m, #folder_param, #return_param, #name_generic, #(#build_generics,)*>(
+                self,
+                #builder_param: &#ir::IrBuilder<'m, 'ctx, #brand_param, #folder_param, #ir::Positioned, #return_param>,
                 #(#build_params,)*
-                #name_param: Name,
-            ) -> #ir::IrResult<Self>
+                #name_param: #name_generic,
+            ) -> #value_ident<'ctx, #brand_param>
             where
-                F: #ir::IrBuilderFolder<'ctx, B>,
-                R: #ir::ReturnMarker,
-                Name: ::core::convert::AsRef<str>,
+                #brand_param: #ir::UniqueBrand,
+                #folder_param: #ir::TrustedFolder<'ctx, #brand_param>,
+                #return_param: #ir::ReturnMarker,
+                #name_generic: ::core::convert::AsRef<str>,
                 #(#build_bounds,)*
             {
-                let #base_name_ident = #name_param.as_ref();
-                #build_return
+                #base_name
+                let #aggregate_ident = #builder_param.struct_poison(self);
+                #(#write_steps)*
+                <#value_ident<'ctx, #brand_param> as #ir::StructSchemaValue<'ctx, #ident, #brand_param, #ir::Mutable>>::from_schema_value(
+                    #aggregate_ident,
+                )
+            }
+
+            #[inline]
+            fn try_build<'m, #folder_param, #return_param, #name_generic, #(#build_generics,)*>(
+                self,
+                #builder_param: &#ir::IrBuilder<'m, 'ctx, #brand_param, #folder_param, #ir::Positioned, #return_param>,
+                #(#build_params,)*
+                #name_param: #name_generic,
+            ) -> #ir::IrResult<#value_ident<'ctx, #brand_param>>
+            where
+                #folder_param: #ir::IrBuilderFolder<'ctx, #brand_param>,
+                #return_param: #ir::ReturnMarker,
+                #name_generic: ::core::convert::AsRef<str>,
+                #(#try_build_bounds,)*
+            {
+                #base_name
+                let #aggregate_ident =
+                    <#value_ident<'ctx, #brand_param> as #ir::StructSchemaValue<'ctx, #ident, #brand_param, #ir::Mutable>>::from_schema_value(
+                        #builder_param.try_struct_poison(self)?,
+                    );
+                #(#insert_steps)*
+                ::core::result::Result::Ok(#aggregate_ident)
+            }
+        }
+
+        // A value of this schema fills a field laid out as this schema — a
+        // nested struct's field — in a build without `?`.
+        impl<'ctx, #brand_param, #capability_param> #ir::FieldArg<'ctx, #ident, #brand_param>
+            for #value_ident<'ctx, #brand_param, #capability_param>
+        where
+            #brand_param: #ir::UniqueBrand + 'ctx,
+            #capability_param: #ir::Capability,
+        {
+            #[inline]
+            fn lower(self, module: #ir::ModuleRef<'ctx, #brand_param>) -> #ir::LoweredField<'ctx, #ident, #brand_param> {
+                #ir::LoweredField::of(self, module)
             }
         }
 
         impl #ir::StructSchema for #ident {
-            type Value<'ctx, B: #ir::ModuleBrand + 'ctx, #capability_param: #ir::Capability> =
-                #value_ident<'ctx, B, #capability_param>;
-            type FieldParams = (#(#field_tys,)*);
+            type Value<'ctx, #brand_param: #ir::ModuleBrand + 'ctx, #capability_param: #ir::Capability> =
+                #value_ident<'ctx, #brand_param, #capability_param>;
+            type Fields = (#(#field_tys,)*);
 
             const NAME: &'static str = #llvm_name;
             const PACKED: bool = #packed;
-
-            fn field_types<'ctx, B>(
-                module: #ir::ModuleView<'ctx, B>,
-            ) -> #ir::IrResult<::std::vec::Vec<#ir::Type<'ctx, B, #ir::ReadOnly>>>
-            where
-                B: #ir::ModuleBrand + 'ctx,
-            {
-                Ok(::std::vec![#(<#field_tys as #ir::IrField>::ir_type(module)?,)*])
-            }
-
-            fn matches_fields<'ctx, B, #capability_param: #ir::Capability>(
-                fields: &[#ir::Type<'ctx, B, #capability_param>],
-            ) -> bool
-            where
-                B: #ir::ModuleBrand + 'ctx,
-            {
-                fields.len() == #field_count #(&& #matches_terms)*
-            }
         }
 
-        impl<'ctx, B, #capability_param> #ir::StructSchemaValue<'ctx, #ident, B, #capability_param>
-            for #value_ident<'ctx, B, #capability_param>
+        impl<'ctx, #brand_param, #capability_param> #ir::StructSchemaValue<'ctx, #ident, #brand_param, #capability_param>
+            for #value_ident<'ctx, #brand_param, #capability_param>
         where
-            B: #ir::ModuleBrand + 'ctx,
+            #brand_param: #ir::ModuleBrand + 'ctx,
             #capability_param: #ir::Capability,
         {
             #[inline]
-            fn as_struct_value(self) -> #ir::StructValue<'ctx, B, #capability_param> {
-                self.raw
-            }
-
-            #[inline]
-            fn from_struct_value(
-                raw: #ir::StructValue<'ctx, B, #capability_param>,
-                _validated: &#ir::ValidatedStructValue<'_>,
+            fn from_schema_value(
+                value: #ir::SchemaValue<'ctx, #ident, #brand_param, #capability_param>,
             ) -> Self {
-                Self { raw }
+                Self { #schema_value_field: value }
+            }
+
+            #[inline]
+            fn schema_value(self) -> #ir::SchemaValue<'ctx, #ident, #brand_param, #capability_param> {
+                self.#schema_value_field
             }
         }
 
-        impl<'ctx, B, #capability_param>
-            ::core::convert::TryFrom<#ir::Argument<'ctx, B, #capability_param>>
-            for #value_ident<'ctx, B, #capability_param>
+        impl<'ctx, #brand_param, #capability_param>
+            ::core::convert::TryFrom<#ir::Argument<'ctx, #brand_param, #capability_param>>
+            for #value_ident<'ctx, #brand_param, #capability_param>
         where
-            B: #ir::ModuleBrand + 'ctx,
+            #brand_param: #ir::ModuleBrand + 'ctx,
             #capability_param: #ir::Capability,
         {
             type Error = #ir::IrError;
 
             #[inline]
-            fn try_from(value: #ir::Argument<'ctx, B, #capability_param>) -> #ir::IrResult<Self> {
-                <#ident as #ir::StructSchema>::try_value_from_ir(value)
+            fn try_from(value: #ir::Argument<'ctx, #brand_param, #capability_param>) -> #ir::IrResult<Self> {
+                Ok(Self { #schema_value_field: #ir::SchemaValue::try_new(value)? })
             }
         }
 
-        impl<'ctx, B, #capability_param>
-            ::core::convert::TryFrom<#ir::StructValue<'ctx, B, #capability_param>>
-            for #value_ident<'ctx, B, #capability_param>
+        impl<'ctx, #brand_param, #capability_param>
+            ::core::convert::TryFrom<#ir::StructValue<'ctx, #brand_param, #capability_param>>
+            for #value_ident<'ctx, #brand_param, #capability_param>
         where
-            B: #ir::ModuleBrand + 'ctx,
+            #brand_param: #ir::ModuleBrand + 'ctx,
             #capability_param: #ir::Capability,
         {
             type Error = #ir::IrError;
 
             #[inline]
             fn try_from(
-                value: #ir::StructValue<'ctx, B, #capability_param>,
+                value: #ir::StructValue<'ctx, #brand_param, #capability_param>,
             ) -> #ir::IrResult<Self> {
-                <#ident as #ir::StructSchema>::try_value_from_ir(value)
+                Ok(Self { #schema_value_field: #ir::SchemaValue::try_new(value)? })
             }
         }
 
-        impl<'ctx, B, #capability_param>
-            ::core::convert::TryFrom<#ir::Value<'ctx, B, #capability_param>>
-            for #value_ident<'ctx, B, #capability_param>
+        impl<'ctx, #brand_param, #capability_param>
+            ::core::convert::TryFrom<#ir::Value<'ctx, #brand_param, #capability_param>>
+            for #value_ident<'ctx, #brand_param, #capability_param>
         where
-            B: #ir::ModuleBrand + 'ctx,
+            #brand_param: #ir::ModuleBrand + 'ctx,
             #capability_param: #ir::Capability,
         {
             type Error = #ir::IrError;
 
             #[inline]
-            fn try_from(value: #ir::Value<'ctx, B, #capability_param>) -> #ir::IrResult<Self> {
-                <#ident as #ir::StructSchema>::try_value_from_ir(value)
+            fn try_from(value: #ir::Value<'ctx, #brand_param, #capability_param>) -> #ir::IrResult<Self> {
+                Ok(Self { #schema_value_field: #ir::SchemaValue::try_new(value)? })
             }
         }
 
-        impl<'ctx, B, #capability_param>
-            ::core::convert::TryFrom<#ir::Constant<'ctx, B, #capability_param>>
-            for #value_ident<'ctx, B, #capability_param>
+        impl<'ctx, #brand_param, #capability_param>
+            ::core::convert::TryFrom<#ir::Constant<'ctx, #brand_param, #capability_param>>
+            for #value_ident<'ctx, #brand_param, #capability_param>
         where
-            B: #ir::ModuleBrand + 'ctx,
+            #brand_param: #ir::ModuleBrand + 'ctx,
             #capability_param: #ir::Capability,
         {
             type Error = #ir::IrError;
 
             #[inline]
-            fn try_from(value: #ir::Constant<'ctx, B, #capability_param>) -> #ir::IrResult<Self> {
-                <#ident as #ir::StructSchema>::try_value_from_ir(value)
+            fn try_from(value: #ir::Constant<'ctx, #brand_param, #capability_param>) -> #ir::IrResult<Self> {
+                Ok(Self { #schema_value_field: #ir::SchemaValue::try_new(value)? })
             }
         }
 
-        impl<'ctx, B> ::core::convert::TryFrom<#ir::Instruction<'ctx, #ir::instruction::state::Attached, B>>
-            for #value_ident<'ctx, B>
+        impl<'ctx, #brand_param> ::core::convert::TryFrom<#ir::Instruction<'ctx, #ir::instruction::state::Attached, #brand_param>>
+            for #value_ident<'ctx, #brand_param>
         where
-            B: #ir::ModuleBrand + 'ctx,
+            #brand_param: #ir::ModuleBrand + 'ctx,
         {
             type Error = #ir::IrError;
 
             #[inline]
             fn try_from(
-                value: #ir::Instruction<'ctx, #ir::instruction::state::Attached, B>,
+                value: #ir::Instruction<'ctx, #ir::instruction::state::Attached, #brand_param>,
             ) -> #ir::IrResult<Self> {
-                <#ident as #ir::StructSchema>::try_value_from_ir(value)
+                Ok(Self { #schema_value_field: #ir::SchemaValue::try_new(value)? })
             }
         }
 
@@ -403,103 +530,57 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
         // another module minted — and re-mint it at that module's reference,
         // so a value of either capability is an operand: naming it is not
         // mutating it.
-        impl<'ctx, B, #capability_param> #ir::IntoIrField<'ctx, #ident, B>
-            for #value_ident<'ctx, B, #capability_param>
+        impl<'ctx, #brand_param, #capability_param> #ir::IntoLayoutValue<'ctx, #ident, #brand_param>
+            for #value_ident<'ctx, #brand_param, #capability_param>
         where
-            B: #ir::ModuleBrand + 'ctx,
+            #brand_param: #ir::ModuleBrand + 'ctx,
             #capability_param: #ir::Capability,
         {
             #[inline]
-            fn into_ir_field(
+            fn into_layout_value(
                 self,
-                module: #ir::ModuleRef<'ctx, B>,
-            ) -> #ir::IrResult<#ir::Value<'ctx, B>> {
-                #ir::IntoErasedValue::into_erased_value(self.raw, module)
+                module: #ir::ModuleRef<'ctx, #brand_param>,
+            ) -> #ir::IrResult<#ir::Value<'ctx, #brand_param>> {
+                #ir::IntoErasedValue::into_erased_value(
+                    self.#schema_value_field.as_struct_value(),
+                    module,
+                )
             }
         }
 
-        impl<'ctx, B: #ir::ModuleBrand + 'ctx, #capability_param: #ir::Capability>
-            #ir::IntoCallArg<'ctx, #ident, B> for #value_ident<'ctx, B, #capability_param>
+        impl<'ctx, #brand_param: #ir::ModuleBrand + 'ctx, #capability_param: #ir::Capability>
+            #ir::IntoCallArg<'ctx, #ident, #brand_param> for #value_ident<'ctx, #brand_param, #capability_param>
         {
             #[inline]
             fn into_call_arg(
                 self,
-                module: #ir::ModuleRef<'ctx, B>,
-            ) -> #ir::IrResult<#ir::Value<'ctx, B>> {
-                #ir::IntoErasedValue::into_erased_value(self.raw, module)
+                module: #ir::ModuleRef<'ctx, #brand_param>,
+            ) -> #ir::IrResult<#ir::Value<'ctx, #brand_param>> {
+                #ir::IntoErasedValue::into_erased_value(
+                    self.#schema_value_field.as_struct_value(),
+                    module,
+                )
             }
         }
 
-        impl<'ctx, B, #capability_param> #ir::ir_builder::IntoReturnValue<'ctx, #ir::Dyn, B>
-            for #value_ident<'ctx, B, #capability_param>
+        impl<'ctx, #brand_param, #capability_param> #ir::ir_builder::IntoReturnValue<'ctx, #ir::Dyn, #brand_param>
+            for #value_ident<'ctx, #brand_param, #capability_param>
         where
-            B: #ir::ModuleBrand + 'ctx,
+            #brand_param: #ir::ModuleBrand + 'ctx,
             #capability_param: #ir::Capability,
         {
             #[inline]
             fn into_return_value(
                 self,
-                module: #ir::ModuleRef<'ctx, B>,
-            ) -> #ir::IrResult<#ir::Value<'ctx, B>> {
-                #ir::IntoErasedValue::into_erased_value(self.raw, module)
+                module: #ir::ModuleRef<'ctx, #brand_param>,
+            ) -> #ir::IrResult<#ir::Value<'ctx, #brand_param>> {
+                #ir::IntoErasedValue::into_erased_value(
+                    self.#schema_value_field.as_struct_value(),
+                    module,
+                )
             }
         }
     })
-}
-
-fn build_value_steps(
-    schema_ident: &Ident,
-    field_idents: &[Ident],
-    field_tys: &[syn::Type],
-    indices: &[u32],
-    cx: BuildStepContext<'_>,
-) -> Vec<TokenStream2> {
-    let ir = cx.ir;
-    let module_param = cx.module_param;
-    let builder_param = cx.builder_param;
-    let base_name_ident = cx.base_name_ident;
-    let mut steps = Vec::new();
-    for (position, ((field_ident, ty), idx)) in field_idents
-        .iter()
-        .zip(field_tys.iter())
-        .zip(indices.iter())
-        .enumerate()
-    {
-        let value_ident = Ident::new(&format!("__llvmkit_value_{position}"), Span::mixed_site());
-        let aggregate = if position == 0 {
-            quote! {
-                <#schema_ident as #ir::StructSchema>::ir_type(#module_param)?
-                    .as_type()
-                    .poison()
-                    .as_constant()
-            }
-        } else {
-            let previous = Ident::new(
-                &format!("__llvmkit_value_{}", position - 1),
-                Span::mixed_site(),
-            );
-            quote! { #previous }
-        };
-        let field_name = field_ident.to_string();
-        let name_ident = Ident::new(
-            &format!("__llvmkit_field_name_{position}"),
-            Span::mixed_site(),
-        );
-        steps.push(quote! {
-            let #name_ident = if #base_name_ident.is_empty() {
-                ::std::string::String::from(#field_name)
-            } else {
-                ::std::format!("{}.{}", #base_name_ident, #field_name)
-            };
-            let #value_ident = #builder_param.insert_field::<#schema_ident, #ty, _, _, _>(
-                #aggregate,
-                #field_ident,
-                #idx,
-                #name_ident,
-            )?;
-        });
-    }
-    steps
 }
 
 fn parse_container_attrs(attrs: &[syn::Attribute], config: &mut Config) -> Result<()> {
@@ -511,6 +592,15 @@ fn parse_container_attrs(attrs: &[syn::Attribute], config: &mut Config) -> Resul
             }
             if meta.path.is_ident("name") {
                 let value: LitStr = meta.value()?.parse()?;
+                if value.value().is_empty() {
+                    // `StructType::create(Context, "")` makes an anonymous
+                    // struct, not one printed `%""`, so an empty name names
+                    // no identified struct.
+                    return Err(Error::new_spanned(
+                        value,
+                        "IrStruct name must not be empty: an identified struct needs a name",
+                    ));
+                }
                 config.llvm_name = value.value();
                 return Ok(());
             }

@@ -505,8 +505,9 @@ the backstop.
 
 That check used to be keyed on the marker being erased -- which was circular: it
 trusted precisely the claim it existed to verify, so at any static width a
-wrong-typed fold result was silently accepted. See the CHANGELOG's *"No silent
-erasure"* entry; the seam is locked from both sides by
+wrong-typed fold result was silently accepted. See commit `bf57e17` (*check
+folded types at every marker, narrow at the source*); the seam is locked from
+both sides by
 `hostile_native_typed_override_wrong_width_rejected_at_static_width`
 (in-crate, via `from_value_unchecked`) and
 `external_narrow_override_wrong_width_rejected_by_accept_folded_int`

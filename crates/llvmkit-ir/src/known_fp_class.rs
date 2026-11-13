@@ -50,13 +50,14 @@ use crate::fmf::FastMathFlags;
 use crate::fp_class::{FloatUnitKind, FpClassTest, KnownFpClass, MinMaxKind, RoundingIntrinsic};
 use crate::fp_predicate::{denormal_mode_of, enclosing_function_of, fcmp_implies_class};
 use crate::instr_types::{
-    BranchKind, CastOpcode, ExtractElementInstData, InsertElementInstData, PhiData,
+    BranchKind, CallBaseParts, CastOpcode, ExtractElementInstData, InsertElementInstData, PhiData,
     ShuffleVectorInstData,
 };
 use crate::instruction::{InstructionKindData, InstructionView};
 use crate::intrinsics::descriptor_for_callee;
 use crate::known_bits::KnownBits;
 use crate::module::{ModuleBrand, ModuleRef};
+use crate::operator::fp_math_operator_flags;
 use crate::r#type::{Type, TypeKind};
 use crate::r#use::Use;
 use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
@@ -147,7 +148,8 @@ fn known_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     // flags: a call's return `nofpclass` or an argument's parameter one. The
     // mask *is* what is ruled out, so it joins directly.
     let mut ruled_out = no_fp_class_of(value);
-    if let Some(flags) = kind.and_then(fast_math_flags) {
+    // `if (const FPMathOperator *FPOp = dyn_cast_or_null<FPMathOperator>(Op))`.
+    if let Some(flags) = fp_math_operator_flags(value) {
         if flags.contains(FastMathFlags::NO_NANS) {
             ruled_out |= FpClassTest::NAN;
         }
@@ -648,28 +650,32 @@ fn demanded_lanes<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// The classes a `nofpclass` attribute rules out for `value`.
 ///
 /// Ports the two reads that open `computeKnownFPClass`'s `KnownNotFromFlags`:
-/// `CallBase::getRetNoFPClass` for a call, and `Argument::getNoFPClass` for a
-/// parameter. Anything else carries no such attribute, which is
-/// [`FpClassTest::NONE`] — nothing ruled out.
+/// `CallBase::getRetNoFPClass` for a `call`, `invoke` or `callbr`
+/// ([`CallBaseParts::return_no_fp_class`], the call site's mask ORed with the
+/// called function's), and `Argument::getNoFPClass` for a parameter. Anything
+/// else carries no such attribute, which is [`FpClassTest::NONE`] — nothing
+/// ruled out.
 fn no_fp_class_of<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
 ) -> FpClassTest {
-    let mask = match &value.data().kind {
+    match &value.data().kind {
+        // `if (const auto *CB = dyn_cast<CallBase>(V)) KnownNotFromFlags |=
+        // CB->getRetNoFPClass();` — the call site's mask ORed with the called
+        // function's, for a `call`, an `invoke` or a `callbr`.
+        ValueKindData::Instruction(instruction) => {
+            CallBaseParts::of(value.module.context(), &instruction.kind)
+                .map_or(FpClassTest::NONE, |call| {
+                    call.return_no_fp_class(value.module)
+                })
+        }
+        // `else if (const auto *Arg = dyn_cast<Argument>(V)) KnownNotFromFlags
+        // |= Arg->getNoFPClass();`
         ValueKindData::Argument { parent_fn, slot } => {
             function_no_fp_class(value, *parent_fn, AttrIndex::Param(*slot))
+                .unwrap_or(FpClassTest::NONE)
         }
-        ValueKindData::Instruction(instruction) => match &instruction.kind {
-            InstructionKindData::Call(call) => {
-                // Only a direct call names a function whose return attributes
-                // can be read; upstream's `getRetNoFPClass` answers the empty
-                // mask for an indirect one too.
-                function_no_fp_class(value, call.callee.get(), AttrIndex::Return)
-            }
-            _ => None,
-        },
-        _ => None,
-    };
-    mask.unwrap_or(FpClassTest::NONE)
+        _ => FpClassTest::NONE,
+    }
 }
 
 /// The `nofpclass` mask at `index` on the function in `function_slot`, if that
@@ -1170,9 +1176,12 @@ fn intrinsic_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             let Some(source) = argument(0) else {
                 return KnownFpClass::unknown();
             };
+            // `II->getFastMathFlags()`, which is
+            // `cast<FPMathOperator>(this)->getFastMathFlags()`: a call that is
+            // no `FPMathOperator` would assert, and here reads no flags.
             let mut known = compute_known_fp_class_with_flags(
                 source,
-                fast_math_flags(kind).unwrap_or_else(FastMathFlags::empty),
+                fp_math_operator_flags(value).unwrap_or_else(FastMathFlags::empty),
                 interested_classes,
                 query,
             );
@@ -1604,8 +1613,11 @@ pub fn can_ignore_sign_bit_of_zero<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     let Some(kind) = instruction_kind(user) else {
         return false;
     };
-    // `nsz` on the user settles it outright.
-    if fast_math_flags(kind).is_some_and(|flags| flags.contains(FastMathFlags::NO_SIGNED_ZEROS)) {
+    // `if (auto *FPOp = dyn_cast<FPMathOperator>(User)) if
+    // (FPOp->hasNoSignedZeros()) return true;` — `nsz` on the user settles it.
+    if fp_math_operator_flags(user)
+        .is_some_and(|flags| flags.contains(FastMathFlags::NO_SIGNED_ZEROS))
+    {
         return true;
     }
 
@@ -1638,8 +1650,9 @@ pub fn can_ignore_sign_bit_of_nan<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     let Some(kind) = instruction_kind(user) else {
         return false;
     };
-    // `nnan` on the user settles it outright.
-    if fast_math_flags(kind).is_some_and(|flags| flags.contains(FastMathFlags::NO_NANS)) {
+    // `if (auto *FPOp = dyn_cast<FPMathOperator>(User)) if (FPOp->hasNoNaNs())
+    // return true;` — `nnan` on the user settles it.
+    if fp_math_operator_flags(user).is_some_and(|flags| flags.contains(FastMathFlags::NO_NANS)) {
         return true;
     }
 
@@ -1910,21 +1923,6 @@ fn constant_fp_class<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         ValueKindData::Constant(ConstantData::Poison) => {
             Some(KnownFpClass::new(FpClassTest::NONE, Some(false)))
         }
-        _ => None,
-    }
-}
-
-/// The fast-math flags an operator carries, where it carries any.
-fn fast_math_flags(kind: &InstructionKindData) -> Option<FastMathFlags> {
-    match kind {
-        InstructionKindData::Fadd(data)
-        | InstructionKindData::Fsub(data)
-        | InstructionKindData::Fmul(data)
-        | InstructionKindData::Fdiv(data)
-        | InstructionKindData::Frem(data) => Some(data.fmf),
-        InstructionKindData::Fneg(data) => Some(data.fmf),
-        InstructionKindData::Fcmp(data) => Some(data.fmf),
-        InstructionKindData::Call(data) => Some(data.fmf),
         _ => None,
     }
 }

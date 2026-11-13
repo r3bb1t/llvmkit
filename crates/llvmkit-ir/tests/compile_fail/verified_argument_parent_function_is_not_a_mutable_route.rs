@@ -26,7 +26,7 @@ fn main() {
     let f = m
         .add_function_dyn(
             "f",
-            m.function_type(f32_ty, [f32_ty.as_type()]),
+            m.function_type(f32_ty, [f32_ty.as_type()]).expect("valid function type"),
             Linkage::External,
         )
         .expect("f");

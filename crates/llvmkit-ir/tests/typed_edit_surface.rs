@@ -101,7 +101,7 @@ fn build_invoke_caller<'ctx, B: ModuleBrand + 'ctx>(
         .as_function();
 
     m.view(caller)
-        .set_personality_fn(m, m.ptr_type(0).const_null())?;
+        .set_personality_fn(m, m.ptr_type_in::<0>().const_null())?;
     let entry = m.view(caller).append_basic_block(m, "entry");
     let normal = m.view(caller).append_basic_block(m, "normal");
     let unwind = m.view(caller).append_basic_block(m, "unwind");
@@ -235,7 +235,7 @@ fn build_callbr_caller<'ctx, B: ModuleBrand + 'ctx>(
     m: &'ctx Module<B, llvmkit_ir::Unverified>,
 ) -> IrResult<CallerFixture<B>> {
     let void_ty = m.void_type();
-    let asm_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let asm_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let asm = m.inline_asm(
         asm_ty,
         "",

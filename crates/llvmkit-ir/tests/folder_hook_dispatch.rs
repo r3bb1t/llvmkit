@@ -104,7 +104,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for RecordingFolder {
 fn flagless_typed_emitters_reach_the_opcode_s_hook() -> Result<(), IrError> {
     let m = module_new!("folder-hook-flagless")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let calls: CallLog = CallLog::default();
@@ -164,7 +164,7 @@ fn flagless_typed_emitters_reach_the_opcode_s_hook() -> Result<(), IrError> {
 fn exact_flag_reaches_the_exact_hook() -> Result<(), IrError> {
     let m = module_new!("folder-hook-exact")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let calls: CallLog = CallLog::default();
@@ -201,7 +201,7 @@ fn exact_flag_reaches_the_exact_hook() -> Result<(), IrError> {
 fn erased_emitter_dispatches_on_opcode_and_forwards_flags() -> Result<(), IrError> {
     let m = module_new!("folder-hook-erased")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let calls: CallLog = CallLog::default();
@@ -271,7 +271,7 @@ fn erased_emitter_dispatches_on_opcode_and_forwards_flags() -> Result<(), IrErro
 fn erased_emitter_drops_flags_the_opcode_does_not_accept() -> Result<(), IrError> {
     let m = module_new!("folder-hook-erased-drop")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let calls: CallLog = CallLog::default();

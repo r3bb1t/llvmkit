@@ -54,7 +54,9 @@ fn a_struct_holding_a_module_can_derive_debug() {
 fn module_debug_summarises_and_names_the_typestate() {
     let module = module_new!("summary").expect("fresh module");
     let i32_type = module.i32_type();
-    let signature = module.function_type_no_parameters(i32_type);
+    let signature = module
+        .function_type_no_parameters(i32_type)
+        .expect("valid function type");
     module
         .add_function_dyn("f", signature, Linkage::External)
         .expect("fresh name");
@@ -138,7 +140,9 @@ fn ir_errors_deduplicate_in_a_hash_set() {
 fn value_and_block_ids_key_a_btree_map_deterministically() {
     let module = module_new!("ordered").expect("fresh module");
     let i32_type = module.i32_type();
-    let signature = module.function_type_no_parameters(i32_type);
+    let signature = module
+        .function_type_no_parameters(i32_type)
+        .expect("valid function type");
     let function = module
         .add_function_dyn("f", signature, Linkage::External)
         .expect("fresh name");

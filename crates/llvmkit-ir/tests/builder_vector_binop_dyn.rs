@@ -15,7 +15,9 @@ fn vector_binops_emit_elementwise_ir() {
     let vec_ty = VectorType::of(i64_ty, lanes::<2>());
 
     let void_ty = m.void_type();
-    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()]);
+    let fn_ty = m
+        .function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()])
+        .expect("valid function type");
     let f = m
         .add_function_dyn("g", fn_ty, Linkage::External)
         .expect("g");
@@ -58,7 +60,9 @@ fn vector_binops_emit_elementwise_ir() {
 fn scalar_binop_dyn_still_works() {
     let m = module_new!("sbinop").expect("fresh module");
     let i64_ty = m.i64_type();
-    let fn_ty = m.function_type(i64_ty.as_type(), [i64_ty.as_type(), i64_ty.as_type()]);
+    let fn_ty = m
+        .function_type(i64_ty.as_type(), [i64_ty.as_type(), i64_ty.as_type()])
+        .expect("valid function type");
     let f = m
         .add_function_dyn("h", fn_ty, Linkage::External)
         .expect("h");

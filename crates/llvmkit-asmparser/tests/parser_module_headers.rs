@@ -2,10 +2,13 @@
 //!
 //! Mirrors focused top-level/header grammar from upstream `LLParser.cpp`.
 
+pub mod support;
+
 use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_asmparser::parse_error::ParseError;
-use llvmkit_ir::Module;
 use llvmkit_ir::module_new;
+use llvmkit_ir::{Linkage, Module, Visibility};
+use support::{check_directives, read_check_directives};
 
 fn parse_module(src: &str) -> String {
     let module = Module::dynamic("parser_module_headers");
@@ -16,33 +19,103 @@ fn parse_module(src: &str) -> String {
     format!("{module}")
 }
 
-/// The `dso_local` / visibility / DLL-storage clause run parses and reprints
-/// in `LLParser::parseOptionalLinkage`'s order, which is also the order
+/// The `dso_local` / visibility / DLL-storage clause run parses in
+/// `LLParser::parseOptionalLinkage`'s order, which is also the order
 /// `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printFunction` emits
-/// (`printDSOLocation`, then `printVisibility`, then `printDLLStorageClass`).
+/// (`printDSOLocation`, then `printVisibility`, then `printDLLStorageClass`),
+/// and prints back as `printDSOLocation` writes it.
 ///
 /// **No upstream fixture combines `dso_local` with a visibility keyword** —
 /// `test/Assembler` covers each clause alone — so this is llvmkit-specific,
-/// with `printFunction` as the anchor for what the order must be. It is a
-/// regression lock: llvmkit read visibility *before* dso-locality until
-/// 0.0.5, and its own writer emitted that same wrong order, so llvmkit
-/// round-tripped itself while rejecting `define dso_local hidden void @f()`
-/// — the spelling `llvm-as` produces.
+/// with `parseOptionalLinkage` as the anchor for the order. It is a
+/// regression lock twice over. llvmkit read visibility *before* dso-locality
+/// until 0.0.5, and its own writer emitted that same wrong order, so it
+/// round-tripped itself while rejecting `define dso_local hidden void @f()`.
+/// And its writer then printed the keyword back as written, where
+/// `printDSOLocation` prints `dso_local` only when `isImplicitDSOLocal` does not
+/// already imply it, which a hidden or protected visibility does, and never
+/// prints `dso_preemptable`.
 #[test]
 fn dso_local_precedes_visibility_and_dll_storage() {
-    for src in [
-        "define dso_local hidden void @f() { ret void }\n",
-        "declare dso_local protected void @g()\n",
-        "define dso_preemptable dllexport void @h() { ret void }\n",
-        "@v = dso_local hidden global i32 0\n",
+    for (src, header) in [
+        (
+            "define dso_local hidden void @f() { ret void }\n",
+            "define hidden void @f()",
+        ),
+        (
+            "declare dso_local protected void @g()\n",
+            "declare protected void @g()",
+        ),
+        (
+            "define dso_preemptable dllexport void @h() { ret void }\n",
+            "define dllexport void @h()",
+        ),
+        (
+            "@v = dso_local hidden global i32 0\n",
+            "@v = hidden global i32 0",
+        ),
     ] {
         let printed = parse_module(src);
-        let header = src.trim_end().trim_end_matches(" { ret void }");
         assert!(
             printed.contains(header),
             "expected `{header}` in printed module, got:\n{printed}"
         );
     }
+}
+
+/// llvmkit-specific: the setters' half of `GlobalValue::isDSOLocal`. The bit
+/// `setLinkage` and `setVisibility` set when `isImplicitDSOLocal` holds outlives
+/// the linkage or visibility that set it, and only `setDSOLocal(false)` clears
+/// it. No upstream unit test isolates it: `rg -n
+/// "isDSOLocal|setDSOLocal|isImplicitDSOLocal"
+/// orig_cpp/llvm-project-llvmorg-22.1.4/llvm/unittests` prints nothing.
+#[test]
+fn the_dso_local_bit_outlives_what_set_it() {
+    let module = Module::dynamic("dso_local_bit");
+    Parser::new(b"@g = global i32 0\n", &module)
+        .expect("parser constructs")
+        .parse_module()
+        .expect("module parses");
+    let g = module.view(module.global("g").expect("@g is defined"));
+    assert!(!g.is_dso_local());
+
+    g.set_linkage(&module, Linkage::Internal);
+    assert!(g.is_dso_local(), "a local linkage sets the bit");
+    g.set_linkage(&module, Linkage::External);
+    assert!(g.is_dso_local(), "the bit stays when the linkage goes");
+    assert!(format!("{module}").contains("@g = dso_local global i32 0"));
+
+    g.set_dso_local(&module, false);
+    assert!(!g.is_dso_local());
+    g.set_visibility(&module, Visibility::Hidden);
+    assert!(g.is_dso_local(), "a hidden visibility sets the bit");
+    assert!(format!("{module}").contains("@g = hidden global i32 0"));
+    g.set_visibility(&module, Visibility::Default);
+    assert!(g.is_dso_local(), "the bit stays when the visibility goes");
+    assert!(format!("{module}").contains("@g = dso_local global i32 0"));
+}
+
+/// Ports `test/Bitcode/dso_location.ll`, vendored verbatim and checked against
+/// its own `CHECK` block. Its RUN line is `llvm-as < %s | llvm-dis`: llvmkit has
+/// no bitcode, and the bit round-trips through it unchanged
+/// (`BitcodeWriter.cpp` writes `isDSOLocal()`, `BitcodeReader.cpp` reads it
+/// back through `setDSOLocal`), so a parse and a print stand for the pipeline.
+///
+/// The fixture pins `printDSOLocation`: `dso_local default` prints as
+/// `dso_local`, `hidden` and `protected` print no `dso_local` though both imply
+/// it, and `dso_preemptable` never prints. llvmkit used to print the keyword it
+/// was given.
+///
+/// Its `ret void ()* null` pins `LLParser::parseRet` too, which reads a whole
+/// type before it asks `isVoidTy`: llvmkit took the `void` token for
+/// `ret void` and refused the file as `value doesn't match function result
+/// type 'ptr'`.
+#[test]
+fn the_dso_location_fixture_prints_as_upstream() {
+    const FIXTURE: &str = include_str!("fixtures/upstream/Bitcode/dso_location.ll");
+
+    let printed = parse_module(FIXTURE);
+    check_directives(&printed, &read_check_directives(FIXTURE));
 }
 
 /// `LLParser::parseOptionalComdat`'s bare form: `comdat` with no parenthesised

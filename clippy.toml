@@ -1,0 +1,8 @@
+# Check exported items as well as private ones. The point is
+# `unnecessary_wraps` (denied in the root Cargo.toml): a public `IrResult` or
+# `Option` that never fails is the same dishonest return type CLAUDE.md's
+# "fallibility honesty" rule refuses, and pre-1.0 the breaking fix is the
+# intended one. The switch is global, so the other lints it governs check
+# exported items too — `wrong_self_convention` among them, which is why the
+# `Copy` handles' `to_erased` take `self`.
+avoid-breaking-exported-api = false

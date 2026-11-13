@@ -30,12 +30,14 @@ use core::iter::FusedIterator;
 use core::num::NonZeroU32;
 use core::str::FromStr;
 
+use crate::addr_space::AddressSpace;
 use crate::align::{Align, MaybeAlign};
 use crate::capability::Capability;
 use crate::error::DataLayoutError;
 use crate::module::{ModuleBrand, ModuleCore};
-use crate::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
+use crate::r#type::{MAX_INT_BITS, Type, TypeData, TypeSlot, TypeSlotAccess, is_scalable};
 use crate::type_components::lanes;
+use crate::type_size::TypeSize;
 
 // --------------------------------------------------------------------------
 // Sub-records
@@ -85,7 +87,7 @@ impl PrimitiveSpec {
 /// `DataLayout::PointerSpec`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PointerSpec {
-    address_space: u32,
+    address_space: AddressSpace,
     bit_width: u32,
     abi_align: Align,
     pref_align: Align,
@@ -102,15 +104,11 @@ pub struct PointerSpec {
     /// Symbolic name (`p1(global):...` -> `"global"`). Empty string
     /// if no name is set.
     address_space_name: String,
-    /// Whether this address space is non-integral (set by `ni:<as>`
-    /// specs after primary parsing). Mirrors the post-pass in
-    /// `parseLayoutString`.
-    non_integral: bool,
 }
 
 impl PointerSpec {
     fn new(
-        address_space: u32,
+        address_space: AddressSpace,
         bit_width: u32,
         abi_align: Align,
         pref_align: Align,
@@ -125,7 +123,6 @@ impl PointerSpec {
             has_unstable_repr: false,
             has_external_state: false,
             address_space_name: String::new(),
-            non_integral: false,
         }
     }
 
@@ -141,7 +138,7 @@ impl PointerSpec {
     }
 
     #[inline]
-    pub const fn address_space(&self) -> u32 {
+    pub const fn address_space(&self) -> AddressSpace {
         self.address_space
     }
 
@@ -185,9 +182,13 @@ impl PointerSpec {
         &self.address_space_name
     }
 
+    /// `DataLayout::isNonIntegralAddressSpace`'s condition: the pointer is more
+    /// than an address, because its index is narrower than its bits, or
+    /// because of either flag. `ni:<as>` is one way to set a flag, not the
+    /// only way to answer `true`.
     #[inline]
     pub const fn is_non_integral(&self) -> bool {
-        self.non_integral
+        self.bit_width != self.index_bit_width || self.has_unstable_repr || self.has_external_state
     }
 
     #[inline]
@@ -195,15 +196,12 @@ impl PointerSpec {
         self.is_non_integral()
     }
 
-    fn with_non_integral(mut self, non_integral: bool) -> Self {
-        self.non_integral = non_integral;
-        self
-    }
-
-    fn into_non_integral_address_space(mut self, address_space: u32) -> Self {
+    /// The post-pass of `parseLayoutString`: `ni:<as>` overrides any `p[e][u]`,
+    /// so a `ni` space is unstable and has no external state.
+    fn into_non_integral_address_space(mut self, address_space: AddressSpace) -> Self {
         self.address_space = address_space;
         self.has_unstable_repr = true;
-        self.non_integral = true;
+        self.has_external_state = false;
         self
     }
 }
@@ -283,9 +281,9 @@ impl ManglingMode {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DataLayout {
     big_endian: bool,
-    alloca_addr_space: u32,
-    program_addr_space: u32,
-    default_globals_addr_space: u32,
+    alloca_addr_space: AddressSpace,
+    program_addr_space: AddressSpace,
+    default_globals_addr_space: AddressSpace,
     stack_natural_align: Option<Align>,
     function_ptr_align: Option<Align>,
     function_ptr_align_type: FunctionPtrAlignType,
@@ -317,9 +315,9 @@ impl Default for DataLayout {
     fn default() -> Self {
         let mut layout = Self {
             big_endian: false,
-            alloca_addr_space: 0,
-            program_addr_space: 0,
-            default_globals_addr_space: 0,
+            alloca_addr_space: AddressSpace::DEFAULT,
+            program_addr_space: AddressSpace::DEFAULT,
+            default_globals_addr_space: AddressSpace::DEFAULT,
             stack_natural_align: None,
             function_ptr_align: None,
             function_ptr_align_type: FunctionPtrAlignType::Independent,
@@ -349,7 +347,13 @@ impl Default for DataLayout {
         // Default pointer spec for AS 0: 64-bit pointers, 8-byte
         // ABI/pref alignment, 64-bit index width. Mirrors the trailing
         // `setPointerSpec(0, ...)` call in `DataLayout::DataLayout()`.
-        layout.set_pointer_spec(PointerSpec::new(0, 64, const_align(8), const_align(8), 64));
+        layout.set_pointer_spec(PointerSpec::new(
+            AddressSpace::DEFAULT,
+            64,
+            const_align(8),
+            const_align(8),
+            64,
+        ));
         layout
     }
 }
@@ -425,19 +429,19 @@ impl DataLayout {
 
     /// Mirrors `DataLayout::getAllocaAddrSpace`.
     #[inline]
-    pub fn alloca_addr_space(&self) -> u32 {
+    pub fn alloca_addr_space(&self) -> AddressSpace {
         self.alloca_addr_space
     }
 
     /// Mirrors `DataLayout::getProgramAddressSpace`.
     #[inline]
-    pub fn program_addr_space(&self) -> u32 {
+    pub fn program_addr_space(&self) -> AddressSpace {
         self.program_addr_space
     }
 
     /// Mirrors `DataLayout::getDefaultGlobalsAddressSpace`.
     #[inline]
-    pub fn default_globals_addr_space(&self) -> u32 {
+    pub fn default_globals_addr_space(&self) -> AddressSpace {
         self.default_globals_addr_space
     }
 
@@ -465,8 +469,10 @@ impl DataLayout {
     }
 
     /// Mirrors `DataLayout::getNonStandardAddressSpaces`. Yields the
-    /// address spaces with an explicit pointer spec (every spec
-    /// except `0`), in spec order.
+    /// address spaces whose pointer spec is non-integral, in spec order:
+    /// `HasUnstableRepresentation`, `HasExternalState`, or a `BitWidth` other
+    /// than the `IndexBitWidth`. A spec that is none of those is standard
+    /// however its address space is numbered.
     ///
     /// Borrows the layout — a [`DataLayout`] has no interior mutability, so
     /// nothing has to be copied out. No [`ExactSizeIterator`]: the length is a
@@ -477,10 +483,10 @@ impl DataLayout {
     /// [`ExactSizeIterator`]: core::iter::ExactSizeIterator
     pub fn non_standard_address_spaces(
         &self,
-    ) -> impl DoubleEndedIterator<Item = u32> + FusedIterator + Clone + '_ {
+    ) -> impl DoubleEndedIterator<Item = AddressSpace> + FusedIterator + Clone + '_ {
         self.pointer_specs
             .iter()
-            .filter(|s| s.address_space() != 0)
+            .filter(|s| s.is_non_integral())
             .map(PointerSpec::address_space)
     }
 
@@ -498,44 +504,68 @@ impl DataLayout {
         self.struct_abi_align
     }
 
-    /// Mirrors `DataLayout::getNonIntegralAddressSpaces` (yields
-    /// every address space marked by `ni:<as>...`, in spec order).
-    ///
-    /// Borrowing and filtering, so no [`ExactSizeIterator`]; see
-    /// [`non_standard_address_spaces`](Self::non_standard_address_spaces).
-    ///
-    /// [`ExactSizeIterator`]: core::iter::ExactSizeIterator
-    pub fn non_integral_address_spaces(
-        &self,
-    ) -> impl DoubleEndedIterator<Item = u32> + FusedIterator + Clone + '_ {
-        self.pointer_specs
-            .iter()
-            .filter(|s| s.is_non_integral())
-            .map(PointerSpec::address_space)
-    }
-
     /// Mirrors `DataLayout::isNonIntegralAddressSpace`.
-    pub fn is_non_integral_address_space(&self, addr_space: u32) -> bool {
+    pub fn is_non_integral_address_space(&self, addr_space: AddressSpace) -> bool {
         self.pointer_spec(addr_space).is_non_integral()
     }
 
+    /// Mirrors `DataLayout::isNonIntegralPointerType(Type *)`: `false` for
+    /// anything but a pointer or a vector of them.
+    pub fn is_non_integral_pointer_type<B: ModuleBrand, C: Capability>(
+        &self,
+        ty: Type<'_, B, C>,
+    ) -> bool {
+        scalar_pointer_address_space(ty)
+            .is_some_and(|space| self.is_non_integral_address_space(space))
+    }
+
+    /// Mirrors `DataLayout::mustNotIntroduceIntToPtr(unsigned)`.
+    pub fn must_not_introduce_int_to_ptr(&self, addr_space: AddressSpace) -> bool {
+        self.has_unstable_representation(addr_space) || self.has_external_state(addr_space)
+    }
+
+    /// Mirrors `DataLayout::mustNotIntroducePtrToInt(unsigned)`.
+    pub fn must_not_introduce_ptr_to_int(&self, addr_space: AddressSpace) -> bool {
+        self.has_unstable_representation(addr_space)
+    }
+
+    /// Mirrors `DataLayout::mustNotIntroduceIntToPtr(Type *)`: `false` for
+    /// anything but a pointer or a vector of them.
+    pub fn must_not_introduce_int_to_ptr_for_type<B: ModuleBrand, C: Capability>(
+        &self,
+        ty: Type<'_, B, C>,
+    ) -> bool {
+        scalar_pointer_address_space(ty)
+            .is_some_and(|space| self.must_not_introduce_int_to_ptr(space))
+    }
+
+    /// Mirrors `DataLayout::mustNotIntroducePtrToInt(Type *)`: `false` for
+    /// anything but a pointer or a vector of them.
+    pub fn must_not_introduce_ptr_to_int_for_type<B: ModuleBrand, C: Capability>(
+        &self,
+        ty: Type<'_, B, C>,
+    ) -> bool {
+        scalar_pointer_address_space(ty)
+            .is_some_and(|space| self.must_not_introduce_ptr_to_int(space))
+    }
+
     /// Mirrors `DataLayout::hasUnstableRepresentation(unsigned)`.
-    pub fn has_unstable_representation(&self, addr_space: u32) -> bool {
+    pub fn has_unstable_representation(&self, addr_space: AddressSpace) -> bool {
         self.pointer_spec(addr_space).has_unstable_representation()
     }
 
     /// Mirrors `DataLayout::hasExternalState(unsigned)`.
-    pub fn has_external_state(&self, addr_space: u32) -> bool {
+    pub fn has_external_state(&self, addr_space: AddressSpace) -> bool {
         self.pointer_spec(addr_space).has_external_state()
     }
 
     /// Mirrors `DataLayout::getAddressSpaceName`.
-    pub fn address_space_name(&self, addr_space: u32) -> &str {
+    pub fn address_space_name(&self, addr_space: AddressSpace) -> &str {
         self.pointer_spec(addr_space).address_space_name()
     }
 
     /// Mirrors `DataLayout::getNamedAddressSpace`.
-    pub fn named_address_space(&self, name: &str) -> Option<u32> {
+    pub fn named_address_space(&self, name: &str) -> Option<AddressSpace> {
         self.pointer_specs
             .iter()
             .find(|s| s.address_space_name() == name)
@@ -545,43 +575,43 @@ impl DataLayout {
     // ----- Pointer accessors -----
 
     /// Mirrors `DataLayout::getPointerSize(AS)`. Bytes.
-    pub fn pointer_size(&self, addr_space: u32) -> u32 {
+    pub fn pointer_size(&self, addr_space: AddressSpace) -> u32 {
         div_ceil_u32(self.pointer_spec(addr_space).bit_width(), 8)
     }
 
     /// Mirrors `DataLayout::getPointerSizeInBits(AS)`.
     #[inline]
-    pub fn pointer_size_in_bits(&self, addr_space: u32) -> u32 {
+    pub fn pointer_size_in_bits(&self, addr_space: AddressSpace) -> u32 {
         self.pointer_spec(addr_space).bit_width()
     }
 
     /// Mirrors `DataLayout::getIndexSize(AS)`. Bytes.
-    pub fn index_size(&self, addr_space: u32) -> u32 {
+    pub fn index_size(&self, addr_space: AddressSpace) -> u32 {
         div_ceil_u32(self.pointer_spec(addr_space).index_bit_width(), 8)
     }
 
     /// Mirrors `DataLayout::getIndexSizeInBits(AS)`.
     #[inline]
-    pub fn index_size_in_bits(&self, addr_space: u32) -> u32 {
+    pub fn index_size_in_bits(&self, addr_space: AddressSpace) -> u32 {
         self.pointer_spec(addr_space).index_bit_width()
     }
 
     /// Mirrors `DataLayout::getPointerABIAlignment(AS)`.
     #[inline]
-    pub fn pointer_abi_align(&self, addr_space: u32) -> Align {
+    pub fn pointer_abi_align(&self, addr_space: AddressSpace) -> Align {
         self.pointer_spec(addr_space).abi_align()
     }
 
     /// Mirrors `DataLayout::getPointerPrefAlignment(AS)`.
     #[inline]
-    pub fn pointer_pref_align(&self, addr_space: u32) -> Align {
+    pub fn pointer_pref_align(&self, addr_space: AddressSpace) -> Align {
         self.pointer_spec(addr_space).pref_align()
     }
 
     /// Mirrors `DataLayout::getPointerSpec`. Exposes the parsed
     /// pointer-layout record without exposing its representation.
-    pub fn pointer_spec(&self, addr_space: u32) -> &PointerSpec {
-        if addr_space != 0
+    pub fn pointer_spec(&self, addr_space: AddressSpace) -> &PointerSpec {
+        if addr_space != AddressSpace::DEFAULT
             && let Some(spec) = self
                 .pointer_specs
                 .iter()
@@ -600,23 +630,21 @@ impl DataLayout {
     /// Bit-size of `ty` when held as an SSA value. Mirrors
     /// `DataLayout::getTypeSizeInBits` (the inline definition in
     /// `DataLayout.h`).
-    pub fn type_size_in_bits<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> u64 {
+    pub fn type_size_in_bits<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> TypeSize {
         self.type_size_in_bits_inner(ty.module().core_ref(), ty.slot_trusting_same_module())
     }
 
     /// Mirrors `DataLayout::getTypeStoreSize`. Bytes.
-    pub fn type_store_size<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> u64 {
-        let bits = self.type_size_in_bits(ty);
-        align_to_power_of_two(bits, 8) / 8
+    pub fn type_store_size<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> TypeSize {
+        self.type_store_size_inner(ty.module().core_ref(), ty.slot_trusting_same_module())
     }
 
     /// Mirrors `DataLayout::getTypeStoreSizeInBits`.
     pub fn type_store_size_in_bits<B: ModuleBrand, C: Capability>(
         &self,
         ty: Type<'_, B, C>,
-    ) -> u64 {
-        let bits = self.type_size_in_bits(ty);
-        align_to_power_of_two(bits, 8)
+    ) -> TypeSize {
+        self.type_store_size_in_bits_inner(ty.module().core_ref(), ty.slot_trusting_same_module())
     }
 
     /// Mirrors `DataLayout::typeSizeEqualsStoreSize`.
@@ -629,7 +657,7 @@ impl DataLayout {
 
     /// Mirrors `DataLayout::getTypeAllocSize`. Bytes including
     /// trailing alignment padding.
-    pub fn type_alloc_size<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> u64 {
+    pub fn type_alloc_size<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> TypeSize {
         self.type_alloc_size_inner(ty.module().core_ref(), ty.slot_trusting_same_module())
     }
 
@@ -637,8 +665,8 @@ impl DataLayout {
     pub fn type_alloc_size_in_bits<B: ModuleBrand, C: Capability>(
         &self,
         ty: Type<'_, B, C>,
-    ) -> u64 {
-        self.type_alloc_size(ty).saturating_mul(8)
+    ) -> TypeSize {
+        self.type_alloc_size(ty).saturating_scaled(8)
     }
 
     /// Mirrors `DataLayout::getABITypeAlign`.
@@ -689,34 +717,39 @@ impl DataLayout {
 // --------------------------------------------------------------------------
 
 impl DataLayout {
-    fn type_size_in_bits_inner(&self, module: &ModuleCore, id: TypeSlot) -> u64 {
+    fn type_size_in_bits_inner(&self, module: &ModuleCore, id: TypeSlot) -> TypeSize {
+        // Upstream's `getTypeSizeInBits(VTy->getElementType()).getFixedValue()`:
+        // an element is never a vector, so its size is fixed.
+        let element_bits =
+            |elem: TypeSlot| self.type_size_in_bits_inner(module, elem).known_min_value();
         match module.context().type_data(id) {
-            TypeData::Label => u64::from(self.pointer_size_in_bits(0)),
-            TypeData::Pointer { addr_space } => u64::from(self.pointer_size_in_bits(*addr_space)),
-            TypeData::TypedPointer { addr_space, .. } => {
-                u64::from(self.pointer_size_in_bits(*addr_space))
+            TypeData::Label => {
+                TypeSize::fixed(u64::from(self.pointer_size_in_bits(AddressSpace::DEFAULT)))
             }
-            TypeData::Array { elem, n } => {
-                n.saturating_mul(self.type_alloc_size_inner(module, *elem).saturating_mul(8))
+            TypeData::Pointer { addr_space } => {
+                TypeSize::fixed(u64::from(self.pointer_size_in_bits(*addr_space)))
             }
+            TypeData::Array { elem, n } => self
+                .type_alloc_size_inner(module, *elem)
+                .saturating_scaled(8)
+                .saturating_scaled(*n),
             TypeData::Struct(_) => self.struct_layout_inner(module, id).size_in_bits(),
-            TypeData::Integer { bits } => u64::from(*bits),
-            TypeData::Half | TypeData::Bfloat => 16,
-            TypeData::Float => 32,
-            TypeData::Double => 64,
-            TypeData::PpcFp128 | TypeData::Fp128 => 128,
-            TypeData::X86Fp80 => 80,
-            TypeData::X86Amx => 8192,
+            TypeData::Integer { bits } => TypeSize::fixed(u64::from(*bits)),
+            TypeData::Half | TypeData::Bfloat => TypeSize::fixed(16),
+            TypeData::Float => TypeSize::fixed(32),
+            TypeData::Double => TypeSize::fixed(64),
+            TypeData::PpcFp128 | TypeData::Fp128 => TypeSize::fixed(128),
+            TypeData::X86Fp80 => TypeSize::fixed(80),
+            TypeData::X86Amx => TypeSize::fixed(8192),
             TypeData::FixedVector { elem, n } => {
-                u64::from(n.get()).saturating_mul(self.type_size_in_bits_inner(module, *elem))
+                TypeSize::fixed(u64::from(n.get()).saturating_mul(element_bits(*elem)))
             }
             TypeData::ScalableVector { elem, min } => {
-                // Mirrors upstream: getKnownMinValue path.
-                u64::from(min.get()).saturating_mul(self.type_size_in_bits_inner(module, *elem))
+                TypeSize::scalable(u64::from(min.get()).saturating_mul(element_bits(*elem)))
             }
             TypeData::TargetExt(_) => match target_ext_layout_type(module, id) {
                 Some(layout) => self.type_size_in_bits_inner(module, layout),
-                None => 0,
+                None => TypeSize::fixed(0),
             },
             // Unsized cases: void, function, label-only, metadata, token,
             // and WebAssembly exception references.
@@ -724,18 +757,18 @@ impl DataLayout {
             | TypeData::Function { .. }
             | TypeData::Metadata
             | TypeData::Token
-            | TypeData::WasmExnRef => 0,
+            | TypeData::WasmExnRef => TypeSize::fixed(0),
         }
     }
 
-    fn type_alloc_size_inner(&self, module: &ModuleCore, id: TypeSlot) -> u64 {
+    fn type_alloc_size_inner(&self, module: &ModuleCore, id: TypeSlot) -> TypeSize {
         match module.context().type_data(id) {
-            TypeData::Array { elem, n } => {
-                n.saturating_mul(self.type_alloc_size_inner(module, *elem))
-            }
+            TypeData::Array { elem, n } => self
+                .type_alloc_size_inner(module, *elem)
+                .saturating_scaled(*n),
             TypeData::Struct(_) => {
                 let layout = self.struct_layout_inner(module, id);
-                let size = layout.size_bytes();
+                let size = layout.size_in_bytes();
                 let is_packed = matches!(
                     module.context().type_data(id),
                     TypeData::Struct(s) if s.body.borrow().as_ref().is_some_and(|b| b.packed)
@@ -744,36 +777,43 @@ impl DataLayout {
                     size
                 } else {
                     let a = std::cmp::max(self.struct_abi_align, layout.alignment());
-                    align_to(size, a)
+                    align_type_size(size, a)
                 }
             }
             TypeData::Integer { bits } => {
-                let bytes = u64::from(div_ceil_u32(*bits, 8));
+                let bytes = TypeSize::fixed(u64::from(div_ceil_u32(*bits, 8)));
                 let a = self.integer_alignment(*bits, true);
-                align_to(bytes, a)
+                align_type_size(bytes, a)
             }
             TypeData::Pointer { addr_space } => {
-                let size = u64::from(self.pointer_size(*addr_space));
-                align_to(size, self.pointer_abi_align(*addr_space))
-            }
-            TypeData::TypedPointer { addr_space, .. } => {
-                let size = u64::from(self.pointer_size(*addr_space));
-                align_to(size, self.pointer_abi_align(*addr_space))
+                let size = TypeSize::fixed(u64::from(self.pointer_size(*addr_space)));
+                align_type_size(size, self.pointer_abi_align(*addr_space))
             }
             TypeData::TargetExt(_) => match target_ext_layout_type(module, id) {
                 Some(layout) => self.type_alloc_size_inner(module, layout),
-                None => 0,
+                None => TypeSize::fixed(0),
             },
             _ => {
                 let store = self.type_store_size_inner(module, id);
-                align_to(store, self.alignment(module, id, true))
+                align_type_size(store, self.alignment(module, id, true))
             }
         }
     }
 
-    fn type_store_size_inner(&self, module: &ModuleCore, id: TypeSlot) -> u64 {
-        let bits = self.type_size_in_bits_inner(module, id);
-        align_to_power_of_two(bits, 8) / 8
+    fn type_store_size_in_bits_inner(&self, module: &ModuleCore, id: TypeSlot) -> TypeSize {
+        let base_size = self.type_size_in_bits_inner(module, id);
+        TypeSize::new(
+            align_to_power_of_two(base_size.known_min_value(), 8),
+            base_size.is_scalable(),
+        )
+    }
+
+    fn type_store_size_inner(&self, module: &ModuleCore, id: TypeSlot) -> TypeSize {
+        let store_size_in_bits = self.type_store_size_in_bits_inner(module, id);
+        TypeSize::new(
+            store_size_in_bits.known_min_value() / 8,
+            store_size_in_bits.is_scalable(),
+        )
     }
 
     fn alignment(&self, module: &ModuleCore, id: TypeSlot, abi_or_pref: bool) -> Align {
@@ -806,6 +846,7 @@ impl DataLayout {
             TypeData::FixedVector { .. } | TypeData::ScalableVector { .. } => {
                 let bit_width = self
                     .type_size_in_bits_inner(module, id)
+                    .known_min_value()
                     .try_into()
                     .unwrap_or(u32::MAX);
                 if let Some(s) = self
@@ -819,9 +860,10 @@ impl DataLayout {
                         s.pref_align()
                     }
                 } else {
-                    let store_bits =
-                        align_to_power_of_two(self.type_size_in_bits_inner(module, id), 8);
-                    let store_bytes_u32: u32 = (store_bits / 8).try_into().unwrap_or(u32::MAX);
+                    // "It doesn't have to be based on the full size for
+                    // scalable vectors": `getKnownMinValue`, in `getAlignment`.
+                    let store_bytes = self.type_store_size_inner(module, id).known_min_value();
+                    let store_bytes_u32: u32 = store_bytes.try_into().unwrap_or(u32::MAX);
                     pow2_ceil_align(store_bytes_u32)
                 }
             }
@@ -832,18 +874,11 @@ impl DataLayout {
                     self.pointer_pref_align(*addr_space)
                 }
             }
-            TypeData::TypedPointer { addr_space, .. } => {
-                if abi_or_pref {
-                    self.pointer_abi_align(*addr_space)
-                } else {
-                    self.pointer_pref_align(*addr_space)
-                }
-            }
             TypeData::Label => {
                 if abi_or_pref {
-                    self.pointer_abi_align(0)
+                    self.pointer_abi_align(AddressSpace::DEFAULT)
                 } else {
-                    self.pointer_pref_align(0)
+                    self.pointer_pref_align(AddressSpace::DEFAULT)
                 }
             }
             TypeData::Array { elem, .. } => self.alignment(module, *elem, abi_or_pref),
@@ -915,33 +950,39 @@ impl DataLayout {
         let elements: &[TypeSlot] = &body.elements;
         let packed = body.packed;
 
-        let mut size_bytes: u64 = 0;
+        let mut size = TypeSize::fixed(0);
         let mut alignment = Align::ONE;
         let mut is_padded = false;
         let mut member_offsets = Vec::with_capacity(elements.len());
 
-        for &elem in elements {
+        for (index, &elem) in elements.iter().enumerate() {
+            if index == 0 && is_scalable(module, elem, &mut Vec::new()) {
+                size = TypeSize::scalable(0);
+            }
+
             let ty_align = if packed {
                 Align::ONE
             } else {
                 self.alignment(module, elem, true)
             };
-            if !size_bytes.is_multiple_of(ty_align.value()) {
+            // Only a homogeneous struct of scalable vectors has a scalable
+            // size, and its members need no padding.
+            if !size.is_scalable() && !size.known_min_value().is_multiple_of(ty_align.value()) {
                 is_padded = true;
-                size_bytes = align_to(size_bytes, ty_align);
+                size = TypeSize::fixed(align_to(size.known_min_value(), ty_align));
             }
             if ty_align.value() > alignment.value() {
                 alignment = ty_align;
             }
-            member_offsets.push(size_bytes);
-            size_bytes = size_bytes.saturating_add(self.type_alloc_size_inner(module, elem));
+            member_offsets.push(size);
+            size = size.saturating_add(self.type_alloc_size_inner(module, elem));
         }
-        if !size_bytes.is_multiple_of(alignment.value()) {
+        if !size.is_scalable() && !size.known_min_value().is_multiple_of(alignment.value()) {
             is_padded = true;
-            size_bytes = align_to(size_bytes, alignment);
+            size = TypeSize::fixed(align_to(size.known_min_value(), alignment));
         }
 
-        StructLayoutInfo::new(size_bytes, alignment, is_padded, member_offsets)
+        StructLayoutInfo::new(size, alignment, is_padded, member_offsets)
     }
 
     fn set_pointer_spec(&mut self, spec: PointerSpec) {
@@ -950,13 +991,7 @@ impl DataLayout {
             .binary_search_by_key(&spec.address_space(), |s| s.address_space())
         {
             Ok(idx) => {
-                // Mirrors the upstream `update existing` arm: keep
-                // the existing `non_integral` flag because that is
-                // applied later by the post-pass in
-                // `parse_layout_string`.
-                let kept_non_integral = self.pointer_specs[idx].is_non_integral();
-                let non_integral = kept_non_integral || spec.is_non_integral();
-                self.pointer_specs[idx] = spec.with_non_integral(non_integral);
+                self.pointer_specs[idx] = spec;
             }
             Err(idx) => {
                 self.pointer_specs.insert(idx, spec);
@@ -994,26 +1029,26 @@ impl DataLayout {
 /// `class StructLayout` in `DataLayout.h` for the values we expose.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructLayoutInfo {
-    size_bytes: u64,
+    size: TypeSize,
     alignment: Align,
     is_padded: bool,
-    member_offsets: Vec<u64>,
+    member_offsets: Vec<TypeSize>,
 }
 
 impl StructLayoutInfo {
-    /// Construct computed struct-layout information.
+    /// Construct computed struct-layout information. `size` is in bytes.
     pub fn new<Offsets>(
-        size_bytes: u64,
+        size: TypeSize,
         alignment: Align,
         is_padded: bool,
         member_offsets: Offsets,
     ) -> Self
     where
-        Offsets: Into<Vec<u64>>,
+        Offsets: Into<Vec<TypeSize>>,
     {
         let member_offsets = member_offsets.into();
         Self {
-            size_bytes,
+            size,
             alignment,
             is_padded,
             member_offsets,
@@ -1022,18 +1057,13 @@ impl StructLayoutInfo {
 
     /// Mirrors `StructLayout::getSizeInBytes`.
     #[inline]
-    pub fn size_bytes(&self) -> u64 {
-        self.size_bytes
-    }
-    /// Mirrors `StructLayout::getSizeInBytes`.
-    #[inline]
-    pub fn size_in_bytes(&self) -> u64 {
-        self.size_bytes()
+    pub fn size_in_bytes(&self) -> TypeSize {
+        self.size
     }
     /// Mirrors `StructLayout::getSizeInBits`.
     #[inline]
-    pub fn size_in_bits(&self) -> u64 {
-        self.size_bytes().saturating_mul(8)
+    pub fn size_in_bits(&self) -> TypeSize {
+        self.size.saturating_scaled(8)
     }
     /// Mirrors `StructLayout::getAlignment`.
     #[inline]
@@ -1052,33 +1082,31 @@ impl StructLayoutInfo {
     }
     /// All member byte offsets in declaration order.
     #[inline]
-    pub fn member_offsets(&self) -> &[u64] {
+    pub fn member_offsets(&self) -> &[TypeSize] {
         &self.member_offsets
     }
     /// Mirrors `StructLayout::getElementOffset`.
-    pub fn element_offset(&self, index: usize) -> u64 {
+    pub fn element_offset(&self, index: usize) -> TypeSize {
         self.member_offsets()[index]
     }
     /// Mirrors `StructLayout::getElementOffsetInBits`.
-    pub fn element_offset_in_bits(&self, index: usize) -> u64 {
-        self.member_offsets()[index].saturating_mul(8)
+    pub fn element_offset_in_bits(&self, index: usize) -> TypeSize {
+        self.member_offsets()[index].saturating_scaled(8)
     }
-    /// Mirrors `StructLayout::getElementContainingOffset`. Returns
-    /// the index of the field that contains the byte offset, or
-    /// `None` for an out-of-range offset.
+    /// Mirrors `StructLayout::getElementContainingOffset`. Returns the index
+    /// of the field that contains the byte offset, or `None` for an
+    /// out-of-range offset, and for a struct of scalable size, which upstream
+    /// asserts on: a byte offset names no field of one.
     pub fn element_containing_offset(&self, byte_offset: u64) -> Option<usize> {
-        if byte_offset >= self.size_bytes() {
+        if byte_offset >= self.size.fixed_value()? {
             return None;
         }
-        // upper_bound: greatest index whose member_offset <= byte_offset.
-        match self
-            .member_offsets()
-            .binary_search_by(|m| m.cmp(&byte_offset))
-        {
-            Ok(idx) => Some(idx),
-            Err(0) => None,
-            Err(idx) => Some(idx - 1),
-        }
+        // Multiple fields can have the same offset if any of them are zero
+        // sized. For example, in { i32, [0 x i32], i32 }, searching for offset
+        // 4 will stop at the i32 in the end.
+        self.member_offsets()
+            .partition_point(|offset| offset.known_min_value() <= byte_offset)
+            .checked_sub(1)
     }
 }
 
@@ -1119,7 +1147,7 @@ impl DataLayout {
         if layout.is_empty() {
             return Ok(());
         }
-        let mut non_integral_address_spaces: Vec<u32> = Vec::new();
+        let mut non_integral_address_spaces: Vec<AddressSpace> = Vec::new();
         let mut addr_space_names: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         for spec in layout.split('-') {
@@ -1146,7 +1174,7 @@ impl DataLayout {
     fn parse_specification(
         &mut self,
         spec: &str,
-        non_integral_address_spaces: &mut Vec<u32>,
+        non_integral_address_spaces: &mut Vec<AddressSpace>,
         addr_space_names: &mut std::collections::HashSet<String>,
     ) -> Result<(), DataLayoutError> {
         // Two-character `ni` specifier first. Mirrors upstream's
@@ -1315,9 +1343,8 @@ impl DataLayout {
         }
         // <size> component must be empty or the literal "0".
         if !components[0].is_empty() {
-            let bit_width: u32 = components[0]
-                .parse()
-                .map_err(|_| invalid("size must be zero".into()))?;
+            let bit_width: u32 =
+                to_integer(components[0]).ok_or_else(|| invalid("size must be zero".into()))?;
             if bit_width != 0 {
                 return Err(invalid("size must be zero".into()));
             }
@@ -1370,7 +1397,7 @@ impl DataLayout {
             }
         }
         let (addr_space, addr_space_name) = if addr_str.is_empty() {
-            (0u32, String::new())
+            (AddressSpace::DEFAULT, String::new())
         } else {
             parse_addr_space_and_name(addr_str)?
         };
@@ -1432,9 +1459,8 @@ fn parse_size(s: &str, name: &str) -> Result<u32, DataLayoutError> {
     if s.is_empty() {
         return Err(invalid(format!("{name} component cannot be empty")));
     }
-    let v: u64 = s
-        .parse()
-        .map_err(|_| invalid(format!("{name} must be a non-zero 24-bit integer")))?;
+    let v: u64 = to_integer(s)
+        .ok_or_else(|| invalid(format!("{name} must be a non-zero 24-bit integer")))?;
     if v == 0 || v > (1u64 << 24) - 1 {
         return Err(invalid(format!("{name} must be a non-zero 24-bit integer")));
     }
@@ -1453,9 +1479,8 @@ fn parse_alignment(s: &str, name: &str, allow_zero: bool) -> Result<Align, DataL
             "{name} alignment component cannot be empty"
         )));
     }
-    let v: u64 = s
-        .parse()
-        .map_err(|_| invalid(format!("{name} alignment must be a 16-bit integer")))?;
+    let v: u64 = to_integer(s)
+        .ok_or_else(|| invalid(format!("{name} alignment must be a 16-bit integer")))?;
     if v > u64::from(u16::MAX) {
         return Err(invalid(format!(
             "{name} alignment must be a 16-bit integer"
@@ -1479,45 +1504,48 @@ fn parse_alignment(s: &str, name: &str, allow_zero: bool) -> Result<Align, DataL
         .unwrap_or_else(|_| unreachable!("v / 8 is a non-zero power of two within Align's range")))
 }
 
+/// Mirrors `to_integer(Str, N, 10)`: all of `s`, in base 10.
+/// `consumeUnsignedInteger` consumes digits and nothing else, where `str::parse`
+/// also takes a leading `+`.
+fn to_integer<N: FromStr>(s: &str) -> Option<N> {
+    if s.bytes().all(|byte| byte.is_ascii_digit()) {
+        s.parse().ok()
+    } else {
+        None
+    }
+}
+
+/// The digits `s` as an address space. `parseAddrSpace`'s number and its
+/// `isUInt<24>` check, which [`AddressSpace::new`] is.
+fn parse_addr_space_digits(s: &str) -> Result<AddressSpace, DataLayoutError> {
+    to_integer(s)
+        .and_then(AddressSpace::new)
+        .ok_or_else(|| invalid("address space must be a 24-bit integer".into()))
+}
+
 /// Mirrors `parseAddrSpace`.
-fn parse_addr_space(s: &str) -> Result<u32, DataLayoutError> {
+fn parse_addr_space(s: &str) -> Result<AddressSpace, DataLayoutError> {
     if s.is_empty() {
         return Err(invalid("address space component cannot be empty".into()));
     }
-    let v: u64 = s
-        .parse()
-        .map_err(|_| invalid("address space must be a 24-bit integer".into()))?;
-    if v > (1u64 << 24) - 1 {
-        return Err(invalid("address space must be a 24-bit integer".into()));
-    }
-    Ok(v.try_into()
-        .unwrap_or_else(|_| unreachable!("AS fits in 24 bits, hence u32")))
+    parse_addr_space_digits(s)
 }
 
 /// Mirrors `parseAddrSpaceAndName`. Accepts `<digits>` or
 /// `<digits>(<name>)` or `(<name>)`.
-fn parse_addr_space_and_name(s: &str) -> Result<(u32, String), DataLayoutError> {
+fn parse_addr_space_and_name(s: &str) -> Result<(AddressSpace, String), DataLayoutError> {
     if s.is_empty() {
         return Err(invalid("address space component cannot be empty".into()));
     }
     let mut bytes = s;
-    let mut addr_space: u32 = 0;
+    let mut addr_space = AddressSpace::DEFAULT;
     if bytes.as_bytes()[0].is_ascii_digit() {
         // Take leading digits.
         let mut end = 0;
         while end < bytes.len() && bytes.as_bytes()[end].is_ascii_digit() {
             end += 1;
         }
-        let digits = &bytes[..end];
-        let v: u64 = digits
-            .parse()
-            .map_err(|_| invalid("address space must be a 24-bit integer".into()))?;
-        if v > (1u64 << 24) - 1 {
-            return Err(invalid("address space must be a 24-bit integer".into()));
-        }
-        addr_space = v
-            .try_into()
-            .unwrap_or_else(|_| unreachable!("AS fits in u32"));
+        addr_space = parse_addr_space_digits(&bytes[..end])?;
         bytes = &bytes[end..];
     }
     if bytes.is_empty() {
@@ -1548,9 +1576,11 @@ fn parse_addr_space_and_name(s: &str) -> Result<(u32, String), DataLayoutError> 
 /// Mirrors `getTargetTypeInfo(...).LayoutType` in `lib/IR/Type.cpp`.
 /// Returns the type id of the in-memory layout type for the given
 /// target-extension type. `None` for a type that is not a target extension
-/// type, and for a `riscv.vector.tuple` whose layout would be a zero-lane
-/// vector; an extension upstream's table does not name gets its `void`
-/// default, as upstream does. The full upstream table covers SPIR-V, AArch64
+/// type, and for one `getTargetTypeInfo` can only assert on — a parameter it
+/// reads that the type lacks, or a layout type `IntegerType::get` or
+/// `ScalableVectorType::get` would refuse (`docs/divergences.md` D22). An
+/// extension upstream's table does not name gets its `void` default, as
+/// upstream does. The full upstream table covers SPIR-V, AArch64
 /// (`aarch64.svcount`), RISC-V (`riscv.vector.tuple`), DirectX
 /// (`dx.*`), AMDGPU (`amdgcn.named.barrier`), and the test
 /// extension (`llvm.test.vectorelement`).
@@ -1564,18 +1594,24 @@ pub(crate) fn target_ext_layout_type(module: &ModuleCore, id: TypeSlot) -> Optio
 
     // SPIR-V images / signed images: opaque pointer in AS 0.
     if name == "spirv.Image" || name == "spirv.SignedImage" {
-        return Some(ctx.ptr_type(0));
+        return Some(ctx.ptr_type(AddressSpace::DEFAULT));
     }
-    // SPIR-V typed reads with explicit size + alignment.
-    if name == "spirv.Type" && ext.int_params.len() >= 3 {
-        let size_bytes = u64::from(ext.int_params[1]);
-        let align_bits = u64::from(ext.int_params[2]);
-        if size_bytes > 0 && align_bits > 0 {
-            // ArrayType::get(IntN, size * 8 / align).
-            let int_bits: u32 = align_bits.try_into().unwrap_or(u32::MAX);
-            let elem = ctx.int_type(int_bits);
-            let n = (size_bytes.saturating_mul(8)) / align_bits;
-            return Some(ctx.array_type(elem, n));
+    // SPIR-V typed reads with explicit size + alignment. Upstream asserts the
+    // three integer parameters.
+    if name == "spirv.Type" {
+        let &[_, size, alignment] = ext.int_params.as_ref() else {
+            return None;
+        };
+        if size > 0 && alignment > 0 {
+            // `Type::getIntNTy` reaches `IntegerType::get`, which asserts
+            // `MAX_INT_BITS`.
+            if alignment > MAX_INT_BITS {
+                return None;
+            }
+            // ArrayType::get(IntN, Size * 8 / Alignment), on `unsigned`s: the
+            // product wraps before the division.
+            let elem = ctx.int_type(alignment);
+            return Some(ctx.array_type(elem, u64::from(size.wrapping_mul(8) / alignment)));
         }
         return Some(ctx.int_type(32));
     }
@@ -1583,44 +1619,46 @@ pub(crate) fn target_ext_layout_type(module: &ModuleCore, id: TypeSlot) -> Optio
     if name == "spirv.IntegralConstant" || name == "spirv.Literal" {
         return Some(ctx.void());
     }
-    // SPIR-V padding: byte-array of N bytes.
+    // SPIR-V padding: byte-array of N bytes. `getIntParameter(0)` asserts the
+    // parameter exists.
     if name == "spirv.Padding" {
-        let n = u64::from(*ext.int_params.first().unwrap_or(&0));
+        let n = u64::from(*ext.int_params.first()?);
         return Some(ctx.array_type(ctx.int_type(8), n));
     }
     // Other SPIR-V types: opaque pointer.
     if name.starts_with("spirv.") {
-        return Some(ctx.ptr_type(0));
+        return Some(ctx.ptr_type(AddressSpace::DEFAULT));
     }
     // AArch64 svcount: <vscale x 16 x i1>.
     if name == "aarch64.svcount" {
         return Some(ctx.scalable_vector_type(ctx.int_type(1), lanes::<16>()));
     }
     // RISC-V vector tuple. Layout = <vscale x N x i8> where N is
-    // computed from the tuple's first scalable-vector type parameter.
-    if name == "riscv.vector.tuple"
-        && let Some(first) = ext.type_params.first()
-        && let TypeData::ScalableVector { min, .. } = ctx.type_data(*first)
-    {
+    // computed from the tuple's first scalable-vector type parameter, which
+    // upstream's `cast<ScalableVectorType>` asserts it is.
+    if name == "riscv.vector.tuple" {
+        let TypeData::ScalableVector { min, .. } = ctx.type_data(*ext.type_params.first()?) else {
+            return None;
+        };
         // Upstream uses `RISCV::RVVBytesPerBlock` (== 8) as the floor.
         const RVV_BYTES_PER_BLOCK: u32 = 8;
         let lanes = core::cmp::max(min.get(), RVV_BYTES_PER_BLOCK);
-        let count_factor = ext.int_params.first().copied().unwrap_or(0);
-        // Upstream's `getTargetTypeInfo` passes this product to
+        let count_factor = *ext.int_params.first()?;
+        // Upstream's `getTargetTypeInfo` passes this `unsigned` product to
         // `ScalableVectorType::get`, which asserts `MinNumElts > 0`; llvmkit
         // has no zero-lane vector, so a zero-count tuple has no layout type
         // and is unsized (`Type::isSizedDerivedType` asks the layout type).
-        let total = NonZeroU32::new(lanes.saturating_mul(count_factor))?;
+        let total = NonZeroU32::new(lanes.wrapping_mul(count_factor))?;
         return Some(ctx.scalable_vector_type(ctx.int_type(8), total));
     }
-    // DirectX padding.
+    // DirectX padding. `getIntParameter(0)` asserts the parameter exists.
     if name == "dx.Padding" {
-        let n = u64::from(*ext.int_params.first().unwrap_or(&0));
+        let n = u64::from(*ext.int_params.first()?);
         return Some(ctx.array_type(ctx.int_type(8), n));
     }
     // Other DirectX types: opaque pointer.
     if name.starts_with("dx.") {
-        return Some(ctx.ptr_type(0));
+        return Some(ctx.ptr_type(AddressSpace::DEFAULT));
     }
     // AMDGPU named.barrier: <4 x i32>.
     if name == "amdgcn.named.barrier" {
@@ -1639,6 +1677,16 @@ pub(crate) fn target_ext_layout_type(module: &ModuleCore, id: TypeSlot) -> Optio
 // --------------------------------------------------------------------------
 
 #[inline]
+/// `dyn_cast<PointerType>(Ty->getScalarType())`'s address space.
+fn scalar_pointer_address_space<B: ModuleBrand, C: Capability>(
+    ty: Type<'_, B, C>,
+) -> Option<AddressSpace> {
+    match ty.scalar_type().data() {
+        TypeData::Pointer { addr_space } => Some(*addr_space),
+        _ => None,
+    }
+}
+
 fn is_power_of_two(v: u64) -> bool {
     v != 0 && (v & (v - 1)) == 0
 }
@@ -1652,6 +1700,13 @@ fn div_ceil_u32(value: u32, denom: u32) -> u32 {
 fn align_to(value: u64, align: Align) -> u64 {
     let a = align.value();
     (value + a - 1) & !(a - 1)
+}
+
+/// Mirrors `llvm::alignTo(TypeSize, uint64_t)` (`Support/TypeSize.h`): the
+/// quantity aligned, the scalability kept.
+#[inline]
+fn align_type_size(size: TypeSize, align: Align) -> TypeSize {
+    TypeSize::new(align_to(size.known_min_value(), align), size.is_scalable())
 }
 
 #[inline]

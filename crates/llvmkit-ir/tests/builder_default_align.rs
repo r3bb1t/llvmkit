@@ -12,7 +12,7 @@ use llvmkit_ir::{DataLayout, IrBuilder, IrError, Linkage, NoFolder, PointerValue
 #[test]
 fn alloca_materialises_preferred_align() -> Result<(), IrError> {
     let m = module_new!("a")?;
-    let fn_ty = m.function_type_no_parameters(m.void_type().as_type());
+    let fn_ty = m.function_type_no_parameters(m.void_type().as_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -40,14 +40,14 @@ fn alloca_materialises_preferred_align() -> Result<(), IrError> {
 #[test]
 fn load_store_materialise_abi_align() -> Result<(), IrError> {
     let m = module_new!("ls")?;
-    let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()]);
+    let ptr_ty = m.ptr_type_in::<0>();
+    let fn_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     b.load(m.i64_type(), p, "l64")?;
-    b.load(m.ptr_type(0), p, "lptr")?;
+    b.load(m.ptr_type_in::<0>(), p, "lptr")?;
     // Store default keys off the *stored value's* type (f32 -> align 4),
     // not the pointer.
     b.store(m.f32_type().const_float(0.0), p)?;
@@ -77,7 +77,7 @@ fn load_store_materialise_abi_align() -> Result<(), IrError> {
 fn alloca_uses_datalayout_alloca_address_space() -> Result<(), IrError> {
     let m = module_new!("as")?;
     m.set_data_layout(DataLayout::parse("A5")?);
-    let fn_ty = m.function_type_no_parameters(m.void_type().as_type());
+    let fn_ty = m.function_type_no_parameters(m.void_type().as_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);

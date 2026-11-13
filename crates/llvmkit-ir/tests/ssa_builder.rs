@@ -20,8 +20,8 @@
 //! convention unless noted otherwise.
 
 use llvmkit_ir::{
-    FloatValue, IntPredicate, IntValue, IrError, Linkage, Module, ModuleBrand, NoFolder,
-    PointerValue, Ptr, SsaBuilder, SsaState, module_new,
+    AddressSpace, FloatValue, IntPredicate, IntValue, IrError, Linkage, Module, ModuleBrand,
+    NoFolder, PointerValue, Ptr, SsaBuilder, SsaState, address_space, module_new,
 };
 use proptest::prelude::*;
 
@@ -30,7 +30,7 @@ use proptest::prelude::*;
 #[test]
 fn for_function_succeeds_on_empty_function() -> Result<(), IrError> {
     let m = module_new!("ssa-construct")?;
-    let fn_ty = m.function_type_no_parameters(m.void_type());
+    let fn_ty = m.function_type_no_parameters(m.void_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let _b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -43,7 +43,7 @@ fn for_function_succeeds_on_empty_function() -> Result<(), IrError> {
 #[test]
 fn for_function_rejects_function_with_existing_body() -> Result<(), IrError> {
     let m = module_new!("ssa-construct-nonempty")?;
-    let fn_ty = m.function_type_no_parameters(m.void_type());
+    let fn_ty = m.function_type_no_parameters(m.void_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let _entry = m.view(f).append_basic_block(&m, "entry");
     match SsaState::for_function(&m, m.view(f)) {
@@ -59,7 +59,7 @@ fn for_function_rejects_function_with_existing_body() -> Result<(), IrError> {
 #[test]
 fn with_folder_for_function_accepts_custom_folder() -> Result<(), IrError> {
     let m = module_new!("ssa-construct-folder")?;
-    let fn_ty = m.function_type_no_parameters(m.void_type());
+    let fn_ty = m.function_type_no_parameters(m.void_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let _b = SsaBuilder::with_folder_for_function(&m, m.view(f), &mut st_b, NoFolder)?;
@@ -73,7 +73,7 @@ fn with_folder_for_function_accepts_custom_folder() -> Result<(), IrError> {
 #[test]
 fn create_block_appends_named_block_to_function() -> Result<(), IrError> {
     let m = module_new!("ssa-create-block")?;
-    let fn_ty = m.function_type_no_parameters(m.void_type());
+    let fn_ty = m.function_type_no_parameters(m.void_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -102,7 +102,7 @@ fn create_block_appends_named_block_to_function() -> Result<(), IrError> {
 #[test]
 fn seal_block_succeeds_once_then_errors() -> Result<(), IrError> {
     let m = module_new!("ssa-seal-once")?;
-    let fn_ty = m.function_type_no_parameters(m.void_type());
+    let fn_ty = m.function_type_no_parameters(m.void_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -124,7 +124,7 @@ fn seal_block_succeeds_once_then_errors() -> Result<(), IrError> {
 #[test]
 fn seal_block_rejects_block_from_different_builder() -> Result<(), IrError> {
     let m = module_new!("ssa-foreign-block")?;
-    let fn_ty = m.function_type_no_parameters(m.void_type());
+    let fn_ty = m.function_type_no_parameters(m.void_type())?;
     let f1 = m.add_function_dyn("f1", fn_ty, Linkage::External)?;
     let f2 = m.add_function_dyn("f2", fn_ty, Linkage::External)?;
 
@@ -151,7 +151,7 @@ fn seal_block_rejects_block_from_different_builder() -> Result<(), IrError> {
 #[test]
 fn declare_var_family_covers_every_category_and_variant() -> Result<(), IrError> {
     let m = module_new!("ssa-declare-all")?;
-    let fn_ty = m.function_type_no_parameters(m.void_type());
+    let fn_ty = m.function_type_no_parameters(m.void_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -172,7 +172,7 @@ fn declare_var_family_covers_every_category_and_variant() -> Result<(), IrError>
 
     let strict_ptr = b.declare_pointer_var("p");
     let poison_ptr = b.declare_pointer_var_poison("pp");
-    let addrspace_ty = m.ptr_type(1);
+    let addrspace_ty = m.ptr_type_in::<1>();
     let addrspace_ptr = b.declare_pointer_var_in_addrspace(addrspace_ty, "pas");
     let addrspace_ptr_poison = b.declare_pointer_var_in_addrspace_poison(addrspace_ty, "paspoison");
 
@@ -201,7 +201,7 @@ fn declare_var_family_covers_every_category_and_variant() -> Result<(), IrError>
 #[test]
 fn ssa_block_label_round_trips_to_basic_block_label() -> Result<(), IrError> {
     let m = module_new!("ssa-block-label")?;
-    let fn_ty = m.function_type_no_parameters(m.void_type());
+    let fn_ty = m.function_type_no_parameters(m.void_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -227,7 +227,7 @@ fn ssa_block_label_round_trips_to_basic_block_label() -> Result<(), IrError> {
 fn single_pred_read_emits_no_phi() -> Result<(), IrError> {
     let m = module_new!("ssa-single-pred")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -264,7 +264,7 @@ fn single_pred_read_emits_no_phi() -> Result<(), IrError> {
 fn diamond_merge_places_single_phi_at_join() -> Result<(), IrError> {
     let m = module_new!("ssa-diamond")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -320,7 +320,7 @@ fn diamond_merge_places_single_phi_at_join() -> Result<(), IrError> {
 fn loop_backedge_completes_incomplete_phi_on_seal() -> Result<(), IrError> {
     let m = module_new!("ssa-loop-factorial")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("factorial", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -419,7 +419,7 @@ fn loop_backedge_completes_incomplete_phi_on_seal() -> Result<(), IrError> {
 fn strict_use_before_def_is_typed_error() -> Result<(), IrError> {
     let m = module_new!("ssa-strict-undef")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -444,7 +444,7 @@ fn strict_use_before_def_is_typed_error() -> Result<(), IrError> {
 fn poison_variable_reads_poison_on_undef_path() -> Result<(), IrError> {
     let m = module_new!("ssa-poison-undef")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -489,7 +489,7 @@ fn poison_variable_reads_poison_on_undef_path() -> Result<(), IrError> {
 fn dead_cycle_phi_names_the_actual_strict_variable_not_same_type_poison() -> Result<(), IrError> {
     let m = module_new!("ssa-dead-cycle-strict-vs-poison")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -556,7 +556,7 @@ fn dead_cycle_phi_names_the_actual_strict_variable_not_same_type_poison() -> Res
 #[test]
 fn branch_to_sealed_block_rejected() -> Result<(), IrError> {
     let m = module_new!("ssa-branch-sealed")?;
-    let fn_ty = m.function_type_no_parameters(m.void_type());
+    let fn_ty = m.function_type_no_parameters(m.void_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -582,7 +582,7 @@ fn branch_to_sealed_block_rejected() -> Result<(), IrError> {
 #[test]
 fn double_seal_rejected() -> Result<(), IrError> {
     let m = module_new!("ssa-double-seal-public")?;
-    let fn_ty = m.function_type_no_parameters(m.void_type());
+    let fn_ty = m.function_type_no_parameters(m.void_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -603,7 +603,7 @@ fn double_seal_rejected() -> Result<(), IrError> {
 #[test]
 fn foreign_variable_rejected() -> Result<(), IrError> {
     let m = module_new!("ssa-foreign-variable")?;
-    let fn_ty = m.function_type_no_parameters(m.void_type());
+    let fn_ty = m.function_type_no_parameters(m.void_type())?;
     let f1 = m.add_function_dyn("f1", fn_ty, Linkage::External)?;
     let f2 = m.add_function_dyn("f2", fn_ty, Linkage::External)?;
 
@@ -697,7 +697,7 @@ fn switch_to_block_rejects_already_filled_block() -> Result<(), IrError> {
 #[test]
 fn dyn_int_var_wrong_width_def_rejected() -> Result<(), IrError> {
     let m = module_new!("ssa-dyn-wrong-width")?;
-    let fn_ty = m.function_type_no_parameters(m.void_type());
+    let fn_ty = m.function_type_no_parameters(m.void_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -733,7 +733,7 @@ fn dyn_int_var_wrong_width_def_rejected() -> Result<(), IrError> {
 #[test]
 fn dyn_float_var_wrong_kind_def_rejected() -> Result<(), IrError> {
     let m = module_new!("ssa-dyn-float-wrong-kind")?;
-    let fn_ty = m.function_type_no_parameters(m.void_type());
+    let fn_ty = m.function_type_no_parameters(m.void_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -759,11 +759,10 @@ fn dyn_float_var_wrong_kind_def_rejected() -> Result<(), IrError> {
 /// Pointer twin of [`dyn_int_var_wrong_width_def_rejected`]: a pointer
 /// variable declared in one address space
 /// (`declare_pointer_var_in_addrspace`) rejects a def whose lifted
-/// value is a pointer in a DIFFERENT address space. `PointerValue` never
-/// statically pins an address space, so this side never had a static
-/// marker to key on -- it is unconditional for the same reason the int
-/// and float sides now are: nothing between the caller and `current_def`
-/// re-checks the claim otherwise.
+/// value is a pointer in a DIFFERENT address space. A `SpaceDyn` variable's
+/// marker says nothing about the space, so the check is unconditional for
+/// the same reason the int and float sides are: nothing between the caller
+/// and `current_def` re-checks the claim otherwise.
 ///
 /// The error must NAME both address spaces. `TypeKindLabel::Pointer` carries
 /// no address space, so the `TypeMismatch { expected: Pointer, got: Pointer }`
@@ -775,14 +774,14 @@ fn dyn_float_var_wrong_kind_def_rejected() -> Result<(), IrError> {
 fn pointer_var_wrong_addrspace_def_rejected() -> Result<(), IrError> {
     let m = module_new!("ssa-ptr-wrong-addrspace")?;
     let void_ty = m.void_type();
-    let ptr_as1_ty = m.ptr_type(1);
-    let fn_ty = m.function_type(void_ty, [ptr_as1_ty.as_type()]);
+    let ptr_as1_ty = m.ptr_type_in::<1>();
+    let fn_ty = m.function_type(void_ty, [ptr_as1_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
     let entry = b.create_block("entry");
 
-    let addrspace0_ty = m.ptr_type(0);
+    let addrspace0_ty = m.ptr_type(llvmkit_ir::AddressSpace::DEFAULT);
     let px = b.declare_pointer_var_in_addrspace(addrspace0_ty, "px");
 
     b.switch_to_block(entry)?;
@@ -798,8 +797,8 @@ fn pointer_var_wrong_addrspace_def_rejected() -> Result<(), IrError> {
     assert_eq!(
         err,
         IrError::AddressSpaceMismatch {
-            expected: 0,
-            got: 1
+            expected: AddressSpace::DEFAULT,
+            got: address_space::<1>(),
         }
     );
     assert_eq!(
@@ -833,7 +832,7 @@ fn pointer_var_wrong_addrspace_def_rejected() -> Result<(), IrError> {
 fn switch_records_one_edge_per_case_occurrence() -> Result<(), IrError> {
     let m = module_new!("ssa-switch-multiplicity")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -906,7 +905,7 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
     // Straight-line single-predecessor chain.
     let m = module_new!("ssa-verify-straight-line")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -929,7 +928,7 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
     // If/then/else diamond.
     let m = module_new!("ssa-verify-diamond")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -967,7 +966,7 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
     // Loop with a back-edge (factorial shape).
     let m = module_new!("ssa-verify-loop")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("factorial", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -1070,7 +1069,7 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
 #[test]
 fn switch_dyn_condition_bad_width_case_rejected_before_emit() -> Result<(), IrError> {
     let m = module_new!("ssa-dyn-bad-case-preemit")?;
-    let fn_ty = m.function_type_no_parameters(m.void_type());
+    let fn_ty = m.function_type_no_parameters(m.void_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -1243,7 +1242,7 @@ fn build_straight_line<B: ModuleBrand>(
     case: &GeneratedCase,
 ) -> Result<BuildOutcome, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(m, m.view(f))?;
     let mut b = SsaBuilder::for_function(m, m.view(f), &mut st_b)?;
@@ -1289,7 +1288,7 @@ fn build_diamond<B: ModuleBrand>(
     case: &GeneratedCase,
 ) -> Result<BuildOutcome, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(m, m.view(f))?;
     let mut b = SsaBuilder::for_function(m, m.view(f), &mut st_b)?;
@@ -1358,7 +1357,7 @@ fn build_loop<B: ModuleBrand>(
     case: &GeneratedCase,
 ) -> Result<BuildOutcome, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("factorial", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(m, m.view(f))?;
     let mut b = SsaBuilder::for_function(m, m.view(f), &mut st_b)?;
@@ -1433,7 +1432,7 @@ fn build_switch_shared<B: ModuleBrand>(
     case: &GeneratedCase,
 ) -> Result<BuildOutcome, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(m, m.view(f))?;
     let mut b = SsaBuilder::for_function(m, m.view(f), &mut st_b)?;
@@ -1564,7 +1563,7 @@ proptest! {
 fn dead_block_poison_read_user_is_rerouted_to_poison() -> Result<(), IrError> {
     let m = module_new!("ssa-dead-poison-user")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -1605,7 +1604,7 @@ fn dead_block_poison_read_user_is_rerouted_to_poison() -> Result<(), IrError> {
 fn dead_cycle_poison_read_with_live_user_resolves_to_poison() -> Result<(), IrError> {
     let m = module_new!("ssa-dead-cycle-poison-user")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -1646,7 +1645,7 @@ fn dead_cycle_poison_read_with_live_user_resolves_to_poison() -> Result<(), IrEr
 fn sealed_single_pred_cycle_read_errors_for_strict_variable() -> Result<(), IrError> {
     let m = module_new!("ssa-sealed-cycle-strict")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -1687,7 +1686,7 @@ fn sealed_single_pred_cycle_read_errors_for_strict_variable() -> Result<(), IrEr
 fn sealed_single_pred_cycle_read_resolves_poison_variable() -> Result<(), IrError> {
     let m = module_new!("ssa-sealed-cycle-poison")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut st_b = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -1845,7 +1844,7 @@ const _: () = {
 #[test]
 fn a_state_opened_for_another_function_is_refused() -> Result<(), IrError> {
     let m = module_new!("ssa-foreign-function")?;
-    let fn_ty = m.function_type_no_parameters(m.void_type());
+    let fn_ty = m.function_type_no_parameters(m.void_type())?;
     let f1 = m.add_function_dyn("f1", fn_ty, Linkage::External)?;
     let f2 = m.add_function_dyn("f2", fn_ty, Linkage::External)?;
     let mut state = SsaState::for_function(&m, m.view(f1))?;
@@ -1876,7 +1875,7 @@ fn a_state_opened_for_another_function_is_refused() -> Result<(), IrError> {
 fn a_cloned_state_restores_the_variable_environment() -> Result<(), IrError> {
     let m = module_new!("ssa-state-snapshot")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut state = SsaState::for_function(&m, m.view(f))?;
 

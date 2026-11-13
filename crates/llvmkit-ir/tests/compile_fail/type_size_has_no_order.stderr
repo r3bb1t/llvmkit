@@ -1,0 +1,13 @@
+error[E0369]: binary operation `<` cannot be applied to type `TypeSize`
+  --> tests/compile_fail/type_size_has_no_order.rs:10:33
+   |
+10 |     let _ = TypeSize::fixed(64) < TypeSize::scalable(64);
+   |             ------------------- ^ ---------------------- TypeSize
+   |             |
+   |             TypeSize
+   |
+note: `TypeSize` does not implement `PartialOrd`
+  --> src/type_size.rs
+   |
+   | pub struct TypeSize {
+   | ^^^^^^^^^^^^^^^^^^^ `TypeSize` is defined in another crate

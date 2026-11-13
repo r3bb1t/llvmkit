@@ -2,8 +2,8 @@
 //! `SelectArm::from_select_value` — the `SelectNarrow` evidence token has no
 //! public constructor (private field, `pub(crate)` constructor). Mirrors the
 //! `intrinsic_id_raw_constructor_private` capability-token fixture family
-//! (D2 evidence-token capability, follows the `ValidatedStructValue`
-//! precedent in `struct_schema.rs`).
+//! (D2 evidence-token capability, following `struct_schema.rs`'s former
+//! `ValidatedStructValue` token, now the `SchemaValue` carrier).
 //!
 //! Closest upstream behaviour: `llvm/include/llvm/IR/IRBuilder.h::IRBuilderBase::CreateSelect`
 //! (and the wider `CreateSelect` family) narrows a select's arm types at

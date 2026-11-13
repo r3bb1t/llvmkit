@@ -35,7 +35,7 @@ fn main() {
     let m = Module::dynamic("m");
     let f32_ty = m.f32_type();
     let g = m
-        .add_function_dyn("g", m.function_type_no_parameters(f32_ty), Linkage::External)
+        .add_function_dyn("g", m.function_type_no_parameters(f32_ty).expect("valid function type"), Linkage::External)
         .expect("g");
     let g_entry = m.view(g).append_basic_block(&m, "entry");
     IrBuilder::new_for::<Dyn>(&m)
@@ -43,7 +43,7 @@ fn main() {
         .ret(f32_ty.const_float(1.0_f32))
         .expect("ret");
     let f = m
-        .add_function_dyn("f", m.function_type_no_parameters(f32_ty), Linkage::External)
+        .add_function_dyn("f", m.function_type_no_parameters(f32_ty).expect("valid function type"), Linkage::External)
         .expect("f");
     let f_entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(f_entry);

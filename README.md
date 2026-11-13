@@ -303,9 +303,19 @@ let b = IrBuilder::new_for_return::<Normalize>(&m).position_at_end(entry);
 let (placement,) = m.view(f).params();
 // `normal_position` returns `RectValue<'ctx, B>`, and `min` returns
 // `PointValue<'ctx, B>`; nested structs keep their generated wrapper type.
-let rect = placement.normal_position(&b)?;
-let _min = rect.min(&b)?;
+let rect = placement.normal_position(&b);
+let min = rect.min(&b);
+// A build starts from the struct type, the one fallible step; the build
+// itself needs no `?`. `try_build` takes any brand or folder and storable ids,
+// and a `SpaceDyn` pointer is narrowed first with `PointerValue::try_from`.
+let moved = m.get_or_insert_struct_of::<Point>()?.build(&b, min.x(&b), 7_i32, "moved");
 ```
+
+A field is one of llvmkit's layouts — an integer (an unsigned field is the
+signless integer of its width), a float, `Ptr<AS>`, an array `[T; N]` of a
+scalar, a nested schema — or a field kind of your own that names one. llvmkit
+builds the struct's body from those layouts, so a field cannot be laid out as an
+invalid element or as another module's type.
 
 Existing IR can be checked back into a generated wrapper with
 `WindowPlacementValue::try_from(raw)?`. When a function boundary should receive
@@ -326,11 +336,14 @@ A pointer's LLVM address space is part of its Rust type. `m.ptr_type_in::<3>()`
 is a `PointerType<'_, Space<3>, _>`, and the pointers built from it — through a
 GEP, `select`, a phi or an SSA variable — stay `Space<3>`, so a `select` or a
 pointer comparison mixing address spaces 0 and 1 does not compile. Where only
-run-time data knows the space — `m.ptr_type(n)`, the parser, the default
+run-time data knows the space — `m.ptr_type(space)`, the parser, the default
 `alloca` — the marker is `SpaceDyn`; `TryFrom` narrows it to `Space<N>`,
 refusing another space with `IrError::AddressSpaceMismatch`, and `as_dyn()`
 erases a static one. In a typed signature `Ptr` is address space 0 and `Ptr<N>`
-is address space `N`.
+is address space `N`. A run-time number becomes an `AddressSpace` through
+`AddressSpace::new`, which refuses anything past LLVM's 24 bits, so no pointer
+type holds a space no parser reads back; `ptr_type_in::<N>()` and `Ptr<N>`
+refuse such an `N` at compile time.
 
 ### Typed pointers
 
@@ -366,7 +379,7 @@ use llvmkit_ir::{IrBuilder, IrError, Len, Linkage, VectorValue, module_new};
 fn typed_vec() -> Result<(), IrError> {
     let m = module_new!("demo")?;
     let v4i32 = m.vector_type_n::<i32, 4>(); // VectorType<'_, i32, Len<4>>
-    let fn_ty = m.function_type(m.i32_type().as_type(), [v4i32.as_type(), v4i32.as_type()]);
+    let fn_ty = m.function_type(m.i32_type().as_type(), [v4i32.as_type(), v4i32.as_type()])?;
     let f = m.add_function_dyn("vadd", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::at_end(entry);

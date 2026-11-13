@@ -13,26 +13,34 @@ use crate::assumptions::{
     AssumptionCache, AssumptionSource, DomConditionCache, find_values_affected_by_condition,
     is_valid_assume_for_context,
 };
-use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored};
+use crate::attributes::{AttrIndex, AttrKind, AttributeStored};
 use crate::capability::{Capability, ReadOnly};
 use crate::cmp_predicate::IntPredicate;
-use crate::constant::{ConstantData, ConstantExprData, ConstantExprOpcode};
+use crate::constant::{
+    Constant, ConstantData, ConstantDataKind, ConstantExprData, ConstantExprFlags,
+    ConstantExprOpcode, ConstantKind, Undefined, is_poison,
+};
+use crate::constant_fold::shufflevector_mask_from_constant;
 use crate::constant_range::{
     ConstantRange, OverflowResult, PreferredRangeType, constant_ranges_from_metadata,
 };
+use crate::constants::{GepTypeCursor, constant_id_is_null_value};
 use crate::data_layout::DataLayout;
 use crate::dominator_tree::{DominatorTree, DominatorTreeAnalysis};
+use crate::fmf::FastMathFlags;
 use crate::function::FunctionValue;
 use crate::instr_types::{
-    AddFlags, AllocaInstData, AshrFlags, BinaryOpData, BinaryOpcode, BranchKind, CastOpData,
-    CastOpcode, CmpInstData, ExtractElementInstData, GepInstData, InsertElementInstData, LshrFlags,
-    PhiData, SdivFlags, ShlFlags, ShuffleMaskElem, ShuffleVectorInstData, SubFlags, UdivFlags,
+    AddFlags, AllocaInstData, AshrFlags, BinaryOpData, BinaryOpcode, BranchKind, CallBaseParts,
+    CallInstData, CastOpData, CastOpcode, CmpInstData, ExtractElementInstData, GepInstData,
+    InsertElementInstData, LshrFlags, PhiData, SdivFlags, ShlFlags, ShuffleMaskElem,
+    ShuffleVectorInstData, SubFlags, UdivFlags,
 };
 use crate::instruction::{InstructionData, InstructionKindData, InstructionView};
-use crate::intrinsics::{IntrinsicSemantic, semantic_for_callee};
-use crate::marker::ReturnMarker;
+use crate::intrinsics::{IntrinsicId, IntrinsicSemantic, semantic_for_callee};
+use crate::marker::{Dyn, ReturnMarker};
 use crate::metadata::MetadataAttachmentKind;
 use crate::module::{ModuleBrand, ModuleRef};
+use crate::operator::fp_math_operator_flags;
 use crate::pass_context::FunctionView;
 use crate::pointer_analysis::strip_pointer_casts_same_representation;
 use crate::speculation::program_undefined_for_value;
@@ -45,6 +53,7 @@ use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use crate::vector_utils::splat_value;
 use crate::{ApInt, IrError, IrResult, KnownBits, ShiftAmountKnowledge};
 use core::cell::{Cell, RefCell};
+use core::cmp::Ordering;
 use core::marker::PhantomData;
 use core::ops::Not;
 use std::collections::{HashMap, HashSet};
@@ -538,6 +547,22 @@ fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     // return before ever being checked, and below the cache lookup a value
     // memoized before this guard existed could still be handed back.
     let width = require_int_or_pointer_width(value, query.data_layout())?;
+    // `if (!DemandedElts) { Known.resetAll(); return; }` — "No demanded elts,
+    // better to assume we don't know anything." Upstream tests it first, ahead
+    // of every constant arm, so a zero vector with no lane demanded is
+    // unknown, not zero.
+    // Read off the query without building the all-lanes default, which for
+    // a long splat would be a lane-count-sized allocation.
+    if let Some(ElementCount {
+        min: lanes,
+        scalable: false,
+    }) = value.ty().data().element_count()
+        && query
+            .demanded_elements()
+            .is_some_and(|demanded| demanded.bit_width() == lanes.get() && demanded.is_zero())
+    {
+        return Ok(KnownBits::unknown(width));
+    }
     // Upstream's constant fast path runs *before* the recursion cutoff.
     // `computeKnownBits` answers `m_APInt` with `KnownBits::makeConstant`,
     // `ConstantPointerNull` / `ConstantAggregateZero` with `setAllZero` and
@@ -546,21 +571,33 @@ fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     // walk, under the comment "All recursive calls that increase depth must
     // come after this." A constant therefore reports its exact value at any
     // depth, and -- like upstream's early `return` -- never reaches
-    // `computeKnownBitsFromContext`. The recursive constant arms
-    // (`ConstantExpr`, aggregates) are *not* part of that fast path upstream
-    // either: a `ConstantExpr` is an `Operator`, so it goes through
-    // `computeKnownBitsFromOperator` below the cutoff.
+    // `computeKnownBitsFromContext`. The vector arms (`m_APInt` on a splat,
+    // `ConstantDataVector`, `ConstantVector`) sit above the cutoff too, and
+    // read their lanes without recursing (`vector_constant_known_bits`). A
+    // `ConstantExpr` is not part of the fast path: it is an `Operator`, so it
+    // goes through `computeKnownBitsFromOperator` below the cutoff.
     if let ValueKindData::Constant(constant) = &value.data().kind
         && let Some(known) = leaf_constant_known_bits(constant, width)
+            .or_else(|| vector_constant_known_bits(value, constant, width, query))
     {
         return Ok(known);
     }
+    // `if (const auto *A = dyn_cast<Argument>(V)) if (std::optional<ConstantRange>
+    // Range = A->getRange()) Known = Range->toKnownBits();` — above the
+    // cutoff, which upstream marks "All recursive calls that increase depth
+    // must come after this.", so an argument's range answers at any depth.
+    // `toKnownBits` of a range of another width would break `KnownBits`'
+    // width invariant; the verifier refuses such a `range`, and here it adds
+    // nothing.
+    let argument_known = argument_range(value)
+        .filter(|range| range.bit_width() == width)
+        .map(|range| range.to_known_bits());
     // Upstream writes this as `Depth == MaxAnalysisRecursionDepth`, resting on
     // the `assert(Depth <= MaxAnalysisRecursionDepth)` above it. llvmkit takes
     // no runtime panics in production paths, so the assert and the equality
     // are folded into one comparison rather than dropped.
     if depth >= query.max_depth() {
-        return Ok(KnownBits::unknown(width));
+        return Ok(argument_known.unwrap_or_else(|| KnownBits::unknown(width)));
     }
     if stack.contains(&value.slot_trusting_same_module()) {
         return Ok(KnownBits::unknown(width));
@@ -579,8 +616,11 @@ fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         ValueKindData::Instruction(inst) => {
             compute_instruction_known_bits(value, inst, query, depth, stack)?
         }
-        ValueKindData::Argument { .. }
-        | ValueKindData::BasicBlock(_)
+        // The argument's range, read above the cutoff.
+        ValueKindData::Argument { .. } => {
+            argument_known.unwrap_or_else(|| KnownBits::unknown(width))
+        }
+        ValueKindData::BasicBlock(_)
         | ValueKindData::Function(_)
         | ValueKindData::GlobalAlias(_)
         | ValueKindData::GlobalIfunc(_)
@@ -598,20 +638,107 @@ fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     Ok(known)
 }
 
-/// The non-recursive half of the constant arm: the cases upstream's
+/// The non-recursive half of the constant arm: the scalar cases upstream's
 /// `computeKnownBits` answers *above* its `Depth == MaxAnalysisRecursionDepth`
-/// cutoff. `None` for the arms that are `Operator`s or aggregates upstream and
-/// so sit below it.
+/// cutoff. The vector cases are [`vector_constant_known_bits`]; `None` here
+/// for those and for the arms that are `Operator`s upstream and so sit below
+/// it.
 fn leaf_constant_known_bits(constant: &ConstantData, width: u32) -> Option<KnownBits> {
     Some(match constant {
         // `match(V, m_APInt(C))` -> `KnownBits::makeConstant(*C)`.
         ConstantData::Int(words) => KnownBits::from_ap_int(ApInt::from_words(width, words)),
-        // `isa<ConstantPointerNull>(V)` -> `Known.setAllZero()`.
-        ConstantData::PointerNull => KnownBits::from_ap_int(ApInt::zero(width)),
+        // `isa<ConstantPointerNull>(V) || isa<ConstantAggregateZero>(V)` ->
+        // `Known.setAllZero()`. A vector zero has already matched `m_APInt`
+        // through its splat upstream, with the same answer.
+        ConstantData::PointerNull | ConstantData::AggregateZero => {
+            KnownBits::from_ap_int(ApInt::zero(width))
+        }
         // `isa<UndefValue>(V)` -> `Known.resetAll(); return;`. `PoisonValue`
         // derives from `UndefValue`, so it lands on the same arm.
         ConstantData::Undef | ConstantData::Poison => KnownBits::unknown(width),
         _ => return None,
+    })
+}
+
+/// The vector arms of the constant fast path, which upstream's
+/// `computeKnownBits` also answers above its `Depth ==
+/// MaxAnalysisRecursionDepth` cutoff, in its order (its first test, `if
+/// (!DemandedElts)`, is at the head of `compute_known_bits_inner`):
+///
+/// - `match(V, m_APInt(C))`, which matches a splat whose
+///   `getSplatValue(/*AllowPoison=*/false)` is a `ConstantInt`, fixed or
+///   scalable, stored or written out as a `shufflevector` expression, and
+///   answers `KnownBits::makeConstant`;
+/// - the `ConstantDataVector` and `ConstantVector` arms: the intersection of
+///   the demanded lanes' values, a `poison` lane skipped (a
+///   `ConstantDataVector` has none), and `resetAll` for a lane that is no
+///   `ConstantInt`, or for a conflict.
+///
+/// A fixed splat of anything else is a `ConstantVector` whose lane is no
+/// `ConstantInt`, so it answers `resetAll`. A scalable one is
+/// `ConstantVector::getSplat`'s `shufflevector` expression, an `Operator`, so
+/// it answers `None` here and is read below the cutoff, where that arm's
+/// `getSplatValue` recurses into the element (`compute_constant_known_bits`).
+/// `None` for anything else that is no vector constant of these shapes.
+fn vector_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    constant: &ConstantData,
+    width: u32,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> Option<KnownBits> {
+    // `dyn_cast<ConstantInt>` of a lane, read at the lane's own width, which
+    // is `width`.
+    let lane_value = |slot: ValueSlot| argument_constant(Some(value_from_slot(value, slot)));
+    let elements = match constant {
+        // `m_APInt`, or else the `ConstantVector` arm's `resetAll` for a fixed
+        // splat, with no lane read but the one stored. A scalable splat of
+        // anything else is upstream's `shufflevector` `Operator`, answered
+        // below the cutoff (`compute_constant_known_bits`).
+        ConstantData::Splat { element, .. } => {
+            return match lane_value(*element) {
+                Some(splat) => Some(KnownBits::from_ap_int(splat)),
+                None if value.ty().kind() == TypeKind::ScalableVector => None,
+                None => Some(KnownBits::unknown(width)),
+            };
+        }
+        // `m_APInt` on a `shufflevector` splat expression, through the same
+        // `getSplatValue`; any other expression is an `Operator`, below the
+        // cutoff.
+        ConstantData::Expr(_) => {
+            let splat = Constant::try_from(value).ok()?.splat_value(false)?;
+            return lane_value(splat.as_erased().slot_trusting_same_module())
+                .map(KnownBits::from_ap_int);
+        }
+        ConstantData::Aggregate(elements) => elements,
+        _ => return None,
+    };
+    // A list stores its lanes, so the demanded mask, one bit per lane, costs
+    // no more than the list. A list is never all one value (that is a
+    // splat), so `m_APInt` cannot match it.
+    let demanded = demanded_elements_for(value, query);
+    let mut known = KnownBits::unknown(width);
+    known.set_all_conflict();
+    for (lane, element) in elements.iter().enumerate() {
+        if let Some(demanded) = &demanded
+            && !u32::try_from(lane).is_ok_and(|lane| demanded.bit(lane))
+        {
+            continue;
+        }
+        if matches!(
+            &value_from_slot(value, *element).data().kind,
+            ValueKindData::Constant(ConstantData::Poison)
+        ) {
+            continue;
+        }
+        let Some(lane_bits) = lane_value(*element) else {
+            return Some(KnownBits::unknown(width));
+        };
+        known = known.intersect_with(&KnownBits::from_ap_int(lane_bits));
+    }
+    Some(if known.has_conflict() {
+        KnownBits::unknown(width)
+    } else {
+        known
     })
 }
 
@@ -623,26 +750,30 @@ fn compute_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
-    // The leaf arms (`m_APInt`, `ConstantPointerNull`, `UndefValue`) are
-    // answered by `leaf_constant_known_bits` above the recursion cutoff in
-    // `compute_known_bits_inner`, exactly as upstream answers them above its
-    // `Depth == MaxAnalysisRecursionDepth` return; this dispatch reads them
-    // from the same helper rather than restating them.
-    if let Some(known) = leaf_constant_known_bits(constant, width) {
-        return Ok(known);
-    }
+    // The fast-path arms (`m_APInt`, `ConstantPointerNull`, `UndefValue`, the
+    // `ConstantDataVector` / `ConstantVector` arms) were answered by
+    // `leaf_constant_known_bits` and `vector_constant_known_bits` above the
+    // recursion cutoff in `compute_known_bits_inner`, this function's only
+    // caller, exactly as upstream answers them above its `Depth ==
+    // MaxAnalysisRecursionDepth` return; what reaches here is an `Operator`.
     Ok(match constant {
         ConstantData::Expr(expr) => {
             compute_constant_expr_known_bits(value, expr, query, depth, stack)?
         }
-        ConstantData::Aggregate(elements) => {
-            aggregate_constant_known_bits(value, elements, query, depth, stack)?
+        // A scalable splat of anything but a `ConstantInt`: upstream's
+        // `shufflevector` expression, whose `computeKnownBitsFromOperator`
+        // arm opens `if (auto *Splat = getSplatValue(I)) {
+        // computeKnownBits(Splat, Known, Q, Depth + 1); break; }`.
+        ConstantData::Splat { element, .. } => {
+            compute_known_bits_inner(value_from_slot(value, *element), query, depth + 1, stack)?
         }
-        // Answered above, by `leaf_constant_known_bits`; listed so a new
-        // `ConstantData` variant is a non-exhaustive-match error here rather
-        // than a silent `unknown`.
-        ConstantData::Int(_)
+        // Answered above, by `leaf_constant_known_bits` and
+        // `vector_constant_known_bits`; listed so a new `ConstantData` variant
+        // is a non-exhaustive-match error here rather than a silent `unknown`.
+        ConstantData::Aggregate(_)
+        | ConstantData::Int(_)
         | ConstantData::PointerNull
+        | ConstantData::AggregateZero
         | ConstantData::Undef
         | ConstantData::Poison
         | ConstantData::Float(_)
@@ -738,9 +869,24 @@ fn compute_constant_expr_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capabili
                 stack,
             )?
         }
-        ConstantExprOpcode::ShuffleVector
-        | ConstantExprOpcode::InsertElement
-        | ConstantExprOpcode::ExtractElement => KnownBits::unknown(width),
+        // `if (auto *Splat = getSplatValue(I)) { computeKnownBits(Splat, Known,
+        // Q, Depth + 1); break; }`, then `auto *Shuf =
+        // dyn_cast<ShuffleVectorInst>(I); if (!Shuf) { Known.resetAll();
+        // return; }`, which every expression takes.
+        ConstantExprOpcode::ShuffleVector => {
+            match Constant::try_from(anchor)
+                .ok()
+                .and_then(|constant| constant.splat_value(false))
+            {
+                Some(splat) => {
+                    compute_known_bits_inner(splat.as_erased(), query, depth + 1, stack)?
+                }
+                None => KnownBits::unknown(width),
+            }
+        }
+        ConstantExprOpcode::InsertElement | ConstantExprOpcode::ExtractElement => {
+            KnownBits::unknown(width)
+        }
     })
 }
 
@@ -885,12 +1031,7 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability
         InstructionKindData::Call(data) => call_known_bits(
             value,
             CallKnownBitsInputs {
-                callee_id: data.callee.get(),
-                args: &data.args,
-                return_attrs: value
-                    .module
-                    .call_attributes(data.attrs.get())
-                    .return_attrs(),
+                call: CallBaseParts::of_call(value.module.context(), data),
                 instruction: inst,
             },
             query,
@@ -900,12 +1041,7 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability
         InstructionKindData::Invoke(data) => call_known_bits(
             value,
             CallKnownBitsInputs {
-                callee_id: data.callee.get(),
-                args: &data.args,
-                return_attrs: value
-                    .module
-                    .call_attributes(data.attrs.get())
-                    .return_attrs(),
+                call: CallBaseParts::of_invoke(value.module.context(), data),
                 instruction: inst,
             },
             query,
@@ -991,29 +1127,6 @@ fn range_metadata_known_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     ranges_known_bits(ranges, bit_width)
 }
 
-fn range_attribute_known_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    value: Value<'ctx, B, C>,
-    attrs: &AttributeStorage,
-    bit_width: u32,
-) -> KnownBits {
-    let Some(stored) = attrs.get(AttrIndex::Return) else {
-        return KnownBits::unknown(bit_width);
-    };
-    let module_view = value.module();
-    let expected_ty = scalar_type_slot(
-        module_view.core_ref(),
-        value.ty().slot_trusting_same_module(),
-    );
-    let ranges = stored.iter().filter_map(|attr| match attr {
-        AttributeStored::Range { ty, lower, upper } if *ty == expected_ty => {
-            let range = ConstantRange::new(lower.clone(), upper.clone()).ok()?;
-            (!range.is_empty_set() && !range.is_full_set()).then_some(range)
-        }
-        _ => None,
-    });
-    ranges_known_bits(ranges, bit_width)
-}
-
 fn ranges_known_bits<I>(ranges: I, bit_width: u32) -> KnownBits
 where
     I: IntoIterator<Item = ConstantRange>,
@@ -1046,9 +1159,7 @@ where
 }
 
 struct CallKnownBitsInputs<'a> {
-    callee_id: ValueSlot,
-    args: &'a [Cell<ValueSlot>],
-    return_attrs: &'a AttributeStorage,
+    call: CallBaseParts<'a>,
     instruction: &'a InstructionData,
 }
 
@@ -1081,12 +1192,15 @@ fn call_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         KnownBits::unknown(width)
     };
     // `if (std::optional<ConstantRange> Range = CB->getRange())
-    //    Known = Known.unionWith(Range->toKnownBits());`
-    known = known.union_with(&range_attribute_known_bits(
-        anchor,
-        inputs.return_attrs,
-        width,
-    ));
+    //    Known = Known.unionWith(Range->toKnownBits());` — `getRange` reads the
+    // called function's `range` as well as the call site's. `unionWith`
+    // asserts equal widths, and the verifier rejects a `range` of another
+    // width; llvmkit takes no runtime panic, so such a range adds nothing.
+    if let Some(range) = inputs.call.range(anchor.module)
+        && range.bit_width() == width
+    {
+        known = known.union_with(&range.to_known_bits());
+    }
     // `if (const Value *RV = CB->getReturnedArgOperand())
     //    if (RV->getType() == I->getType()) { … }`
     if let Some(returned_arg) = returned_arg_operand(anchor)
@@ -1104,9 +1218,9 @@ fn call_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         }
     }
     // `if (const IntrinsicInst *II = dyn_cast<IntrinsicInst>(I)) switch (…)`
-    if let Some(semantic) = intrinsic_semantic_for_callee(anchor, inputs.callee_id) {
+    if let Some(semantic) = intrinsic_semantic_for_callee(anchor, inputs.call.callee) {
         let intrinsic_known =
-            intrinsic_known_bits(anchor, semantic, inputs.args, query, depth, stack)?;
+            intrinsic_known_bits(anchor, semantic, inputs.call.args, query, depth, stack)?;
         known = known.union_with(&intrinsic_known);
     }
     Ok(known)
@@ -2675,26 +2789,111 @@ pub fn is_sign_bit_check(predicate: IntPredicate, rhs: &ApInt) -> Option<bool> {
 fn zero_int_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
 ) -> Option<bool> {
-    match &value.data().kind {
-        ValueKindData::Constant(ConstantData::Int(_)) => {
-            argument_constant(Some(value))?.is_zero().then_some(true)
-        }
-        // A vector constant matches when every lane is a zero or a poison
-        // standing in for one; it is a null value only if no lane is poison.
-        ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-            let mut all_null = true;
-            for element in elements.iter() {
-                match zero_int_constant(value_from_slot(value, *element)) {
-                    Some(true) => {}
-                    Some(false) => all_null = false,
-                    None => return None,
-                }
-            }
-            Some(all_null)
-        }
-        ValueKindData::Constant(ConstantData::Poison) => Some(false),
-        _ => None,
+    constant_int_predicate_matches(value, ApInt::is_zero)
+        .then(|| Constant::try_from(value).is_ok_and(Constant::is_null_value))
+}
+
+/// Ports `cstval_pred_ty<Predicate, ConstantInt, /*AllowPoison=*/true>`'s
+/// `match_impl` — `cst_pred_ty`, the matcher under `m_ZeroInt`, `m_AllOnes`
+/// and their siblings — for `predicate` as the `isValue` test.
+///
+/// A `ConstantInt` answers its predicate. A vector constant answers through
+/// its strict `getSplatValue()` when that is a `ConstantInt`, and otherwise,
+/// when it is fixed-width, lane by lane: a `poison` lane is skipped, any other
+/// lane must be a `ConstantInt` that satisfies the predicate, and at least one
+/// lane must be one. Anything else, an array included, does not match: the
+/// matcher looks through vectors only.
+fn constant_int_predicate_matches<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    predicate: fn(&ApInt) -> bool,
+) -> bool {
+    // `if (const auto *CV = dyn_cast<ConstantVal>(V)) return
+    // this->isValue(CV->getValue());`
+    if let Some(constant) = argument_constant(Some(value)) {
+        return predicate(&constant);
     }
+    // `if (const auto *VTy = dyn_cast<VectorType>(V->getType())) { if (const
+    // auto *C = dyn_cast<Constant>(V)) {`
+    let Some((_, lanes, scalable)) = value.ty().data().as_vector() else {
+        return false;
+    };
+    let Ok(constant) = Constant::try_from(value) else {
+        return false;
+    };
+    // `if (const auto *CV = dyn_cast_or_null<ConstantVal>(C->getSplatValue()))
+    // return this->isValue(CV->getValue());`
+    if let Some(splat) = constant
+        .splat_value(false)
+        .and_then(|splat| argument_constant(Some(splat.as_erased())))
+    {
+        return predicate(&splat);
+    }
+    // Number of elements of a scalable vector unknown at compile time.
+    if scalable {
+        return false;
+    }
+    // Non-splat vector constant: check each element for a match. A vector
+    // stored in one slot asks its one lane, which every lane is (D40).
+    let mut has_non_poison_elements = false;
+    for lane in 0..constant.lanes_to_ask(lanes.get()) {
+        let Some(element) = constant.aggregate_element(lane) else {
+            return false;
+        };
+        if is_poison(element) {
+            continue;
+        }
+        match argument_constant(Some(element.as_erased())) {
+            Some(element) if predicate(&element) => {}
+            _ => return false,
+        }
+        has_non_poison_elements = true;
+    }
+    has_non_poison_elements
+}
+
+/// Ports `ap_match<APInt>::match`, the matcher under `m_APInt` (`allow_poison`
+/// `false`) and `m_APIntAllowPoison` (`true`): a `ConstantInt`'s value, or a
+/// vector constant's whose `getSplatValue(AllowPoison)` is a `ConstantInt`.
+fn ap_int_match<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    allow_poison: bool,
+) -> Option<ApInt> {
+    if let Some(constant) = argument_constant(Some(value)) {
+        return Some(constant);
+    }
+    if !value.ty().is_vector() {
+        return None;
+    }
+    let splat = Constant::try_from(value).ok()?.splat_value(allow_poison)?;
+    argument_constant(Some(splat.as_erased()))
+}
+
+/// Ports `api_pred_ty<Predicate>::match`, the matcher under `m_LowBitMask`
+/// and its siblings: a `ConstantInt` that satisfies `predicate`, or a vector
+/// constant whose `getSplatValue(/*AllowPoison=*/true)` is one.
+fn ap_int_predicate_match<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    predicate: fn(&ApInt) -> bool,
+) -> Option<ApInt> {
+    if let Some(constant) = argument_constant(Some(value))
+        && predicate(&constant)
+    {
+        return Some(constant);
+    }
+    if !value.ty().is_vector() {
+        return None;
+    }
+    let splat = Constant::try_from(value).ok()?.splat_value(true)?;
+    let splat = argument_constant(Some(splat.as_erased()))?;
+    predicate(&splat).then_some(splat)
+}
+
+/// Ports `is_zero::match`, the matcher under `m_Zero()`: a constant that is
+/// null, or that `cst_pred_ty<is_zero_int>` matches.
+fn matches_zero<'ctx, B: ModuleBrand + 'ctx, C: Capability>(value: Value<'ctx, B, C>) -> bool {
+    Constant::try_from(value).is_ok_and(|constant| {
+        constant.is_null_value() || constant_int_predicate_matches(value, ApInt::is_zero)
+    })
 }
 
 /// Whether the negating `sub` must carry `nsw`.
@@ -3257,22 +3456,12 @@ fn binary_operands_of<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 /// Whether `value` matches upstream's `m_AllOnes()`.
 ///
 /// Ports `cst_pred_ty<is_all_ones>`, which accepts a scalar `-1` *and* a
-/// vector constant whose every lane is one — the form a vector `not` takes.
+/// vector constant whose every lane is one or `poison`, at least one lane
+/// being one — the form a vector `not` takes.
 fn is_all_ones_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
 ) -> bool {
-    match &value.data().kind {
-        ValueKindData::Constant(ConstantData::Int(_)) => {
-            argument_constant(Some(value)).is_some_and(|constant| constant.is_all_ones())
-        }
-        ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-            !elements.is_empty()
-                && elements
-                    .iter()
-                    .all(|element| is_all_ones_constant(value_from_slot(value, *element)))
-        }
-        _ => false,
-    }
+    constant_int_predicate_matches(value, ApInt::is_all_ones)
 }
 
 /// `m_Not(V)`: `xor V, -1`, matched commutatively.
@@ -3306,9 +3495,8 @@ pub(crate) fn not_operand<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 /// provably neither also gives up.
 ///
 /// Upstream's `m_ImmConstant` is "a constant that is not, and does not
-/// contain, a `ConstantExpr`". llvmkit keeps constant expressions in their own
-/// `ConstantData::Expr` arm, so the check is structural here rather than a
-/// predicate over one flat `Constant` class.
+/// contain, a `ConstantExpr`", or a vector whose splat value is one
+/// (`is_immediate_constant`).
 pub fn collect_possible_values<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
     max_count: usize,
@@ -3405,30 +3593,27 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> PossibleValues<'ctx, B, C> {
     }
 }
 
-/// Whether `value` is an immediate constant — upstream's `m_ImmConstant`.
-///
-/// Upstream asks for a `Constant` that is not a `ConstantExpr` and does not
-/// contain one. llvmkit stores constant expressions in their own arm, so this
-/// rejects that arm and recurses through aggregates for the "contains" half.
-///
-/// Upstream carries one further escape hatch: a vector whose splat value is
-/// expression-free counts even when the vector itself is not. That exists for
-/// scalable splats held as a `ConstantExpr` and is marked with a `TODO` to
-/// delete; llvmkit stores aggregate elements as slots, so a splat with no
-/// expression in it already passes the recursive check.
+/// Whether `value` is an immediate constant — upstream's `m_ImmConstant`,
+/// `immconstant_ty::isImmConstant` (`PatternMatch.h`), arm by arm: a
+/// `Constant` that is no `ConstantExpr` and does not contain one
+/// (`Constant::containsConstantExpression`, which looks only at a fixed
+/// vector's lanes), or a vector whose `getSplatValue(/*AllowPoison=*/true)`
+/// is such a constant. A global value is a `Constant` and qualifies; a
+/// scalable splat is upstream's `shufflevector` expression and qualifies
+/// through its splat value.
 fn is_immediate_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
 ) -> bool {
-    let ValueKindData::Constant(constant) = &value.data().kind else {
+    let Ok(constant) = Constant::try_from(value) else {
         return false;
     };
-    match constant {
-        ConstantData::Expr(_) => false,
-        ConstantData::Aggregate(elements) => elements
-            .iter()
-            .all(|element| is_immediate_constant(value_from_slot(value, *element))),
-        _ => true,
+    let expression_free = |constant: Constant<'ctx, B, C>| {
+        !matches!(constant.kind(), ConstantKind::Expr(_)) && !contains_constant_expression(constant)
+    };
+    if expression_free(constant) {
+        return true;
     }
+    constant.ty().is_vector() && constant.splat_value(true).is_some_and(expression_free)
 }
 
 /// The inner value `X` of an expression `f(X)` that is zero exactly when `X`
@@ -3467,9 +3652,9 @@ fn null_test_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     shifted: Value<'ctx, B, C>,
     flag: Value<'ctx, B, C>,
 ) -> Option<Value<'ctx, B, C>> {
-    // m_LShr(m_Value(X), m_APInt(C1))
+    // m_LShr(m_Value(X), m_APInt(C1)), whose splat forbids poison.
     let (base, shift_amount) = binary_operands_of(shifted, BinaryOpcode::Lshr)?;
-    let shift_amount = splat_or_scalar_constant(shift_amount)?;
+    let shift_amount = ap_int_match(shift_amount, false)?;
 
     // m_ZExt(m_SpecificICmp(ICMP_NE, .., m_Zero()))
     let compare = zext_source(flag)?;
@@ -3481,19 +3666,16 @@ fn null_test_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }
     let masked = value_from_slot(compare, compare_data.lhs.get());
     let zero = value_from_slot(compare, compare_data.rhs.get());
-    if !splat_or_scalar_constant(zero).is_some_and(|constant| constant.is_zero()) {
+    if !matches_zero(zero) {
         return None;
     }
 
-    // m_And(m_Deferred(X), m_LowBitMask(C2))
+    // m_And(m_Deferred(X), m_LowBitMask(C2)), whose splat allows poison.
     let (masked_base, mask) = binary_operands_of(masked, BinaryOpcode::And)?;
     if masked_base != base {
         return None;
     }
-    let mask = splat_or_scalar_constant(mask)?;
-    if !mask.is_mask() {
-        return None;
-    }
+    let mask = ap_int_predicate_match(mask, ApInt::is_mask)?;
 
     // `C2->popcount() == C1->getZExtValue()`. Upstream's `getZExtValue`
     // asserts the shift fits in 64 bits; comparing at the shift's own width
@@ -3501,40 +3683,6 @@ fn null_test_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     // never exceeds a bit width.
     let popcount = ApInt::from_words(shift_amount.bit_width(), &[u64::from(mask.popcount())]);
     shift_amount.eq_ap_int(&popcount).then_some(base)
-}
-
-/// The constant `value` carries, matching upstream's `m_APInt`: a scalar
-/// integer constant, or a vector whose lanes all carry the same one.
-///
-/// Upstream reaches the vector case through `getSplatValue(AllowPoison=true)`,
-/// so a poison lane is skipped rather than treated as a disagreement — it can
-/// be read as whatever the other lanes hold.
-fn splat_or_scalar_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    value: Value<'ctx, B, C>,
-) -> Option<ApInt> {
-    match &value.data().kind {
-        ValueKindData::Constant(ConstantData::Int(_)) => argument_constant(Some(value)),
-        ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-            let mut splat: Option<ApInt> = None;
-            for element in elements.iter() {
-                let element = value_from_slot(value, *element);
-                if matches!(
-                    element.data().kind,
-                    ValueKindData::Constant(ConstantData::Poison)
-                ) {
-                    continue;
-                }
-                let element = splat_or_scalar_constant(element)?;
-                match &splat {
-                    Some(seen) if !seen.eq_ap_int(&element) => return None,
-                    Some(_) => {}
-                    None => splat = Some(element),
-                }
-            }
-            splat
-        }
-        _ => None,
-    }
 }
 
 /// The source of a `zext`, matching upstream's `m_ZExt`.
@@ -4764,7 +4912,7 @@ where
 pub(crate) fn logical_op_parts<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
 ) -> Option<LogicalOperation<'ctx, B, C>> {
-    if !matches!(scalar_type_kind(value), Some(TypeKind::Integer { bits: 1 })) {
+    if !matches!(scalar_type_kind(value), TypeKind::Integer { bits: 1 }) {
         return None;
     }
     match instruction_kind(value)? {
@@ -4857,12 +5005,12 @@ fn is_null_pointer<'ctx, B: ModuleBrand + 'ctx, C: Capability>(value: Value<'ctx
 /// The kind of the value's scalar type, peeling one vector layer.
 fn scalar_type_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
-) -> Option<TypeKind> {
+) -> TypeKind {
     let ty = value.ty();
-    Some(match ty.data().as_vector() {
+    match ty.data().as_vector() {
         Some((element, _, _)) => Type::new(element, ty.module).kind(),
         None => ty.kind(),
-    })
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -4901,8 +5049,13 @@ impl UndefPoisonKind {
 /// carry. Ports `llvm::canCreatePoison`.
 ///
 /// `consider_flags_and_metadata` mirrors upstream's parameter: with it set, an
-/// operator carrying a poison-generating annotation (`nsw`, `nuw`, `exact`,
-/// `inbounds`, `nneg`, `disjoint`) answers true on that basis alone.
+/// operator carrying a poison-generating annotation answers true on that basis
+/// alone. The annotations are `Operator::hasPoisonGeneratingAnnotations`'s:
+/// the flags (`nuw` and `nsw` of `add`, `sub`, `mul`, `shl` and `trunc`;
+/// `exact`; `disjoint`; a `getelementptr`'s no-wrap flags and `inrange`;
+/// `nneg` of `zext` and `uitofp`; `samesign`; and `nnan` or `ninf` of an
+/// `FPMathOperator`), and of an instruction its `range`, `align` or `nonnull`
+/// return attribute and its `!range`, `!nonnull` or `!align` metadata.
 pub fn can_create_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
     consider_flags_and_metadata: bool,
@@ -4927,27 +5080,149 @@ pub fn can_create_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     )
 }
 
+/// What `dyn_cast<Operator>(V)` admits: an instruction, or a constant
+/// expression.
+///
+/// llvmkit stores a constant expression in five shapes, the five that
+/// [`Constant::kind`] classifies as [`ConstantKind::Expr`]. One keeps its
+/// operands; the four compact ones stand for the expression each prints as,
+/// and are read as that expression.
+#[derive(Clone, Copy)]
+enum OperatorRef<'ctx> {
+    /// An instruction: its payload, and beside it the metadata
+    /// `Instruction::hasPoisonGeneratingMetadata` reads.
+    Instruction(&'ctx InstructionData),
+    /// A constant expression stored with its operands.
+    Expression(&'ctx ConstantExprData),
+    /// [`ConstantData::GepOffset`] at a nonzero offset, which prints as
+    /// `getelementptr inbounds (i8, ptr @base, i64 off)`. At a zero offset it
+    /// is the base global itself, and no operator.
+    GlobalOffset { base: ValueSlot },
+    /// [`ConstantData::SymbolDelta`], or [`ConstantData::SymbolDeltaPlus`]
+    /// with a zero addend: `sub (i64 ptrtoint (ptr @hi to i64), i64 ptrtoint
+    /// (ptr @lo to i64))`.
+    SymbolDelta { hi: ValueSlot, lo: ValueSlot },
+    /// [`ConstantData::SymbolDeltaPlus`] with a nonzero addend: `add (i64
+    /// <the symbol difference>, i64 addend)`.
+    SymbolDeltaPlus { hi: ValueSlot, lo: ValueSlot },
+    /// A scalable splat: the `shufflevector (insert, poison,
+    /// zeroinitializer)` `ConstantVector::getSplat` builds, whose `insert`,
+    /// `insertelement (poison, V, i64 0)`, the splat stores.
+    ScalableSplat { insert: ValueSlot },
+}
+
+/// Ports `dyn_cast<Operator>(V)`, read off llvmkit's storage.
+fn operator_ref<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<OperatorRef<'ctx>> {
+    let constant = match &value.data().kind {
+        ValueKindData::Instruction(instruction) => {
+            return Some(OperatorRef::Instruction(instruction));
+        }
+        ValueKindData::Constant(constant) => constant,
+        _ => return None,
+    };
+    // Matched exhaustively, as `Constant::kind` is: a new constant kind has to
+    // be classified as an operator or not.
+    match constant {
+        ConstantData::Expr(expression) => Some(OperatorRef::Expression(expression)),
+        ConstantData::GepOffset { off: 0, .. } => None,
+        ConstantData::GepOffset { base_id, .. } => {
+            Some(OperatorRef::GlobalOffset { base: *base_id })
+        }
+        ConstantData::SymbolDelta { hi_id, lo_id }
+        | ConstantData::SymbolDeltaPlus {
+            hi_id,
+            lo_id,
+            addend: 0,
+        } => Some(OperatorRef::SymbolDelta {
+            hi: *hi_id,
+            lo: *lo_id,
+        }),
+        ConstantData::SymbolDeltaPlus { hi_id, lo_id, .. } => Some(OperatorRef::SymbolDeltaPlus {
+            hi: *hi_id,
+            lo: *lo_id,
+        }),
+        // A scalable splat is upstream's `shufflevector` expression. A fixed
+        // one is a `ConstantDataVector` or a `ConstantVector`, no `Operator`.
+        ConstantData::Splat {
+            insert: Some(insert),
+            ..
+        } => Some(OperatorRef::ScalableSplat { insert: *insert }),
+        ConstantData::Splat { .. }
+        | ConstantData::Aggregate(_)
+        | ConstantData::Int(_)
+        | ConstantData::Float(_)
+        | ConstantData::GlobalValueRef { .. }
+        | ConstantData::PointerNull
+        | ConstantData::ForwardRefPlaceholder
+        | ConstantData::AggregateZero
+        | ConstantData::BlockAddress { .. }
+        | ConstantData::DsoLocalEquivalent { .. }
+        | ConstantData::NoCfi { .. }
+        | ConstantData::TokenNone
+        | ConstantData::TargetExtNone
+        | ConstantData::PtrAuth { .. }
+        | ConstantData::Undef
+        | ConstantData::Poison => None,
+    }
+}
+
 /// Ports the static `canCreateUndefOrPoison(Op, Kind, ConsiderFlagsAndMetadata)`.
+///
+/// Upstream takes an `Operator`. A value that is none answers `false`, as an
+/// operator that creates nothing does; the public entries take any value, and
+/// every caller in this file asks only of an operator. Upstream's one `switch`
+/// over the opcode is split by storage: [`instruction_can_create_undef_or_poison`]
+/// holds an instruction's arms and [`expression_can_create_undef_or_poison`] a
+/// stored expression's, each in the switch's order, and a compact expression
+/// answers here as the expression it prints as.
 fn can_create_undef_or_poison_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
     kind: UndefPoisonKind,
     consider_flags_and_metadata: bool,
 ) -> bool {
-    let ValueKindData::Instruction(inst) = &value.data().kind else {
-        // Upstream reaches this through `dyn_cast<Operator>`; a non-operator is
-        // not an operator that can create anything.
+    let Some(operator) = operator_ref(value) else {
         return false;
     };
 
     if consider_flags_and_metadata
         && kind.includes_poison()
-        && has_poison_generating_annotations(&inst.kind)
+        && has_poison_generating_annotations(value, operator)
     {
         return true;
     }
 
-    match &inst.kind {
-        // Shifts are poison when the amount is out of range.
+    match operator {
+        OperatorRef::Instruction(instruction) => {
+            instruction_can_create_undef_or_poison(value, &instruction.kind, kind)
+        }
+        OperatorRef::Expression(expression) => {
+            expression_can_create_undef_or_poison(value, expression, kind)
+        }
+        // `case Instruction::GetElementPtr: return false;`
+        OperatorRef::GlobalOffset { .. } => false,
+        // A `sub` and an `add` reach `default`, where
+        // `Instruction::isBinaryOp(Opcode)` answers `false`.
+        OperatorRef::SymbolDelta { .. } | OperatorRef::SymbolDeltaPlus { .. } => false,
+        // `case Instruction::ShuffleVector:` over the splat's mask, which is
+        // all zeros, so `is_contained(Mask, PoisonMaskElem)` is false.
+        OperatorRef::ScalableSplat { .. } => false,
+    }
+}
+
+/// The `canCreateUndefOrPoison` switch over an instruction's opcode, its arms
+/// in the switch's order. The annotations test before the switch is
+/// [`can_create_undef_or_poison_kind`]'s.
+fn instruction_can_create_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    instruction: &InstructionKindData,
+    kind: UndefPoisonKind,
+) -> bool {
+    match instruction {
+        // `case Instruction::Shl: case Instruction::AShr: case
+        // Instruction::LShr: return includesPoison(Kind) &&
+        // !shiftAmountKnownInRange(Op->getOperand(1));`
         InstructionKindData::Shl(data)
         | InstructionKindData::Ashr(data)
         | InstructionKindData::Lshr(data) => {
@@ -4955,49 +5230,55 @@ fn can_create_undef_or_poison_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                 && !shift_amount_known_in_range(value_from_slot(value, data.rhs.get()))
         }
 
-        // fptosi/fptoui yield poison when the value does not fit the
-        // destination type.
+        // `case Instruction::FPToSI: case Instruction::FPToUI:` — "fptosi/ui
+        // yields poison if the resulting value does not fit in the destination
+        // type." `return true;`
         InstructionKindData::Cast(data)
             if matches!(data.kind, CastOpcode::FpToSi | CastOpcode::FpToUi) =>
         {
             true
         }
 
-        // addrspacecast can create poison; every other cast cannot. Upstream
-        // reaches the latter through the `isa<CastInst>` test in `default`.
-        InstructionKindData::Cast(data) => data.kind == CastOpcode::AddrSpaceCast,
-
-        // Upstream returns true unless the call is annotated `noundef` on its
-        // return, or `nocreateundeforpoison` on the callee. llvmkit does not
-        // model `nocreateundeforpoison`, so only the `noundef` half is
-        // consulted; the effect is that some calls answer true where upstream
-        // would answer false — conservative in the safe direction.
-        call @ (InstructionKindData::Call(_)
-        | InstructionKindData::Invoke(_)
-        | InstructionKindData::CallBr(_)) => !call_returns_noundef(value, call),
-
-        // Out-of-range lane indices give poison.
-        InstructionKindData::ExtractElement(data) => {
-            kind.includes_poison()
-                && !lane_index_known_in_range(
-                    value_from_slot(value, data.vector.get()),
-                    value_from_slot(value, data.index.get()),
-                )
+        // `case Instruction::Call:` — the intrinsic `switch`, then
+        // `[[fallthrough]];` into the `CallBase` arm below it.
+        InstructionKindData::Call(data) => {
+            if intrinsic_cannot_create_undef_or_poison(value, data, kind) {
+                return false;
+            }
+            call_base_can_create_undef_or_poison(value, instruction)
         }
+        // `case Instruction::CallBr: case Instruction::Invoke:`
+        InstructionKindData::CallBr(_) | InstructionKindData::Invoke(_) => {
+            call_base_can_create_undef_or_poison(value, instruction)
+        }
+
+        // `case Instruction::InsertElement: case Instruction::ExtractElement:`
+        // — "If index exceeds the length of the vector, it returns poison";
+        // the index is operand 2 of an `insertelement`, 1 of an
+        // `extractelement`.
         InstructionKindData::InsertElement(data) => {
             kind.includes_poison()
                 && !lane_index_known_in_range(
-                    value_from_slot(value, data.vector.get()),
-                    value_from_slot(value, data.index.get()),
+                    Some(value_from_slot(value, data.vector.get())),
+                    Some(value_from_slot(value, data.index.get())),
+                )
+        }
+        InstructionKindData::ExtractElement(data) => {
+            kind.includes_poison()
+                && !lane_index_known_in_range(
+                    Some(value_from_slot(value, data.vector.get())),
+                    Some(value_from_slot(value, data.index.get())),
                 )
         }
 
-        // A poison mask element creates poison.
+        // `case Instruction::ShuffleVector: return includesPoison(Kind) &&
+        // is_contained(Mask, PoisonMaskElem);`
         InstructionKindData::ShuffleVector(data) => {
             kind.includes_poison() && data.mask.contains(&ShuffleMaskElem::Poison)
         }
 
-        // These never create undef or poison of their own.
+        // `case Instruction::FNeg:` … `case Instruction::GetElementPtr:
+        // return false;`
         InstructionKindData::Fneg(_)
         | InstructionKindData::Phi(_)
         | InstructionKindData::Select(_)
@@ -5008,111 +5289,460 @@ fn can_create_undef_or_poison_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         | InstructionKindData::Fcmp(_)
         | InstructionKindData::Gep(_) => false,
 
-        // Upstream's `default`: a binary operator cannot create undef or
-        // poison on its own (its flags are handled above); anything else is
-        // conservatively assumed to.
+        // `case Instruction::AddrSpaceCast: return true;`
+        InstructionKindData::Cast(data) if data.kind == CastOpcode::AddrSpaceCast => true,
+
+        // `default:` — `if (isa<CastInst>(Op) || (CE && CE->isCast())) return
+        // false;`
+        InstructionKindData::Cast(_) => false,
+        // `else if (Instruction::isBinaryOp(Opcode)) return false;` — "Be
+        // conservative and return true."
         other => !is_binary_operator_kind(other),
     }
 }
 
-/// Ports `Operator::hasPoisonGeneratingAnnotations` for the flags llvmkit
-/// models. The metadata half (`!range`, `!nonnull`, `!align`) is not consulted
-/// because those attach to loads and calls, whose arms already answer
-/// conservatively.
-fn has_poison_generating_annotations(kind: &InstructionKindData) -> bool {
-    match kind {
-        InstructionKindData::Add(data)
-        | InstructionKindData::Sub(data)
-        | InstructionKindData::Mul(data)
-        | InstructionKindData::Shl(data) => data.no_signed_wrap || data.no_unsigned_wrap,
-        InstructionKindData::Udiv(data)
-        | InstructionKindData::Sdiv(data)
-        | InstructionKindData::Lshr(data)
-        | InstructionKindData::Ashr(data) => data.is_exact,
-        InstructionKindData::Or(data) => data.disjoint,
-        InstructionKindData::Gep(data) => !data.flags.is_empty(),
-        InstructionKindData::Cast(data) => data.nneg.get() || data.nuw.get(),
+/// `case Instruction::Call:`'s `if (auto *II = dyn_cast<IntrinsicInst>(Op))
+/// switch (II->getIntrinsicID())`: whether one of its cases returns `false`.
+/// A case that `break`s, an intrinsic with no case, and a call that is no
+/// intrinsic call fall through to the `CallBase` arm, which this answers
+/// `false` for.
+///
+/// `IntrinsicInst::classof` asks that the called operand be a `Function` and
+/// `isIntrinsic()`, and `getIntrinsicID()` is that function's `IntID`
+/// ([`FunctionValue::intrinsic_id`]).
+///
+/// The `ctlz` / `cttz` / `abs` case reads `cast<ConstantInt>(
+/// II->getArgOperand(1))`, which asserts that the operand is a `ConstantInt`
+/// (the verifier requires an `immarg`). llvmkit takes no runtime panic: an
+/// operand that is none, or a call with no such operand, is read as no null
+/// value, so the case `break`s and the `CallBase` arm answers. That is the
+/// answer that claims less.
+fn intrinsic_cannot_create_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    call: &CallInstData,
+    kind: UndefPoisonKind,
+) -> bool {
+    let Ok(function) =
+        FunctionValue::<Dyn, B, C>::try_from(value_from_slot(anchor, call.callee.get()))
+    else {
+        return false;
+    };
+    if !function.is_intrinsic() {
+        return false;
+    }
+    let argument = |index: usize| {
+        call.args
+            .get(index)
+            .map(|slot| value_from_slot(anchor, slot.get()))
+    };
+    match function.intrinsic_id() {
+        // "TODO: Add more intrinsics." `case Intrinsic::ctlz: case
+        // Intrinsic::cttz: case Intrinsic::abs: if
+        // (cast<ConstantInt>(II->getArgOperand(1))->isNullValue()) return
+        // false; break;`
+        Some(IntrinsicId::CTLZ | IntrinsicId::CTTZ | IntrinsicId::ABS) => {
+            argument_constant(argument(1)).is_some_and(|operand| operand.is_zero())
+        }
+        // `case Intrinsic::sshl_sat: case Intrinsic::ushl_sat: if
+        // (!includesPoison(Kind) || shiftAmountKnownInRange(
+        // II->getArgOperand(1))) return false; break;`
+        Some(IntrinsicId::SSHL_SAT | IntrinsicId::USHL_SAT) => {
+            !kind.includes_poison() || argument(1).is_some_and(shift_amount_known_in_range)
+        }
         _ => false,
     }
 }
 
-/// Ports `shiftAmountKnownInRange`: a constant shift amount strictly below the
-/// bit width. A non-constant amount answers false.
-fn shift_amount_known_in_range<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    shift_amount: Value<'ctx, B, C>,
-) -> bool {
-    let data_layout = shift_amount.module().data_layout();
-    let Some(width) = value_bit_width(shift_amount, &data_layout) else {
-        return false;
-    };
-    argument_constant(Some(shift_amount))
-        .is_some_and(|amount| amount.limited_value(u64::from(width)) < u64::from(width))
-}
-
-/// True when `index` is a constant lane index within `vector`'s element count.
-/// Ports the `InsertElement` / `ExtractElement` arm's bounds test.
+/// `case Instruction::CallBr: case Instruction::Invoke:`, which the `Call`
+/// arm falls through into:
 ///
-/// A scalable vector answers false: upstream compares against
-/// `getKnownMinValue()`, which cannot bound the real length, and llvmkit
-/// declines rather than guessing.
-fn lane_index_known_in_range<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    vector: Value<'ctx, B, C>,
-    index: Value<'ctx, B, C>,
-) -> bool {
-    if vector.ty().kind() != TypeKind::FixedVector {
-        return false;
-    }
-    let Some((_, lanes, _)) = vector.ty().data().as_vector() else {
-        return false;
-    };
-    argument_constant(Some(index))
-        .is_some_and(|idx| idx.limited_value(u64::from(lanes.get())) < u64::from(lanes.get()))
-}
-
-/// True when the call/invoke/callbr's return carries `noundef`.
-fn call_returns_noundef<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+/// ```text
+/// const auto *CB = cast<CallBase>(Op);
+/// return !CB->hasRetAttr(Attribute::NoUndef) &&
+///        !CB->hasFnAttr(Attribute::NoCreateUndefOrPoison);
+/// ```
+///
+/// Both read the called function's attributes as well as the call site's
+/// ([`CallBaseParts::has_return_attribute`],
+/// [`CallBaseParts::has_function_attribute`]). Every caller passes a `call`,
+/// `invoke` or `callbr`, which `cast<CallBase>` asserts; anything else would
+/// answer `true`, the default arm's "Be conservative" answer.
+fn call_base_can_create_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     anchor: Value<'ctx, B, C>,
-    kind: &InstructionKindData,
+    instruction: &InstructionKindData,
 ) -> bool {
-    call_return_attrs(anchor, kind).is_some_and(|stored| {
-        stored
-            .iter()
-            .any(|attr| matches!(attr, AttributeStored::Enum(AttrKind::NoUndef)))
+    CallBaseParts::of(anchor.module.context(), instruction).is_none_or(|call| {
+        !call.has_return_attribute(anchor.module, AttrKind::NoUndef)
+            && !call.has_function_attribute(anchor.module, AttrKind::NoCreateUndefOrPoison)
     })
 }
 
+/// The `canCreateUndefOrPoison` switch over a constant expression's opcode,
+/// its arms in the switch's order. No llvmkit expression is a shift, an
+/// `fptosi` or `fptoui`, or a call, so those arms are not reached, and neither
+/// is `default`'s closing `return true`: every expression opcode left is a
+/// cast or a binary operator.
+fn expression_can_create_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    expression: &ConstantExprData,
+    kind: UndefPoisonKind,
+) -> bool {
+    match expression.opcode {
+        // `case Instruction::InsertElement: case Instruction::ExtractElement:`
+        // — the index is operand 2 of an `insertelement`, 1 of an
+        // `extractelement`.
+        ConstantExprOpcode::InsertElement | ConstantExprOpcode::ExtractElement => {
+            let index_operand = if expression.opcode == ConstantExprOpcode::InsertElement {
+                2
+            } else {
+                1
+            };
+            let operand = |position: usize| {
+                expression
+                    .operands
+                    .get(position)
+                    .map(|&slot| value_from_slot(anchor, slot))
+            };
+            kind.includes_poison() && !lane_index_known_in_range(operand(0), operand(index_operand))
+        }
+        // `case Instruction::ShuffleVector:` reads
+        // `cast<ConstantExpr>(Op)->getShuffleMask()`. llvmkit keeps the mask as
+        // the expression's third operand, a constant vector, and reads it as
+        // `ShuffleVectorInst::getShuffleMask` reads one; a mask it cannot read
+        // is taken to hold a poison lane, the answer that claims nothing.
+        ConstantExprOpcode::ShuffleVector => {
+            kind.includes_poison() && expression_shuffle_mask_has_poison_lane(anchor, expression)
+        }
+        // `case Instruction::GetElementPtr: return false;`
+        ConstantExprOpcode::GetElementPtr => false,
+        // `case Instruction::AddrSpaceCast: return true;`
+        ConstantExprOpcode::AddrSpaceCast => true,
+        // `default:` — `CE && CE->isCast()`.
+        ConstantExprOpcode::Trunc
+        | ConstantExprOpcode::PtrToAddr
+        | ConstantExprOpcode::PtrToInt
+        | ConstantExprOpcode::IntToPtr
+        | ConstantExprOpcode::BitCast => false,
+        // `default:` — `Instruction::isBinaryOp(Opcode)`.
+        ConstantExprOpcode::Add | ConstantExprOpcode::Sub | ConstantExprOpcode::Xor => false,
+    }
+}
+
+/// Whether the mask of a `shufflevector` expression, its third operand read as
+/// `ShuffleVectorInst::getShuffleMask` reads a mask constant, has a
+/// `PoisonMaskElem` lane (an `undef` or `poison` lane). A mask it cannot read
+/// is taken to have one, the answer that claims nothing. A mask stored in one
+/// slot answers from that slot (`Constant::has_uniform_lanes`), so a long `splat`
+/// mask is not decoded lane by lane (`docs/divergences.md` D40).
+fn expression_shuffle_mask_has_poison_lane<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    expression: &ConstantExprData,
+) -> bool {
+    let Some(mask) = expression
+        .operands
+        .get(2)
+        .and_then(|&mask| Constant::try_from(value_from_slot(anchor, mask)).ok())
+    else {
+        return true;
+    };
+    // A zero mask, fixed or scalable, is every lane `0`; an `undef` or
+    // `poison` mask every lane `PoisonMaskElem`.
+    if mask.is_null_value() {
+        return false;
+    }
+    if matches!(mask.kind(), ConstantKind::Data(ConstantDataKind::Undef(_))) {
+        return true;
+    }
+    if mask.has_uniform_lanes()
+        && let Some(lane) = mask.aggregate_element(0)
+    {
+        return matches!(lane.kind(), ConstantKind::Data(ConstantDataKind::Undef(_)));
+    }
+    shufflevector_mask_from_constant(mask)
+        .is_none_or(|mask| mask.contains(&ShuffleMaskElem::Poison))
+}
+
+/// Ports `Operator::hasPoisonGeneratingAnnotations` (`Operator.cpp`):
+///
+/// ```text
+/// if (hasPoisonGeneratingFlags())
+///   return true;
+/// auto *I = dyn_cast<Instruction>(this);
+/// return I && (I->hasPoisonGeneratingReturnAttributes() ||
+///              I->hasPoisonGeneratingMetadata());
+/// ```
+///
+/// `anchor` is the operator's own value: an instruction's result type is what
+/// `FPMathOperator::classof` reads, and its module what an attribute query
+/// reads.
+fn has_poison_generating_annotations<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    operator: OperatorRef<'ctx>,
+) -> bool {
+    if has_poison_generating_flags(anchor, operator) {
+        return true;
+    }
+    match operator {
+        OperatorRef::Instruction(instruction) => {
+            instruction_has_poison_generating_return_attributes(anchor, &instruction.kind)
+                || instruction_has_poison_generating_metadata(instruction)
+        }
+        // `dyn_cast<Instruction>` is null for a constant expression.
+        OperatorRef::Expression(_)
+        | OperatorRef::GlobalOffset { .. }
+        | OperatorRef::SymbolDelta { .. }
+        | OperatorRef::SymbolDeltaPlus { .. }
+        | OperatorRef::ScalableSplat { .. } => false,
+    }
+}
+
+/// Ports `Operator::hasPoisonGeneratingFlags` (`Operator.cpp`). Its one
+/// `switch` over the opcode is split by storage:
+/// [`instruction_has_poison_generating_flags`] holds an instruction's arms and
+/// [`expression_has_poison_generating_flags`] a stored expression's, each in
+/// the switch's order, and a compact expression has the flags of the
+/// expression it prints as.
+fn has_poison_generating_flags<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    operator: OperatorRef<'ctx>,
+) -> bool {
+    match operator {
+        OperatorRef::Instruction(instruction) => {
+            instruction_has_poison_generating_flags(anchor, &instruction.kind)
+        }
+        OperatorRef::Expression(expression) => expression_has_poison_generating_flags(expression),
+        // `getelementptr inbounds`: `GEP->getNoWrapFlags() !=
+        // GEPNoWrapFlags::none()`.
+        OperatorRef::GlobalOffset { .. } => true,
+        // A `sub` or an `add` with neither `nuw` nor `nsw`, and a
+        // `shufflevector`, which reaches `default` and is no `FPMathOperator`.
+        OperatorRef::SymbolDelta { .. }
+        | OperatorRef::SymbolDeltaPlus { .. }
+        | OperatorRef::ScalableSplat { .. } => false,
+    }
+}
+
+/// `Operator::hasPoisonGeneratingFlags` of a constant expression, its arms in
+/// the switch's order.
+fn expression_has_poison_generating_flags(expression: &ConstantExprData) -> bool {
+    match expression.opcode {
+        // `case Instruction::Add: case Instruction::Sub:` (and `Mul` and
+        // `Shl`, which no llvmkit expression is) —
+        // `OBO->hasNoUnsignedWrap() || OBO->hasNoSignedWrap()`.
+        ConstantExprOpcode::Add | ConstantExprOpcode::Sub => match &expression.flags {
+            ConstantExprFlags::Overflowing(flags) => flags.nuw() || flags.nsw(),
+            ConstantExprFlags::None | ConstantExprFlags::Gep(_) => false,
+        },
+        // `case Instruction::Trunc:` asks `dyn_cast<TruncInst>`, which no
+        // expression is.
+        ConstantExprOpcode::Trunc => false,
+        // `case Instruction::GetElementPtr:` — `GEP->getNoWrapFlags() !=
+        // GEPNoWrapFlags::none() || GEP->getInRange() != std::nullopt`.
+        ConstantExprOpcode::GetElementPtr => match &expression.flags {
+            ConstantExprFlags::Gep(flags) => {
+                !flags.no_wrap().is_empty() || flags.in_range().is_some()
+            }
+            ConstantExprFlags::None | ConstantExprFlags::Overflowing(_) => false,
+        },
+        // `default:` asks `dyn_cast<FPMathOperator>`, whose `classof` admits
+        // only an instruction.
+        ConstantExprOpcode::Xor
+        | ConstantExprOpcode::PtrToAddr
+        | ConstantExprOpcode::PtrToInt
+        | ConstantExprOpcode::IntToPtr
+        | ConstantExprOpcode::BitCast
+        | ConstantExprOpcode::AddrSpaceCast
+        | ConstantExprOpcode::ShuffleVector
+        | ConstantExprOpcode::InsertElement
+        | ConstantExprOpcode::ExtractElement => false,
+    }
+}
+
+/// `Operator::hasPoisonGeneratingFlags` of an instruction, its arms in the
+/// switch's order. `anchor` is the instruction's own value, whose result type
+/// the `default:` arm's `FPMathOperator::classof` reads.
+fn instruction_has_poison_generating_flags<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    kind: &InstructionKindData,
+) -> bool {
+    match kind {
+        // `case Instruction::Add: case Instruction::Sub: case Instruction::Mul:
+        // case Instruction::Shl:` — `OBO->hasNoUnsignedWrap() ||
+        // OBO->hasNoSignedWrap()`.
+        InstructionKindData::Add(data)
+        | InstructionKindData::Sub(data)
+        | InstructionKindData::Mul(data)
+        | InstructionKindData::Shl(data) => data.no_unsigned_wrap || data.no_signed_wrap,
+        // `case Instruction::Trunc:` — `if (auto *TI = dyn_cast<TruncInst>(this))
+        // return TI->hasNoUnsignedWrap() || TI->hasNoSignedWrap();`, which an
+        // instruction always is.
+        InstructionKindData::Cast(data) if data.kind == CastOpcode::Trunc => {
+            data.nuw.get() || data.nsw.get()
+        }
+        // `case Instruction::UDiv: case Instruction::SDiv: case
+        // Instruction::AShr: case Instruction::LShr:` — `isExact()`.
+        InstructionKindData::Udiv(data)
+        | InstructionKindData::Sdiv(data)
+        | InstructionKindData::Ashr(data)
+        | InstructionKindData::Lshr(data) => data.is_exact,
+        // `case Instruction::Or:` — `isDisjoint()`.
+        InstructionKindData::Or(data) => data.disjoint,
+        // `case Instruction::GetElementPtr:` — `GEP->getNoWrapFlags() !=
+        // GEPNoWrapFlags::none() || GEP->getInRange() != std::nullopt`.
+        // "inrange exists on constexpr only": `GEPOperator::getInRange` of an
+        // instruction is `std::nullopt`.
+        InstructionKindData::Gep(data) => !data.flags.is_empty(),
+        // `case Instruction::UIToFP: case Instruction::ZExt:` — `if (auto *NNI =
+        // dyn_cast<PossiblyNonNegInst>(this)) return NNI->hasNonNeg();`, which
+        // an instruction of either opcode always is.
+        InstructionKindData::Cast(data)
+            if matches!(data.kind, CastOpcode::UiToFp | CastOpcode::Zext) =>
+        {
+            data.nneg.get()
+        }
+        // `case Instruction::ICmp:` — `cast<ICmpInst>(this)->hasSameSign()`.
+        InstructionKindData::Icmp(data) => data.samesign,
+        // `default:` — `if (const auto *FP = dyn_cast<FPMathOperator>(this))
+        // return FP->hasNoNaNs() || FP->hasNoInfs(); return false;`
+        _ => fp_math_operator_flags(anchor).is_some_and(|flags| {
+            flags.contains(FastMathFlags::NO_NANS) || flags.contains(FastMathFlags::NO_INFS)
+        }),
+    }
+}
+
+/// Ports `Instruction::hasPoisonGeneratingReturnAttributes`
+/// (`Instruction.cpp`):
+///
+/// ```text
+/// if (const auto *CB = dyn_cast<CallBase>(this)) {
+///   AttributeSet RetAttrs = CB->getAttributes().getRetAttrs();
+///   return RetAttrs.hasAttribute(Attribute::Range) ||
+///          RetAttrs.hasAttribute(Attribute::Alignment) ||
+///          RetAttrs.hasAttribute(Attribute::NonNull);
+/// }
+/// return false;
+/// ```
+///
+/// It reads the call site's own list only, and not the called function's, as
+/// `CallBase::hasRetAttr` would.
+fn instruction_has_poison_generating_return_attributes<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+>(
+    anchor: Value<'ctx, B, C>,
+    kind: &InstructionKindData,
+) -> bool {
+    let Some(call) = CallBaseParts::of(anchor.module.context(), kind) else {
+        return false;
+    };
+    let return_attributes = call.attributes.return_attrs();
+    [AttrKind::Range, AttrKind::Alignment, AttrKind::NonNull]
+        .into_iter()
+        .any(|kind| return_attributes.has_kind(AttrIndex::Return, kind))
+}
+
+/// Ports `Instruction::hasPoisonGeneratingMetadata` (`Instruction.cpp`):
+/// `any_of(Metadata::PoisonGeneratingIDs, [this](unsigned ID) { return
+/// hasMetadata(ID); })`, whose kinds are `MD_range`, `MD_nonnull` and
+/// `MD_align`, in that order (`Metadata.h`).
+fn instruction_has_poison_generating_metadata(instruction: &InstructionData) -> bool {
+    let metadata = instruction.metadata.borrow();
+    [
+        MetadataAttachmentKind::Range,
+        MetadataAttachmentKind::NonNull,
+        MetadataAttachmentKind::Align,
+    ]
+    .iter()
+    .any(|kind| metadata.get(kind).is_some())
+}
+
+/// Ports `shiftAmountKnownInRange` (`ValueTracking.cpp`): "Shifts return poison
+/// if shiftwidth is larger than the bitwidth."
+///
+/// ```text
+/// auto *C = dyn_cast<Constant>(ShiftAmount);
+/// if (!C) return false;
+/// if (auto *FVTy = dyn_cast<FixedVectorType>(C->getType())) {
+///   for (unsigned i = 0; i < NumElts; ++i)
+///     ShiftAmounts.push_back(C->getAggregateElement(i));
+/// } else if (isa<ScalableVectorType>(C->getType()))
+///   return false; // Can't tell, just return false to be safe
+/// else
+///   ShiftAmounts.push_back(C);
+/// return all_of(ShiftAmounts, [](const Constant *C) {
+///   auto *CI = dyn_cast_or_null<ConstantInt>(C);
+///   return CI && CI->getValue().ult(C->getType()->getIntegerBitWidth());
+/// });
+/// ```
+///
+/// Upstream collects a fixed vector's lanes into a list before it tests them.
+/// The test reads nothing but the lane, so here each lane is tested as it is
+/// read, in the same order, and no list as long as the vector is ever built.
+/// `all_of` stops at the first lane that fails, as `Iterator::all` does.
+fn shift_amount_known_in_range<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    shift_amount: Value<'ctx, B, C>,
+) -> bool {
+    let Ok(constant) = Constant::try_from(shift_amount) else {
+        return false;
+    };
+    // The lambda: `dyn_cast_or_null<ConstantInt>(C)`, then `ult` against the
+    // `ConstantInt`'s own width.
+    let in_range = |lane: Option<Constant<'ctx, B, C>>| {
+        lane.is_some_and(|lane| match lane.kind() {
+            ConstantKind::Data(ConstantDataKind::Int(int)) => {
+                let amount = int.ap_int();
+                amount.unsigned_cmp_u64(u64::from(amount.bit_width())) == Ordering::Less
+            }
+            _ => false,
+        })
+    };
+    match constant.ty().data() {
+        // A vector stored in one slot asks its one lane, which every lane is
+        // (D40).
+        TypeData::FixedVector { n, .. } => (0..constant.lanes_to_ask(n.get()))
+            .all(|index| in_range(constant.aggregate_element(index))),
+        TypeData::ScalableVector { .. } => false,
+        _ => in_range(Some(constant)),
+    }
+}
+
+/// Ports the `InsertElement` / `ExtractElement` arm's bounds test, the negation
+/// of `!Idx || Idx->getValue().uge(VTy->getElementCount().getKnownMinValue())`:
+/// `index` is a `ConstantInt` below `vector`'s known minimum length. A
+/// scalable vector is at least that long, so a lane below it is in range there
+/// as in a fixed-width one.
+fn lane_index_known_in_range<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    vector: Option<Value<'ctx, B, C>>,
+    index: Option<Value<'ctx, B, C>>,
+) -> bool {
+    let Some((_, lanes, _)) = vector.and_then(|vector| vector.ty().data().as_vector()) else {
+        return false;
+    };
+    argument_constant(index)
+        .is_some_and(|idx| idx.limited_value(u64::from(lanes.get())) < u64::from(lanes.get()))
+}
+
 /// True when the call/invoke/callbr's return carries `noundef`,
-/// `dereferenceable` or `dereferenceable_or_null`.
+/// `dereferenceable` or `dereferenceable_or_null`, on the call site or on the
+/// function it calls.
 ///
 /// Ports the `dyn_cast<CallBase>` arm of `isGuaranteedNotToBeUndefOrPoison`,
-/// which accepts all three because the two dereferenceability attributes imply
-/// `noundef`. [`call_returns_noundef`] is the narrower `canCreateUndefOrPoison`
-/// test, which reads only the first.
+/// `CB->hasRetAttr(Attribute::NoUndef) ||
+/// CB->hasRetAttr(Attribute::Dereferenceable) ||
+/// CB->hasRetAttr(Attribute::DereferenceableOrNull)`, which accepts all three
+/// because the two dereferenceability attributes imply `noundef`. Each
+/// `hasRetAttr` is [`CallBaseParts::has_return_attribute`], the routine
+/// `canCreateUndefOrPoison`'s `CallBase` arm asks of `noundef` alone.
 fn call_return_is_well_defined<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     anchor: Value<'ctx, B, C>,
     kind: &InstructionKindData,
 ) -> bool {
-    call_return_attrs(anchor, kind)
-        .is_some_and(|stored| stored.iter().any(is_well_defined_attribute))
-}
-
-/// The return-position attributes of a call/invoke/callbr. `anchor` is any
-/// value of `kind`'s module, whose context holds the interned attribute list.
-fn call_return_attrs<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    anchor: Value<'ctx, B, C>,
-    kind: &InstructionKindData,
-) -> Option<&'ctx [AttributeStored]> {
-    let attrs = match kind {
-        InstructionKindData::Call(data) => data.attrs.get(),
-        InstructionKindData::Invoke(data) => data.attrs.get(),
-        InstructionKindData::CallBr(data) => data.attrs.get(),
-        _ => return None,
-    };
-    anchor
-        .module
-        .call_attributes(attrs)
-        .return_attrs()
-        .get(AttrIndex::Return)
+    CallBaseParts::of(anchor.module.context(), kind).is_some_and(|call| {
+        call.has_return_attribute(anchor.module, AttrKind::NoUndef)
+            || call.has_return_attribute(anchor.module, AttrKind::Dereferenceable)
+            || call.has_return_attribute(anchor.module, AttrKind::DereferenceableOrNull)
+    })
 }
 
 /// Ports `llvm::propagatesPoison(const Use &)`: does poison in the
@@ -5281,17 +5911,21 @@ pub fn is_known_not_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capabili
 // Constant ranges and overflow prediction
 // --------------------------------------------------------------------------
 
-/// The range of values `value` can take. Ports `llvm::computeConstantRange`.
+/// The range of values `value` can take. Ports part of `llvm::computeConstantRange`.
 ///
 /// `for_signed` selects the domain the range must not wrap in, which changes
 /// which of two equally-correct answers is returned for a value whose sign is
 /// unknown.
 ///
-/// Three of upstream's sources are not consulted, each because llvmkit does
-/// not model the input rather than because the reasoning was skipped: the
-/// `@llvm.assume`-driven refinement (no `AssumptionCache`), the select-pattern
-/// clamp (no `SelectPatternResult` — tranche 4), and `!range` metadata on
-/// `call` returns. Each omission only widens the answer.
+/// Ported: the depth cutoff, the constant arm, the `select` union, the
+/// `Argument::getRange` arm and the `CallBase::getRange` intersection. Not
+/// ported, each only widening the answer: `setLimitsForBinOp` for a binary
+/// operator, `getRangeForIntrinsic`, `setLimitForFPToI`, the
+/// `getRangeForSelectPattern` clamp on a `select`, the `!range` metadata
+/// intersection (which [`compute_constant_range_including_known_bits`] picks
+/// up through its known-bits half instead), and the `@llvm.assume` refinement.
+/// `docs/future-work.md`, "`computeConstantRange` is a partial port", lists
+/// them.
 pub fn compute_constant_range<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
     signedness: Signedness,
@@ -5339,19 +5973,53 @@ fn compute_constant_range_inner<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                 range = true_range.union_with(&false_range, preferred_for(for_signed));
             }
             _ => {
-                // Everything else is reached through its known bits below,
-                // which is where upstream's `setLimitsForBinOp` reasoning
-                // lands for llvmkit.
+                // `setLimitsForBinOp`, `getRangeForIntrinsic` and
+                // `setLimitForFPToI` are not ported (see the doc comment); the
+                // range stays full.
             }
         }
     }
+    // `} else if (const auto *A = dyn_cast<Argument>(V))
+    //    if (std::optional<ConstantRange> Range = A->getRange()) CR = *Range;`
+    if let Some(argument) = argument_range(value).filter(|argument| argument.bit_width() == width) {
+        range = argument;
+    }
 
-    // Upstream intersects `!range` metadata here. llvmkit already reads that
-    // metadata inside `compute_known_bits`, so
-    // [`compute_constant_range_including_known_bits`] — the form every caller
-    // in this module uses — picks it up through the known-bits half rather
-    // than twice.
+    if let ValueKindData::Instruction(instruction) = &value.data().kind {
+        // `if (auto *Range = IIQ.getMetadata(I, LLVMContext::MD_range))`:
+        // not consulted here. llvmkit already reads that metadata inside
+        // `compute_known_bits`, so
+        // [`compute_constant_range_including_known_bits`] — the form every
+        // caller in this module uses — picks it up through the known-bits half.
+        //
+        // `if (const auto *CB = dyn_cast<CallBase>(V)) if
+        // (std::optional<ConstantRange> Range = CB->getRange()) CR =
+        // CR.intersectWith(*Range);`, the default preferred type being
+        // `Smallest`.
+        if let Some(call) = CallBaseParts::of(value.module.context(), &instruction.kind)
+            && let Some(call_range) = call.range(value.module)
+            && call_range.bit_width() == width
+        {
+            range = range.intersect_with(&call_range, PreferredRangeType::Smallest);
+        }
+    }
     Ok(range)
+}
+
+/// `Argument::getRange()` (`Function.cpp`): `const Attribute RangeAttr =
+/// getAttribute(llvm::Attribute::Range); if (RangeAttr.isValid()) return
+/// RangeAttr.getRange(); return std::nullopt;`, the parameter's `range`
+/// attribute on its function. `None` for any value that is no argument.
+fn argument_range<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Option<ConstantRange> {
+    let ValueKindData::Argument { parent_fn, slot } = &value.data().kind else {
+        return None;
+    };
+    let ValueKindData::Function(function) = &value_from_slot(value, *parent_fn).data().kind else {
+        return None;
+    };
+    function.attributes.borrow().range(AttrIndex::Param(*slot))
 }
 
 /// The range of `value`, refined by its known bits. Ports
@@ -5577,97 +6245,100 @@ where
         source_ty,
         indices,
     } = input;
-    let addr_space = pointer_addr_space(anchor.ty()).unwrap_or(0);
-    let index_width = query.data_layout().index_size_in_bits(addr_space);
-    let mut offset = ApInt::zero(index_width);
-    let mut indexed_ty = source_ty;
-    let module = module_ref(anchor);
+    let addr_space = pointer_addr_space(anchor.ty()).unwrap_or(crate::AddressSpace::DEFAULT);
+    let data_layout = query.data_layout();
+    let index_width = data_layout.index_size_in_bits(addr_space);
+    // Accumulate the constant indices in a separate variable to minimize the
+    // number of calls to computeForAddSub.
+    let mut acc_const_indices = ApInt::zero(index_width);
+    let mut cursor = Some(GepTypeCursor::begin(Type::new(
+        source_ty,
+        module_ref(anchor),
+    )));
 
     for index_value in indices {
+        // TrailZ can only become smaller, short-circuit if we hit zero.
         if known.is_unknown() {
             break;
         }
-        let ty = Type::new(indexed_ty, module);
-        match ty.data() {
-            TypeData::Struct(_) => {
-                let Some(index_ap) = argument_constant(Some(index_value)) else {
-                    return Ok(KnownBits::unknown(width));
-                };
-                let Some(raw_index) = index_ap.try_zext_u64() else {
-                    return Ok(KnownBits::unknown(width));
-                };
-                let Ok(field_index) = usize::try_from(raw_index) else {
-                    return Ok(KnownBits::unknown(width));
-                };
-                let layout = query.data_layout().struct_layout(erase_type(ty));
-                offset = offset.wrapping_add(&ApInt::from_words(
-                    index_width,
-                    &[layout.element_offset(field_index)],
-                ));
-                if let Some(field_ty) = struct_field_type_id(ty, field_index) {
-                    indexed_ty = field_ty;
-                }
-            }
-            TypeData::Array { elem, .. } | TypeData::FixedVector { elem, .. } => {
-                let stride = query
-                    .data_layout()
-                    .type_alloc_size(erase_type(Type::new(*elem, module)));
-                add_gep_index(
-                    &mut known,
-                    &mut offset,
-                    index_value,
-                    GepIndexScale {
-                        stride,
-                        index_width,
-                        pointer_width: width,
-                    },
-                    query,
-                    depth,
-                    stack,
-                )?;
-                indexed_ty = *elem;
-            }
-            TypeData::ScalableVector { elem, .. } => {
-                let stride = query
-                    .data_layout()
-                    .type_alloc_size(erase_type(Type::new(*elem, module)));
-                let mut scale = KnownBits::unknown(index_width);
-                scale.set_known_zero_bits_from(stride.trailing_zeros());
-                add_gep_index_bits(
-                    &mut known,
-                    &KnownBits::mul(
-                        &compute_known_bits_inner(index_value, query, depth + 1, stack)?
-                            .sext_or_trunc(index_width),
-                        &scale,
-                    ),
-                    index_width,
-                    width,
+        let index_slot = index_value.slot_trusting_same_module();
+        // `GetElementPtrInst::getIndexedType` validated this walk when the GEP
+        // was built; a walk that stops anyway proves nothing.
+        let Some(step) = cursor else {
+            return Ok(KnownBits::unknown(width));
+        };
+        let Some(indexed_ty) = step.indexed_type(index_slot) else {
+            return Ok(KnownBits::unknown(width));
+        };
+        cursor = GepTypeCursor::after(indexed_ty);
+
+        // Handle case when index is zero.
+        if value_is_constant_zero(index_value) {
+            continue;
+        }
+
+        if let Some(struct_ty) = step.struct_type() {
+            // Handle struct member offset arithmetic.
+            let Some(field) = step.struct_field(index_slot) else {
+                return Ok(KnownBits::unknown(width));
+            };
+            // `uint64_t Offset = SL->getElementOffset(Idx)` is the implicit
+            // `TypeSize` conversion, fatal on a scalable offset. Nothing is
+            // known about such a field's address instead.
+            let layout = data_layout.struct_layout(erase_type(struct_ty));
+            let Some(field_offset) = layout.element_offset(field).fixed_value() else {
+                return Ok(KnownBits::unknown(width));
+            };
+            acc_const_indices =
+                acc_const_indices.wrapping_add(&ApInt::from_words(index_width, &[field_offset]));
+            continue;
+        }
+
+        // Handle array index arithmetic.
+        if !indexed_ty.is_sized() {
+            known = KnownBits::unknown(width);
+            break;
+        }
+
+        let stride = step.sequential_element_stride(data_layout);
+        let stride_in_bytes = stride.known_min_value();
+        if !stride.is_scalable() {
+            // Fast path for constant offset.
+            if let Some(index) = argument_constant(Some(index_value)) {
+                acc_const_indices = acc_const_indices.wrapping_add(
+                    &index
+                        .sext_or_trunc(index_width)
+                        .wrapping_mul(&ApInt::from_words(index_width, &[stride_in_bytes])),
                 );
-                indexed_ty = *elem;
-            }
-            _ => {
-                let stride = query.data_layout().type_alloc_size(erase_type(ty));
-                add_gep_index(
-                    &mut known,
-                    &mut offset,
-                    index_value,
-                    GepIndexScale {
-                        stride,
-                        index_width,
-                        pointer_width: width,
-                    },
-                    query,
-                    depth,
-                    stack,
-                )?;
+                continue;
             }
         }
-    }
 
-    if !known.is_unknown() && !offset.is_zero() {
+        let index_bits = compute_known_bits_inner(index_value, query, depth + 1, stack)?
+            .sext_or_trunc(index_width);
+        // Multiply by current sizeof type.
+        // &A[i] == A + i * sizeof(*A[i]).
+        let scaling_factor = if stride.is_scalable() {
+            // For scalable types the only thing we know about sizeof is that
+            // this is a multiple of the minimum size.
+            let mut factor = KnownBits::unknown(index_width);
+            factor.mark_low_bits_zero(stride_in_bytes.trailing_zeros().min(index_width));
+            factor
+        } else {
+            KnownBits::make_constant(ApInt::from_words(index_width, &[stride_in_bytes]))
+        };
         add_gep_index_bits(
             &mut known,
-            &KnownBits::make_constant(offset),
+            &KnownBits::mul(&index_bits, &scaling_factor),
+            index_width,
+            width,
+        );
+    }
+
+    if !known.is_unknown() && !acc_const_indices.is_zero() {
+        add_gep_index_bits(
+            &mut known,
+            &KnownBits::make_constant(acc_const_indices),
             index_width,
             width,
         );
@@ -5675,37 +6346,13 @@ where
     Ok(known)
 }
 
-#[derive(Clone, Copy)]
-struct GepIndexScale {
-    stride: u64,
-    index_width: u32,
-    pointer_width: u32,
-}
-
-fn add_gep_index<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    known: &mut KnownBits,
-    offset: &mut ApInt,
-    index_value: Value<'ctx, B, C>,
-    scale: GepIndexScale,
-    query: &ValueTrackingQuery<'a, 'ctx, B>,
-    depth: u32,
-    stack: &mut HashSet<ValueSlot>,
-) -> IrResult<()> {
-    if let Some(index) = argument_constant(Some(index_value)) {
-        let scaled = index
-            .sext_or_trunc(scale.index_width)
-            .wrapping_mul(&ApInt::from_words(scale.index_width, &[scale.stride]));
-        *offset = offset.wrapping_add(&scaled);
-        return Ok(());
-    }
-    let index_bits = compute_known_bits_inner(index_value, query, depth + 1, stack)?
-        .sext_or_trunc(scale.index_width);
-    let scaled = KnownBits::mul(
-        &index_bits,
-        &KnownBits::make_constant(ApInt::from_words(scale.index_width, &[scale.stride])),
-    );
-    add_gep_index_bits(known, &scaled, scale.index_width, scale.pointer_width);
-    Ok(())
+/// `CIndex && CIndex->isZeroValue()` for a `getelementptr` index, which is an
+/// integer or a vector of them, so `isZeroValue` is `isNullValue`.
+fn value_is_constant_zero<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> bool {
+    matches!(value.data().kind, ValueKindData::Constant(_))
+        && constant_id_is_null_value(value.module().core_ref(), value.slot_trusting_same_module())
 }
 
 fn add_gep_index_bits(
@@ -5726,29 +6373,14 @@ fn add_gep_index_bits(
 
 fn pointer_addr_space<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     ty: Type<'ctx, B, C>,
-) -> Option<u32> {
+) -> Option<crate::AddressSpace> {
     match ty.data() {
-        TypeData::Pointer { addr_space } | TypeData::TypedPointer { addr_space, .. } => {
-            Some(*addr_space)
-        }
+        TypeData::Pointer { addr_space } => Some(*addr_space),
         TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
             pointer_addr_space(Type::new(*elem, module_ref_from_type(ty)))
         }
         _ => None,
     }
-}
-
-fn struct_field_type_id<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    ty: Type<'ctx, B, C>,
-    field_index: usize,
-) -> Option<TypeSlot> {
-    let TypeData::Struct(data) = ty.data() else {
-        return None;
-    };
-    data.body
-        .borrow()
-        .as_ref()
-        .and_then(|body| body.elements.get(field_index).copied())
 }
 
 fn extract_element_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
@@ -5987,46 +6619,6 @@ fn shuffle_vector_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }
 }
 
-fn aggregate_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    value: Value<'ctx, B, C>,
-    elements: &[ValueSlot],
-    query: &ValueTrackingQuery<'a, 'ctx, B>,
-    depth: u32,
-    stack: &mut HashSet<ValueSlot>,
-) -> IrResult<KnownBits> {
-    let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
-    let Some(ElementCount {
-        min: lanes,
-        scalable: false,
-    }) = value.ty().data().element_count()
-    else {
-        return Ok(KnownBits::unknown(width));
-    };
-    let lanes = lanes.get();
-    let demanded = demanded_elements_for(value, query).unwrap_or_else(|| ApInt::all_ones(lanes));
-    let mut known = KnownBits::unknown(width);
-    known.set_all_conflict();
-    for (lane, element) in elements.iter().enumerate() {
-        let Ok(lane) = u32::try_from(lane) else {
-            return Ok(KnownBits::unknown(width));
-        };
-        if !demanded.bit(lane) {
-            continue;
-        }
-        let element_known =
-            compute_known_bits_inner(value_from_slot(value, *element), query, depth + 1, stack)?;
-        known = known.intersect_with(&element_known);
-        if known.is_unknown() {
-            break;
-        }
-    }
-    if known.has_conflict() {
-        Ok(KnownBits::unknown(width))
-    } else {
-        Ok(known)
-    }
-}
-
 fn compute_known_bits_for_demanded<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
     demanded: &ApInt,
@@ -6089,6 +6681,13 @@ fn require_int_or_pointer_width<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 /// Ports the static `isGuaranteedNotToBeUndefOrPoison(V, AC, CtxI, DT, Depth,
 /// Kind)` (`ValueTracking.cpp`).
 ///
+/// Its `dyn_cast<Operator>` arm takes a constant expression as well as an
+/// instruction ([`OperatorRef`]), and llvmkit's compact constants answer there
+/// as the expressions they print as. The expressions those print inside
+/// themselves are not stored. [`unstored_expression_is_well_defined`] answers
+/// them through the same arms, and the dominating-condition loop compares a
+/// condition with one as the expression it is ([`ConditionTarget`]).
+///
 /// One of upstream's arms is **not** ported, and can only make the answer weaker
 /// — a `false` where upstream proves `true` — so no caller is misled: the
 /// `@llvm.assume` arm (`getKnowledgeValidInContext`), which needs an
@@ -6145,68 +6744,37 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx, C: C
         return Ok(true);
     }
 
-    let Some(operator) = instruction_kind(value) else {
-        return Ok(false);
-    };
-
-    // A freeze can never be undef or poison.
-    if matches!(operator, InstructionKindData::Freeze(_)) {
-        return Ok(true);
-    }
-    // Nor can a call whose return is annotated `noundef`, `dereferenceable` or
-    // `dereferenceable_or_null` — the latter two imply the first.
-    if call_return_is_well_defined(value, operator) {
-        return Ok(true);
-    }
-
-    if !can_create_undef_or_poison_kind(value, kind, true) {
-        if let InstructionKindData::Phi(data) = operator {
-            // Upstream evaluates each incoming value at its edge's terminator;
-            // llvmkit has no per-edge context, so the incoming value is
-            // evaluated where it stands. That can only weaken the answer.
-            let incoming = data.incoming.borrow();
-            let mut well_defined = true;
-            for (operand, _) in incoming.iter() {
-                if operand.get() == value.slot_trusting_same_module() {
-                    continue;
-                }
-                if !is_guaranteed_not_to_be_undef_or_poison(
-                    value_from_slot(value, operand.get()),
-                    query,
-                    depth + 1,
-                    kind,
-                )? {
-                    well_defined = false;
-                    break;
-                }
-            }
-            if well_defined {
-                return Ok(true);
-            }
-        } else if let InstructionKindData::ShuffleVector(_) = operator
-            && let Some(splat) = splat_value(value)
+    // `if (auto *Opr = dyn_cast<Operator>(V))`: an instruction or a constant
+    // expression. Only the arms inside it are restricted to an operator; the
+    // load, `programUndefinedIfUndefOrPoison` and dominating-condition arms
+    // after it run for every value the arms before it leave.
+    if let Some(operator) = operator_ref(value) {
+        // A freeze can never be undef or poison.
+        if let OperatorRef::Instruction(InstructionData {
+            kind: InstructionKindData::Freeze(_),
+            ..
+        }) = operator
         {
-            // For a splat, only the value being splatted has to be checked.
-            if is_guaranteed_not_to_be_undef_or_poison(splat, query, depth + 1, kind)? {
-                return Ok(true);
-            }
-        } else {
-            let mut well_defined = true;
-            for operand in operands_of(value) {
-                if !is_guaranteed_not_to_be_undef_or_poison(operand, query, depth + 1, kind)? {
-                    well_defined = false;
-                    break;
-                }
-            }
-            if well_defined {
-                return Ok(true);
-            }
+            return Ok(true);
+        }
+        // Nor can a call whose return is annotated `noundef`, `dereferenceable`
+        // or `dereferenceable_or_null` — the latter two imply the first.
+        if let OperatorRef::Instruction(instruction) = operator
+            && call_return_is_well_defined(value, &instruction.kind)
+        {
+            return Ok(true);
+        }
+
+        if operator_is_well_defined_by_its_operands(value, operator, query, depth, kind)? {
+            return Ok(true);
         }
     }
 
-    // A load carrying `!noundef`, `!dereferenceable` or
-    // `!dereferenceable_or_null` is well defined by declaration.
-    if matches!(operator, InstructionKindData::Load(_)) && load_metadata_asserts_well_defined(value)
+    // `if (auto *I = dyn_cast<LoadInst>(V))`: a load carrying `!noundef`,
+    // `!dereferenceable` or `!dereferenceable_or_null` is well defined by
+    // declaration.
+    if matches!(instruction_kind(value), Some(InstructionKindData::Load(_)))
+        && load_metadata_asserts_well_defined(value)
     {
         return Ok(true);
     }
@@ -6215,11 +6783,229 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx, C: C
         return Ok(true);
     }
 
-    if dominating_condition_proves_well_defined(value, query, kind) {
+    let target = ConditionTarget::Stored(value.slot_trusting_same_module());
+    if dominating_condition_proves_well_defined(value, target, query, kind) {
         return Ok(true);
     }
 
     Ok(false)
+}
+
+/// The `if (!::canCreateUndefOrPoison(Opr, Kind, true))` block of
+/// `isGuaranteedNotToBeUndefOrPoison`'s operator arm: an operator that creates
+/// neither is well defined when its operands are — every incoming value of a
+/// phi, the splatted value of a `shufflevector` instruction that is a splat,
+/// and otherwise every operand `Opr->operands()` lists, each asked one level
+/// deeper.
+fn operator_is_well_defined_by_its_operands<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    operator: OperatorRef<'ctx>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+    kind: UndefPoisonKind,
+) -> IrResult<bool> {
+    if can_create_undef_or_poison_kind(value, kind, true) {
+        return Ok(false);
+    }
+    if let OperatorRef::Instruction(InstructionData {
+        kind: InstructionKindData::Phi(data),
+        ..
+    }) = operator
+    {
+        // Upstream evaluates each incoming value at its edge's terminator;
+        // llvmkit has no per-edge context, so the incoming value is evaluated
+        // where it stands. That can only weaken the answer.
+        let incoming = data.incoming.borrow();
+        for (operand, _) in incoming.iter() {
+            if operand.get() == value.slot_trusting_same_module() {
+                continue;
+            }
+            if !is_guaranteed_not_to_be_undef_or_poison(
+                value_from_slot(value, operand.get()),
+                query,
+                depth + 1,
+                kind,
+            )? {
+                return Ok(false);
+            }
+        }
+        return Ok(true);
+    }
+    // `isa<ShuffleVectorInst>(Opr) ? getSplatValue(Opr) : nullptr` — an
+    // instruction only; a `shufflevector` expression takes the operand walk.
+    if let OperatorRef::Instruction(InstructionData {
+        kind: InstructionKindData::ShuffleVector(_),
+        ..
+    }) = operator
+        && let Some(splat) = splat_value(value)
+    {
+        // For a splat, only the value being splatted has to be checked.
+        return is_guaranteed_not_to_be_undef_or_poison(splat, query, depth + 1, kind);
+    }
+    operands_are_well_defined(value, operator_operands(operator), query, depth + 1, kind)
+}
+
+/// An operand of an operator, as `Opr->operands()` lists it.
+#[derive(Clone, Copy)]
+enum OperatorOperand {
+    /// A value llvmkit stores.
+    Stored(ValueSlot),
+    /// A `ConstantInt` a compact expression keeps as a number: a
+    /// `GepOffset`'s offset, a `SymbolDeltaPlus`'s addend, or the lane index
+    /// of a splat's `insertelement`.
+    Int,
+    /// A splat's `poison` vector.
+    Poison,
+    /// An expression a compact expression prints inside itself.
+    Unstored(UnstoredExpression),
+}
+
+/// An expression a compact expression prints inside itself. Upstream builds
+/// each as a uniqued constant; llvmkit stores none of them.
+#[derive(Clone, Copy)]
+enum UnstoredExpression {
+    /// `ptrtoint (ptr @global to i64)`, each operand of a symbol difference.
+    PtrToInt { global: ValueSlot },
+    /// The symbol difference a `SymbolDeltaPlus` adds to.
+    SymbolDelta { hi: ValueSlot, lo: ValueSlot },
+}
+
+/// `Opr->operands()`.
+///
+/// A `shufflevector` expression's mask is no operand upstream:
+/// `ShuffleVectorConstantExpr` has two, and keeps the mask beside them.
+/// llvmkit stores it as a third, so it is left out here.
+fn operator_operands(operator: OperatorRef<'_>) -> Vec<OperatorOperand> {
+    match operator {
+        OperatorRef::Instruction(instruction) => instruction
+            .kind
+            .operand_ids()
+            .into_iter()
+            .map(OperatorOperand::Stored)
+            .collect(),
+        OperatorRef::Expression(expression) => {
+            let count = if expression.opcode == ConstantExprOpcode::ShuffleVector {
+                2
+            } else {
+                expression.operands.len()
+            };
+            expression
+                .operands
+                .iter()
+                .take(count)
+                .copied()
+                .map(OperatorOperand::Stored)
+                .collect()
+        }
+        OperatorRef::GlobalOffset { base } => {
+            vec![OperatorOperand::Stored(base), OperatorOperand::Int]
+        }
+        OperatorRef::SymbolDelta { hi, lo } => vec![
+            OperatorOperand::Unstored(UnstoredExpression::PtrToInt { global: hi }),
+            OperatorOperand::Unstored(UnstoredExpression::PtrToInt { global: lo }),
+        ],
+        OperatorRef::SymbolDeltaPlus { hi, lo } => vec![
+            OperatorOperand::Unstored(UnstoredExpression::SymbolDelta { hi, lo }),
+            OperatorOperand::Int,
+        ],
+        OperatorRef::ScalableSplat { insert } => {
+            vec![OperatorOperand::Stored(insert), OperatorOperand::Poison]
+        }
+    }
+}
+
+/// `all_of(Opr->operands(), OpCheck)`, each operand asked at `depth`.
+fn operands_are_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    operands: Vec<OperatorOperand>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+    kind: UndefPoisonKind,
+) -> IrResult<bool> {
+    for operand in operands {
+        if !operand_is_well_defined(anchor, operand, query, depth, kind)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// `OpCheck(Op)`: the routine, asked about `operand` at `depth`.
+fn operand_is_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    operand: OperatorOperand,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+    kind: UndefPoisonKind,
+) -> IrResult<bool> {
+    match operand {
+        OperatorOperand::Stored(slot) => is_guaranteed_not_to_be_undef_or_poison(
+            value_from_slot(anchor, slot),
+            query,
+            depth,
+            kind,
+        ),
+        // The depth test, then the constant arm's `isa<ConstantInt>(C)`.
+        OperatorOperand::Int => Ok(depth < query.max_depth()),
+        // The depth test, then the constant arm's `if (isa<PoisonValue>(C))
+        // return !includesPoison(Kind);`.
+        OperatorOperand::Poison => Ok(depth < query.max_depth() && !kind.includes_poison()),
+        OperatorOperand::Unstored(expression) => {
+            unstored_expression_is_well_defined(anchor, expression, query, depth, kind)
+        }
+    }
+}
+
+/// The routine, asked at `depth` about an expression a compact expression
+/// prints inside itself.
+///
+/// Its arms, in order: the depth test. No argument arm. The constant arm
+/// answers none of them: none is a `ConstantInt`, a global variable, a
+/// `ConstantFP`, a null or a function; the two casts are no vector; and
+/// `getSplatValue` answers the `insertelement` `nullptr`, since only the
+/// `shufflevector` of the splat is one. The strip leaves an integer and a
+/// vector as they are. In the operator arm, none is a `freeze` or a call, and
+/// `canCreateUndefOrPoison` answers each `false`: a `ptrtoint` is a cast, a
+/// `sub` without flags a binary operator, and an `insertelement` at lane 0 is
+/// in range of any vector. So the operand walk decides.
+///
+/// Where the walk fails, the arms after it run as they run for any value. None
+/// of these is a load, and `programUndefinedIfUndefOrPoison` scans from an
+/// instruction or an argument only, so neither proves one. The
+/// dominating-condition loop compares each condition with the expression as
+/// the expression it is ([`ConditionTarget`]), so it finds a stored constant
+/// that is the same `ptrtoint` or `sub`. The `insertelement` takes no loop: it
+/// is a scalable vector, which no `br` or `switch` takes as its condition, and
+/// no instruction that propagates poison from its operand turns one into an
+/// `i1` (`propagatesPoison`'s arms are binary, unary and cast operators,
+/// `icmp`, `fcmp` and `getelementptr`, each with a vector result here).
+fn unstored_expression_is_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    expression: UnstoredExpression,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+    kind: UndefPoisonKind,
+) -> IrResult<bool> {
+    if depth >= query.max_depth() {
+        return Ok(false);
+    }
+    let operands = match expression {
+        UnstoredExpression::PtrToInt { global } => vec![OperatorOperand::Stored(global)],
+        UnstoredExpression::SymbolDelta { hi, lo } => vec![
+            OperatorOperand::Unstored(UnstoredExpression::PtrToInt { global: hi }),
+            OperatorOperand::Unstored(UnstoredExpression::PtrToInt { global: lo }),
+        ],
+    };
+    if operands_are_well_defined(anchor, operands, query, depth + 1, kind)? {
+        return Ok(true);
+    }
+    let target = match expression {
+        UnstoredExpression::PtrToInt { global } => ConditionTarget::PtrToInt { global },
+        UnstoredExpression::SymbolDelta { hi, lo } => ConditionTarget::SymbolDelta { hi, lo },
+    };
+    Ok(dominating_condition_proves_well_defined(
+        anchor, target, query, kind,
+    ))
 }
 
 /// Whether a `load` carries `!noundef`, `!dereferenceable` or
@@ -6264,8 +7050,13 @@ fn load_metadata_asserts_well_defined<'ctx, B: ModuleBrand + 'ctx, C: Capability
 /// two early `return false`s — no context instruction or dominator tree, and an
 /// unreachable context block — are `false` here rather than early returns,
 /// because llvmkit has one more arm after this point.
+///
+/// `anchor` is any value of the module; `target` is upstream's `V`
+/// ([`ConditionTarget`]), the value itself or an expression a compact constant
+/// prints but llvmkit does not store.
 fn dominating_condition_proves_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    value: Value<'ctx, B, C>,
+    anchor: Value<'ctx, B, C>,
+    target: ConditionTarget,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     kind: UndefPoisonKind,
 ) -> bool {
@@ -6281,21 +7072,19 @@ fn dominating_condition_proves_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx, C: 
 
     // Purely a compile-time guard upstream: the walk can be skipped when the
     // question includes undef and the value is not an integer.
-    if kind.includes_undef() && !matches!(value.ty().kind(), TypeKind::Integer { .. }) {
+    if kind.includes_undef() && !condition_target_is_integer(anchor, target) {
         return false;
     }
 
     for block in dominator_tree.strictly_dominating_blocks(context_block) {
-        let Some(terminator) = block_terminator(value, block) else {
+        let Some(terminator) = block_terminator(anchor, block) else {
             continue;
         };
         let Some(condition) = branch_or_switch_condition(terminator) else {
             continue;
         };
-        // boundary (F2): Task 27
-        // Conditions read from the query's dominator tree and context,
-        // compared with the caller's value.
-        if condition == value.slot_trusting_same_module() {
+        // `if (Cond == V) return true;`
+        if is_condition_target(anchor, condition, target) {
             return true;
         }
         // For poison — but not undef, which does not propagate eagerly — a
@@ -6304,7 +7093,14 @@ fn dominating_condition_proves_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx, C: 
         if kind.includes_undef() {
             continue;
         }
-        let condition = value_from_slot(value, condition);
+        // Upstream asks `isa<Operator>(Cond)`, which a constant expression
+        // passes too. Its operand positions propagate poison only when it is a
+        // `getelementptr` (`propagatesPoison`'s `default` asks
+        // `isa<BinaryOperator>`, `isa<UnaryOperator>` and `isa<CastInst>`,
+        // which no expression is), and a `getelementptr` is a pointer, which no
+        // `br` or `switch` takes as its condition. So only an instruction
+        // condition can answer here.
+        let condition = value_from_slot(anchor, condition);
         let Some(condition_kind) = instruction_kind(condition) else {
             continue;
         };
@@ -6313,14 +7109,145 @@ fn dominating_condition_proves_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx, C: 
             .iter()
             .enumerate()
             .any(|(index, operand)| {
-                // boundary (F2): Task 27
-                *operand == value.slot_trusting_same_module() && propagates_poison(condition, index)
+                is_condition_target(anchor, *operand, target) && propagates_poison(condition, index)
             });
         if propagates {
             return true;
         }
     }
     false
+}
+
+/// Upstream's `V` in the dominating-condition loop of
+/// `isGuaranteedNotToBeUndefOrPoison`: the value the loop compares each
+/// condition, and each operand of one, with.
+///
+/// Upstream uniques constants, so `Cond == V` holds of a condition that is the
+/// same expression, however it was built. A stored value is compared by slot.
+/// An expression that a compact symbol difference prints but llvmkit does not
+/// store is compared with each stored constant as the expression it is, in each
+/// spelling llvmkit stores that expression in.
+#[derive(Clone, Copy)]
+enum ConditionTarget {
+    /// A value llvmkit stores.
+    Stored(ValueSlot),
+    /// `ptrtoint (ptr @global to i64)`, an operand of a symbol difference.
+    PtrToInt { global: ValueSlot },
+    /// The symbol difference a `SymbolDeltaPlus` adds to: `sub (i64 ptrtoint
+    /// (ptr @hi to i64), i64 ptrtoint (ptr @lo to i64))`.
+    SymbolDelta { hi: ValueSlot, lo: ValueSlot },
+}
+
+/// `V->getType()->isIntegerTy()`, for the loop's compile-time guard. Both
+/// unstored expressions are `i64`.
+fn condition_target_is_integer<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    target: ConditionTarget,
+) -> bool {
+    match target {
+        ConditionTarget::Stored(slot) => matches!(
+            value_from_slot(anchor, slot).ty().kind(),
+            TypeKind::Integer { .. }
+        ),
+        ConditionTarget::PtrToInt { .. } | ConditionTarget::SymbolDelta { .. } => true,
+    }
+}
+
+/// `Cond == V`, or `V == U` for an operand `U` of a condition: whether the value
+/// at `slot` is `target`.
+fn is_condition_target<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    slot: ValueSlot,
+    target: ConditionTarget,
+) -> bool {
+    match target {
+        // boundary (F2): Task 27
+        // Conditions read from the query's dominator tree and context,
+        // compared with the caller's value.
+        ConditionTarget::Stored(stored) => slot == stored,
+        ConditionTarget::PtrToInt { global } => stores_ptr_to_int_of(anchor, slot, global),
+        ConditionTarget::SymbolDelta { hi, lo } => stores_symbol_delta_of(anchor, slot, hi, lo),
+    }
+}
+
+/// Whether the constant at `slot` is `ptrtoint (ptr @global to i64)`: a
+/// `ptrtoint` expression of type `i64` whose operand names `global`.
+fn stores_ptr_to_int_of<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    slot: ValueSlot,
+    global: ValueSlot,
+) -> bool {
+    let module = module_ref(anchor);
+    let data = module.value_data(slot);
+    let ValueKindData::Constant(ConstantData::Expr(expression)) = &data.kind else {
+        return false;
+    };
+    expression.opcode == ConstantExprOpcode::PtrToInt
+        && is_i64(anchor, data.ty)
+        && matches!(
+            expression.operands.as_ref(),
+            [operand] if names_global(anchor, *operand, global)
+        )
+}
+
+/// Whether the constant at `slot` is the symbol difference of `hi` and `lo`:
+/// the compact form of it (a `SymbolDelta`, or a `SymbolDeltaPlus` whose zero
+/// addend `Constant::kind` reads as the `sub` itself), or a stored `sub`
+/// expression of type `i64` without `nuw` or `nsw` over `ptrtoint (ptr @hi to
+/// i64)` and `ptrtoint (ptr @lo to i64)`.
+fn stores_symbol_delta_of<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    slot: ValueSlot,
+    hi: ValueSlot,
+    lo: ValueSlot,
+) -> bool {
+    let module = module_ref(anchor);
+    let data = module.value_data(slot);
+    match &data.kind {
+        ValueKindData::Constant(
+            ConstantData::SymbolDelta { hi_id, lo_id }
+            | ConstantData::SymbolDeltaPlus {
+                hi_id,
+                lo_id,
+                addend: 0,
+            },
+        ) => *hi_id == hi && *lo_id == lo,
+        ValueKindData::Constant(ConstantData::Expr(expression)) => {
+            expression.opcode == ConstantExprOpcode::Sub
+                && is_i64(anchor, data.ty)
+                && !expression_has_poison_generating_flags(expression)
+                && matches!(
+                    expression.operands.as_ref(),
+                    [minuend, subtrahend]
+                        if stores_ptr_to_int_of(anchor, *minuend, hi)
+                            && stores_ptr_to_int_of(anchor, *subtrahend, lo)
+                )
+        }
+        _ => false,
+    }
+}
+
+/// Whether the value at `slot` is the global `global`: the global itself, or
+/// the constant pointer ([`ConstantData::GlobalValueRef`]) that wraps it as an
+/// operand.
+fn names_global<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    slot: ValueSlot,
+    global: ValueSlot,
+) -> bool {
+    slot == global
+        || matches!(
+            &module_ref(anchor).value_data(slot).kind,
+            ValueKindData::Constant(ConstantData::GlobalValueRef { value }) if *value == global
+        )
+}
+
+/// Whether `ty` is `i64`.
+fn is_i64<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    anchor: Value<'ctx, B, C>,
+    ty: TypeSlot,
+) -> bool {
+    Type::new(ty, module_ref(anchor)).kind() == TypeKind::Integer { bits: 64 }
 }
 
 /// The terminator of `block`, as a value.
@@ -6379,50 +7306,121 @@ fn is_well_defined_attribute(attribute: &AttributeStored) -> bool {
     )
 }
 
-/// The `dyn_cast<Constant>` arm. `None` means the constant fell through to the
-/// operator tests, exactly as upstream's `ConstantExpr` case does.
+/// The `if (auto *C = dyn_cast<Constant>(V))` arm of
+/// `isGuaranteedNotToBeUndefOrPoison`, in its order. `None` falls through to
+/// the rest of the routine, as upstream's arm does for a constant it does not
+/// answer: an aggregate that is no vector, a vector constant expression that
+/// is no splat of a `ConstantInt` or `ConstantFP`, and every other constant
+/// expression.
 fn constant_is_well_defined<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
     constant: &ConstantData,
     kind: UndefPoisonKind,
 ) -> Option<bool> {
-    match constant {
-        ConstantData::Poison => Some(!kind.includes_poison()),
-        ConstantData::Undef => Some(!kind.includes_undef()),
-        ConstantData::Int(_)
-        | ConstantData::Float(_)
-        | ConstantData::PointerNull
-        | ConstantData::GlobalValueRef { .. } => Some(true),
-        // Upstream's vector arm: an element that is undef or poison of the
-        // asked-about kind disqualifies the whole vector, and a constant
-        // expression inside one is not analysed.
-        ConstantData::Aggregate(elements)
-            if matches!(
-                value.ty().kind(),
-                TypeKind::FixedVector | TypeKind::ScalableVector
-            ) =>
-        {
-            for element in elements.iter() {
-                let element = value_from_slot(value, *element);
-                match &element.data().kind {
-                    ValueKindData::Constant(ConstantData::Undef) if kind.includes_undef() => {
-                        return Some(false);
-                    }
-                    ValueKindData::Constant(ConstantData::Poison) if kind.includes_poison() => {
-                        return Some(false);
-                    }
-                    ValueKindData::Constant(ConstantData::Expr(_)) => return Some(false),
-                    _ => {}
-                }
-            }
-            Some(true)
+    let handle = Constant::try_from(value).ok()?;
+    match handle.kind() {
+        // `if (isa<PoisonValue>(C)) return !includesPoison(Kind);`
+        ConstantKind::Data(ConstantDataKind::Undef(Undefined::Poison)) => {
+            return Some(!kind.includes_poison());
         }
-        // A constant expression falls through to the operator tests upstream;
-        // llvmkit models those in a separate arm that the operator walk below
-        // does not reach, so the honest answer is "not proven".
-        ConstantData::Expr(_) => Some(false),
-        _ => None,
+        // `if (isa<UndefValue>(C)) return !includesUndef(Kind);`
+        ConstantKind::Data(ConstantDataKind::Undef(Undefined::Undef)) => {
+            return Some(!kind.includes_undef());
+        }
+        _ => {}
     }
+    // `if (isa<ConstantInt>(C) || isa<GlobalVariable>(C) || isa<ConstantFP>(C)
+    // || isa<ConstantPointerNull>(C) || isa<Function>(C)) return true;` — a
+    // `GlobalValueRef` wraps a global variable or a function only
+    // (`docs/divergences.md` D3); an alias or ifunc is its own slot.
+    if matches!(
+        constant,
+        ConstantData::Int(_)
+            | ConstantData::GlobalValueRef { .. }
+            | ConstantData::Float(_)
+            | ConstantData::PointerNull
+    ) {
+        return Some(true);
+    }
+    // `if (C->getType()->isVectorTy()) {`
+    if !value.ty().is_vector() {
+        return None;
+    }
+    if matches!(handle.kind(), ConstantKind::Expr(_)) {
+        // Scalable vectors can use a ConstantExpr to build a splat.
+        let splat = handle.splat_value(false)?;
+        return matches!(
+            splat.kind(),
+            ConstantKind::Data(ConstantDataKind::Int(_) | ConstantDataKind::Float(_))
+        )
+        .then_some(true);
+    }
+    if kind.includes_undef()
+        && contains_undefined_element(handle, |element| {
+            matches!(
+                element.kind(),
+                ConstantKind::Data(ConstantDataKind::Undef(Undefined::Undef))
+            )
+        })
+    {
+        return Some(false);
+    }
+    if kind.includes_poison() && contains_undefined_element(handle, is_poison) {
+        return Some(false);
+    }
+    Some(!contains_constant_expression(handle))
+}
+
+/// Ports the static `containsUndefinedElement(C, HasFn)` (`Constants.cpp`),
+/// under `Constant::containsUndefElement` and `containsPoisonElement`: a
+/// vector that `has` itself, or a fixed-width one with a lane `has` holds
+/// for. A `ConstantAggregateZero` and a scalable vector have no such lane.
+fn contains_undefined_element<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+    has: impl Fn(Constant<'ctx, B, C>) -> bool,
+) -> bool {
+    let Some((_, lanes, scalable)) = constant.ty().data().as_vector() else {
+        return false;
+    };
+    if has(constant) {
+        return true;
+    }
+    if matches!(
+        constant.kind(),
+        ConstantKind::Data(ConstantDataKind::AggregateZero)
+    ) {
+        return false;
+    }
+    if scalable {
+        return false;
+    }
+    // A vector stored in one slot asks its one lane, which every lane is
+    // (D40).
+    (0..constant.lanes_to_ask(lanes.get()))
+        .any(|lane| constant.aggregate_element(lane).is_some_and(&has))
+}
+
+/// Ports `Constant::containsConstantExpression`: a fixed-width vector with a
+/// constant-expression lane.
+fn contains_constant_expression<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+) -> bool {
+    if matches!(
+        constant.kind(),
+        ConstantKind::Data(ConstantDataKind::Int(_) | ConstantDataKind::Float(_))
+    ) {
+        return false;
+    }
+    let TypeData::FixedVector { n, .. } = constant.ty().data() else {
+        return false;
+    };
+    // A vector stored in one slot asks its one lane, which every lane is
+    // (D40).
+    (0..constant.lanes_to_ask(n.get())).any(|lane| {
+        constant
+            .aggregate_element(lane)
+            .is_some_and(|element| matches!(element.kind(), ConstantKind::Expr(_)))
+    })
 }
 
 fn type_bit_width<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
@@ -6435,10 +7433,6 @@ fn type_bit_width<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         TypeKind::FixedVector | TypeKind::ScalableVector => {
             let (elem, _, _) = ty.data().as_vector()?;
             type_bit_width(Type::new(elem, module_ref_from_type(ty)), dl)
-        }
-        TypeKind::TypedPointer => {
-            let (_, addr_space) = ty.data().as_typed_pointer()?;
-            Some(dl.pointer_size_in_bits(addr_space))
         }
         TypeKind::Void
         | TypeKind::Half
@@ -6527,8 +7521,7 @@ mod tests {
         let id = core.context().push_value(value);
         for op in operand_ids {
             core.context()
-                .value_data(op)
-                .add_use(crate::value::ValueUse::Instruction(id));
+                .add_use(op, crate::value::ValueUse::Instruction(id));
         }
         let ValueKindData::BasicBlock(bb_data) = &core.context().value_data(bb_id).kind else {
             panic!("fabricate_instruction: bb_id is not a basic block");
@@ -6555,9 +7548,9 @@ mod tests {
         m.set_data_layout(DataLayout::parse("p1:64:64:64:32")?);
         let i8_ty = m.i8_type();
         let i32_ty = m.i32_type();
-        let ptr1_ty = m.ptr_type(1);
+        let ptr1_ty = m.ptr_type_in::<1>();
         let ptr_vec_ty = VectorType::of(ptr1_ty, lanes::<2>());
-        let fn_ty = m.function_type_no_parameters(m.void_type());
+        let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, crate::Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
 

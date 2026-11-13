@@ -32,15 +32,15 @@
 
 use crate::ApInt;
 use crate::atomic_ordering::AtomicOrdering;
-use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored, MemoryEffects};
+use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored};
 use crate::capability::Capability;
 use crate::cfg::kind_successor_ids;
 use crate::constant::ConstantData;
 use crate::dominator_tree::DominatorTree;
 use crate::function::FunctionValue;
 use crate::instr_types::{
-    BranchKind, CallAttributeData, CastOpcode, LandingPadClauseKind, LandingPadInstData, Opcode,
-    ShuffleMaskElem, ShuffleVectorInstData, call_site_has_fn_attr,
+    BranchKind, CallBaseParts, CastOpcode, LandingPadClauseKind, LandingPadInstData, Opcode,
+    ShuffleMaskElem, ShuffleVectorInstData, call_site_has_function_attribute,
 };
 use crate::instruction::{InstructionKindData, InstructionView};
 use crate::intrinsics::{IntrinsicId, descriptor_for_callee};
@@ -50,7 +50,6 @@ use crate::r#type::TypeKind;
 use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use crate::value_id::ValueId;
 use crate::value_tracking::propagates_poison;
-use core::cell::Cell;
 use std::collections::{HashSet, VecDeque};
 
 /// How many instructions [`program_undefined_if_poison`] will scan.
@@ -110,11 +109,18 @@ impl SpeculationOptions {
         self
     }
 
-    /// Whether attributes that make *particular* operand values UB (`noundef`,
-    /// `dereferenceable`, `dereferenceable_or_null`) may be disregarded.
+    /// Honour the attributes that make *particular* operand values UB
+    /// (`noundef`, `dereferenceable`, `dereferenceable_or_null`): upstream's
+    /// `IgnoreUBImplyingAttrs = false`, which a caller that hoists a call to a
+    /// point where its operands may hold other values passes.
+    ///
+    /// The default disregards them, as upstream's defaulted
+    /// `IgnoreUBImplyingAttrs = true` does, so this is the one setting a caller
+    /// can change. It replaces `ignoring_ub_implying_attrs`, which set the
+    /// default's own value and so changed nothing.
     #[must_use]
-    pub fn ignoring_ub_implying_attrs(mut self) -> Self {
-        self.ignore_ub_implying_attrs = true;
+    pub fn honouring_ub_implying_attrs(mut self) -> Self {
+        self.ignore_ub_implying_attrs = false;
         self
     }
 
@@ -123,7 +129,7 @@ impl SpeculationOptions {
         self.use_variable_info
     }
 
-    /// See [`Self::ignoring_ub_implying_attrs`].
+    /// See [`Self::honouring_ub_implying_attrs`].
     pub fn ignores_ub_implying_attrs(self) -> bool {
         self.ignore_ub_implying_attrs
     }
@@ -219,7 +225,10 @@ pub fn is_safe_to_speculatively_execute_with_opcode<'ctx, B: ModuleBrand + 'ctx,
             // Hoisting may change which values the operands hold, so the
             // attributes that make particular operand values UB matter again.
             options.ignores_ub_implying_attrs()
-                || !has_ub_implying_attrs(module_ref(anchor).call_attributes(data.attrs.get()))
+                || !has_ub_implying_attrs(
+                    module_ref(anchor),
+                    CallBaseParts::of_call(module_ref(anchor).context(), data),
+                )
         }
         // Upstream's `default: return true`.
         Opcode::Fneg
@@ -927,26 +936,18 @@ where
         // is implicitly `noundef` too.
         InstructionKindData::AtomicCmpXchg(data) => handle(data.ptr.get()),
         InstructionKindData::AtomicRmw(data) => handle(data.ptr.get()),
-        InstructionKindData::Call(_) | InstructionKindData::Invoke(_) => {
-            let Some(call) = call_parts(instruction, kind) else {
-                return false;
-            };
-            // An indirect call's callee operand must be well defined.
-            if is_indirect_callee(value_from_slot(instruction, call.callee.get()))
-                && handle(call.callee.get())
-            {
-                return true;
-            }
-            for (index, arg) in call.args.iter().enumerate() {
-                let Ok(index) = u32::try_from(index) else {
-                    continue;
-                };
-                if param_is_well_defined(call.attrs.arg_attrs(), index) && handle(arg.get()) {
-                    return true;
-                }
-            }
-            false
-        }
+        // `case Instruction::Call: case Instruction::Invoke:` — `CB` is
+        // `cast<CallBase>(I)`.
+        InstructionKindData::Call(data) => call_operands_must_be_well_defined(
+            instruction,
+            CallBaseParts::of_call(module_ref(instruction).context(), data),
+            handle,
+        ),
+        InstructionKindData::Invoke(data) => call_operands_must_be_well_defined(
+            instruction,
+            CallBaseParts::of_invoke(module_ref(instruction).context(), data),
+            handle,
+        ),
         InstructionKindData::Ret(data) => {
             let Some(returned) = data.value.get() else {
                 return false;
@@ -960,6 +961,50 @@ where
         },
         _ => false,
     }
+}
+
+/// The `case Instruction::Call: case Instruction::Invoke:` arm of
+/// `handleGuaranteedWellDefinedOps`:
+///
+/// ```text
+/// if (CB->isIndirectCall() && Handle(CB->getCalledOperand()))
+///   return true;
+/// for (unsigned i = 0; i < CB->arg_size(); ++i)
+///   if ((CB->paramHasAttr(i, Attribute::NoUndef) ||
+///        CB->paramHasAttr(i, Attribute::Dereferenceable) ||
+///        CB->paramHasAttr(i, Attribute::DereferenceableOrNull)) &&
+///       Handle(CB->getArgOperand(i)))
+///     return true;
+/// break;
+/// ```
+///
+/// `paramHasAttr` reads the call site, then the called function's declaration
+/// ([`CallBaseParts::has_parameter_attribute`]).
+fn call_operands_must_be_well_defined<'ctx, B, C, F>(
+    instruction: Value<'ctx, B, C>,
+    call: CallBaseParts<'_>,
+    mut handle: F,
+) -> bool
+where
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+    F: FnMut(ValueSlot) -> bool,
+{
+    let module = module_ref(instruction);
+    // An indirect call's callee operand must be well defined.
+    if is_indirect_callee(value_from_slot(instruction, call.callee)) && handle(call.callee) {
+        return true;
+    }
+    for (argument, operand) in call.args.iter().enumerate() {
+        if (call.has_parameter_attribute(module, argument, AttrKind::NoUndef)
+            || call.has_parameter_attribute(module, argument, AttrKind::Dereferenceable)
+            || call.has_parameter_attribute(module, argument, AttrKind::DereferenceableOrNull))
+            && handle(operand.get())
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// Ports the template `handleGuaranteedNonPoisonOps`: the well-defined operands
@@ -997,7 +1042,7 @@ fn may_throw<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     kind: &InstructionKindData,
 ) -> bool {
     match kind {
-        InstructionKindData::Call(data) => !call_site_has_fn_attr(
+        InstructionKindData::Call(data) => !call_site_has_function_attribute(
             module_ref(anchor),
             data.callee.get(),
             module_ref(anchor).call_attributes(data.attrs.get()),
@@ -1075,15 +1120,10 @@ fn will_return<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         InstructionKindData::Call(_)
         | InstructionKindData::Invoke(_)
         | InstructionKindData::CallBr(_) => {
-            let Some(call) = call_parts(anchor, kind) else {
+            let Some(call) = CallBaseParts::of(module_ref(anchor).context(), kind) else {
                 return true;
             };
-            call_site_has_fn_attr(
-                module_ref(anchor),
-                call.callee.get(),
-                call.attrs,
-                AttrKind::WillReturn,
-            )
+            call.has_function_attribute(module_ref(anchor), AttrKind::WillReturn)
         }
         _ => true,
     }
@@ -1111,10 +1151,10 @@ fn may_read_or_write_memory<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         InstructionKindData::Call(_)
         | InstructionKindData::Invoke(_)
         | InstructionKindData::CallBr(_) => {
-            let Some(call) = call_parts(anchor, kind) else {
+            let Some(call) = CallBaseParts::of(module_ref(anchor).context(), kind) else {
                 return true;
             };
-            let effects = call_site_memory_effects(anchor, call.callee.get(), call.attrs);
+            let effects = call.memory_effects(module_ref(anchor));
             // Reads unless write-only; writes unless read-only.
             !effects.only_writes_memory() || !effects.only_reads_memory()
         }
@@ -1140,10 +1180,10 @@ fn may_write_to_memory<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         InstructionKindData::Call(_)
         | InstructionKindData::Invoke(_)
         | InstructionKindData::CallBr(_) => {
-            let Some(call) = call_parts(anchor, kind) else {
+            let Some(call) = CallBaseParts::of(module_ref(anchor).context(), kind) else {
                 return true;
             };
-            !call_site_memory_effects(anchor, call.callee.get(), call.attrs).only_reads_memory()
+            !call.memory_effects(module_ref(anchor)).only_reads_memory()
         }
         InstructionKindData::Load(data) => !is_unordered(data.ordering, data.volatile),
         _ => false,
@@ -1290,75 +1330,6 @@ fn view_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }
 }
 
-/// The three fields shared by `call`, `invoke` and `callbr` — the slice of
-/// `CallBase` these predicates read.
-struct CallParts<'a> {
-    callee: &'a Cell<ValueSlot>,
-    args: &'a [Cell<ValueSlot>],
-    attrs: &'a CallAttributeData,
-}
-
-/// Ports the `cast<CallBase>` that upstream reaches all three call forms
-/// through. `anchor` is any value of `kind`'s module, whose context holds the
-/// interned attribute list.
-fn call_parts<'a, 'ctx: 'a, B: ModuleBrand + 'ctx, C: Capability>(
-    anchor: Value<'ctx, B, C>,
-    kind: &'a InstructionKindData,
-) -> Option<CallParts<'a>> {
-    let module = module_ref(anchor);
-    match kind {
-        InstructionKindData::Call(data) => Some(CallParts {
-            callee: &data.callee,
-            args: &data.args,
-            attrs: module.call_attributes(data.attrs.get()),
-        }),
-        InstructionKindData::Invoke(data) => Some(CallParts {
-            callee: &data.callee,
-            args: &data.args,
-            attrs: module.call_attributes(data.attrs.get()),
-        }),
-        InstructionKindData::CallBr(data) => Some(CallParts {
-            callee: &data.callee,
-            args: &data.args,
-            attrs: module.call_attributes(data.attrs.get()),
-        }),
-        _ => None,
-    }
-}
-
-/// The memory effects of a call site: the `memory(...)` attribute if present,
-/// otherwise the callee's, otherwise unknown. Ports `CallBase::getMemoryEffects`.
-fn call_site_memory_effects<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    anchor: Value<'ctx, B, C>,
-    callee: ValueSlot,
-    attrs: &CallAttributeData,
-) -> MemoryEffects {
-    if let Some(effects) = memory_effects_in(attrs.function_attrs()) {
-        return effects;
-    }
-    let callee = value_from_slot(anchor, callee);
-    if let ValueKindData::Function(data) = &callee.data().kind
-        && let Some(effects) = memory_effects_in(&data.attributes.borrow())
-    {
-        return effects;
-    }
-    match descriptor_for_callee(callee) {
-        Some(descriptor) => descriptor.id().memory_effects(),
-        None => MemoryEffects::unknown(),
-    }
-}
-
-/// The `memory(...)` attribute in `storage`'s function-attribute slot.
-fn memory_effects_in(storage: &AttributeStorage) -> Option<MemoryEffects> {
-    storage
-        .get(AttrIndex::Function)?
-        .iter()
-        .find_map(|stored| match stored {
-            AttributeStored::Memory(effects) => Some(*effects),
-            _ => None,
-        })
-}
-
 /// Whether `storage` carries the enum attribute `attribute` at `index`.
 fn storage_has_enum_attr(
     storage: &AttributeStorage,
@@ -1372,51 +1343,35 @@ fn storage_has_enum_attr(
     })
 }
 
-/// Whether parameter `index` of a call site carries one of the three attributes
-/// that make an undef argument UB. Ports `CallBase::isPassingUndefUB`.
-fn param_is_well_defined(arg_attrs: &[AttributeStorage], index: u32) -> bool {
-    let Ok(position) = usize::try_from(index) else {
-        return false;
-    };
-    let Some(storage) = arg_attrs.get(position) else {
-        return false;
-    };
-    storage
-        .get(AttrIndex::Param(index))
-        .into_iter()
-        .flatten()
-        .any(is_ub_implying_attribute)
-}
-
-/// Ports `Instruction::hasUBImplyingAttrs` for a call site: any argument or the
-/// return carrying `noundef`, `dereferenceable` or `dereferenceable_or_null`.
-fn has_ub_implying_attrs(attrs: &CallAttributeData) -> bool {
-    let arg_attrs = attrs.arg_attrs();
-    for index in 0..arg_attrs.len() {
-        let Ok(index) = u32::try_from(index) else {
-            continue;
-        };
-        if param_is_well_defined(arg_attrs, index) {
+/// Ports `Instruction::hasUBImplyingAttrs` (`Instruction.cpp`) for a call,
+/// the one caller's `dyn_cast<CallBase>` having held:
+///
+/// ```text
+/// // For call instructions, we also need to check parameter and return
+/// // attributes that can cause UB.
+/// for (unsigned ArgNo = 0; ArgNo < CB->arg_size(); ArgNo++)
+///   if (CB->isPassingUndefUB(ArgNo))
+///     return true;
+/// return CB->hasRetAttr(Attribute::NoUndef) ||
+///        CB->hasRetAttr(Attribute::Dereferenceable) ||
+///        CB->hasRetAttr(Attribute::DereferenceableOrNull);
+/// ```
+///
+/// Both halves read the called function's declaration as well as the call
+/// site ([`CallBaseParts::is_passing_undef_undefined_behaviour`],
+/// [`CallBaseParts::has_return_attribute`]).
+fn has_ub_implying_attrs<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    module: ModuleRef<'ctx, B, C>,
+    call: CallBaseParts<'_>,
+) -> bool {
+    for argument in 0..call.args.len() {
+        if call.is_passing_undef_undefined_behaviour(module, argument) {
             return true;
         }
     }
-    attrs
-        .return_attrs()
-        .get(AttrIndex::Return)
-        .into_iter()
-        .flatten()
-        .any(is_ub_implying_attribute)
-}
-
-/// The three attributes that make an undef value at this position UB.
-/// `dereferenceable` and `dereferenceable_or_null` both imply `noundef`.
-fn is_ub_implying_attribute(attribute: &AttributeStored) -> bool {
-    matches!(
-        attribute,
-        AttributeStored::Enum(AttrKind::NoUndef)
-            | AttributeStored::Int(AttrKind::Dereferenceable, _)
-            | AttributeStored::Int(AttrKind::DereferenceableOrNull, _)
-    )
+    call.has_return_attribute(module, AttrKind::NoUndef)
+        || call.has_return_attribute(module, AttrKind::Dereferenceable)
+        || call.has_return_attribute(module, AttrKind::DereferenceableOrNull)
 }
 
 /// Whether the enclosing function's return carries `noundef`. Ports
@@ -1466,8 +1421,8 @@ fn called_intrinsic<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     instruction: Value<'ctx, B, C>,
 ) -> Option<IntrinsicId> {
     let kind = instruction_kind(instruction)?;
-    let call = call_parts(instruction, kind)?;
-    let callee = value_from_slot(instruction, call.callee.get());
+    let call = CallBaseParts::of(module_ref(instruction).context(), kind)?;
+    let callee = value_from_slot(instruction, call.callee);
     Some(descriptor_for_callee(callee)?.id())
 }
 

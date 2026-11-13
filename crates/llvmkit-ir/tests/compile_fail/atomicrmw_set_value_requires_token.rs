@@ -14,9 +14,9 @@ use llvmkit_ir::atomicrmw_binop::AtomicRmwBinOp;
 fn main() -> IrResult<()> {
     let m = Module::dynamic("armw-token");
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
-    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);

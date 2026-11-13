@@ -37,7 +37,7 @@ fn rendered_type_agrees_with_the_type_it_came_from() -> Result<(), IrError> {
         m.void_type().as_type(),
         i32_ty,
         m.f64_type().as_type(),
-        m.ptr_type(0).as_type(),
+        m.ptr_type_in::<0>().as_type(),
         m.array_type_n::<i32, 4>().as_type(),
         m.vector_type_n::<i32, 4>().as_type(),
         m.struct_type([i32_ty, i32_ty])?.as_type(),
@@ -91,7 +91,7 @@ fn same_kind_operands_still_render_distinctly() -> Result<(), IrError> {
 
     // `IrBuilder::select_erased` — the two arms must agree. Two integer
     // widths, so both label `integer`.
-    let fn_ty = m.function_type_no_parameters(m.void_type());
+    let fn_ty = m.function_type_no_parameters(m.void_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

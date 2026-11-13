@@ -1,20 +1,220 @@
 //! Pointers carry their LLVM address space in their Rust type: `Space<N>` when
 //! the call fixes it, `SpaceDyn` when only run-time data knows it.
 //!
-//! Every test here pins a Rust type-level marker, which upstream cannot have
-//! (an LLVM `PointerType *` carries its address space only at run time), so
-//! each is llvmkit-specific (D3, D4). The run-time address-space behaviour of
-//! the same builders is pinned by ported tests: `builder_cast_ptr_int.rs`
-//! (`TEST(InstructionsTest, CastInst)`), `builder_gep.rs`
-//! (`TEST(InstructionsTest, GEPIndices)`) and the corpus's
+//! The tests named `upstream_*` are ports: `TEST(GlobalTest, CreateAddressSpace)`
+//! from `unittests/IR/ValueTest.cpp` and `TEST_F(IRBuilderTest,
+//! CreateGlobalString)` from `unittests/IR/IRBuilderTest.cpp`. Each other test
+//! pins a Rust type-level marker, which upstream cannot have (an LLVM
+//! `PointerType *` carries its address space only at run time), or a routine
+//! upstream does not test, so each says it is llvmkit-specific. The run-time
+//! address-space behaviour of the same builders is pinned by ported tests:
+//! `builder_cast_ptr_int.rs` (`TEST(InstructionsTest, CastInst)`),
+//! `builder_gep.rs` (`TEST(InstructionsTest, GEPIndices)`),
+//! `intrinsic_declarations.rs` (`TEST_F(IntrinsicsTest,
+//! OverloadedIntrinsicAddressSpace)`), `data_layout_round_trip.rs`
+//! (`TEST(DataLayoutTest, GlobalsAddressSpace)`) and the corpus's
 //! `test/Assembler/2007-12-11-AddressSpaces.ll`.
 
 use llvmkit_ir::{
-    ConstantIntValue, ConstantPointerNull, InstructionKind, InstructionView, IntDyn, IntValue,
-    IrBuilder, IrError, IrStruct, Linkage, Module, NoFolder, PointerPhiInstId, PointerType,
-    PointerValue, PointerValueId, PointerVariable, Ptr, Space, SpaceDyn, SsaBuilder, SsaState,
-    StructSchema, TypedPointerValue, module_new,
+    AddressSpace, Align, ConstantIntValue, ConstantPointerNull, DataLayout, Dyn, InstructionKind,
+    InstructionView, IntDyn, IntPredicate, IntValue, IntrinsicId, IrBuilder, IrError, IrStruct,
+    Linkage, MaybeAlign, Module, NoFolder, PointerPhiInstId, PointerType, PointerValue,
+    PointerValueId, PointerVariable, Ptr, Space, SpaceDyn, SsaBuilder, SsaState, TypedPointerValue,
+    UnnamedAddr, address_space, module_new,
 };
+
+/// Port of `unittests/IR/ValueTest.cpp::TEST(GlobalTest, CreateAddressSpace)`.
+/// `Value::MaximumAlignment` is written out; llvmkit has no constant for it.
+#[test]
+fn upstream_global_create_address_space() {
+    let m = Module::dynamic("TestModule");
+    let int8_ty = m.i8_type();
+    let int32_ty = m.i32_type();
+
+    let dummy0 = m
+        .global_builder("dummy", int32_ty)
+        .constant()
+        .linkage(Linkage::External)
+        .initializer(int32_ty.const_all_ones())
+        .address_space(address_space::<1>())
+        .build()
+        .expect("a fresh name");
+
+    let k_max_alignment = Align::new(1 << 32).expect("a power of two");
+    assert_eq!(k_max_alignment.value(), 4_294_967_296);
+    m.view(dummy0)
+        .set_align(&m, MaybeAlign::new(k_max_alignment));
+    assert_eq!(m.view(dummy0).align(), MaybeAlign::new(k_max_alignment));
+
+    // Make sure the address space isn't dropped when returning this.
+    let dummy1 = m
+        .get_or_insert_global("dummy", int32_ty)
+        .expect("`dummy` is a global");
+    assert_eq!(dummy0, dummy1);
+    assert_eq!(m.view(dummy1).ty().address_space(), 1);
+
+    // This one requires a bitcast, but the address space must also stay the
+    // same.
+    let dummy_cast0 = m
+        .global_builder("dummy_cast", int32_ty)
+        .constant()
+        .linkage(Linkage::External)
+        .initializer(int32_ty.const_all_ones())
+        .address_space(address_space::<1>())
+        .build()
+        .expect("a fresh name");
+
+    // Make sure the address space isn't dropped when returning this.
+    let dummy_cast1 = m
+        .get_or_insert_global("dummy_cast", int8_ty)
+        .expect("`dummy_cast` is a global");
+    assert_eq!(dummy_cast0, dummy_cast1);
+    assert_eq!(m.view(dummy_cast1).ty().address_space(), 1);
+}
+
+/// `Module::getOrInsertGlobal`'s other arm: no global holds the name, so one
+/// is declared, external and without an initializer, in the data layout's
+/// default globals address space. A foreign type is refused either way, and a
+/// function holding the name is refused where upstream would unique the new
+/// global's name. llvmkit-specific (rule anchor): upstream's test reaches only
+/// the found arm.
+#[test]
+fn a_missing_global_is_declared_in_the_default_globals_address_space() {
+    let m = Module::dynamic("spaces");
+    m.set_data_layout(DataLayout::parse("G5").expect("a valid layout"));
+    let int32_ty = m.i32_type();
+
+    let declared = m
+        .get_or_insert_global("declared", int32_ty)
+        .expect("a fresh name");
+    let view = m.view(declared);
+    assert_eq!(view.ty().address_space(), 5);
+    assert_eq!(view.value_type(), int32_ty.as_type());
+    assert!(view.initializer().is_none());
+    assert_eq!(view.linkage(), Linkage::External);
+    assert!(!view.is_constant());
+
+    let foreign = Module::dynamic("foreign");
+    let foreign_ty = foreign.i32_type();
+    assert!(matches!(
+        m.get_or_insert_global("declared", foreign_ty),
+        Err(IrError::ForeignType)
+    ));
+
+    let signature = m
+        .function_type_no_parameters(m.void_type())
+        .expect("a valid signature");
+    m.add_function_dyn("function", signature, Linkage::External)
+        .expect("a fresh name");
+    assert!(matches!(
+        m.get_or_insert_global("function", int32_ty),
+        Err(IrError::DuplicateGlobalName { .. })
+    ));
+}
+
+/// Port of `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest,
+/// CreateGlobalString)`. `AddressSpace::DEFAULT` is the `0` upstream's default
+/// argument supplies for `String1a`.
+#[test]
+fn upstream_ir_builder_create_global_string() {
+    let m = Module::dynamic("MyModule");
+    let signature = m
+        .function_type_no_parameters(m.void_type())
+        .expect("a valid signature");
+    let f = m
+        .add_function_dyn("", signature, Linkage::External)
+        .expect("an unnamed function");
+    let bb = m.view(f).append_basic_block(&m, "");
+    let builder = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
+
+    let string1a = builder
+        .global_string("TestString", "String1a", AddressSpace::DEFAULT)
+        .expect("a fresh name");
+    let string1b = builder
+        .global_string("TestString", "String1b", address_space::<0>())
+        .expect("a fresh name");
+    let string2 = builder
+        .global_string("TestString", "String2", address_space::<1>())
+        .expect("a fresh name");
+    let string3 = builder
+        .global_string("TestString", "String3", address_space::<2>())
+        .expect("a fresh name");
+
+    assert_eq!(m.view(string1a).ty().address_space(), 0);
+    assert_eq!(m.view(string1b).ty().address_space(), 0);
+    assert_eq!(m.view(string2).ty().address_space(), 1);
+    assert_eq!(m.view(string3).ty().address_space(), 2);
+}
+
+/// `IRBuilderBase::CreateGlobalString`'s other effects: a private constant
+/// `[N x i8]` holding the bytes and a NUL, `unnamed_addr`, aligned as the data
+/// layout prefers `i8`. llvmkit-specific (rule anchor): upstream's test reads
+/// only the address space.
+#[test]
+fn a_global_string_is_a_private_constant_byte_array() {
+    let m = Module::dynamic("spaces");
+    let signature = m
+        .function_type_no_parameters(m.void_type())
+        .expect("a valid signature");
+    let f = m
+        .add_function_dyn("f", signature, Linkage::External)
+        .expect("a fresh name");
+    let bb = m.view(f).append_basic_block(&m, "");
+    let builder = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
+
+    let string = builder
+        .global_string("Hi", "s", AddressSpace::DEFAULT)
+        .expect("a fresh name");
+    let view = m.view(string);
+    assert!(view.is_constant());
+    assert_eq!(view.linkage(), Linkage::Private);
+    assert_eq!(view.unnamed_addr(), UnnamedAddr::Global);
+    assert_eq!(view.value_type().to_string(), "[3 x i8]");
+    assert!(
+        m.to_string()
+            .contains("@s = private unnamed_addr constant [3 x i8] c\"Hi\\00\", align 1"),
+        "{m}"
+    );
+}
+
+/// A function with no address space given takes the data layout's program
+/// address space, through every route that declares one, and an explicit one
+/// wins. Mirrors `Function::Create(Ty, Linkage, N, M)` and
+/// `Module::getOrInsertFunction`. llvmkit-specific regression (rule anchor):
+/// these took address space 0, so a `P<n>` module's functions disagreed with
+/// the parser's; `rg -n "P[0-9]" llvm/unittests/IR` finds no upstream test of
+/// the default.
+#[test]
+fn a_function_defaults_to_the_program_address_space() {
+    let m = Module::dynamic("spaces");
+    m.set_data_layout(DataLayout::parse("P7").expect("a valid layout"));
+    let signature = m
+        .function_type_no_parameters(m.void_type())
+        .expect("a valid signature");
+
+    let added = m
+        .add_function_dyn("added", signature, Linkage::External)
+        .expect("a fresh name");
+    assert_eq!(m.view(added).address_space(), 7);
+
+    let built = m
+        .function_builder::<Dyn, _>("built", signature)
+        .build()
+        .expect("a fresh name");
+    assert_eq!(m.view(built).address_space(), 7);
+
+    let explicit = m
+        .function_builder::<Dyn, _>("explicit", signature)
+        .address_space(AddressSpace::DEFAULT)
+        .build()
+        .expect("a fresh name");
+    assert_eq!(m.view(explicit).address_space(), 0);
+
+    let declared = m
+        .get_or_insert_intrinsic_declaration_by_id(IntrinsicId::TRAP, [])
+        .expect("`llvm.trap` is not overloaded");
+    assert_eq!(m.view(declared).address_space(), 7);
+}
 
 /// `ptr_type_in::<N>()` names its address space in its type; `ptr_type(n)`,
 /// whose space is a run-time number, is `SpaceDyn`. Both answer the same
@@ -25,8 +225,33 @@ fn a_typed_pointer_type_carries_its_address_space() {
     let p: PointerType<'_, Space<3>, _> = m.ptr_type_in::<3>();
     assert_eq!(p.address_space(), 3);
     assert_eq!(p.to_string(), "ptr addrspace(3)");
-    let q: PointerType<'_, SpaceDyn, _> = m.ptr_type(3);
+    let q: PointerType<'_, SpaceDyn, _> = m.ptr_type(address_space::<3>());
     assert_eq!(q.address_space(), 3);
+}
+
+/// An address space is 24 bits, and [`AddressSpace`] holds no more:
+/// `Type::setSubclassData` (`include/llvm/IR/Type.h`) asserts that a pointer's
+/// fits, and `LLParser::parseOptionalAddrSpace` refuses anything wider. So
+/// every route that names an address space takes, returns or yields one. The two
+/// commands in the module docs of `addr_space.rs` check that, and both print
+/// nothing, measured on top of `de3f63c`. llvmkit-specific regression (D10):
+/// `ptr_type(1 << 24)` built `ptr addrspace(16777216)`, which no parser reads back.
+/// The largest space is the positive control.
+#[test]
+fn an_address_space_holds_24_bits() {
+    assert_eq!(AddressSpace::new(0xFF_FFFF), Some(AddressSpace::MAX));
+    assert_eq!(AddressSpace::new(1 << 24), None);
+    assert_eq!(AddressSpace::new(u32::MAX), None);
+    assert_eq!(AddressSpace::default(), AddressSpace::DEFAULT);
+    assert_eq!(address_space::<7>().get(), 7);
+    assert_eq!(address_space::<7>().to_string(), "7");
+    assert_eq!(u32::from(address_space::<7>()), 7);
+
+    let m = Module::dynamic("spaces");
+    assert_eq!(
+        m.ptr_type(AddressSpace::MAX).to_string(),
+        "ptr addrspace(16777215)"
+    );
 }
 
 /// Narrowing a `SpaceDyn` pointer to `Space<N>` checks the run-time address
@@ -36,7 +261,7 @@ fn a_typed_pointer_type_carries_its_address_space() {
 #[test]
 fn narrowing_a_dyn_pointer_checks_its_address_space() -> Result<(), IrError> {
     let m = Module::dynamic("spaces");
-    let fn_ty = m.function_type(m.void_type(), [m.ptr_type(1).as_type()]);
+    let fn_ty = m.function_type(m.void_type(), [m.ptr_type_in::<1>().as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let arg: PointerValue<'_, SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let one: Result<PointerValue<'_, Space<1>, _>, IrError> = PointerValue::try_from(arg);
@@ -45,8 +270,8 @@ fn narrowing_a_dyn_pointer_checks_its_address_space() -> Result<(), IrError> {
     assert_eq!(
         zero.err(),
         Some(IrError::AddressSpaceMismatch {
-            expected: 0,
-            got: 1
+            expected: AddressSpace::DEFAULT,
+            got: address_space::<1>(),
         })
     );
     let one = one?;
@@ -117,7 +342,7 @@ fn pointer_load_names_the_space_it_loads() -> Result<(), IrError> {
     let f = m.add_typed_function_of::<fn(), _>("f", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let slot = b.alloca_in::<0, _, _>(m.ptr_type(0), "slot")?;
+    let slot = b.alloca_in::<0, _, _>(m.ptr_type_in::<0>(), "slot")?;
     let p: PointerValueId<Space<0>, _> = b.pointer_load(slot, "p")?;
     let q: PointerValueId<Space<1>, _> = b.pointer_load_in::<1, _, _>(slot, "q")?;
     let r: PointerValueId<Space<0>, _> = b.load_from(slot).pointer("r")?;
@@ -132,9 +357,65 @@ fn pointer_load_names_the_space_it_loads() -> Result<(), IrError> {
     Ok(())
 }
 
+/// `AssemblyWriter` prints an operand with its `GV->getType()`, which for a
+/// function is a pointer in the function's own address space, so a `P1` module
+/// spells `ptr addrspace(1) @f` inside a constant expression. llvmkit printed
+/// `ptr @f`, which the type of the expression then contradicted.
+/// llvmkit-specific (rule anchor): the shape is
+/// `FunctionValue::as_aggregate_ptr`'s, which has no upstream counterpart.
+#[test]
+fn a_function_operand_prints_its_address_space() -> Result<(), IrError> {
+    let m = module_new!("spaces")?;
+    m.set_data_layout(DataLayout::parse("P1").expect("a valid layout"));
+    let fn_ty = m.function_type_no_parameters(m.void_type().as_type())?;
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let pointer = m.view(f).as_aggregate_ptr(m.view(f).address_space());
+    m.add_global_constant("p", pointer)?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("getelementptr inbounds (i8, ptr addrspace(1) @f, i64 0)"),
+        "{text}"
+    );
+    Ok(())
+}
+
+/// `CmpInst`'s constructor asserts its operands have one type (`AssertOK`,
+/// `lib/IR/Instructions.cpp`). The marker enforces that for two `Space<N>`
+/// pointers, and two `SpaceDyn` pointers are only known at run time, so
+/// `pointer_cmp` refuses them as `select` refuses its arms, and an `icmp` no
+/// parser reads back is never built. llvmkit-specific (D10). The same space is
+/// the positive control.
+#[test]
+fn a_pointer_compare_refuses_two_address_spaces() -> Result<(), IrError> {
+    let m = module_new!("spaces")?;
+    let f = m.add_typed_function::<(), (), _>("f", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let near = m
+        .view(b.alloca_in::<0, _, _>(m.i32_type(), "near")?)
+        .as_dyn();
+    let far = m
+        .view(b.alloca_in::<1, _, _>(m.i32_type(), "far")?)
+        .as_dyn();
+    let Err(IrError::TypeIdentityMismatch { expected, got }) = b
+        .pointer_cmp(IntPredicate::Eq, near, far, "same")
+        .map(|_| ())
+    else {
+        panic!("`ptr` and `ptr addrspace(1)` compare as two types");
+    };
+    assert_eq!(expected.spelling(), "ptr");
+    assert_eq!(got.spelling(), "ptr addrspace(1)");
+    assert_eq!(b.insert_block().instructions().len(), 2);
+
+    b.pointer_cmp(IntPredicate::Eq, near, near, "same")?;
+    b.ret_void();
+    Ok(())
+}
+
 /// `Ptr` is address space 0 and `Ptr<N>` address space `N`, in a typed
-/// signature and in a return-type check, which now requires the space exactly
-/// (it accepted any before). llvmkit-specific (D4).
+/// signature and in the checks that read one back, a return type's and a
+/// parameter's, which require the space exactly (the return's accepted any
+/// before). llvmkit-specific (D4).
 #[test]
 fn ptr_means_address_space_zero() -> Result<(), IrError> {
     let m = module_new!("spaces")?;
@@ -147,10 +428,28 @@ fn ptr_means_address_space_zero() -> Result<(), IrError> {
         "{text}"
     );
 
-    let fn_ty = m.function_type_no_parameters(m.ptr_type(1).as_type());
+    let fn_ty = m.function_type_no_parameters(m.ptr_type_in::<1>().as_type())?;
     m.add_function_dyn("ret_one", fn_ty, Linkage::External)?;
     assert!(m.function::<Ptr>("ret_one").is_err());
     assert!(m.function::<Ptr<1>>("ret_one")?.is_some());
+
+    let fn_ty = m.function_type(m.void_type(), [m.ptr_type_in::<1>().as_type()])?;
+    m.add_function_dyn("take_one", fn_ty, Linkage::External)?;
+    let take_one = m.function::<()>("take_one")?.expect("declared above");
+    assert_eq!(
+        m.view(take_one)
+            .with_typed_signature::<fn(Ptr)>()
+            .map(|_| ()),
+        Err(IrError::AddressSpaceMismatch {
+            expected: AddressSpace::DEFAULT,
+            got: address_space::<1>(),
+        })
+    );
+    assert!(
+        m.view(take_one)
+            .with_typed_signature::<fn(Ptr<1>)>()
+            .is_ok()
+    );
     Ok(())
 }
 
@@ -166,7 +465,8 @@ fn casts_take_the_destination_types_address_space() -> Result<(), IrError> {
     let (x,) = m.view(f).params();
     let p: PointerValueId<Space<2>, _> =
         b.int_to_ptr::<i64, _, _, _>(x, m.ptr_type_in::<2>(), "p")?;
-    let q: PointerValueId<SpaceDyn, _> = b.pointer_cast(p, m.ptr_type(3), "q")?;
+    let q: PointerValueId<SpaceDyn, _> =
+        b.pointer_cast(p, m.ptr_type(address_space::<3>()), "q")?;
     let _ = q;
     let text = format!("{m}");
     for line in [
@@ -211,7 +511,8 @@ fn a_ptr_call_result_is_in_the_callees_address_space() -> Result<(), IrError> {
 fn a_null_constant_is_in_its_types_address_space() {
     let m = Module::dynamic("spaces");
     let typed: ConstantPointerNull<'_, Space<4>, _> = m.ptr_type_in::<4>().const_null();
-    let dynamic: ConstantPointerNull<'_, SpaceDyn, _> = m.ptr_type(4).const_null();
+    let dynamic: ConstantPointerNull<'_, SpaceDyn, _> =
+        m.ptr_type(address_space::<4>()).const_null();
     assert_eq!(typed.as_erased(), dynamic.as_erased());
     assert_eq!(typed.as_erased().to_string(), "ptr addrspace(4) null");
 }
@@ -307,7 +608,7 @@ fn a_ptr_field_is_in_its_address_space() -> Result<(), IrError> {
     assert!(rust_value.near.as_ptr().is_null() && rust_value.far.as_ptr().is_null());
 
     let m = module_new!("spaces")?;
-    let _ = <Spaced as StructSchema>::ir_type(m.as_view())?;
+    let _ = m.get_or_insert_struct_of::<Spaced>()?;
     let text = format!("{m}");
     assert!(
         text.contains("%Spaced = type { ptr, ptr addrspace(1) }"),

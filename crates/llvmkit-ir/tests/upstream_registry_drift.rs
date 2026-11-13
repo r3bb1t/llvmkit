@@ -255,21 +255,19 @@ fn no_source_comment_cites_upstream_by_line_number() {
 /// `docs/divergences.md` already records an instance of it ("cited 49-79 is
 /// minor line drift").
 ///
-/// Two exemptions, and they are rules rather than conveniences:
+/// One exemption, and it is a rule rather than a convenience: **a dated
+/// evidence block is a snapshot, not a claim.** `docs/divergences.md` keeps
+/// coordinates inside `<details>` and `Correction from verification` blocks,
+/// which its own header defines as "dated snapshots of one verification pass …
+/// valid only against the vendored 22.1.4 tree". Stripping them would destroy
+/// the record of what was checked. Its *entry prose* — every `**LLVM:**` /
+/// `**llvmkit:**` / `**Why:**` / `**Fix:**` bullet — is live, is checked, and
+/// was already clean when this test was written.
 ///
-/// - **`CHANGELOG.md` is frozen history.** A released entry records what was
-///   said at the time; correcting it would be falsifying a record. The
-///   `Unreleased` section is live prose and is checked.
-/// - **A dated evidence block is a snapshot, not a claim.** `docs/divergences.md`
-///   keeps coordinates inside `<details>` and `Correction from verification`
-///   blocks, which its own header defines as "dated snapshots of one
-///   verification pass … valid only against the vendored 22.1.4 tree". Stripping
-///   them would destroy the record of what was checked. Its *entry prose* —
-///   every `**LLVM:**` / `**llvmkit:**` / `**Why:**` / `**Fix:**` bullet — is
-///   live, is checked, and was already clean when this test was written.
-///
-/// `docs/design/**` is exempt for the same reason as frozen history: those are
-/// dated records of how a decision was reached, explicitly not maintained.
+/// `docs/design/**` is exempt for the same reason: those are dated records of
+/// how a decision was reached, explicitly not maintained. `CHANGELOG.md` is
+/// checked like any live page — it is a placeholder until the next release,
+/// with no released history left to freeze.
 #[test]
 fn no_live_doc_page_cites_a_line_number() {
     let root = repo_root();
@@ -288,7 +286,7 @@ fn no_live_doc_page_cites_a_line_number() {
          documentation point at a coordinate instead of the thing there. Name \
          the construct: the `@global` / `define` for a `.ll` fixture, the \
          function or its named arm for C++ or Rust. If the number is genuinely \
-         the subject (a dated evidence block, frozen changelog history), it \
+         the subject (a dated evidence block), it \
          belongs in one of the exempt places this test already knows about:\n{}",
         offenders.len(),
         offenders.join("\n")
@@ -308,22 +306,16 @@ fn no_live_doc_page_cites_a_line_number() {
 /// date before the colon), and is exempt by its own rule rather than by
 /// sitting inside such an accident.
 fn doc_page_line_citations(relative: &str, text: &str) -> Vec<String> {
-    let frozen_changelog = relative == "CHANGELOG.md";
     let mut offenders = Vec::new();
     let mut in_evidence = 0usize;
-    let mut past_unreleased = false;
     for (at, line) in text.lines().enumerate() {
         let trimmed = line.trim_start();
         let lower = trimmed.to_ascii_lowercase();
         if lower.starts_with("<details") {
             in_evidence += 1;
         }
-        // Everything below the first released heading is history.
-        if frozen_changelog && line.starts_with("## [") && !line.starts_with("## [Unreleased") {
-            past_unreleased = true;
-        }
         let correction = trimmed.starts_with("- **Correction from verification");
-        if in_evidence == 0 && !past_unreleased && !correction && cites_a_line(line) {
+        if in_evidence == 0 && !correction && cites_a_line(line) {
             offenders.push(format!("  {relative}:{}: {}", at + 1, line.trim()));
         }
         if in_evidence > 0 && lower.contains("</details") {

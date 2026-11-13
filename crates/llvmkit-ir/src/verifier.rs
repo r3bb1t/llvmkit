@@ -42,7 +42,10 @@ use std::collections::{HashMap, HashSet};
 
 use super::asm_writer::slot_label;
 use super::cfg::FunctionCfg;
-use super::constant::{Constant, ConstantData, ConstantExprOpcode};
+use super::constant::{
+    Constant, ConstantAggregateKind, ConstantData, ConstantDataKind, ConstantExprOpcode,
+    ConstantKind,
+};
 use super::eh_personalities::{
     classify_eh_personality, color_eh_funclets, first_non_phi_kind, is_funclet_pad_kind,
     is_scoped_eh_personality,
@@ -51,8 +54,8 @@ use super::global_value::Linkage;
 use super::global_variable::GlobalVariable;
 use super::inline_asm::{ConstraintKind, InlineAsm};
 use super::instr_types::{
-    AllocaInstData, AtomicCmpXchgInstData, AtomicRmwInstData, CallAttributeData, CallBrInstData,
-    CallInstData, CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
+    AllocaInstData, AtomicCmpXchgInstData, AtomicRmwInstData, CallBrInstData, CallInstData,
+    CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
     CleanupReturnInstData, ExtractElementInstData, ExtractValueInstData, FenceInstData,
     FnegInstData, FreezeInstData, IndirectBrInstData, InsertElementInstData, InsertValueInstData,
     InvokeInstData, LandingPadClauseKind, LandingPadInstData, LoadInstData, OperandBundleData,
@@ -74,11 +77,10 @@ use crate::dominator_tree::DominatorTree;
 use crate::error::{IrError, IrResult, VerifierRule, VerifierSubject};
 use crate::function::FunctionValue;
 use crate::instr_types::{
-    BinaryOpData, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData, FcmpInstData,
-    GepInstData, PhiData, ReturnOpData,
+    BinaryOpData, BranchInstData, BranchKind, CallBaseParts, CastOpData, CastOpcode, CmpInstData,
+    FcmpInstData, GepInstData, PhiData, ReturnOpData,
 };
 use crate::instruction::{InstructionKindData, InstructionView};
-use crate::llvm_context::Context;
 use crate::marker::Dyn;
 use crate::metadata::{
     MetadataAttachmentKind, MetadataId, MetadataKind, MetadataSlot, MetadataStore, StoredBrand,
@@ -133,60 +135,6 @@ struct FunctionContext<'a, B: ModuleBrand> {
     /// `landingpad` or `resume` established, which every later one must agree
     /// with. Upstream resets it to null per function.
     landing_pad_result_ty: &'a Cell<Option<TypeSlot>>,
-}
-
-/// The four `CallBase` fields the shared `visitCallBase` / `visitIntrinsicCall`
-/// halves read, projected out of a `call`, `invoke` or `callbr` payload — the
-/// slice of `CallBase` those routines take.
-#[derive(Clone, Copy)]
-struct CallBaseParts<'a> {
-    /// `CallBase::getCalledOperand()`.
-    callee: ValueSlot,
-    /// `CallBase::getFunctionType()`.
-    fn_ty: TypeSlot,
-    /// `CallBase::args()`.
-    args: &'a [core::cell::Cell<ValueSlot>],
-    /// `CallBase::getAttributes()`.
-    attrs: &'a CallAttributeData,
-    /// The operand bundles, `CallBase::getOperandBundleAt(0 ..
-    /// getNumOperandBundles())`.
-    operand_bundles: &'a [OperandBundleData],
-}
-
-impl<'a> CallBaseParts<'a> {
-    /// A `call`, its attribute list resolved in `context`, the context of the
-    /// module that holds it.
-    fn of_call(context: &'a Context, c: &'a CallInstData) -> Self {
-        Self {
-            callee: c.callee.get(),
-            fn_ty: c.fn_ty,
-            args: &c.args,
-            attrs: context.call_attributes(c.attrs.get()),
-            operand_bundles: &c.operand_bundles,
-        }
-    }
-
-    /// An `invoke`, as [`Self::of_call`].
-    fn of_invoke(context: &'a Context, i: &'a InvokeInstData) -> Self {
-        Self {
-            callee: i.callee.get(),
-            fn_ty: i.fn_ty,
-            args: &i.args,
-            attrs: context.call_attributes(i.attrs.get()),
-            operand_bundles: &i.operand_bundles,
-        }
-    }
-
-    /// A `callbr`, as [`Self::of_call`].
-    fn of_call_br(context: &'a Context, c: &'a CallBrInstData) -> Self {
-        Self {
-            callee: c.callee.get(),
-            fn_ty: c.fn_ty,
-            args: &c.args,
-            attrs: context.call_attributes(c.attrs.get()),
-            operand_bundles: &c.operand_bundles,
-        }
-    }
 }
 
 /// Where an instruction sits in its block: the position plus the block's
@@ -650,8 +598,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     });
                 }
             }
-            ConstantData::Aggregate(ids) => {
-                for id in ids.iter() {
+            // A splat's lanes are all its element, so its one subtree is the
+            // lanes' (`ConstantData::lane_slots`).
+            data @ (ConstantData::Aggregate(_) | ConstantData::Splat { .. }) => {
+                for id in data.lane_slots().into_iter().flatten() {
                     let operand_data = self.module.context().value_data(*id);
                     if matches!(operand_data.kind, ValueKindData::Constant(_)) {
                         self.verify_constant_tree(Constant::try_from(Value::from_parts(
@@ -669,6 +619,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             }
             ConstantData::GlobalValueRef { .. }
             | ConstantData::PointerNull
+            | ConstantData::AggregateZero
             | ConstantData::GepOffset { .. }
             | ConstantData::SymbolDelta { .. }
             | ConstantData::SymbolDeltaPlus { .. }
@@ -1372,7 +1323,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     fn function_address_is_taken(&self, f: FunctionValue<'ctx, Dyn, B, ReadOnly>) -> bool {
         let value = f.as_erased();
         let signature = f.signature();
-        let edges: Vec<ValueUse> = value.data().use_list.borrow().iter().copied().collect();
+        let context = self.module.context();
+        // An operand cell may hold the interned `ptr @f` wrapper while its edge
+        // sits on the function's own list (`docs/divergences.md` D3), so "this
+        // operand is the function" reads the cell through the wrapper.
+        let names_function = |operand: ValueSlot| {
+            context.use_edge_target(operand) == value.slot_trusting_same_module()
+        };
+        let edges: Vec<ValueUse> = context
+            .use_list_of(value.slot_trusting_same_module())
+            .borrow()
+            .iter()
+            .copied()
+            .collect();
         for edge in edges {
             // `IgnoreCallbackUses` is false at this call site, so the
             // `AbstractCallSite` arm never runs.
@@ -1404,8 +1367,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             }
             // `if (!Call->isCallee(&U) || (!IgnoreCastedDirectCall &&
             //      Call->getFunctionType() != getFunctionType()))`
-            if call.callee == value.slot_trusting_same_module()
-                && call.fn_ty == signature.slot_trusting_same_module()
+            if names_function(call.callee)
+                && call.function_type == signature.slot_trusting_same_module()
             {
                 continue;
             }
@@ -1414,9 +1377,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             //                                  U.getOperandNo())) continue;`
             if call.operand_bundles.iter().any(|bundle| {
                 bundle.tag() == &OperandBundleTag::ClangArcAttachedCall
-                    && bundle
-                        .inputs()
-                        .any(|input| input == value.slot_trusting_same_module())
+                    && bundle.inputs().any(names_function)
             }) {
                 continue;
             }
@@ -1435,7 +1396,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         match &instruction.kind {
             InstructionKindData::Call(c) => Some(CallBaseParts::of_call(context, c)),
             InstructionKindData::Invoke(i) => Some(CallBaseParts::of_invoke(context, i)),
-            InstructionKindData::CallBr(c) => Some(CallBaseParts::of_call_br(context, c)),
+            InstructionKindData::CallBr(c) => Some(CallBaseParts::of_call_branch(context, c)),
             _ => None,
         }
     }
@@ -3685,14 +3646,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             }
             // `Check(Call.paramHasAttr(I.index(), Attribute::SwiftError),
             //  "swifterror value when used in a callsite should be marked with
-            //   swifterror attribute", SwiftErrorVal, Call);`
+            //   swifterror attribute", SwiftErrorVal, Call);` — `paramHasAttr`
+            // reads the called function's declaration when the call site has
+            // no `swifterror`.
             self.verifier_check(
                 f,
                 bb,
-                call.attrs
-                    .arg_attrs()
-                    .get(index)
-                    .is_some_and(|set| set.has_kind(AttrIndex::Param(0), AttrKind::SwiftError)),
+                call.has_parameter_attribute(
+                    ModuleRef::<B, ReadOnly>::new(self.module),
+                    index,
+                    AttrKind::SwiftError,
+                ),
                 VerifierRule::SwiftErrorValueUse,
                 &format!(
                     "swifterror value when used in a callsite should be marked with swifterror attribute (argument #{index})"
@@ -3790,20 +3754,24 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     ) -> IrResult<()> {
         // `FTy = Call.getFunctionType()`; a payload whose recorded type is not
         // a function type is rejected by the caller's own guard.
-        let Some((_ret, params, _var_arg)) =
-            self.module.context().type_data(call.fn_ty).as_function()
+        let Some((_ret, params, _var_arg)) = self
+            .module
+            .context()
+            .type_data(call.function_type)
+            .as_function()
         else {
             return Ok(());
         };
         // `for (unsigned i = 0, e = FTy->getNumParams(); i != e; ++i)`
         for index in 0..params.len() {
-            // `if (Call.paramHasAttr(i, Attribute::SwiftError))`
-            if !call
-                .attrs
-                .arg_attrs()
-                .get(index)
-                .is_some_and(|set| set.has_kind(AttrIndex::Param(0), AttrKind::SwiftError))
-            {
+            // `if (Call.paramHasAttr(i, Attribute::SwiftError))`, which reads
+            // the called function's declaration when the call site has no
+            // `swifterror`.
+            if !call.has_parameter_attribute(
+                ModuleRef::<B, ReadOnly>::new(self.module),
+                index,
+                AttrKind::SwiftError,
+            ) {
                 continue;
             }
             // `Value *SwiftErrorArg = Call.getArgOperand(i);`
@@ -3911,7 +3879,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         let CallBaseParts {
             callee,
             args,
-            attrs,
+            attributes: attrs,
             ..
         } = call;
         // `const InlineAsm *IA = cast<InlineAsm>(Call.getCalledOperand());`
@@ -3972,9 +3940,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             } else {
                 // `Check(!Call.paramHasAttr(ArgNo, Attribute::ElementType),
                 //  "Elementtype attribute can only be applied for indirect
-                //  constraints", &Call);`
-                let has_element_type = arg_attrs
-                    .is_some_and(|set| set.has_kind(AttrIndex::Param(0), AttrKind::ElementType));
+                //  constraints", &Call);` — the called operand is an inline
+                // asm, so `paramHasAttr`'s `getCalledFunction()` half finds no
+                // function and only the call site is read.
+                let has_element_type = call.has_parameter_attribute(
+                    ModuleRef::<B, ReadOnly>::new(self.module),
+                    arg_no,
+                    AttrKind::ElementType,
+                );
                 self.verifier_check(
                     f,
                     bb,
@@ -4290,8 +4263,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     ) -> IrResult<()> {
         let CallBaseParts {
             callee,
-            fn_ty,
-            attrs,
+            function_type: fn_ty,
+            attributes: attrs,
             ..
         } = call;
         // `FunctionType *FTy = Call.getFunctionType();`
@@ -4316,8 +4289,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         //         (Call.doesNotReturn() && FTy->getReturnType()->isVoidTy())), …)`
         //
         // `CallBase::doesNotReturn()` is `hasFnAttr(Attribute::NoReturn)`,
-        // ported once as `call_site_has_fn_attr`.
-        let does_not_return = crate::instr_types::call_site_has_fn_attr(
+        // ported once as `call_site_has_function_attribute`.
+        let does_not_return = crate::instr_types::call_site_has_function_attribute(
             ModuleRef::<B, ReadOnly>::new(self.module),
             callee,
             attrs,
@@ -4347,8 +4320,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     .to_owned(),
             ));
         };
-        let input_data = self.module.context().value_data(*input);
-        let ValueKindData::Function(_) = &input_data.kind else {
+        // A function in value position is the interned `ptr @f`, which *is* the
+        // function (`docs/divergences.md` D3).
+        let input_function =
+            crate::pointer_analysis::global_value_or_self(Value::<B, ReadOnly>::from_parts(
+                *input,
+                self.module,
+                self.module.context().value_data(*input).ty,
+            ));
+        let ValueKindData::Function(_) = &input_function.data().kind else {
             return Err(self.fail(
                 f,
                 bb,
@@ -4358,7 +4338,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     .to_owned(),
             ));
         };
-        let input_function = Value::<B, ReadOnly>::from_parts(*input, self.module, input_data.ty);
 
         // `Intrinsic::ID IID = Fn->getIntrinsicID(); if (IID) … else …`
         let intrinsic_id = crate::intrinsics::descriptor_for_callee(input_function)
@@ -4797,7 +4776,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     ) -> IrResult<()> {
         let CallBaseParts {
             callee: callee_id,
-            fn_ty,
+            function_type: fn_ty,
             args,
             operand_bundles,
             ..
@@ -5196,7 +5175,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         let valid_result = rty.is_integer()
             || rty.is_floating_point()
             || rty.is_pointer()
-            || rty.is_typed_pointer()
             || rty.is_vector()
             || rty.is_array()
             || (rty.is_struct() && rty.is_first_class());
@@ -5529,7 +5507,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         d: &CallBrInstData,
         cx: &FunctionContext<'_, B>,
     ) -> IrResult<()> {
-        let call = CallBaseParts::of_call_br(self.module.context(), d);
+        let call = CallBaseParts::of_call_branch(self.module.context(), d);
         let callee_data = self.module.context().value_data(d.callee.get());
         // `if (!CBI.isInlineAsm()) { … } else { … }`
         if let ValueKindData::InlineAsm(_) = &callee_data.kind {
@@ -6040,7 +6018,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     // on the invoke, whose called operand is `II`'s own —
                     // not the stripped `CalledFn`.
                     if let Some(id) = intrinsic_id
-                        && crate::instr_types::call_site_has_fn_attr(
+                        && crate::instr_types::call_site_has_function_attribute(
                             ModuleRef::<B, ReadOnly>::new(self.module),
                             callee,
                             self.module.context().call_attributes(invoke.attrs.get()),
@@ -6243,16 +6221,25 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 // enum, so the branch is unrepresentable rather than merely
                 // untaken.
                 //
-                // `isa<ConstantArray> || isa<ConstantAggregateZero>` collapses
-                // to one test here: llvmkit spells a `zeroinitializer` as an
-                // aggregate of zeros, so both are `ConstantData::Aggregate`.
+                // Both classes are read off `Constant::kind`: an element list
+                // of array type is a `ConstantArray` or, when its elements are
+                // all simple, a `ConstantDataArray`, which this refuses as
+                // upstream does.
                 LandingPadClauseKind::Filter => self.verifier_check(
                     f,
                     bb,
-                    matches!(
-                        &self.module.context().value_data(clause).kind,
-                        ValueKindData::Constant(ConstantData::Aggregate(_))
-                    ),
+                    Constant::try_from(Value::<B, ReadOnly>::from_parts(
+                        clause,
+                        self.module,
+                        self.value_type(clause),
+                    ))
+                    .is_ok_and(|clause| {
+                        matches!(
+                            clause.kind(),
+                            ConstantKind::Aggregate(ConstantAggregateKind::Array)
+                                | ConstantKind::Data(ConstantDataKind::AggregateZero)
+                        )
+                    }),
                     VerifierRule::EhPadInvalidStructure,
                     "Filter operand is not an array of constants!",
                 )?,
@@ -7337,7 +7324,10 @@ fn walk_aggregate_path(
     Ok(cur)
 }
 
-fn pointer_source_shape(m: &ModuleCore, ty: TypeSlot) -> Option<(u32, Option<(u32, bool)>)> {
+fn pointer_source_shape(
+    m: &ModuleCore,
+    ty: TypeSlot,
+) -> Option<(crate::AddressSpace, Option<(u32, bool)>)> {
     match m.context().type_data(ty) {
         TypeData::Pointer { addr_space } => Some((*addr_space, None)),
         TypeData::FixedVector { elem, n } => match m.context().type_data(*elem) {
@@ -7479,8 +7469,7 @@ mod tests {
         let id = m.context().push_value(v);
         for op in operand_ids {
             m.context()
-                .value_data(op)
-                .add_use(crate::value::ValueUse::Instruction(id));
+                .add_use(op, crate::value::ValueUse::Instruction(id));
         }
         let bb_data = match &m.context().value_data(bb_id).kind {
             ValueKindData::BasicBlock(b) => b,
@@ -7523,7 +7512,9 @@ mod tests {
         params: &[crate::Type<'ctx, B>],
         name: &str,
     ) -> (ValueSlot, ValueSlot) {
-        let fn_ty = m.function_type(ret_ty, params.iter().copied());
+        let fn_ty = m
+            .function_type(ret_ty, params.iter().copied())
+            .expect("valid function type");
         let f = m.add_function_dyn(name, fn_ty, Linkage::External).unwrap();
         let bb = m.view(f).append_basic_block(m, "entry");
         // Reach the value-id pair without leaking the return marker.
@@ -7626,7 +7617,7 @@ mod tests {
     fn ret_type_mismatch_ptr_in_i32_function() {
         let m = crate::module_new!("t").expect("fresh module");
         let i32_ty = m.i32_type().as_type();
-        let ptr_ty = m.ptr_type(0).as_type();
+        let ptr_ty = m.ptr_type_in::<0>().as_type();
         let (_, bb_id) = skeleton(&m, i32_ty, &[], "f");
         let null_id = fab_null_ptr_id(&m, ptr_ty.slot_trusting_same_module());
         fabricate_instruction(
@@ -7838,37 +7829,6 @@ mod tests {
         assert_rule(&err, VerifierRule::PhiInvalidResultType);
     }
 
-    /// The result-type rule must NOT reject a *typed* pointer (`i32*`, the legacy
-    /// `TypedPointerType`): it is a first-class data type and a valid phi result,
-    /// distinct from the opaque `ptr` that `Type::is_pointer` matches. Regression
-    /// guard — the first cut of this rule enumerated only `is_pointer()`, so it
-    /// rejected `phi i32*`, IR that verified clean before.
-    ///
-    /// The phi is fabricated in a predecessor-less block so the incoming count
-    /// matches the predecessor count on `0 == 0` and the case isolates the
-    /// result-type gate, which runs ahead of the count delegation.
-    #[test]
-    fn phi_with_typed_pointer_result_type_verifies() {
-        let m = crate::module_new!("t").expect("fresh module");
-        let i32_ty = m.i32_type().as_type();
-        let void_ty = m.void_type().as_type();
-        let tptr_ty = m.typed_pointer_type(i32_ty, 0).as_type();
-        let (f_id, entry_id) = skeleton(&m, void_ty, &[], "f");
-        let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.capability_ref());
-        let dead = f.append_basic_block(&m, "dead");
-        let dead_id = dead.slot_trusting_same_module();
-        fabricate_instruction(
-            &m,
-            dead_id,
-            tptr_ty.slot_trusting_same_module(),
-            InstructionKindData::Phi(PhiData::new()),
-        );
-        append_ret_void(&m, dead_id);
-        append_ret_void(&m, entry_id);
-        m.verify_borrowed()
-            .expect("a typed-pointer phi result must remain valid");
-    }
-
     /// `test/Verifier/AmbiguousPhi.ll` -- duplicate predecessor with
     /// differing values.
     ///
@@ -7969,7 +7929,9 @@ mod tests {
         let void_ty = m.void_type().as_type();
         // Callee: `define i32 @callee(i32, i32)` -- empty body, terminator
         // fabricated to make it valid.
-        let callee_fn_ty = m.function_type(i32_ty, [i32_ty, i32_ty]);
+        let callee_fn_ty = m
+            .function_type(i32_ty, [i32_ty, i32_ty])
+            .expect("valid function type");
         let callee = m
             .add_function_dyn("callee", callee_fn_ty, Linkage::External)
             .unwrap();
@@ -7982,7 +7944,9 @@ mod tests {
             InstructionKindData::Ret(ReturnOpData::new(Some(zero))),
         );
         // Caller: passes only ONE arg.
-        let caller_fn_ty = m.function_type(void_ty, [i32_ty]);
+        let caller_fn_ty = m
+            .function_type(void_ty, [i32_ty])
+            .expect("valid function type");
         let caller = m
             .add_function_dyn("caller", caller_fn_ty, Linkage::External)
             .unwrap();
@@ -8016,7 +7980,7 @@ mod tests {
         m.set_data_layout(DataLayout::parse("p1:64:64:64:32").unwrap());
         let void_ty = m.void_type().as_type();
         let i64_ty = m.i64_type().as_type();
-        let ptr1_ty = m.ptr_type(1).as_type();
+        let ptr1_ty = m.ptr_type_in::<1>().as_type();
         let (_f_id, bb_id) = skeleton(&m, void_ty, &[], "f");
         let ptr = fab_null_ptr_id(&m, ptr1_ty.slot_trusting_same_module());
         fabricate_instruction(

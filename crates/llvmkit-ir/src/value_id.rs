@@ -729,7 +729,10 @@ impl<'ctx, A: AddrSpace, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PointerValue
             "PointerValueId points at a non-pointer arena type at its slot",
         );
         debug_assert!(
-            A::static_space().is_none_or(|space| module.type_data(ty).as_pointer() == Some(space)),
+            A::static_space().is_none_or(|space| module
+                .type_data(ty)
+                .as_pointer()
+                .is_some_and(|got| got == space)),
             "PointerValueId's address-space marker disagrees with its arena type",
         );
         Some(PointerValue::from_value_unchecked(Value::from_parts(
@@ -1294,7 +1297,7 @@ mod tests {
     fn block_id_slot_in_refuses_an_id_of_another_module() -> Result<(), IrError> {
         let home = Module::dynamic("home");
         let foreign = Module::dynamic("foreign");
-        let fn_ty = home.function_type_no_parameters(home.void_type());
+        let fn_ty = home.function_type_no_parameters(home.void_type())?;
         let f = home.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = home.view(f).append_basic_block(&home, "entry");
         let id = entry.id();

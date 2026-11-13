@@ -33,6 +33,7 @@ use super::constant::{
     Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode,
 };
 use super::constant_range::ConstantRange;
+use super::constants::global_value_type;
 use super::function::FunctionValue;
 use super::global_alias::GlobalAlias;
 use super::global_ifunc::GlobalIfunc;
@@ -566,11 +567,17 @@ fn predict_value_use_list_order(
     // `for (const Use &U : V->uses()) if (OM.lookup(U.getUser()))`. Only the
     // edges upstream models as `Use`s take part — see
     // `ValueUse::is_operand_use`.
-    let mut list: Vec<(ValueSlot, usize)> = Vec::new();
-    for user in m.context().value_data(value).operand_users() {
-        if om.lookup(user) != 0 {
+    let mut list: Vec<PredictedUse> = Vec::new();
+    for edge in m.context().use_list_of(value).borrow().iter() {
+        if let Some(user) = edge.user()
+            && om.lookup(user) != 0
+        {
             let position = list.len();
-            list.push((user, position));
+            list.push(PredictedUse {
+                user,
+                operand: edge.operand_number(),
+                position,
+            });
         }
     }
     if list.len() < 2 {
@@ -579,7 +586,7 @@ fn predict_value_use_list_order(
 
     // "When referencing a value before its declaration, a temporary value is
     // created, which will later be RAUWed with the actual value. This reverses
-    // the use list." — the reversal `ValueData::prepend_moved_uses` reproduces.
+    // the use list." — the reversal `Context::prepend_moved_uses` reproduces.
     let gets_reversed = !matches!(
         m.context().value_data(value).kind,
         ValueKindData::BasicBlock(_)
@@ -589,42 +596,58 @@ fn predict_value_use_list_order(
         _ => id,
     };
 
-    // `llvm::sort` under upstream's comparator. The operand-number tie-break
-    // for two uses by the *same* user has no llvmkit counterpart — its use
-    // list holds one indistinguishable edge per reference — so those compare
-    // equal and a stable sort leaves them where they are. Recorded in
-    // `docs/future-work.md`.
+    // `llvm::sort` under upstream's comparator, as a strict "`L` before `R`".
+    let before = |left: &PredictedUse, right: &PredictedUse| {
+        let left_id = om.lookup(left.user);
+        let right_id = om.lookup(right.user);
+        if left_id < right_id {
+            return gets_reversed && right_id <= id;
+        }
+        if right_id < left_id {
+            return !(gets_reversed && left_id <= id);
+        }
+        // "LID and RID are equal, so we have different operands of the same
+        // user." Upstream orders them by `getOperandNo`. Only a global-field
+        // edge can answer it here; two instruction or constant edges of one
+        // user are indistinguishable (`docs/divergences.md` D4), so neither
+        // goes first and the stable sort leaves them where they are.
+        let (Some(left_operand), Some(right_operand)) = (left.operand, right.operand) else {
+            return false;
+        };
+        if gets_reversed && left_id <= id {
+            return left_operand < right_operand;
+        }
+        left_operand > right_operand
+    };
     list.sort_by(|left, right| {
-        let left_id = om.lookup(left.0);
-        let right_id = om.lookup(right.0);
-        let left_first = if left_id < right_id {
-            gets_reversed && right_id <= id
-        } else if right_id < left_id {
-            !(gets_reversed && left_id <= id)
+        if before(left, right) {
+            core::cmp::Ordering::Less
+        } else if before(right, left) {
+            core::cmp::Ordering::Greater
         } else {
-            false
-        };
-        let right_first = if right_id < left_id {
-            gets_reversed && left_id <= id
-        } else if left_id < right_id {
-            !(gets_reversed && right_id <= id)
-        } else {
-            false
-        };
-        match (left_first, right_first) {
-            (true, false) => core::cmp::Ordering::Less,
-            (false, true) => core::cmp::Ordering::Greater,
-            _ => core::cmp::Ordering::Equal,
+            core::cmp::Ordering::Equal
         }
     });
 
     // `if (llvm::is_sorted(List, llvm::less_second())) return {};`
-    if list.windows(2).all(|pair| pair[0].1 <= pair[1].1) {
+    if list
+        .windows(2)
+        .all(|pair| pair[0].position <= pair[1].position)
+    {
         return Vec::new();
     }
     list.into_iter()
-        .map(|(_, position)| u32::try_from(position).unwrap_or(u32::MAX))
+        .map(|entry| u32::try_from(entry.position).unwrap_or(u32::MAX))
         .collect()
+}
+
+/// One entry of `predictValueUseListOrder`'s `List`: upstream's
+/// `std::pair<const Use *, unsigned>`, the `Use` read as its user and, where
+/// llvmkit's edge can answer it, its `getOperandNo`.
+struct PredictedUse {
+    user: ValueSlot,
+    operand: Option<u32>,
+    position: usize,
 }
 
 /// `BasicBlock::getParent` on a slot.
@@ -708,11 +731,21 @@ fn fmt_use_list_order(
         fmt_operand_ref(f, block.to_erased(), Some(&parent_slots))?;
     } else {
         f.write_str(" ")?;
-        fmt_operand(
-            f,
-            Value::<DynBrand, ReadOnly>::from_parts(directive.value, m, data.ty),
-            slots,
-        )?;
+        let value = Value::<DynBrand, ReadOnly>::from_parts(directive.value, m, data.ty);
+        // `writeOperand(V, true)` prints `V->getType()`, which for a
+        // `Function` is the pointer `GlobalValue::getType` answers. llvmkit's
+        // function value carries its signature (`docs/divergences.md` D3), so
+        // the pointer is spelled here, as the type printer's pointer arm does.
+        if matches!(data.kind, ValueKindData::Function(_)) {
+            let function =
+                FunctionValue::<Dyn, DynBrand, ReadOnly>::from_parts_unchecked(directive.value, m);
+            f.write_str("ptr")?;
+            print_address_space(f, function.address_space(), " ", "", false)?;
+            f.write_str(" ")?;
+            fmt_operand_ref(f, value, slots)?;
+        } else {
+            fmt_operand(f, value, slots)?;
+        }
     }
     f.write_str(", ")?;
     fmt_indexes(f, &directive.shuffle)
@@ -789,6 +822,10 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         ConstantData::Undef => f.write_str("undef"),
         ConstantData::Poison => f.write_str("poison"),
         ConstantData::Aggregate(elems) => fmt_aggregate_constant(f, host, elems),
+        ConstantData::Splat { element, insert } => fmt_splat_constant(f, host, *element, *insert),
+        // `if (isa<ConstantAggregateZero>(CV) || isa<ConstantTargetNone>(CV))
+        // { Out << "zeroinitializer"; return; }`
+        ConstantData::AggregateZero => f.write_str("zeroinitializer"),
         ConstantData::BlockAddress { function, block } => {
             let module = host.module.module();
             let fval = Value::<B, ReadOnly>::from_parts(
@@ -890,7 +927,7 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             write!(
                 f,
                 "getelementptr inbounds (i8, {} ",
-                constant_ptr_operand_type(base)
+                global_value_type(base)
             )?;
             fmt_operand_ref(f, base, None)?;
             write!(f, ", i64 {off})")
@@ -907,13 +944,9 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                 module,
                 module.context().value_data(*lo_id).ty,
             );
-            write!(f, "sub (i64 ptrtoint ({} ", constant_ptr_operand_type(hi))?;
+            write!(f, "sub (i64 ptrtoint ({} ", global_value_type(hi))?;
             fmt_operand_ref(f, hi, None)?;
-            write!(
-                f,
-                " to i64), i64 ptrtoint ({} ",
-                constant_ptr_operand_type(lo)
-            )?;
+            write!(f, " to i64), i64 ptrtoint ({} ", global_value_type(lo))?;
             fmt_operand_ref(f, lo, None)?;
             f.write_str(" to i64))")
         }
@@ -933,17 +966,9 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                 module,
                 module.context().value_data(*lo_id).ty,
             );
-            write!(
-                f,
-                "add (i64 sub (i64 ptrtoint ({} ",
-                constant_ptr_operand_type(hi)
-            )?;
+            write!(f, "add (i64 sub (i64 ptrtoint ({} ", global_value_type(hi))?;
             fmt_operand_ref(f, hi, None)?;
-            write!(
-                f,
-                " to i64), i64 ptrtoint ({} ",
-                constant_ptr_operand_type(lo)
-            )?;
+            write!(f, " to i64), i64 ptrtoint ({} ", global_value_type(lo))?;
             fmt_operand_ref(f, lo, None)?;
             write!(f, " to i64)), i64 {addend})")
         }
@@ -977,6 +1002,21 @@ fn fmt_constant_expr<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     expr: &ConstantExprData,
 ) -> fmt::Result {
     let module = host.module();
+    // `if (CE->getOpcode() == Instruction::ShuffleVector) { if (auto *SplatVal
+    // = CE->getSplatValue()) { if (isa<ConstantInt>(SplatVal) ||
+    // isa<ConstantFP>(SplatVal)) { Out << "splat ("; … } } }` — a
+    // `shufflevector` written out as a splat of an integer or a float prints
+    // the shorthand, as a stored splat does.
+    if expr.opcode == ConstantExprOpcode::ShuffleVector
+        && let Ok(constant) = crate::Constant::try_from(host)
+        && let Some(splat) = constant.splat_value(false)
+        && is_int_or_fp_splat_value(
+            module.core_ref(),
+            splat.as_erased().slot_trusting_same_module(),
+        )
+    {
+        return fmt_splat_shorthand(f, splat.as_erased());
+    }
     f.write_str(expr.opcode.keyword())?;
     match &expr.flags {
         ConstantExprFlags::None => {}
@@ -1043,6 +1083,16 @@ fn infer_gep_source_ty(module: &ModuleCore, expr: &ConstantExprData) -> TypeSlot
     expr.result_ty
 }
 
+/// Mirrors `printDSOLocation` (`lib/IR/AsmWriter.cpp`):
+/// `if (GV.isDSOLocal() && !GV.isImplicitDSOLocal()) Out << "dso_local ";`.
+/// So `dso_preemptable` never prints, and neither does `dso_local` on a local
+/// linkage or beside a hidden or protected visibility, which imply it.
+/// Upstream writes the trailing space; `printFunction`'s caller here spaces
+/// its keywords from the front, so each caller places the space itself.
+fn dso_location_keyword(is_dso_local: bool, is_implicit_dso_local: bool) -> Option<&'static str> {
+    (is_dso_local && !is_implicit_dso_local).then_some("dso_local")
+}
+
 /// Mirrors `printAddressSpace` (`lib/IR/AsmWriter.cpp`).
 ///
 /// One branch of the upstream routine is **not** ported: the
@@ -1064,7 +1114,7 @@ fn infer_gep_source_ty(module: &ModuleCore, expr: &ConstantExprData) -> TypeSlot
 /// keeps the `PrintAddrspaceName` gap above a single-site fix.
 pub(crate) fn print_address_space(
     f: &mut fmt::Formatter<'_>,
-    addr_space: u32,
+    addr_space: crate::AddressSpace,
     prefix: &str,
     suffix: &str,
     force_print: bool,
@@ -1095,14 +1145,14 @@ pub(crate) fn print_address_space(
 fn callee_pointer_address_space<B: ModuleBrand>(
     module: ModuleView<'_, B>,
     callee: ValueSlot,
-) -> Option<u32> {
+) -> Option<crate::AddressSpace> {
     let data = module.context().value_data(callee);
     match &data.kind {
         ValueKindData::Function(function) => Some(*function.address_space.borrow()),
         ValueKindData::GlobalAlias(alias) => Some(alias.address_space),
         ValueKindData::GlobalIfunc(ifunc) => Some(ifunc.address_space),
         ValueKindData::GlobalVariable(global) => Some(global.address_space),
-        ValueKindData::InlineAsm(_) => Some(0),
+        ValueKindData::InlineAsm(_) => Some(crate::AddressSpace::DEFAULT),
         _ => match module.context().type_data(data.ty) {
             TypeData::Pointer { addr_space } => Some(*addr_space),
             _ => None,
@@ -1132,16 +1182,6 @@ fn maybe_print_call_addr_space<B: ModuleBrand>(
     // `!Mod` case: an instruction always has a module.
     let force_print_addr_space = module.data_layout().program_addr_space() != 0;
     print_address_space(f, call_addr_space, " ", "", force_print_addr_space)
-}
-
-fn constant_ptr_operand_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    value: Value<'ctx, B, C>,
-) -> Type<'ctx, B, C> {
-    match &value.data().kind {
-        ValueKindData::Function(_) => value.module.ptr_type(0).as_type(),
-        ValueKindData::GlobalAlias(_) | ValueKindData::GlobalIfunc(_) => value.ty(),
-        _ => value.ty(),
-    }
 }
 
 fn fmt_int_constant<B: ModuleBrand, C: Capability>(
@@ -1360,9 +1400,22 @@ fn print_escaped_string<W: fmt::Write>(f: &mut W, bytes: &[u8]) -> fmt::Result {
     Ok(())
 }
 
-fn fmt_llvm_name(f: &mut fmt::Formatter<'_>, prefix: &str, name: &str) -> fmt::Result {
+pub(crate) fn fmt_llvm_name(f: &mut fmt::Formatter<'_>, prefix: &str, name: &str) -> fmt::Result {
     f.write_str(prefix)?;
     fmt_llvm_name_without_prefix(f, name)
+}
+
+/// `%name` as `TypePrinting::print` spells an identified struct.
+pub(crate) fn struct_name_spelling(name: &str) -> String {
+    struct StructName<'a>(&'a str);
+
+    impl fmt::Display for StructName<'_> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            fmt_llvm_name(f, "%", self.0)
+        }
+    }
+
+    StructName(name).to_string()
 }
 
 /// `printLLVMName(Out, Name, NoPrefix)` (`lib/IR/AsmWriter.cpp`).
@@ -1469,11 +1522,6 @@ fn collect_byte_string<B: ModuleBrand, C: Capability>(
     }
 }
 
-fn aggregate_splat_id(elem_ids: &[ValueSlot]) -> Option<ValueSlot> {
-    let first = elem_ids.first().copied()?;
-    elem_ids.iter().all(|id| *id == first).then_some(first)
-}
-
 fn is_int_or_fp_splat_value(module: &ModuleCore, id: ValueSlot) -> bool {
     matches!(
         module.context().value_data(id).kind,
@@ -1481,36 +1529,18 @@ fn is_int_or_fp_splat_value(module: &ModuleCore, id: ValueSlot) -> bool {
     )
 }
 
-/// Whether a uniform vector constant is spelled `splat (…)` rather than as an
-/// element list.
-///
-/// **The two vector kinds answer differently, and only one of them is a
-/// choice.** For a *fixed* vector both spellings are legal, and
-/// `AsmWriter.cpp`'s `writeConstantInternal` picks the shorthand only for
-/// `ConstantInt` and `ConstantFP`; that restriction is mirrored here so printed
-/// output stays byte-identical.
-///
-/// A *scalable* vector has no element-list spelling at all — its lane count is
-/// a minimum, not a count, so a list cannot describe the lanes one for one and
-/// LLVM would reject the text. `splat (…)` is the only form it has, whatever
-/// the element category, so the int/fp restriction must not apply. Upstream
-/// never faces the question: `ConstantVector::get` takes a fixed count, so a
-/// scalable vector constant with an element list cannot exist there. llvmkit
-/// builds one deliberately — it is how a scalable splat is represented, see
-/// `constant_fold::vector_splat_constant` — which is why the printer has to
-/// know the difference. `VectorType::const_vector` requires a scalable
-/// constant's lanes to agree, so every scalable aggregate that reaches here
-/// takes this arm and the element-list fallback below is fixed-width only.
-fn prints_as_splat<B: ModuleBrand, C: Capability>(
-    module: &ModuleCore,
-    ty: Type<'_, B, C>,
-    splat: ValueSlot,
-) -> bool {
-    match ty.data() {
-        TypeData::FixedVector { .. } => is_int_or_fp_splat_value(module, splat),
-        TypeData::ScalableVector { .. } => true,
-        _ => false,
-    }
+/// `Out << "splat ("; writeAsOperandInternal(Out, SplatVal, WriterCtx,
+/// /*PrintType=*/true); Out << ')';` — the shorthand `writeConstantInternal`
+/// writes for a vector whose splat value is a `ConstantInt` or a `ConstantFP`
+/// ([`is_int_or_fp_splat_value`]): a fixed `ConstantDataVector` /
+/// `ConstantVector`, or the `shufflevector` expression of a scalable splat.
+fn fmt_splat_shorthand<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    f: &mut fmt::Formatter<'_>,
+    value: Value<'ctx, B, C>,
+) -> fmt::Result {
+    f.write_str("splat (")?;
+    fmt_operand(f, value, None)?;
+    f.write_str(")")
 }
 
 fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
@@ -1520,36 +1550,22 @@ fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 ) -> fmt::Result {
     let module = host.module();
     let ty = host.ty();
-    // `isa<ConstantAggregateZero>(CV)`, asked before the `ConstantDataArray`
-    // string arm as `writeConstantInternal` asks it. An element list is one
-    // exactly when every element is null, the empty list included — the
-    // canonicalisation `Constant::kind` replays.
-    if elem_ids
-        .iter()
-        .all(|id| crate::constants::constant_id_is_null_value(module.core_ref(), *id))
-    {
-        return f.write_str("zeroinitializer");
-    }
+    // No element list is a `ConstantAggregateZero`: `intern_aggregate` stores
+    // a list of nulls as one, which `fmt_constant` prints as `zeroinitializer`
+    // before reaching here. The one all-null list it keeps, the
+    // `ConstantStruct` an in-place operand change leaves, prints its elements
+    // upstream too.
     if let Some(bytes) = collect_byte_string(module.core_ref(), ty, elem_ids) {
         f.write_str("c\"")?;
         print_escaped_string(f, &bytes)?;
         return f.write_str("\"");
     }
-    if let Some(splat) = aggregate_splat_id(elem_ids)
-        && prints_as_splat(module.core_ref(), ty, splat)
-    {
-        let data = module.context().value_data(splat);
-        let value = Value::from_parts(splat, module, data.ty);
-        f.write_str("splat (")?;
-        fmt_operand(f, value, None)?;
-        return f.write_str(")");
-    }
-    // The element-list fallback, which no *scalable* vector reaches: a shape
-    // with no LLVM spelling would be printed here, and the answer was to stop
-    // the constant being constructible rather than to invent a spelling for
-    // it. `VectorType::const_vector` requires a scalable constant's lanes to
-    // agree — it is llvmkit's `ConstantVector::getSplat` — so a scalable
-    // aggregate is always a splat and always took the arm above.
+    // An element list is no splat and never scalable: `intern_element_list`
+    // stores a vector list whose lanes are all one constant, and every
+    // scalable vector constant, as a `ConstantData::Splat`
+    // (`fmt_splat_constant`). So the list prints its elements, as
+    // `writeConstantInternal` prints a `ConstantVector` whose splat value is
+    // no `ConstantInt` or `ConstantFP`.
     let (open, close) = match ty.data() {
         TypeData::Array { .. } => ("[", "]"),
         TypeData::Struct(s) => {
@@ -1559,8 +1575,10 @@ fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                 _ => ("{ ", " }"),
             }
         }
-        TypeData::FixedVector { .. } | TypeData::ScalableVector { .. } => ("<", ">"),
-        _ => unreachable!("aggregate constant ty invariant"),
+        TypeData::FixedVector { .. } => ("<", ">"),
+        _ => unreachable!(
+            "aggregate constant ty invariant: an element list is an array, a struct or a fixed vector"
+        ),
     };
     f.write_str(open)?;
     let mut first = true;
@@ -1574,6 +1592,62 @@ fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         fmt_operand(f, v, None)?;
     }
     f.write_str(close)
+}
+
+/// A [`ConstantData::Splat`], printed as upstream prints the constant it
+/// stands for: `splat (…)` for a `ConstantInt` or `ConstantFP` element
+/// ([`fmt_splat_shorthand`]); otherwise a
+/// fixed splat's lanes in a `< … >` list, as `writeConstantInternal` writes a
+/// `ConstantVector` whose splat value is no `ConstantInt` or `ConstantFP`, and
+/// a scalable splat as the expression `ConstantVector::getSplat` builds,
+/// `shufflevector (insertelement (poison, V, i64 0), poison,
+/// zeroinitializer)`. The lanes are written one by one rather than
+/// collected, so a long splat costs its output and nothing more.
+fn fmt_splat_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    f: &mut fmt::Formatter<'_>,
+    host: Value<'ctx, B, C>,
+    element: ValueSlot,
+    insert: Option<ValueSlot>,
+) -> fmt::Result {
+    let module = host.module();
+    let ty = host.ty();
+    let value = Value::from_parts(element, module, module.context().value_data(element).ty);
+    if is_int_or_fp_splat_value(module.core_ref(), element) {
+        return fmt_splat_shorthand(f, value);
+    }
+    let Some((_, lanes, scalable)) = ty.data().as_vector() else {
+        unreachable!("splat constant ty invariant: a splat is a vector")
+    };
+    if scalable && let Some(insert) = insert {
+        // `ConstantVector::getSplat`'s `ConstantExpr::getShuffleVector(V,
+        // PoisonV, Zeros)`, whose `V` is the `insertelement` the splat stores
+        // and whose mask prints as the `i32` zero of the same element count.
+        f.write_str("shufflevector (")?;
+        let insert = Value::from_parts(insert, module, module.context().value_data(insert).ty);
+        fmt_operand(f, insert, None)?;
+        return write!(
+            f,
+            ", {ty} poison, <vscale x {} x i32> zeroinitializer)",
+            lanes.get()
+        );
+    }
+    // Every lane prints the same text, so it is rendered once and written per
+    // lane.
+    struct Lane<'v, 'ctx, B: ModuleBrand, C: Capability>(&'v Value<'ctx, B, C>);
+    impl<B: ModuleBrand, C: Capability> fmt::Display for Lane<'_, '_, B, C> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            fmt_operand(f, *self.0, None)
+        }
+    }
+    let lane_text = Lane(&value).to_string();
+    f.write_str("<")?;
+    for lane in 0..lanes.get() {
+        if lane != 0 {
+            f.write_str(", ")?;
+        }
+        f.write_str(&lane_text)?;
+    }
+    f.write_str(">")
 }
 
 // --------------------------------------------------------------------------
@@ -3399,7 +3473,7 @@ fn fmt_function_with_use_lists<B: ModuleBrand, C: Capability>(
     // `printFunction` order: DSO location, then visibility, then DLL storage
     // class. This is the same order `LLParser::parseOptionalLinkage` reads,
     // and the pair has to agree for LLVM's own output to round-trip here.
-    if let Some(s) = func.dso_locality().keyword() {
+    if let Some(s) = dso_location_keyword(func.is_dso_local(), func.is_implicit_dso_local()) {
         write!(f, " {s}")?;
     }
     if let Some(s) = func.visibility().keyword() {
@@ -3709,7 +3783,7 @@ pub(super) fn fmt_module_with_options(
             // Identified structs print their identity block here; an
             // anonymous one is numbered rather than named, exactly as
             // `AsmWriter::printTypeIdentities` does.
-            match s.identity.name() {
+            match s.identity.name(m.context()) {
                 Some(name) => fmt_llvm_name(f, "%", name)?,
                 None => match m.context().anonymous_identified_struct_number(id) {
                     Some(number) => write!(f, "%{number}")?,
@@ -4225,7 +4299,7 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         f.write_str(" ")?;
     }
 
-    if let Some(s) = g.dso_locality().keyword() {
+    if let Some(s) = dso_location_keyword(g.is_dso_local(), g.is_implicit_dso_local()) {
         f.write_str(s)?;
         f.write_str(" ")?;
     }
@@ -4381,7 +4455,7 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         f.write_str(linkage_kw)?;
         f.write_str(" ")?;
     }
-    if let Some(s) = a.dso_locality().keyword() {
+    if let Some(s) = dso_location_keyword(a.is_dso_local(), a.is_implicit_dso_local()) {
         f.write_str(s)?;
         f.write_str(" ")?;
     }
@@ -4438,7 +4512,7 @@ pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         f.write_str(linkage_kw)?;
         f.write_str(" ")?;
     }
-    if let Some(s) = i.dso_locality().keyword() {
+    if let Some(s) = dso_location_keyword(i.is_dso_local(), i.is_implicit_dso_local()) {
         f.write_str(s)?;
         f.write_str(" ")?;
     }

@@ -24,9 +24,10 @@ use core::num::NonZeroU32;
 use std::collections::HashMap;
 
 use super::value::{GlobalFieldKind, ValueUse};
+use crate::addr_space::AddressSpace;
 use crate::constant::{ConstantData, ConstantExprData};
 use crate::instr_types::{CallAttributeData, CallAttributesSlot};
-use crate::r#type::{StructBody, TypeData, TypeSlot};
+use crate::r#type::{StructBody, TypeData, TypeSlot, TypedPointeeSlot, TypedPointerSlot};
 use crate::value::{ValueData, ValueKindData, ValueSlot};
 
 /// What [`Context::get_or_create_named_struct`] answered with: the identified
@@ -71,7 +72,7 @@ pub(crate) struct Context {
     // ---- Parameterised — one map per kind. Keys are small structural
     // fingerprints (mirrors LLVMContextImpl).
     int_types: RefCell<HashMap<u32, TypeSlot>>,
-    ptr_types: RefCell<HashMap<u32, TypeSlot>>,
+    ptr_types: RefCell<HashMap<AddressSpace, TypeSlot>>,
     array_types: RefCell<HashMap<(TypeSlot, u64), TypeSlot>>,
     fixed_vector_types: RefCell<HashMap<(TypeSlot, NonZeroU32), TypeSlot>>,
     scalable_vector_types: RefCell<HashMap<(TypeSlot, NonZeroU32), TypeSlot>>,
@@ -82,7 +83,18 @@ pub(crate) struct Context {
     /// `named_struct_types` (which is unordered). Lets the printer emit the
     /// `%Name = type {...}` identity block in declaration order.
     named_struct_order: RefCell<Vec<TypeSlot>>,
-    typed_pointer_types: RefCell<HashMap<(TypeSlot, u32), TypeSlot>>,
+    /// Every name an identified struct has held, append-only: `StructType::name`
+    /// hands out a `&'ctx str`, which has to outlive a rename.
+    struct_names: boxcar::Vec<String>,
+    /// The next suffix a renamed struct's colliding name takes. Mirrors
+    /// `LLVMContextImpl::NamedStructTypesUniqueID`.
+    named_struct_types_unique_id: Cell<u32>,
+    /// Typed pointers — `(pointee, address space)` records in a table of their
+    /// own, not in the type arena: a typed pointer is no IR type, so no
+    /// `TypeSlot` names one. Indexed by `TypedPointerSlot`; uniqued through
+    /// `typed_pointer_ids`, as `TypedPointerType::get` uniques per context.
+    typed_pointers: RefCell<Vec<(TypedPointeeSlot, AddressSpace)>>,
+    typed_pointer_ids: RefCell<HashMap<(TypedPointeeSlot, AddressSpace), TypedPointerSlot>>,
     target_ext_types: RefCell<HashMap<TargetExtKey, TypeSlot>>,
 
     // ---- Value arena. Like the type arena, `boxcar::Vec` gives
@@ -101,6 +113,14 @@ pub(crate) struct Context {
     undef_constants: RefCell<HashMap<TypeSlot, ValueSlot>>,
     poison_constants: RefCell<HashMap<TypeSlot, ValueSlot>>,
     aggregate_constants: RefCell<AggregateConstantMap>,
+    /// `LLVMContextImpl::CAZConstants`: one `ConstantAggregateZero` per type.
+    aggregate_zero_constants: RefCell<HashMap<TypeSlot, ValueSlot>>,
+    /// One [`ConstantData::Splat`] per vector type and element. Upstream keeps
+    /// a splat in whichever map its class lives in (`CDSConstants` for a
+    /// `ConstantDataVector`, `VectorConstants` for a `ConstantVector`, the
+    /// `ExprConstants` for a scalable `shufflevector`); llvmkit stores every
+    /// splat as its one element, so it has one map of its own.
+    splat_constants: RefCell<HashMap<(TypeSlot, ValueSlot), ValueSlot>>,
     expr_constants: RefCell<HashMap<ConstantExprData, ValueSlot>>,
     block_address_constants: RefCell<HashMap<(TypeSlot, ValueSlot, ValueSlot), ValueSlot>>,
     dso_local_equivalent_constants: RefCell<HashMap<(TypeSlot, ValueSlot), ValueSlot>>,
@@ -200,7 +220,10 @@ impl Context {
             literal_struct_types: RefCell::new(HashMap::new()),
             named_struct_types: RefCell::new(HashMap::new()),
             named_struct_order: RefCell::new(Vec::new()),
-            typed_pointer_types: RefCell::new(HashMap::new()),
+            struct_names: boxcar::Vec::new(),
+            named_struct_types_unique_id: Cell::new(0),
+            typed_pointers: RefCell::new(Vec::new()),
+            typed_pointer_ids: RefCell::new(HashMap::new()),
             target_ext_types: RefCell::new(HashMap::new()),
             values: boxcar::Vec::new(),
             int_constants: RefCell::new(HashMap::new()),
@@ -213,6 +236,8 @@ impl Context {
             undef_constants: RefCell::new(HashMap::new()),
             poison_constants: RefCell::new(HashMap::new()),
             aggregate_constants: RefCell::new(HashMap::new()),
+            aggregate_zero_constants: RefCell::new(HashMap::new()),
+            splat_constants: RefCell::new(HashMap::new()),
             expr_constants: RefCell::new(HashMap::new()),
             block_address_constants: RefCell::new(HashMap::new()),
             dso_local_equivalent_constants: RefCell::new(HashMap::new()),
@@ -302,7 +327,7 @@ impl Context {
         id
     }
 
-    pub(crate) fn ptr_type(&self, addr_space: u32) -> TypeSlot {
+    pub(crate) fn ptr_type(&self, addr_space: AddressSpace) -> TypeSlot {
         if let Some(&id) = self.ptr_types.borrow().get(&addr_space) {
             return id;
         }
@@ -404,22 +429,40 @@ impl Context {
         let id = self.push(TypeData::Struct(crate::r#type::StructTypeData {
             identity: crate::r#type::StructIdentity::Literal,
             body: RefCell::new(Some(StructBody { elements, packed })),
+            schema_held: Cell::new(false),
         }));
         self.literal_struct_types.borrow_mut().insert(key, id);
         id
     }
 
-    pub(crate) fn typed_pointer_type(&self, pointee: TypeSlot, addr_space: u32) -> TypeSlot {
+    /// The typed pointer to `pointee` in `addr_space`, uniqued. Mirrors
+    /// `TypedPointerType::get`'s `ASTypedPointerTypes` lookup.
+    pub(crate) fn typed_pointer_type(
+        &self,
+        pointee: TypedPointeeSlot,
+        addr_space: AddressSpace,
+    ) -> TypedPointerSlot {
         let key = (pointee, addr_space);
-        if let Some(&id) = self.typed_pointer_types.borrow().get(&key) {
+        if let Some(&id) = self.typed_pointer_ids.borrow().get(&key) {
             return id;
         }
-        let id = self.push(TypeData::TypedPointer {
-            pointee,
-            addr_space,
-        });
-        self.typed_pointer_types.borrow_mut().insert(key, id);
+        let mut table = self.typed_pointers.borrow_mut();
+        let id = TypedPointerSlot::from_index(table.len());
+        table.push(key);
+        self.typed_pointer_ids.borrow_mut().insert(key, id);
         id
+    }
+
+    /// The `(pointee, address space)` record behind `slot`.
+    pub(crate) fn typed_pointer_data(
+        &self,
+        slot: TypedPointerSlot,
+    ) -> (TypedPointeeSlot, AddressSpace) {
+        self.typed_pointers
+            .borrow()
+            .get(slot.table_index())
+            .copied()
+            .unwrap_or_else(|| unreachable!("a TypedPointerSlot indexes its own context's table"))
     }
 
     pub(crate) fn target_ext_type(
@@ -455,9 +498,10 @@ impl Context {
         }
         let id = self.push(TypeData::Struct(crate::r#type::StructTypeData {
             identity: crate::r#type::StructIdentity::Identified {
-                name: Some(name.to_owned()),
+                name: Cell::new(Some(self.struct_names.push(name.to_owned()))),
             },
             body: RefCell::new(None),
+            schema_held: Cell::new(false),
         }));
         self.named_struct_types
             .borrow_mut()
@@ -473,11 +517,78 @@ impl Context {
     /// still two types, which is the whole point of the identified regime.
     pub(crate) fn create_anonymous_identified_struct(&self) -> TypeSlot {
         let id = self.push(TypeData::Struct(crate::r#type::StructTypeData {
-            identity: crate::r#type::StructIdentity::Identified { name: None },
+            identity: crate::r#type::StructIdentity::Identified {
+                name: Cell::new(None),
+            },
             body: RefCell::new(None),
+            schema_held: Cell::new(false),
         }));
         self.named_struct_order.borrow_mut().push(id);
         id
+    }
+
+    /// Hold the struct `id`, and every struct it holds by value, by name: a
+    /// schema minted it or a whole check confirmed it, so a `StructOf` or a
+    /// `SchemaValue` may rest on that name from here on, and
+    /// `Module::set_struct_name` refuses it. A struct already held has its own
+    /// fields held, and a by-value body is finite (`set_named_struct_body`), so
+    /// the walk ends.
+    pub(crate) fn hold_schema_struct(&self, id: TypeSlot) {
+        let Some(data) = self.type_data(id).as_struct() else {
+            return;
+        };
+        if data.schema_held.replace(true) {
+            return;
+        }
+        if let Some(body) = data.body.borrow().as_ref() {
+            for element in &body.elements {
+                self.hold_schema_struct(*element);
+            }
+        }
+    }
+
+    /// The name at `index` in the list of every name a struct has held.
+    pub(crate) fn struct_name(&self, index: usize) -> Option<&str> {
+        self.struct_names.get(index).map(String::as_str)
+    }
+
+    /// Rename the identified struct `id`, or remove its name with an empty
+    /// `name`. Mirrors `StructType::setName` (`lib/IR/Type.cpp`), arm for arm:
+    /// the same name changes nothing, the old name leaves the table first, and
+    /// a name in use takes the first free `.N` suffix from
+    /// `NamedStructTypesUniqueID`, a counter that only rises.
+    pub(crate) fn set_struct_name(&self, id: TypeSlot, name: &str) {
+        let data = self
+            .type_data(id)
+            .as_struct()
+            .expect("set_struct_name invariant: id refers to a Struct");
+        let crate::r#type::StructIdentity::Identified { name: held } = &data.identity else {
+            unreachable!("set_struct_name invariant: Module::set_struct_name refuses a literal");
+        };
+        let old = data.identity.name(self);
+        if old.unwrap_or_default() == name {
+            return;
+        }
+
+        let mut table = self.named_struct_types.borrow_mut();
+        if let Some(old) = old {
+            table.remove(old);
+        }
+
+        if name.is_empty() {
+            held.set(None);
+            return;
+        }
+
+        let mut unique = name.to_owned();
+        while table.contains_key(&unique) {
+            let suffix = self.named_struct_types_unique_id.get();
+            self.named_struct_types_unique_id
+                .set(suffix.wrapping_add(1));
+            unique = format!("{name}.{suffix}");
+        }
+        table.insert(unique.clone(), id);
+        held.set(Some(self.struct_names.push(unique)));
     }
 
     /// This anonymous identified struct's position among the module's
@@ -490,10 +601,7 @@ impl Context {
             let TypeData::Struct(data) = self.type_data(candidate) else {
                 continue;
             };
-            if !matches!(
-                data.identity,
-                crate::r#type::StructIdentity::Identified { name: None }
-            ) {
+            if !data.identity.is_anonymous_identified() {
                 continue;
             }
             if candidate == id {
@@ -529,12 +637,12 @@ impl Context {
         let mut slot = s.body.borrow_mut();
         if slot.is_some() {
             return Err(crate::IrError::StructBodyAlreadySet {
-                name: s.identity.name().unwrap_or_default().to_owned(),
+                name: s.identity.name(self).unwrap_or_default().to_owned(),
             });
         }
         if self.body_would_be_recursive(id, &body) {
             return Err(crate::IrError::RecursiveStructBody {
-                name: s.identity.name().unwrap_or_default().to_owned(),
+                name: s.identity.name(self).unwrap_or_default().to_owned(),
             });
         }
         *slot = Some(body);
@@ -581,9 +689,6 @@ impl Context {
                         .any(|&elem| self.type_reaches_type(elem, target, visited))
                 })
             }
-            TypeData::TypedPointer { pointee, .. } => {
-                self.type_reaches_type(*pointee, target, visited)
-            }
             TypeData::TargetExt(data) => data
                 .type_params
                 .iter()
@@ -615,6 +720,12 @@ impl Context {
             Some(d) => d,
             None => unreachable!("invalid ValueSlot: out of arena range (cross-module mixing?)"),
         }
+    }
+
+    /// How many values the arena holds. A slot whose index is at least this
+    /// count was pushed after the count was read.
+    pub(crate) fn value_count(&self) -> usize {
+        self.values.count()
     }
 
     /// Push a fresh value to the arena and return its id.
@@ -653,7 +764,7 @@ impl Context {
             return;
         };
         data.for_each_operand(|operand| {
-            self.value_data(operand).add_use(ValueUse::Constant(user));
+            self.add_use(operand, ValueUse::Constant(user));
         });
     }
 
@@ -662,8 +773,8 @@ impl Context {
     /// llvmkit gives a global object its *value* type and interns a separate
     /// pointer-typed [`ConstantData::GlobalValueRef`] to stand for `@name`
     /// where a constant is wanted. Upstream has no such node: a `GlobalValue`
-    /// **is** a pointer-typed `Constant`, so a field naming one is a `Use` of
-    /// the global itself.
+    /// **is** a pointer-typed `Constant`, so a field or operand naming one is
+    /// a `Use` of the global itself.
     ///
     /// Registering on the wrapper instead would not merely relabel the edge,
     /// it would lose count — the wrapper is *interned*, so three aliases of
@@ -675,6 +786,64 @@ impl Context {
             ValueKindData::Constant(ConstantData::GlobalValueRef { value: global }) => *global,
             _ => value,
         }
+    }
+
+    // ---- Use lists ----
+    //
+    // The doors every edge goes through. Each reads its value through
+    // [`Self::use_edge_target`], so a `GlobalValueRef` wrapper never holds an
+    // edge of its own: an operand cell may hold the wrapper, but the edge it
+    // stands for is on the global's one list, as upstream's `Use` is on the
+    // `GlobalValue`'s.
+
+    /// The use list of `value`, read through the wrapper. Mirrors
+    /// `Value::UseList` (`Value.h`).
+    pub(crate) fn use_list_of(&self, value: ValueSlot) -> &RefCell<Vec<ValueUse>> {
+        &self.value_data(self.use_edge_target(value)).use_list
+    }
+
+    /// Register `edge` as a new use of `value`.
+    ///
+    /// Mirrors `Value::addUse` (`Value.h`), which forwards to
+    /// `Use::addToList` (`Use.h`): upstream threads its use list through the
+    /// uses themselves and a new one becomes the **head**, so the list reads
+    /// newest-first. llvmkit stores the same sequence rather than appending,
+    /// because the sequence is contractual — `LLParser::sortUseListOrder`
+    /// keys each use by its position in it, and
+    /// `AsmWriter::predictValueUseListOrder` emits a shuffle against it.
+    pub(crate) fn add_use(&self, value: ValueSlot, edge: ValueUse) {
+        self.use_list_of(value).borrow_mut().insert(0, edge);
+    }
+
+    /// Drop the first `edge` from `value`'s use list, if it is there.
+    /// Mirrors `Use::removeFromList` (`Use.h`); an operand that names a value
+    /// twice holds two equal edges, and each removal takes one.
+    pub(crate) fn remove_use(&self, value: ValueSlot, edge: ValueUse) {
+        let mut uses = self.use_list_of(value).borrow_mut();
+        if let Some(position) = uses.iter().position(|candidate| *candidate == edge) {
+            uses.remove(position);
+        }
+    }
+
+    /// Move `edges` — a head-first snapshot of another value's use list —
+    /// onto the head of `value`'s.
+    ///
+    /// Mirrors the drain loop in `Value::replaceAllUsesWith`
+    /// (`lib/IR/Value.cpp`), which repeatedly takes the *head* of the old
+    /// list and `Use::set`s it, prepending each in turn to the new list. The
+    /// net effect reverses the moved run — which is exactly the reversal
+    /// `AsmWriter::predictValueUseListOrder` compensates for with its
+    /// `GetsReversed` flag, so reproducing it here is what makes a
+    /// forward-referenced value's printed shuffle match upstream's.
+    pub(crate) fn prepend_moved_uses(&self, value: ValueSlot, edges: &[ValueUse]) {
+        if edges.is_empty() {
+            return;
+        }
+        let mut list = self.use_list_of(value).borrow_mut();
+        let mut merged = Vec::with_capacity(edges.len() + list.len());
+        merged.extend(edges.iter().rev().copied());
+        merged.append(&mut list);
+        *list = merged;
     }
 
     /// Move a global object's single-slot field edge from `old` to `new`.
@@ -697,14 +866,10 @@ impl Context {
         }
         let edge = ValueUse::GlobalField { owner, field };
         if let Some(old) = old {
-            let data = self.value_data(old);
-            let mut uses = data.use_list.borrow_mut();
-            if let Some(position) = uses.iter().position(|use_| *use_ == edge) {
-                uses.remove(position);
-            }
+            self.remove_use(old, edge);
         }
         if let Some(new) = new {
-            self.value_data(new).add_use(edge);
+            self.add_use(new, edge);
         }
     }
 
@@ -936,6 +1101,7 @@ impl Context {
             kind: ValueKindData::Constant(ConstantData::GepOffset { base_id, off }),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
+        self.register_constant_operand_uses(id);
         self.gep_offset_constants.borrow_mut().insert(key, id);
         id
     }
@@ -957,6 +1123,7 @@ impl Context {
             kind: ValueKindData::Constant(ConstantData::SymbolDelta { hi_id, lo_id }),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
+        self.register_constant_operand_uses(id);
         self.symbol_delta_constants.borrow_mut().insert(key, id);
         id
     }
@@ -983,6 +1150,7 @@ impl Context {
             }),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
+        self.register_constant_operand_uses(id);
         self.symbol_delta_plus_constants
             .borrow_mut()
             .insert(key, id);
@@ -1007,6 +1175,143 @@ impl Context {
         });
         self.register_constant_operand_uses(id);
         self.aggregate_constants.borrow_mut().insert(key, id);
+        id
+    }
+
+    /// `ConstantAggregateZero::get(Ty)`: the one zero of an array, struct or
+    /// vector type, keyed by the type alone, so its length costs nothing.
+    pub(crate) fn intern_constant_aggregate_zero(&self, ty: TypeSlot) -> ValueSlot {
+        if let Some(&id) = self.aggregate_zero_constants.borrow().get(&ty) {
+            return id;
+        }
+        let id = self.push_value(ValueData {
+            ty,
+            name: core::cell::RefCell::new(None),
+            debug_loc: None,
+            kind: ValueKindData::Constant(ConstantData::AggregateZero),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        });
+        self.aggregate_zero_constants.borrow_mut().insert(ty, id);
+        id
+    }
+
+    /// The `insertelement` of `ConstantVector::getSplat`'s scalable branch:
+    /// `Type *IdxTy = Type::getInt64Ty(…); Constant *PoisonV =
+    /// PoisonValue::get(VTy); V = ConstantExpr::getInsertElement(PoisonV, V,
+    /// ConstantInt::get(IdxTy, 0));`, which does not fold for a scalable
+    /// vector (`ConstantFoldInsertElementInstruction`'s "Do not iterate on
+    /// scalable vector"). With [`Self::get_splat_shuffle`], the one spelling
+    /// of that expression: the splat interns it, an operand change rebuilds
+    /// it, and `constants.rs::scalable_get_splat_element` recognises it.
+    pub(crate) fn get_splat_insert(&self, ty: TypeSlot, element: ValueSlot) -> ConstantExprData {
+        ConstantExprData {
+            opcode: crate::constant::ConstantExprOpcode::InsertElement,
+            result_ty: ty,
+            source_ty: None,
+            operands: Box::new([
+                self.intern_constant_poison(ty),
+                element,
+                self.intern_constant_int(self.int_type(64), Box::new([])),
+            ]),
+            indices: Box::new([]),
+            mask: Box::new([]),
+            flags: crate::constant::ConstantExprFlags::none(),
+        }
+    }
+
+    /// Whether `insert` and `shuffle` are exactly what
+    /// [`Self::get_splat_insert`] and [`Self::get_splat_shuffle`] would build
+    /// at `ty` (`insert` being `shuffle`'s first operand), read off the stored
+    /// slots without interning anything: the recogniser of the same spelling.
+    pub(crate) fn is_get_splat(
+        &self,
+        ty: TypeSlot,
+        insert: &ConstantExprData,
+        shuffle: &ConstantExprData,
+    ) -> bool {
+        let is_poison_of_ty = |slot: ValueSlot| {
+            let value = self.value_data(slot);
+            value.ty == ty && matches!(value.kind, ValueKindData::Constant(ConstantData::Poison))
+        };
+        let is_i64_zero = |slot: ValueSlot| {
+            let value = self.value_data(slot);
+            matches!(self.type_data(value.ty), TypeData::Integer { bits: 64 })
+                && matches!(&value.kind, ValueKindData::Constant(ConstantData::Int(words)) if words.is_empty())
+        };
+        let is_zero_mask = |slot: ValueSlot| {
+            let value = self.value_data(slot);
+            matches!(
+                value.kind,
+                ValueKindData::Constant(ConstantData::AggregateZero)
+            ) && matches!(self.type_data(value.ty), TypeData::ScalableVector { elem, min }
+                    if matches!(self.type_data(*elem), TypeData::Integer { bits: 32 })
+                        && self.type_data(ty).element_count().is_some_and(|count| count.min == *min))
+        };
+        let plain = |data: &ConstantExprData| {
+            data.result_ty == ty
+                && data.source_ty.is_none()
+                && data.indices.is_empty()
+                && data.mask.is_empty()
+                && data.flags == crate::constant::ConstantExprFlags::none()
+        };
+        matches!(self.type_data(ty), TypeData::ScalableVector { .. })
+            && plain(insert)
+            && plain(shuffle)
+            && insert.opcode == crate::constant::ConstantExprOpcode::InsertElement
+            && shuffle.opcode == crate::constant::ConstantExprOpcode::ShuffleVector
+            && matches!(*insert.operands, [into, _, index] if is_poison_of_ty(into) && is_i64_zero(index))
+            && matches!(*shuffle.operands, [_, other, mask] if is_poison_of_ty(other) && is_zero_mask(mask))
+    }
+
+    /// `ConstantExpr::getShuffleVector(V, PoisonV, Zeros)`: the
+    /// `shufflevector` of `getSplat`'s scalable branch over `insert`, its mask
+    /// the `i32` zero of `ty`'s element count. `None` for a type with no
+    /// element count.
+    pub(crate) fn get_splat_shuffle(
+        &self,
+        ty: TypeSlot,
+        insert: ValueSlot,
+    ) -> Option<ConstantExprData> {
+        let count = self.type_data(ty).element_count()?;
+        let mask_ty = self.scalable_vector_type(self.int_type(32), count.min);
+        Some(ConstantExprData {
+            opcode: crate::constant::ConstantExprOpcode::ShuffleVector,
+            result_ty: ty,
+            source_ty: None,
+            operands: Box::new([
+                insert,
+                self.intern_constant_poison(ty),
+                self.intern_constant_aggregate_zero(mask_ty),
+            ]),
+            indices: Box::new([]),
+            mask: Box::new([]),
+            flags: crate::constant::ConstantExprFlags::none(),
+        })
+    }
+
+    /// The splat of `element` at the vector type `ty`, uniqued per pair. The
+    /// caller has applied `ConstantVector::getSplat`'s canonicalisation, so
+    /// `element` is no null, `undef` or `poison` (those are the zero and the
+    /// two markers). A fixed splat registers one use of `element`; see
+    /// `docs/divergences.md` D39 for what that means for a `ConstantVector`
+    /// splat. A scalable splat interns `getSplat`'s `insertelement` and
+    /// registers one use of that, as upstream's `shufflevector` does.
+    pub(crate) fn intern_constant_splat(&self, ty: TypeSlot, element: ValueSlot) -> ValueSlot {
+        let key = (ty, element);
+        if let Some(&id) = self.splat_constants.borrow().get(&key) {
+            return id;
+        }
+        let insert = matches!(self.type_data(ty), TypeData::ScalableVector { .. })
+            .then(|| self.intern_constant_expr(self.get_splat_insert(ty, element)));
+        let id = self.push_value(ValueData {
+            ty,
+            name: core::cell::RefCell::new(None),
+            debug_loc: None,
+            kind: ValueKindData::Constant(ConstantData::Splat { element, insert }),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        });
+        self.register_constant_operand_uses(id);
+        self.splat_constants.borrow_mut().insert(key, id);
         id
     }
 
@@ -1067,6 +1372,7 @@ impl Context {
             kind: ValueKindData::Constant(ConstantData::DsoLocalEquivalent { function }),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
+        self.register_constant_operand_uses(id);
         self.dso_local_equivalent_constants
             .borrow_mut()
             .insert(key, id);
@@ -1085,6 +1391,7 @@ impl Context {
             kind: ValueKindData::Constant(ConstantData::NoCfi { function }),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
+        self.register_constant_operand_uses(id);
         self.no_cfi_constants.borrow_mut().insert(key, id);
         id
     }

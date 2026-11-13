@@ -8,13 +8,13 @@ use llvmkit_ir::{Dyn, IrBuilder, Linkage, Module};
 fn main() {
     let m = Module::dynamic("retained-catchswitch");
     let void_ty = m.void_type();
-    let fn_ty = m.function_type(void_ty, Vec::<llvmkit_ir::Type<_>>::new());
+    let fn_ty = m.function_type(void_ty, Vec::<llvmkit_ir::Type<_>>::new()).expect("valid function type");
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
     let entry = m.view(f).append_basic_block(&m, "entry");
     let handler = m.view(f).append_basic_block(&m, "handler");
     let handler_label = handler.id();
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let (_sealed, cs) = b.catch_switch_within_none_to_caller("cs").unwrap();
+    let (_sealed, cs) = b.catch_switch_within_none_to_caller("cs");
 
     let _closed = cs.finish();
     let _ = cs.add_handler(handler_label);

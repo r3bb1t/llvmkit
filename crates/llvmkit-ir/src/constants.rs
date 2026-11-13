@@ -29,21 +29,21 @@ use super::block_params::BlockParamsDyn;
 use super::block_state::BlockTerminationState;
 use super::capability::{CanMutate, Capability, CapabilityOf, Mutable, ReadOnly};
 use super::constant::{
-    Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode,
-    ForwardRefValue, IntoConstantValue, IsConstant,
+    CanonicalAggregate, Constant, ConstantData, ConstantExprData, ConstantExprFlags,
+    ConstantExprOpcode, ForwardRefValue, IntoConstantValue, IsConstant, Undefined,
+    canonical_aggregate, splat_canonical,
 };
 use super::constant_fold::{
     constant_fold_binary_instruction_trusting_same_module,
     constant_fold_cast_instruction_trusting_same_module,
     constant_fold_extract_element_instruction_trusting_same_module,
     constant_fold_get_element_ptr_trusting_same_module,
-    constant_fold_insert_element_instruction_trusting_same_module,
-    constant_fold_shuffle_vector_instruction_trusting_same_module,
-    shufflevector_mask_from_constant,
+    constant_fold_insert_element_instruction_trusting_same_module, constant_from_id,
 };
+use super::data_layout::DataLayout;
 use super::derived_types::{
-    ArrayType, FloatType, IntType, PointerType, StructType, TargetExtProperty, TargetExtType,
-    VectorType,
+    AnyTypeEnum, ArrayType, FloatType, IntType, PointerType, StructType, TargetExtProperty,
+    TargetExtType, VectorType,
 };
 use super::element::VecElem;
 use super::error::{IrError, IrResult, TypeKindLabel};
@@ -60,6 +60,7 @@ use super::r#type::{
     ElementCount, Type, TypeData, TypeSlot, TypeSlotAccess, is_int_or_int_vector,
     is_ptr_or_ptr_vector, scalar_type_slot,
 };
+use super::type_size::TypeSize;
 use super::value::{
     HasDebugLoc, HasName, IsValue, SetName, Typed, Value, ValueKindData, ValueSlot,
     ValueSlotAccess, ValueUse, sealed,
@@ -1235,14 +1236,15 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, Cap: Capability>
     /// element-list constant is *always* fixed-width there and a scalable
     /// vector constant can only be born from
     /// `ConstantVector::getSplat(ElementCount, V)` — one value, replicated.
-    /// llvmkit stores a scalable splat as `min_len` equal elements (see
-    /// `constant_fold::vector_splat_constant`), which is a representation
-    /// choice, not a licence to describe lanes upstream cannot: the list must
-    /// have exactly `min_len` entries and every entry must be the same
-    /// constant, so what this builds is `getSplat` under llvmkit's spelling
-    /// and nothing else. Without that rule a non-uniform scalable constant is
-    /// constructible and prints text neither LLVM nor llvmkit's own `.ll`
-    /// parser will read back.
+    /// Here a scalable list must have exactly `min_len` entries, every entry
+    /// the same constant, so what this builds is `getSplat` under another
+    /// spelling and nothing else ([`Self::const_splat`] is the direct one).
+    /// Without that rule a non-uniform scalable constant is constructible and
+    /// prints text neither LLVM nor llvmkit's own `.ll` parser will read back.
+    ///
+    /// A list whose lanes are all one constant is stored as that constant,
+    /// as [`Self::const_splat`] stores it, so the two spellings are one
+    /// constant.
     pub fn const_vector<C, I>(self, elements: I) -> IrResult<ConstantAggregate<'ctx, B, Cap>>
     where
         I: IntoIterator<Item = C>,
@@ -1279,6 +1281,40 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, Cap: Capability>
             });
         }
         Ok(intern_aggregate(self.as_type(), ids.into_boxed_slice()))
+    }
+
+    /// `<N x T> splat (T V)`. Mirrors `ConstantVector::getSplat(ElementCount,
+    /// V)` at this type's element count: the zero, `undef` or `poison` its
+    /// canonicalisation names, and otherwise the splat, which stores the one
+    /// element whatever the lane count, so `<4294967295 x i32> splat (i32 1)`
+    /// costs one constant. Upstream's fixed branch builds every lane (a
+    /// `ConstantDataVector` or a `ConstantVector`) and its scalable branch a
+    /// `shufflevector` expression; [`Constant::kind`] answers those classes.
+    ///
+    /// `element` must be of this type's element type, as
+    /// `VectorType::get(V->getType(), EC)` makes it upstream.
+    pub fn const_splat<C>(self, element: C) -> IrResult<ConstantAggregate<'ctx, B, Cap>>
+    where
+        C: IntoConstantValue<'ctx, B>,
+    {
+        let value = element.into_constant(self.module)?.as_erased();
+        if value.ty().slot_trusting_same_module() != self.element().slot_trusting_same_module() {
+            return Err(IrError::TypeIdentityMismatch {
+                expected: self.element().rendered(),
+                got: value.ty().rendered(),
+            });
+        }
+        let ty = self.as_type();
+        let module = ty.module;
+        let slot = ty.slot_trusting_same_module();
+        let id = intern_canonical_aggregate(
+            module.module(),
+            slot,
+            splat_canonical(module, value.slot_trusting_same_module()),
+        );
+        Ok(ConstantAggregate::from_parts(constant_handle(
+            id, module, slot,
+        )))
     }
 }
 
@@ -1406,7 +1442,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
         if let Some(folded) = fold_constant_expr_data(self, result_ty, &data)? {
             return Ok(folded);
         }
-        let id = self.context().intern_constant_expr(data);
+        let id = intern_constant_expr_or_splat(self.module(), data);
         Ok(constant_handle::<B, _, _>(id, self, result_ty_slot))
     }
 
@@ -1446,12 +1482,16 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
         Ok(constant_handle::<B, _, _>(id, self, ty))
     }
 
-    /// `dso_local_equivalent @function`.
+    /// `dso_local_equivalent @function`. Mirrors
+    /// `DSOLocalEquivalent::DSOLocalEquivalent`, typed `GV->getType()`.
     pub(crate) fn dso_local_equivalent<FunctionCapability: Capability>(
         self,
         function: FunctionValue<'ctx, Dyn, B, FunctionCapability>,
     ) -> Constant<'ctx, B, C> {
-        let ty = self.ptr_type(0).as_type().slot_trusting_same_module();
+        let ty = self
+            .ptr_type(function.address_space())
+            .as_type()
+            .slot_trusting_same_module();
         // boundary (F1): refused by Task 26
         // Infallible, so a function from another module is interned by its slot.
         let function = function.slot_trusting_same_module();
@@ -1489,19 +1529,23 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
                 message: "dso_local_equivalent expects a function, alias to function, or ifunc",
             });
         }
-        let ty = self.ptr_type(0).as_type().slot_trusting_same_module();
+        let ty = global_value_type(value).slot_trusting_same_module();
         let id = self
             .context()
             .intern_constant_dso_local_equivalent(ty, value_slot);
         Ok(constant_handle::<B, _, _>(id, self, ty))
     }
 
-    /// `no_cfi @function`.
+    /// `no_cfi @function`. Mirrors `NoCFIValue::NoCFIValue`, typed
+    /// `GV->getType()`.
     pub(crate) fn no_cfi<FunctionCapability: Capability>(
         self,
         function: FunctionValue<'ctx, Dyn, B, FunctionCapability>,
     ) -> Constant<'ctx, B, C> {
-        let ty = self.ptr_type(0).as_type().slot_trusting_same_module();
+        let ty = self
+            .ptr_type(function.address_space())
+            .as_type()
+            .slot_trusting_same_module();
         // boundary (F1): refused by Task 26
         // Infallible, so a function from another module is interned by its slot.
         let function = function.slot_trusting_same_module();
@@ -1534,7 +1578,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
                 });
             }
         }
-        let ty = self.ptr_type(0).as_type().slot_trusting_same_module();
+        let ty = global_value_type(value).slot_trusting_same_module();
         let id = self.context().intern_constant_no_cfi(ty, value_slot);
         Ok(constant_handle::<B, _, _>(id, self, ty))
     }
@@ -1744,12 +1788,54 @@ fn fold_constant_expr_data<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             let [lhs, rhs, mask] = operands.as_slice() else {
                 return Ok(None);
             };
-            let Some(mask) = shufflevector_mask_from_constant(*mask) else {
-                return Ok(None);
-            };
-            constant_fold_shuffle_vector_instruction_trusting_same_module(*lhs, *rhs, &mask)
+            crate::constant_fold::constant_fold_shuffle_vector_with_mask_constant(*lhs, *rhs, *mask)
         }
     }
+}
+
+/// `ConstantExpr::getWithOperands` for an expression whose operands changed:
+/// canonicalised and validated as a constructor would, folded where it folds,
+/// and otherwise interned ([`intern_constant_expr_or_splat`]).
+fn reinterned_expression(module: &ModuleCore, mut expr: ConstantExprData) -> IrResult<ValueSlot> {
+    canonicalize_constant_expr_data(module, &mut expr)?;
+    validate_constant_expr_data(module, &expr)?;
+    let module_ref = ModuleRef::<DynBrand, ReadOnly>::new(module);
+    let result_ty = Type::new(expr.result_ty, module_ref);
+    if let Some(folded) = fold_constant_expr_data(module_ref, result_ty, &expr)? {
+        return Ok(folded.slot_trusting_same_module());
+    }
+    Ok(intern_constant_expr_or_splat(module, expr))
+}
+
+/// Intern the expression `data`, unless it is the expression
+/// `ConstantVector::getSplat` builds for a scalable vector, which is stored as
+/// that splat ([`ConstantData::Splat`]). Upstream's `getSplat` and the same
+/// expression written out are one uniqued `ConstantExpr`, so the two must be
+/// one constant here.
+fn intern_constant_expr_or_splat(module: &ModuleCore, data: ConstantExprData) -> ValueSlot {
+    match scalable_get_splat_element(module, &data) {
+        Some(element) => intern_canonical_aggregate(
+            module,
+            data.result_ty,
+            splat_canonical(ModuleRef::<DynBrand, ReadOnly>::new(module), element),
+        ),
+        None => module.context().intern_constant_expr(data),
+    }
+}
+
+/// The `V` of `shufflevector (insertelement (poison, V, i64 0), poison,
+/// zeroinitializer)` at a scalable type: exactly the expression
+/// `ConstantVector::getSplat`'s scalable branch builds (`Type *IdxTy =
+/// Type::getInt64Ty(…)`, one `PoisonV` for both, a mask of zeros). Any other
+/// spelling, an `i32` index say, is another constant upstream too.
+fn scalable_get_splat_element(module: &ModuleCore, data: &ConstantExprData) -> Option<ValueSlot> {
+    let context = module.context();
+    let parts = crate::constant::SplatExpression::of(context, data)?;
+    // The spelling `Context::get_splat_insert` and `Context::get_splat_shuffle`
+    // build, recognised without interning (`Context::is_get_splat`).
+    context
+        .is_get_splat(data.result_ty, parts.insert, data)
+        .then_some(parts.element)
 }
 
 fn constant_expr_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
@@ -1758,11 +1844,7 @@ fn constant_expr_operands<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 ) -> Option<Vec<Constant<'ctx, B, C>>> {
     operands
         .iter()
-        .map(|id| {
-            let data = module.value_data(*id);
-            matches!(&data.kind, ValueKindData::Constant(_))
-                .then(|| constant_handle::<B, _, _>(*id, module, data.ty))
-        })
+        .map(|id| constant_from_id(module, *id))
         .collect()
 }
 
@@ -1779,6 +1861,83 @@ impl<'ctx, B: ModuleBrand + 'ctx, Cap: Capability> Type<'ctx, B, Cap> {
     /// `poison <type>`. Mirrors `PoisonValue::get`.
     pub fn poison(self) -> PoisonValue<'ctx, B, Cap> {
         intern_poison(self)
+    }
+
+    /// The all-ones value of this type. Ports `Constant::getAllOnesValue`:
+    /// an integer's `APInt::getAllOnes`, a float's
+    /// `APFloat::getAllOnesValue` (the all-ones bit pattern), and for a vector
+    /// `ConstantVector::getSplat` of its element's. `None` for any other type,
+    /// where upstream's closing `cast<VectorType>(Ty)` asserts.
+    pub fn all_ones_value(self) -> Option<Constant<'ctx, B, Cap>> {
+        crate::constant_fold::all_ones_constant_for_type(self)
+    }
+
+    /// The all-zero constant of this type, or `None` for a type that has
+    /// none. Ports `Constant::getNullValue`, case by case.
+    ///
+    /// An array, a struct (an opaque one included: `ConstantAggregateZero::get`
+    /// asserts only `Ty->isStructTy()`) or a vector answers its one
+    /// `ConstantAggregateZero`, which keeps no elements, so a long array costs
+    /// what a short one does.
+    ///
+    /// `None` stands for two of upstream's failures: the `default` arm's
+    /// `llvm_unreachable("Cannot create a null constant of that type!")` —
+    /// `void`, `label`, `metadata`, `x86_amx` and a function type — and the
+    /// assert in `ConstantTargetNone::get` on a target type without
+    /// `HasZeroInit`. `exnref` answers `None` too: it is llvmkit's own type,
+    /// with no upstream `TypeID` to have a case (`docs/divergences.md` entry
+    /// 103).
+    pub fn null_value(self) -> Option<Constant<'ctx, B, Cap>> {
+        let module = self.module;
+        let slot = self.slot_trusting_same_module();
+        match AnyTypeEnum::from(self) {
+            // `case Type::IntegerTyID: return ConstantInt::get(Ty, 0);`
+            AnyTypeEnum::Int(int_ty) => Some(int_ty.const_zero().as_constant()),
+            // The seven floating-point cases: `ConstantFP::get(Ty->getContext(),
+            // APFloat::getZero(Ty->getFltSemantics()))`. `+0.0` is the all-zero
+            // bit pattern at every semantics, `ppc_fp128`'s pair of doubles
+            // included.
+            AnyTypeEnum::Float(float_ty) => Some(float_ty.const_from_bits(0).as_constant()),
+            // `case Type::PointerTyID: return
+            // ConstantPointerNull::get(cast<PointerType>(Ty));`
+            AnyTypeEnum::Pointer(pointer_ty) => Some(pointer_ty.const_null().as_constant()),
+            // `case Type::StructTyID: case Type::ArrayTyID: case
+            // Type::FixedVectorTyID: case Type::ScalableVectorTyID: return
+            // ConstantAggregateZero::get(Ty);`
+            AnyTypeEnum::Struct(_) | AnyTypeEnum::Array(_) | AnyTypeEnum::Vector(_) => {
+                let id = module
+                    .module()
+                    .context()
+                    .intern_constant_aggregate_zero(slot);
+                Some(constant_handle(id, module, slot))
+            }
+            // `case Type::TokenTyID: return
+            // ConstantTokenNone::get(Ty->getContext());`
+            AnyTypeEnum::Token(_) => Some(module.token_none()),
+            // `case Type::TargetExtTyID: return
+            // ConstantTargetNone::get(cast<TargetExtType>(Ty));`, which asserts
+            // `Ty->hasProperty(TargetExtType::HasZeroInit)`.
+            AnyTypeEnum::TargetExt(target_ty) => {
+                if !target_ty.has_property(TargetExtProperty::HasZeroInit) {
+                    return None;
+                }
+                let id = module
+                    .module()
+                    .context()
+                    .intern_constant_target_ext_none(slot);
+                Some(constant_handle(id, module, slot))
+            }
+            // `default: // Function, Label, or Opaque type?
+            // llvm_unreachable("Cannot create a null constant of that type!");`
+            AnyTypeEnum::Void(_)
+            | AnyTypeEnum::Label(_)
+            | AnyTypeEnum::Metadata(_)
+            | AnyTypeEnum::X86Amx(_)
+            | AnyTypeEnum::Function(_) => None,
+            // llvmkit's own `exnref`, which no upstream `TypeID` names
+            // (`docs/divergences.md` entry 103), has no null value either.
+            AnyTypeEnum::WasmExnRef(_) => None,
+        }
     }
 }
 
@@ -1875,9 +2034,6 @@ fn vector_splat_constant(
     scalar: ValueSlot,
     count: ElementCount,
 ) -> IrResult<ValueSlot> {
-    let lane_count = usize::try_from(count.min.get()).map_err(|_| IrError::InvalidOperation {
-        message: "invalid getelementptr constant expression",
-    })?;
     let module_ref = ModuleRef::<DynBrand, ReadOnly>::new(module);
     let elem_ty = Type::new(module.context().value_data(scalar).ty, module_ref);
     // `ConstantVector::getSplat`'s `VectorType::get(V->getType(), EC)`: the
@@ -1888,7 +2044,13 @@ fn vector_splat_constant(
         module_ref.vector_type(elem_ty, count.min)?
     }
     .as_type();
-    Ok(intern_aggregate(vector_ty, vec![scalar; lane_count].into_boxed_slice()).id)
+    // `ConstantVector::getSplat(EC, V)`, through its canonicalisation rather
+    // than a list of `EC` lanes, so the cost does not depend on the count.
+    Ok(intern_canonical_aggregate(
+        module,
+        vector_ty.slot_trusting_same_module(),
+        splat_canonical(module_ref, scalar),
+    ))
 }
 /// Ports the mask-value tail of `ShuffleVectorInst::isValidOperands(const
 /// Value *V1, const Value *V2, const Value *Mask)` (`Instructions.cpp`),
@@ -1915,14 +2077,13 @@ pub(crate) fn valid_shufflevector_mask_constant(
     lhs_scalable: bool,
 ) -> bool {
     // `if (isa<UndefValue>(Mask) || isa<ConstantAggregateZero>(Mask)) return true;`
-    match &module.context().value_data(mask).kind {
-        ValueKindData::Constant(ConstantData::Undef | ConstantData::Poison) => return true,
-        ValueKindData::Constant(ConstantData::Aggregate(_))
-            if constant_id_is_null_value(module, mask) =>
-        {
-            return true;
-        }
-        _ => {}
+    if matches!(
+        &module.context().value_data(mask).kind,
+        ValueKindData::Constant(
+            ConstantData::Undef | ConstantData::Poison | ConstantData::AggregateZero
+        )
+    ) {
+        return true;
     }
 
     // NOTE: Through vector ConstantInt we have the potential to support more
@@ -1951,6 +2112,14 @@ pub(crate) fn valid_shufflevector_mask_constant(
                 ) && const_index_u64(module, *element).is_some_and(|value| value < bound)
             })
         }
+        // The same per-lane test, every lane being the element. The element
+        // is no `undef` or `poison` (those masks are the markers above).
+        ValueKindData::Constant(ConstantData::Splat { element, .. }) => {
+            matches!(
+                &module.context().value_data(*element).kind,
+                ValueKindData::Constant(ConstantData::Int(_))
+            ) && const_index_u64(module, *element).is_some_and(|value| value < bound)
+        }
         _ => false,
     }
 }
@@ -1969,36 +2138,35 @@ fn constant_id_is_undef_or_poison(module: &ModuleCore, id: ValueSlot) -> bool {
 /// Upstream's arms: a `ConstantInt` that is zero; a `ConstantFP` for which
 /// `isExactlyValue(+0.0)` holds — a bitwise comparison with `+0.0` at the
 /// constant's semantics, whose pattern is all zeros at every float kind; and
-/// a `ConstantAggregateZero`, `ConstantPointerNull`, `ConstantTokenNone` or
-/// `ConstantTargetNone`. An element list is a `ConstantAggregateZero`
-/// exactly when every element is null, because that is the list the
-/// canonicalisations in `ConstantArray::getImpl`, `ConstantStruct::get` and
-/// `ConstantVector::getImpl` turn into one (see `Constant::kind`).
+/// `isa<ConstantAggregateZero>(this) || isa<ConstantPointerNull>(this) ||
+/// isa<ConstantTokenNone>(this) || isa<ConstantTargetNone>(this)`. An element
+/// list is none of these: `intern_aggregate` stores a list of nulls as the
+/// `ConstantAggregateZero` its constructor builds, and the one all-null list
+/// that is stored, the `ConstantStruct` an in-place operand change leaves, is
+/// not null upstream either.
 pub(crate) fn constant_id_is_null_value(module: &ModuleCore, id: ValueSlot) -> bool {
     match &module.context().value_data(id).kind {
         // `ConstantInt::isZero`, over every word of the width.
         ValueKindData::Constant(ConstantData::Int(words)) => words.iter().all(|word| *word == 0),
         ValueKindData::Constant(ConstantData::Float(bits)) => *bits == 0,
         ValueKindData::Constant(
-            ConstantData::PointerNull | ConstantData::TokenNone | ConstantData::TargetExtNone,
+            ConstantData::AggregateZero
+            | ConstantData::PointerNull
+            | ConstantData::TokenNone
+            | ConstantData::TargetExtNone,
         ) => true,
-        ValueKindData::Constant(ConstantData::Aggregate(elements)) => elements
-            .iter()
-            .all(|element| constant_id_is_null_value(module, *element)),
         _ => false,
     }
 }
 
+/// `Idx->getSplatValue()` for a vector-typed constant index: the one value
+/// every lane holds, a `ConstantAggregateZero`'s element null included.
+/// Delegates to [`Constant::splat_value`], the port of
+/// `Constant::getSplatValue`, at its `AllowPoison = false` default.
 fn vector_splat_value(module: &ModuleCore, vector: ValueSlot) -> Option<ValueSlot> {
-    let ValueKindData::Constant(ConstantData::Aggregate(elements)) =
-        &module.context().value_data(vector).kind
-    else {
-        return None;
-    };
-    let (&first, rest) = elements.split_first()?;
-    rest.iter()
-        .all(|element| *element == first)
-        .then_some(first)
+    let module_ref = ModuleRef::<DynBrand, ReadOnly>::new(module);
+    let vector = constant_handle(vector, module_ref, module.context().value_data(vector).ty);
+    Some(vector.splat_value(false)?.slot_trusting_same_module())
 }
 
 /// Retire a forward-reference placeholder in favour of the value that turned
@@ -2049,23 +2217,23 @@ fn is_constant_value(module: &ModuleCore, id: ValueSlot) -> bool {
     )
 }
 
-/// Point every recorded use of `from_id` at `replacement_id`.
+/// Point every recorded use of `from_id` at `replacement_id`. Mirrors
+/// `Value::doRAUW` (`lib/IR/Value.cpp`): a constant user goes through
+/// `Constant::handleOperandChange`, every other `Use` is `set` to the
+/// replacement, which puts it at the head of the replacement's list.
 ///
 /// Category-agnostic: `replacement_id` may name any value. Uniqued constant
 /// users are *re-interned* rather than mutated in place, so a rewritten
 /// constant keeps its structural identity — which is why replacing a value a
-/// constant embeds requires the replacement to be a constant too.
+/// constant embeds requires the replacement to be a constant too. See
+/// [`replace_constant_operand`] for how a re-interned constant keeps the place
+/// upstream's mutated one keeps.
 fn replace_value_uses_with(
     module: &ModuleCore,
     from_id: ValueSlot,
     replacement_id: ValueSlot,
 ) -> IrResult<()> {
-    let user_edges = module
-        .context()
-        .value_data(from_id)
-        .use_list
-        .borrow()
-        .clone();
+    let user_edges = module.context().use_list_of(from_id).borrow().clone();
     let mut direct_users = Vec::new();
     for edge in user_edges.iter().copied() {
         match edge {
@@ -2082,12 +2250,13 @@ fn replace_value_uses_with(
                         message: "a value embedded in a constant can only be replaced by a constant",
                     });
                 }
-                if let Some(rewritten_id) =
-                    constant_with_replaced_operand(module, user_id, from_id, replacement_id)?
-                    && rewritten_id != user_id
-                {
-                    replace_value_uses_with(module, user_id, rewritten_id)?;
-                }
+                replace_constant_operand(
+                    module,
+                    user_id,
+                    from_id,
+                    replacement_id,
+                    ReplacedOperand::Set,
+                )?;
             }
             ValueUse::Metadata(id) => {
                 module.rewrite_metadata_value(id, from_id, replacement_id);
@@ -2105,18 +2274,252 @@ fn replace_value_uses_with(
             }
         }
     }
-    module
-        .context()
-        .value_data(from_id)
-        .use_list
-        .borrow_mut()
-        .clear();
+    module.context().use_list_of(from_id).borrow_mut().clear();
     // Reversed, per `Value::replaceAllUsesWith` — see
-    // `ValueData::prepend_moved_uses`.
+    // `Context::prepend_moved_uses`. A `ptr @g` replacement is the global, so
+    // the moved edges join the global's own list (`docs/divergences.md` D3).
     module
         .context()
-        .value_data(replacement_id)
-        .prepend_moved_uses(&direct_users);
+        .prepend_moved_uses(replacement_id, &direct_users);
+    Ok(())
+}
+
+/// How the operand a constant is rewritten for was replaced, which decides
+/// where the rewritten constant's edge on the replacement belongs.
+#[derive(Clone, Copy)]
+enum ReplacedOperand {
+    /// `Use::set(To)` on the way through `Value::doRAUW`: the edge moves to
+    /// the head of the replacement's list, and the one on `From` goes with
+    /// `From`'s list.
+    Set,
+    /// The operand was itself a constant updated in place, so its users, this
+    /// constant among them, kept their places on its list, which
+    /// [`move_users_in_place`] has already moved to the replacement.
+    InPlace,
+}
+
+/// `Constant::handleOperandChange(From, To)` for the constant `user_id`.
+///
+/// Upstream's `handleOperandChangeImpl` answers one of two ways. A fold, or a
+/// constant already uniqued under the new operands, comes back as the
+/// replacement, and `handleOperandChange` runs `replaceAllUsesWith` and
+/// `destroyConstant`, which drops the old constant's uses of its operands.
+/// Otherwise `ConstantUniqueMap::replaceOperandsInPlace` updates the constant
+/// where it stands: on each operand's list its `Use` keeps its place, and its
+/// users keep theirs.
+///
+/// llvmkit does not mutate an interned constant, so the in-place case is a
+/// freshly interned constant over the same operands with `From` replaced,
+/// which takes the old one's place: [`take_constant_place`] puts it where the
+/// old one's edges were, and [`move_users_in_place`] hands it the old one's
+/// users in their order. Anything else is upstream's other answer.
+fn replace_constant_operand(
+    module: &ModuleCore,
+    user_id: ValueSlot,
+    from_id: ValueSlot,
+    replacement_id: ValueSlot,
+    replaced: ReplacedOperand,
+) -> IrResult<()> {
+    let fresh_from = module.context().value_count();
+    let Some(rewritten_id) =
+        constant_with_replaced_operand(module, user_id, from_id, replacement_id)?
+    else {
+        return Ok(());
+    };
+    if rewritten_id == user_id {
+        return Ok(());
+    }
+    let old_operands = constant_operands(module, user_id);
+    let new_operands = constant_operands(module, rewritten_id);
+    let in_place = rewritten_id.arena_index() >= fresh_from
+        && old_operands.len() == new_operands.len()
+        && old_operands
+            .iter()
+            .zip(&new_operands)
+            .all(|(old, new)| old == new || (*old == from_id && *new == replacement_id));
+    if in_place {
+        take_constant_place(
+            module,
+            user_id,
+            rewritten_id,
+            &old_operands,
+            from_id,
+            replacement_id,
+            replaced,
+        );
+        return move_users_in_place(module, user_id, rewritten_id);
+    }
+    // A `ConstantVector` whose lanes the change makes all one value is the
+    // splat `ConstantData::Splat` stores as one operand, so the count test
+    // above cannot see it. Upstream's `ConstantVector::getImpl` answers such a
+    // list `nullptr` (no lane is a `ConstantDataSequential` element), and
+    // `replaceOperandsInPlace` updates it where it stands unless an equal
+    // vector exists, which a freshly interned splat says does not.
+    if let [element] = new_operands.as_slice()
+        && rewritten_id.arena_index() >= fresh_from
+        && old_operands
+            .iter()
+            .all(|old| old == element || (*old == from_id && *element == replacement_id))
+        && is_constant_vector_splat(module, user_id, rewritten_id)
+    {
+        // Every old operand was `element`, or was `From` and is now `element`,
+        // so every edge the list kept is on `element`'s list (under
+        // `ReplacedOperand::Set` the one on `From`'s list goes with it).
+        // Upstream's updated `ConstantVector` keeps one `Use` per lane; the
+        // splat keeps one (`docs/divergences.md` D39), at the place of the
+        // list's first edge.
+        take_edge_place(module, *element, user_id, rewritten_id, OldEdges::DropLater);
+        return move_users_in_place(module, user_id, rewritten_id);
+    }
+    // `replaceAllUsesWith(Replacement); destroyConstant();`
+    replace_value_uses_with(module, user_id, rewritten_id)?;
+    for operand in old_operands {
+        // An operand updated in place left its list to its replacement.
+        let holder = match replaced {
+            ReplacedOperand::InPlace if operand == from_id => replacement_id,
+            ReplacedOperand::InPlace | ReplacedOperand::Set => operand,
+        };
+        module
+            .context()
+            .remove_use(holder, ValueUse::Constant(user_id));
+    }
+    Ok(())
+}
+
+/// Whether `old_id` is an element list and `new_id` the splat it became, of
+/// upstream's `ConstantVector` class: the only class whose `getImpl` answers
+/// an all-equal list `nullptr` and so leaves it to `replaceOperandsInPlace`.
+fn is_constant_vector_splat(module: &ModuleCore, old_id: ValueSlot, new_id: ValueSlot) -> bool {
+    let context = module.context();
+    if !matches!(
+        context.value_data(old_id).kind,
+        ValueKindData::Constant(ConstantData::Aggregate(_))
+    ) {
+        return false;
+    }
+    let module_ref = ModuleRef::<DynBrand, ReadOnly>::new(module);
+    let splat = Constant::from_parts(Value::from_parts(
+        new_id,
+        module_ref,
+        context.value_data(new_id).ty,
+    ));
+    matches!(
+        splat.kind(),
+        crate::constant::ConstantKind::Aggregate(crate::constant::ConstantAggregateKind::Vector)
+    )
+}
+
+/// A constant's operands, in `User::operands` order.
+fn constant_operands(module: &ModuleCore, constant: ValueSlot) -> Vec<ValueSlot> {
+    let mut operands = Vec::new();
+    if let ValueKindData::Constant(data) = &module.context().value_data(constant).kind {
+        data.for_each_operand(|operand| operands.push(operand));
+    }
+    operands
+}
+
+/// Put `new_id`, interned a moment ago, where `old_id`'s edges were on its
+/// operands' lists, and drop the edges interning added at their heads — the
+/// place a `Use` updated by `replaceOperandsInPlace` keeps. An operand that
+/// was `From` under [`ReplacedOperand::Set`] is the exception: `setOperand`
+/// is a `Use::set`, so the new edge stays at the head of the replacement's
+/// list.
+fn take_constant_place(
+    module: &ModuleCore,
+    old_id: ValueSlot,
+    new_id: ValueSlot,
+    old_operands: &[ValueSlot],
+    from_id: ValueSlot,
+    replacement_id: ValueSlot,
+    replaced: ReplacedOperand,
+) {
+    for operand in old_operands.iter().copied() {
+        let holder = match replaced {
+            ReplacedOperand::Set if operand == from_id => continue,
+            // `From`'s list, this constant's edge on it included, is now its
+            // replacement's.
+            ReplacedOperand::InPlace if operand == from_id => replacement_id,
+            ReplacedOperand::Set | ReplacedOperand::InPlace => operand,
+        };
+        take_edge_place(module, holder, old_id, new_id, OldEdges::KeepLater);
+    }
+}
+
+/// Whether [`take_edge_place`] keeps `old_id`'s edges after the first.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OldEdges {
+    KeepLater,
+    DropLater,
+}
+
+/// On `holder`'s list, drop the edge interning `new_id` added at the head and
+/// put `new_id`'s edge in the place of `old_id`'s first one: the place an
+/// operand's `Use` keeps through `replaceOperandsInPlace`. Under
+/// [`OldEdges::DropLater`], `old_id`'s later edges on the list go too.
+fn take_edge_place(
+    module: &ModuleCore,
+    holder: ValueSlot,
+    old_id: ValueSlot,
+    new_id: ValueSlot,
+    later: OldEdges,
+) {
+    let mut uses = module.context().use_list_of(holder).borrow_mut();
+    let new_edge = ValueUse::Constant(new_id);
+    if let Some(fresh) = uses.iter().position(|edge| *edge == new_edge) {
+        uses.remove(fresh);
+    }
+    let mut placed = false;
+    uses.retain_mut(|edge| {
+        if *edge != ValueUse::Constant(old_id) {
+            return true;
+        }
+        if placed {
+            return later == OldEdges::KeepLater;
+        }
+        *edge = new_edge;
+        placed = true;
+        true
+    });
+}
+
+/// Hand `old_id`'s users to `new_id` in their order, rewriting each to name
+/// `new_id`. The users of a constant upstream updated in place still hold the
+/// same object, so their `Use`s never move; a constant user is itself
+/// re-interned, under [`ReplacedOperand::InPlace`].
+fn move_users_in_place(module: &ModuleCore, old_id: ValueSlot, new_id: ValueSlot) -> IrResult<()> {
+    let context = module.context();
+    let moved = core::mem::take(&mut *context.use_list_of(old_id).borrow_mut());
+    {
+        let mut list = context.use_list_of(new_id).borrow_mut();
+        let mut merged = moved.clone();
+        merged.append(&mut list);
+        *list = merged;
+    }
+    for edge in moved {
+        match edge {
+            ValueUse::Instruction(user_id) => {
+                if let ValueKindData::Instruction(inst) = &context.value_data(user_id).kind {
+                    rewrite_operand_cells(&inst.kind, old_id, new_id);
+                }
+            }
+            ValueUse::Constant(user_id) => {
+                replace_constant_operand(
+                    module,
+                    user_id,
+                    old_id,
+                    new_id,
+                    ReplacedOperand::InPlace,
+                )?;
+            }
+            ValueUse::Metadata(id) => module.rewrite_metadata_value(id, old_id, new_id),
+            ValueUse::DebugRecord { inst, record } => {
+                rewrite_debug_record_value(module, inst, record, old_id, new_id);
+            }
+            ValueUse::GlobalField { owner, field } => {
+                context.rewrite_global_field_cell(owner, field, old_id, new_id);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -2136,14 +2539,49 @@ fn constant_with_replaced_operand(
             if !elements.contains(&from_id) {
                 return Ok(None);
             }
-            let elements = elements
-                .iter()
-                .map(|id| if *id == from_id { replacement_id } else { *id })
-                .collect::<Vec<_>>()
-                .into_boxed_slice();
-            Ok(Some(
-                module.context().intern_constant_aggregate(ty, elements),
-            ))
+            Ok(Some(aggregate_with_replaced_operand(
+                module,
+                ty,
+                elements,
+                from_id,
+                replacement_id,
+            )))
+        }
+        // A fixed splat: `ConstantVector::handleOperandChangeImpl` replaces
+        // every lane equal to `From`, which for a splat is every lane, and
+        // asks `getImpl` of the result: the splat of `To`, through `getSplat`'s
+        // canonicalisation. A newly interned splat is the in-place update, as
+        // an aggregate's is.
+        ConstantData::Splat {
+            element,
+            insert: None,
+        } => {
+            if *element != from_id {
+                return Ok(None);
+            }
+            let module_ref = ModuleRef::<DynBrand, ReadOnly>::new(module);
+            Ok(Some(intern_canonical_aggregate(
+                module,
+                ty,
+                splat_canonical(module_ref, replacement_id),
+            )))
+        }
+        // A scalable splat is upstream's `shufflevector (insert, poison,
+        // zeroinitializer)`, whose one changing operand is its
+        // `insertelement`: `ConstantExpr::handleOperandChangeImpl` rebuilds
+        // the expression on the new operand, through `getWithOperands`'s fold,
+        // and the expression's own arm below does the same.
+        ConstantData::Splat {
+            insert: Some(insert),
+            ..
+        } => {
+            if *insert != from_id {
+                return Ok(None);
+            }
+            let Some(expr) = module.context().get_splat_shuffle(ty, replacement_id) else {
+                return Ok(None);
+            };
+            reinterned_expression(module, expr).map(Some)
         }
         ConstantData::Expr(expr) => {
             if !expr.operands.contains(&from_id) {
@@ -2155,14 +2593,7 @@ fn constant_with_replaced_operand(
                     *operand = replacement_id;
                 }
             }
-            canonicalize_constant_expr_data(module, &mut expr)?;
-            validate_constant_expr_data(module, &expr)?;
-            let module_ref = ModuleRef::<DynBrand, ReadOnly>::new(module);
-            let result_ty = Type::new(expr.result_ty, module_ref);
-            if let Some(folded) = fold_constant_expr_data(module_ref, result_ty, &expr)? {
-                return Ok(Some(folded.slot_trusting_same_module()));
-            }
-            Ok(Some(module.context().intern_constant_expr(expr)))
+            reinterned_expression(module, expr).map(Some)
         }
         ConstantData::PtrAuth {
             pointer,
@@ -2219,6 +2650,7 @@ fn constant_with_replaced_operand(
         | ConstantData::GlobalValueRef { .. }
         | ConstantData::PointerNull
         | ConstantData::ForwardRefPlaceholder
+        | ConstantData::AggregateZero
         | ConstantData::GepOffset { .. }
         | ConstantData::SymbolDelta { .. }
         | ConstantData::SymbolDeltaPlus { .. }
@@ -2230,6 +2662,58 @@ fn constant_with_replaced_operand(
         | ConstantData::Undef
         | ConstantData::Poison => Ok(None),
     }
+}
+
+/// The `handleOperandChangeImpl` of `ConstantArray`, `ConstantStruct` and
+/// `ConstantVector`, for an element list of type `ty` that holds `from_id`:
+/// the constant the new operand list is, before
+/// [`replace_constant_operand`] decides whether it replaces the old one or
+/// takes its place (`replaceOperandsInPlace`).
+///
+/// The array and struct routines first ask whether every new operand is the
+/// replacement (`AllSame`), and answer a null one with
+/// `ConstantAggregateZero::get(getType())` and an `undef` one — a `poison`
+/// too, since `isa<UndefValue>` holds for it — with `UndefValue::get(getType())`.
+/// The array and vector routines then ask `getImpl`; the struct routine does
+/// not, so a struct of nulls that are not all the replacement is updated in
+/// place and stays a `ConstantStruct`.
+fn aggregate_with_replaced_operand(
+    module: &ModuleCore,
+    ty: TypeSlot,
+    elements: &[ValueSlot],
+    from_id: ValueSlot,
+    replacement_id: ValueSlot,
+) -> ValueSlot {
+    let context = module.context();
+    // Fill values with the modified operands of the constant array. Also,
+    // compute whether this turns into an all-zeros array.
+    let values = elements
+        .iter()
+        .map(|id| if *id == from_id { replacement_id } else { *id })
+        .collect::<Box<[_]>>();
+    let type_data = context.type_data(ty);
+    if matches!(type_data, TypeData::Array { .. } | TypeData::Struct(_)) {
+        // Keep track of whether all the values in the array are "ToC".
+        let all_same = values.iter().all(|value| *value == replacement_id);
+        // `if (AllSame && ToC->isNullValue()) return
+        // ConstantAggregateZero::get(getType());`
+        if all_same && constant_id_is_null_value(module, replacement_id) {
+            return context.intern_constant_aggregate_zero(ty);
+        }
+        // `if (AllSame && isa<UndefValue>(ToC)) return
+        // UndefValue::get(getType());`
+        if all_same && constant_id_is_undef_or_poison(module, replacement_id) {
+            return context.intern_constant_undef(ty);
+        }
+    }
+    if matches!(type_data, TypeData::Struct(_)) {
+        // Update to the new value.
+        return context.intern_constant_aggregate(ty, values);
+    }
+    // Check for any other type of constant-folding: `if (Constant *C =
+    // getImpl(getType(), Values)) return C;` — `ConstantVector`'s asks
+    // `getImpl(Values)`. Then update to the new value.
+    intern_element_list(module, ty, values)
 }
 
 pub(crate) fn advance_gep_index_type(
@@ -2268,6 +2752,104 @@ pub(crate) fn gep_indexed_type(
     Some(current)
 }
 
+/// One position of a walk over a `getelementptr`'s indices. Mirrors
+/// `generic_gep_type_iterator` (`GetElementPtrTypeIterator.h`), whose `CurTy`
+/// holds one of the three things [`GepStepKind`] names.
+///
+/// The first index strides whole source types whatever the source is, so a
+/// walk that matches on the kind of the type it stands on gets the first index
+/// wrong: that is what this type is for.
+#[derive(Branded)]
+#[branded(Clone, Copy)]
+pub(crate) struct GepTypeCursor<'ctx, B: ModuleBrand, C: Capability> {
+    kind: GepStepKind,
+    ty: Type<'ctx, B, C>,
+}
+
+/// What `CurTy` holds, and what [`GepTypeCursor`]'s `ty` is for each.
+#[derive(Clone, Copy)]
+enum GepStepKind {
+    /// A plain `Type *`, which is the type indexed: the source type under the
+    /// first index, or an array's element.
+    Sequential,
+    /// A `VectorType *`; `ty` is its element.
+    Vector,
+    /// A `StructType *`; `ty` is the struct.
+    Struct,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GepTypeCursor<'ctx, B, C> {
+    /// `gep_type_begin`.
+    pub(crate) fn begin(source_ty: Type<'ctx, B, C>) -> Self {
+        Self {
+            kind: GepStepKind::Sequential,
+            ty: source_ty,
+        }
+    }
+
+    /// `getIndexedType`. A struct's is the field `index` names, and `None` when
+    /// it names none.
+    pub(crate) fn indexed_type(self, index: ValueSlot) -> Option<Type<'ctx, B, C>> {
+        match self.kind {
+            GepStepKind::Sequential | GepStepKind::Vector => Some(self.ty),
+            GepStepKind::Struct => {
+                let module = self.ty.module;
+                let field =
+                    type_at_gep_index(module.module(), self.ty.slot_trusting_same_module(), index)?;
+                Some(Type::new(field, module))
+            }
+        }
+    }
+
+    /// `operator++`, from what [`Self::indexed_type`] answered. `None` is
+    /// upstream's null `CurTy`: a type no further index can step into.
+    pub(crate) fn after(indexed_ty: Type<'ctx, B, C>) -> Option<Self> {
+        let module = indexed_ty.module;
+        match indexed_ty.data() {
+            TypeData::Array { elem, .. } => Some(Self {
+                kind: GepStepKind::Sequential,
+                ty: Type::new(*elem, module),
+            }),
+            TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
+                Some(Self {
+                    kind: GepStepKind::Vector,
+                    ty: Type::new(*elem, module),
+                })
+            }
+            TypeData::Struct(_) => Some(Self {
+                kind: GepStepKind::Struct,
+                ty: indexed_ty,
+            }),
+            _ => None,
+        }
+    }
+
+    /// `getStructTypeOrNull`.
+    pub(crate) fn struct_type(self) -> Option<Type<'ctx, B, C>> {
+        matches!(self.kind, GepStepKind::Struct).then_some(self.ty)
+    }
+
+    /// The field a struct's `index` names, or `None` when this is no struct's
+    /// step or `index` names no field.
+    pub(crate) fn struct_field(self, index: ValueSlot) -> Option<usize> {
+        let struct_ty = self.struct_type()?;
+        struct_gep_field_index(
+            struct_ty.module.module(),
+            struct_ty.slot_trusting_same_module(),
+            index,
+        )
+    }
+
+    /// `getSequentialElementStride`, whose `assert` that a vector's element is
+    /// byte-addressable is not a release build's behaviour and is not ported.
+    pub(crate) fn sequential_element_stride(self, data_layout: &DataLayout) -> TypeSize {
+        match self.kind {
+            GepStepKind::Vector => data_layout.type_store_size(self.ty),
+            GepStepKind::Sequential | GepStepKind::Struct => data_layout.type_alloc_size(self.ty),
+        }
+    }
+}
+
 /// Mirrors `GetElementPtrInst::getTypeAtIndex(Type *, Value *)`: a struct
 /// validates its index first, everything else only has to be indexed by an
 /// integer (or vector of them) and be an array or a vector.
@@ -2292,12 +2874,11 @@ fn type_at_gep_index(module: &ModuleCore, current: TypeSlot, index: ValueSlot) -
 /// `i32`, never a scalable vector, and in range — with a vector index read
 /// through `getSplatValue`, so all lanes must agree.
 ///
-/// The other arms of `Constant::getSplatValue` cannot be reached from here.
-/// A poison lane makes the splat poison, which is not a `ConstantInt` either
-/// way; a `zeroinitializer` is spelled as an all-zero element list, which the
-/// lane comparison already handles; and the constant-*expression* splat form
-/// only survives construction for a *scalable* vector, which this rejects
-/// before asking.
+/// `vector_splat_value` is `Constant::getSplatValue`'s port, so its
+/// `ConstantAggregateZero` arm reads a `zeroinitializer` index as field 0, and
+/// a poison splat is a poison element, which is no `ConstantInt`. The
+/// constant-*expression* splat form only survives construction for a
+/// *scalable* vector, which this rejects before asking.
 fn struct_gep_field_index(
     module: &ModuleCore,
     struct_ty: TypeSlot,
@@ -2711,7 +3292,7 @@ fn scalar_int_bits(module: &ModuleCore, id: TypeSlot) -> Option<u32> {
     }
 }
 
-fn pointer_address_space(module: &ModuleCore, id: TypeSlot) -> Option<u32> {
+fn pointer_address_space(module: &ModuleCore, id: TypeSlot) -> Option<crate::AddressSpace> {
     match module.context().type_data(id) {
         TypeData::Pointer { addr_space } => Some(*addr_space),
         _ => None,
@@ -2871,17 +3452,64 @@ fn intern_poison<'ctx, B: ModuleBrand + 'ctx, Cap: Capability>(
     PoisonValue::from_parts(constant_handle(id, module, slot))
 }
 
+/// The door every element list a constructor builds passes through:
+/// `ConstantArray::get`, `ConstantStruct::get` and `ConstantVector::get`
+/// (`const_array`, `const_struct`, `const_vector`).
 pub(super) fn intern_aggregate<'ctx, B: ModuleBrand + 'ctx, Cap: Capability>(
     ty: Type<'ctx, B, Cap>,
     ids: Box<[ValueSlot]>,
 ) -> ConstantAggregate<'ctx, B, Cap> {
     let module = ty.module;
     let slot = ty.slot_trusting_same_module();
-    let id = module
-        .module()
-        .context()
-        .intern_constant_aggregate(slot, ids);
+    let id = intern_element_list(module.module(), slot, ids);
     ConstantAggregate::from_parts(constant_handle(id, module, slot))
+}
+
+/// The element list `elements` of type `ty`, as upstream's constructor for
+/// `ty` answers it: the uniqued zero, `undef` or `poison` its canonicalisation
+/// names ([`canonical_aggregate`]), and otherwise the list, uniqued — the
+/// `getOrCreate` that follows `getImpl`.
+pub(crate) fn intern_element_list(
+    module: &ModuleCore,
+    ty: TypeSlot,
+    elements: Box<[ValueSlot]>,
+) -> ValueSlot {
+    let context = module.context();
+    let module_ref = ModuleRef::<DynBrand, ReadOnly>::new(module);
+    match canonical_aggregate(module_ref, context.type_data(ty), &elements) {
+        Some(canonical) => intern_canonical_aggregate(module, ty, canonical),
+        None => context.intern_constant_aggregate(ty, elements),
+    }
+}
+
+/// The uniqued constant `canonical` names, at type `ty`.
+pub(crate) fn intern_canonical_aggregate(
+    module: &ModuleCore,
+    ty: TypeSlot,
+    canonical: CanonicalAggregate,
+) -> ValueSlot {
+    let context = module.context();
+    match canonical {
+        CanonicalAggregate::Zero => context.intern_constant_aggregate_zero(ty),
+        CanonicalAggregate::Undefined(Undefined::Undef) => context.intern_constant_undef(ty),
+        CanonicalAggregate::Undefined(Undefined::Poison) => context.intern_constant_poison(ty),
+        CanonicalAggregate::Splat(element) => context.intern_constant_splat(ty, element),
+    }
+}
+
+/// `GV->getType()`: a global value as a pointer, in its address space. Every
+/// other global's own type is that pointer; a function's is its signature, so
+/// the pointer is built here.
+pub(crate) fn global_value_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+) -> Type<'ctx, B, C> {
+    match &value.data().kind {
+        ValueKindData::Function(function) => value
+            .module
+            .ptr_type(*function.address_space.borrow())
+            .as_type(),
+        _ => value.ty(),
+    }
 }
 
 #[inline]

@@ -87,10 +87,11 @@ The four `N/A`s, each checked against `LLParser.cpp` rather than assumed:
 - `name is too long …` — see the divergence below.
 
 The remainder are almost all one shape: llvmkit runs the check at the same point
-and words it differently (`expected '}' to close struct body` where upstream
-says `expected '}' at end of struct`). They are concentrated in `parseValID`'s
-blockaddress and vector-splat forms (5), `parseArrayVectorType` (4) and `parsePHI`
-(2). **The count of 46 predates 0.0.4's funclet work** (2026-08-20), which
+and words it differently. This paragraph used to break them down by routine, with
+counts nothing in the tree can re-derive; two of the routines it named,
+`parseStructBody` and `parseArrayVectorType`, have since been ported, so the
+breakdown is gone rather than repaired. **The count of 46 predates 0.0.4's funclet
+work** (2026-08-20), which
 closed the `parseCatchSwitch` (4) and `parseCleanupRet` (3) messages this
 paragraph used to count under "funclet EH terminators", plus
 `expected 'from' after catchret` — the example this paragraph used to lead
@@ -798,6 +799,15 @@ So the folder was not at fault and must not be "fixed": an attempt to guard
 the representation is deliberate. The fix belonged in the printer, and that is
 where it landed.
 
+**Superseded 2026-11-12 (splat storage).** A scalable splat is no longer
+`min_len` equal elements: every splat is stored as its one element
+(`ConstantData::Splat`), so no scalable element list exists. It prints as
+upstream prints the `shufflevector` expression `ConstantVector::getSplat`
+builds for it: `splat (…)` for a `ConstantInt` or `ConstantFP`, and the
+expression written out otherwise, as `test/Assembler/constant-splat.ll`'s
+`@ret_scalable_vector_ptr` checks. The printer rule above, `splat (…)` for any
+scalable element, was itself a divergence for a `ptr` splat.
+
 ## ~~Parser — no vector floating-point binary operators~~ (found 2026-08-05, fixed 2026-08-05)
 
 **Fixed.** `fadd <vscale x 2 x double> %b, splat (double 1.5)` answered
@@ -934,6 +944,77 @@ rather than a scope decision:
 | Family | Status |
 |---|---|
 | `fromHexadecimalString`, `fromStringSpecials` | Unported. `crates/llvmkit-ir/tests/ap_float_from_string.rs` covers the same rules with llvmkit-chosen boundary spellings and says so — it is marked `llvmkit-specific subset` in `UPSTREAM.md`, not a port. Its header used to claim this backlog entry existed; it did not until now. `TEST(APFloatTest, makeNaN)`, the third fixture that header named, **is** ported (`ap_float_upstream_predicates.rs::make_nan`). |
+
+## `computeKnownBits` does not read a pointer's alignment (found 2026-11-12, splat storage review)
+
+`computeKnownBits` (`ValueTracking.cpp`) ends its value arms with "Aligned
+pointers have trailing zeros": `if (isa<PointerType>(V->getType())) { Align
+Alignment = V->getPointerAlignment(Q.DL); Known.Zero.setLowBits(Log2(Alignment)); }`.
+llvmkit's `value_tracking.rs::compute_known_bits_inner` has no such step, and
+`Value::getPointerAlignment` (`Value.cpp`: the `GlobalObject`, `Argument`,
+`AllocaInst`, `CallBase` and `LoadInst` arms) has no port:
+`rg -n "getPointerAlignment|Aligned pointers" crates/llvmkit-ir/src` on `efbfa8a` with the
+uncommitted splat storage applied printed nothing. So `ptr @g` with
+`align 16` reports no known bits where upstream reports four low zeros, and the
+answer is only ever wider than upstream's. `constant_fold.rs::global_pointer_alignment`
+is not that port: it is `ConstantFold.cpp`'s comparison helper, which answers a
+function with no `function_ptr_align` as `4` where `getPointerAlignment` answers
+`valueOrOne()`, so reusing it would be a divergence of its own.
+
+## A `shufflevector` mask stores one entry per lane (found 2026-11-12, splat storage)
+
+`shufflevector_mask_from_constant` (`constant_fold.rs`) decodes a mask constant
+into a `Vec<ShuffleMaskElem>` of one entry per lane, which the instruction
+keeps (`ShuffleVectorInstData::mask` in `instr_types.rs`), as upstream's
+`ShuffleVectorInst::ShuffleMask` is a `SmallVector<int>`. So a mask written as
+`<4294967295 x i32> zeroinitializer`, `poison` or a `splat`, a few bytes of
+`.ll`, still costs 2^32 entries when parsed as an instruction's mask. A
+constant expression keeps its mask as an operand, and its readers (the folds,
+`value_tracking.rs::expression_shuffle_mask_has_poison_lane`) answer a uniform
+mask from its one slot. The constant folds found walking a
+long splat no longer do (`docs/divergences.md` D40, which names the searches
+that found them); this path still does, and it is the instruction's
+representation, not a fold. Its public surface is a slice
+(`ShuffleVectorInst::mask`, and `IrBuilder::shuffle_vector`'s mask
+argument), so the change is a breaking one.
+Closing it means
+a mask type that can say "every lane is `k`" without listing the lanes, threaded
+through every reader of the mask.
+
+## `computeConstantRange` is a partial port (found 2026-11-06, crash-proofing Task 1b review)
+
+`value_tracking.rs::compute_constant_range` ports the depth cutoff, the
+constant arm, the `select` union, `Argument::getRange` and the
+`CallBase::getRange` intersection of `llvm::computeConstantRange`
+(`ValueTracking.cpp`). The rest of the routine is not ported, and each missing
+arm leaves the range full, so the answer is only ever wider than upstream's:
+
+- `setLimitsForBinOp`, the `BinaryOperator` arm;
+- `getRangeForIntrinsic`, the `IntrinsicInst` arm;
+- `setLimitForFPToI`, the `fptoui` / `fptosi` arm;
+- `getRangeForSelectPattern`, the clamp intersected into a `select`'s union;
+- the `!range` metadata intersection, which
+  `compute_constant_range_including_known_bits` gets through its known-bits
+  half instead;
+- the `@llvm.assume` refinement over `AC->assumptionsFor(V)`.
+
+The 2026-08-02 tranche row below (`3e`) marks `compute_constant_range` done; that
+row counted the entry point, not the arms. The first test is upstream's
+`TEST_F(ValueTrackingTest, ComputeConstantRange)` in
+`unittests/Analysis/ValueTrackingTest.cpp`, whose cases go through an
+`AssumptionCache` and so need the assumption half.
+
+## `paramHasAttr`'s operand-bundle arms have no reader (found 2026-11-06, crash-proofing Task 1b review)
+
+`instr_types.rs::CallBaseParts::has_parameter_attribute` ports
+`CallBase::paramHasAttr` whole, including its "Take into account mod/ref by
+operand bundles" switch: `ReadNone`, `ReadOnly` and `WriteOnly` asked of a
+callee's parameter attribute are refused when the call has reading or
+clobbering bundles. No llvmkit caller asks those three kinds, so the arms are
+untested. Upstream's readers are `CallBase::doesNotAccessMemory(OpNo)`,
+`onlyReadsMemory(OpNo)` and `onlyWritesMemory(OpNo)`, through
+`dataOperandHasImpliedAttr` (`IR/InstrTypes.h`). The port of that family is
+where the arms get their test.
 
 ## ValueTracking.h — remaining tranches, and the order to take them
 
@@ -1156,7 +1237,11 @@ All four of `SqrtNszSignBit`'s blocks are ported. This paragraph used to say
 were therefore unportable; that had been false since `no_fp_class_of` landed
 (`known_fp_class.rs`, porting `CallBase::getRetNoFPClass` and
 `Argument::getNoFPClass`), and the stale sentence outlived the work by weeks
-because nothing re-derives a blocker before it is used to schedule.
+because nothing re-derives a blocker before it is used to schedule. (The
+`getRetNoFPClass` half was itself partial: it read only the called function's
+mask, and only for a `call`. Task 1b of the crash-proofing plan ported the call
+site's half and every `CallBase`, pinned by the `SelectNoFPClassCallSite*`
+ports in `crates/llvmkit-asmparser/tests/known_fp_class.rs`.)
 
 ### Order for the remaining gaps (recorded 2026-08-04)
 
@@ -1394,10 +1479,14 @@ sequenced:
    answer: `programUndefinedIfUndefOrPoison` and the dominating branch-condition
    walk that follows it (both CFG reachability, tranche 6), the `@llvm.assume`
    arm (tranche 8), and `stripPointerCastsSameRepresentation` before the
-   allocated-object test (tranche 5). One arm is a deliberate llvmkit
+   allocated-object test (tranche 5). One arm was a deliberate llvmkit
    refinement, marked at its site: a shift whose amount known bits prove in
    range is not poison, where upstream's `shiftAmountKnownInRange` demands a
-   literal constant.
+   literal constant. (Since deleted as an invention inside a port, as
+   `is_guaranteed_not_to_be_undef_or_poison`'s doc comment records. Task 1b of
+   the crash-proofing plan then found the port of `shiftAmountKnownInRange`
+   itself reading only a scalar `ConstantInt`, where upstream reads each lane of
+   a fixed vector through `getAggregateElement`; it now does.)
 
    Two upstream fixtures did **not** port, and each gap was recorded rather
    than papered over; one has since closed:
@@ -1420,6 +1509,18 @@ sequenced:
    `propagatesPoison`, `programUndefinedIfPoison`, `mustTriggerUB`,
    `isGuaranteedNotToBeUndef`, in `speculation.rs`. It extended the existing
    `is_guaranteed_not_to_be_poison` seed and needed no new types, as predicted.
+   **Correction (Task 1b of the crash-proofing plan):** `canCreateUndefOrPoison`
+   was not 1:1 on its instruction side. Its annotations test read no
+   `samesign`, no `trunc nsw`, no `nnan` / `ninf`, no poison-generating return
+   attribute and no poison-generating metadata, so it claimed "cannot create
+   poison" where upstream does not; its `Call` arm lacked the intrinsic
+   `switch` and `nocreateundeforpoison`, and read `noundef` off the call site
+   only, where `CallBase::hasRetAttr` also reads the called function; and
+   `shiftAmountKnownInRange` read no vector lanes. Task 1b's commit ports
+   each of these, pinned by
+   `crates/llvmkit-asmparser/tests/speculation.rs::can_create_poison_or_undef`
+   (upstream's `TEST(ValueTracking, canCreatePoisonOrUndef)`) and
+   `can_create_poison_reads_every_annotation_and_arm`.
 3. ~~**`ConstantRange` to completion**, then the families it gates.~~
    **DONE 2026-08-02** — all five slices. `ConstantRange` went from 13 of 83
    public methods to 90 llvmkit methods covering all but `castOp`,
@@ -1438,7 +1539,7 @@ sequenced:
    | ~~**3d**~~ ✅ | ~37 | **done 2026-08-02** across six sub-slices: |
    | 3d-i ✅ | 7 | **done 2026-08-02**: `add`, `sub`, `multiply`, `smax`/`smin`/`umax`/`umin`. These are exactly what `computeOverflowFor*` in 3e needs, which is why they went first. |
    | 3d-ii ✅ | 5 | **done 2026-08-02**: `udiv`, `sdiv`, `urem`, `srem`, plus `abs` pulled forward from 3d-v because `srem` needs it. |
-   | 3d-iii ✅ | 7 | **done 2026-08-02**: `binary_and`, `binary_or`, `binary_xor`, `binary_not`, `shl`, `lshr`, `ashr`. Found and fixed a real `ApInt::ashr` bug on the way — see the CHANGELOG. |
+   | 3d-iii ✅ | 7 | **done 2026-08-02**: `binary_and`, `binary_or`, `binary_xor`, `binary_not`, `shl`, `lshr`, `ashr`. Found and fixed a real `ApInt::ashr` bug on the way — see commit `d405fb5`. |
    | 3d-iv ✅ | 8 | **done 2026-08-02**: the saturating family. Six share one frame (`saturating_pairwise`); `smul_sat` needs all four corners and `sshl_sat` picks its shift by endpoint sign. |
    | 3d-v ✅ | 3 | **done 2026-08-02**: `ctlz`, `cttz`, `ctpop` (`abs` landed in 3d-ii). |
    | 3d-vi ✅ | 8 | **done 2026-08-02**: `binary_op`, `overflowing_binary_op`, `intrinsic`, `is_intrinsic_supported`, `add_with_no_wrap`, `sub_with_no_wrap`, `multiply_with_no_wrap`, `smul_fast`. **`shlWithNoWrap` is not ported** — it is three helper functions (`computeShlNUW`, `computeShlNSWWithNNegLHS`, `computeShlNSWWithNegLHS`) plus a dispatcher, and no llvmkit caller needs it yet; `overflowing_binary_op` sends `shl` to the plain `shl`, which is sound and only weaker. |
@@ -1818,12 +1919,13 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
   element-atomic variants); lifetime intrinsics `CreateLifetimeStart/End` --
   NOTE: in LLVM 22 these take only a pointer (size argument removed, allocas
   only; verified against 22.1.4).
-- `CreateGlobalString` (needs globals + builder hookup; upstream
-  `CreateGlobalStringPtr` is deprecated in its favor), `CreateAssumption`
-  (takes operand bundles), the min/max family (`CreateMinNum`/`CreateMaxNum`
-  with `FMFSource`, plus
+- `CreateGlobalString`'s `M` and `AddNull` arguments
+  (`IrBuilder::global_string` writes into the builder's module and always adds
+  the NUL), `CreateAssumption` (takes operand bundles), the min/max family
+  (`CreateMinNum`/`CreateMaxNum` with `FMFSource`, plus
   `CreateMinimum`/`CreateMaximum`/`CreateMinimumNum`/`CreateMaximumNum`), the
-  intrinsic helper family (`CreateIntrinsic` 3 overloads,
+  intrinsic helper family (the `CreateIntrinsic` overloads other than
+  `(RetTy, ID, Args)`, which is `IrBuilder::intrinsic_call_by_signature`;
   `CreateUnaryIntrinsic`, `CreateBinaryIntrinsic` -- the latter returns
   `Value*` because it folds), `CreateStepVector`, `CreateAggregateRet`
   (explicitly deferred in AGENTS.md).
@@ -1891,36 +1993,9 @@ half. Closing it means a `getRawDataValues` / `getRaw` pair on the
 `ConstantDataKind::Sequential` constants, after which the two tests take their
 second assertion back.
 
-## Storage-level `isa<UndefValue>` / `isa<PoisonValue>` reads outside `Constant` (found 2026-10-10, capability plan Task 6.1 review)
-
-Upstream canonicalises an all-`undef` or all-`poison` element list to one
-`UndefValue` / `PoisonValue` when it builds it (`ConstantArray::getImpl`,
-`ConstantStruct::get`, `ConstantVector::getImpl`). llvmkit keeps the list, so
-a routine that ports `isa<UndefValue>(C)` by matching `ConstantData::Undef` /
-`ConstantData::Poison` on the storage answers `false` for such a list where
-upstream answers `true`. `constant.rs`'s `is_undef`, `is_poison` and
-`is_undef_or_poison` now answer through `Constant::kind`, and the review that
-moved them found the folders' whole-value `isa<PoisonValue>` reads wrong
-(`constant_kind.rs::a_whole_value_fold_sees_an_all_poison_list_as_poison`).
-The other storage-level matches are unaudited. `rg -n
-"ConstantData::(Undef|Poison)\b" crates/llvmkit-ir/src` lists them; outside
-`constant.rs`, the interning in `llvm_context.rs` and the printer's `undef` /
-`poison` arms in `asm_writer.rs`, they sit in `constant_fold.rs`
-(`is_not_poison_for_select`), `constant_folding.rs`
-(`constant_to_store_bytes`, `is_guaranteed_not_to_be_undef_or_poison`),
-`constants.rs` (`constant_with_replaced_operand`,
-`valid_shufflevector_mask_constant`), `known_fp_class.rs`
-(`constant_fp_class`), `pointer_analysis.rs` (`is_bytewise_value`),
-`value_tracking.rs` (`compute_constant_known_bits`,
-`constant_is_well_defined`, `leaf_constant_known_bits`,
-`splat_or_scalar_constant`, `zero_int_constant`), `vector_utils.rs`
-(`constant_mask_lanes_satisfy`, `is_splat_value_at_depth`) and `verifier.rs`
-(`verify_constant_tree`, `verify_must_tail_call`). One is checked:
-`constants.rs::constant_id_is_undef_or_poison` reads only the scalar lanes of
-a shuffle mask, where storage and class agree. Some matches are exhaustive
-arms or element reads rather than `isa` ports. Each needs reading against the
-upstream routine it ports, and a test where its answer is wrong, before it
-moves to `Constant::kind`.
+The same storage gap costs memory: the parser's `Keyword::C` arm builds `c"..."`
+as a list of one `i8` constant per byte, so string data costs one `ValueSlot` a
+character where `ConstantDataArray` stores the raw bytes.
 
 ## Ergonomics backlog (from the core audit)
 
@@ -2140,7 +2215,7 @@ moves to `Constant::kind`.
   `ArrayType`/`ArrayValue` now carry a scalar **element** marker (the scalar
   itself — `i64`, `f64`, … via `VecElem`/`StaticVecElem` in `element.rs`) and a
   **length** marker (`Len<const N: u32>`/`LenDyn` in `vec_len.rs`;
-  `ArrLen<const N: u64>`/`ArrLenDyn` in `array_len.rs`). The bare
+  `ArrLen<const N: usize>`/`ArrLenDyn` in `array_len.rs`). The bare
   `VectorValue<'ctx>`/`ArrayValue<'ctx>` stay the all-`Dyn` (erased) form —
   parsed `.ll`, scalable vectors, and runtime lengths land there and narrow via
   `TryFrom` (`OperandWidthMismatch` for lane count, `IrError::ArrayLengthMismatch`
@@ -2174,11 +2249,14 @@ moves to `Constant::kind`.
     associated-type-projection limitation), so its callers annotate / turbofish
     the result.
 - **A proof token that *carries* the validated `TypeSlot`** (residual after the
-  unforgeable-markers cycle). The crate has five capability tokens -- `WrapWitness`
+  unforgeable-markers cycle). The crate's capability tokens -- `WrapWitness`
   (`element.rs`), `ValidatedFunctionParams` / `ValidatedCallResult`
-  (`function_signature.rs`), `SelectNarrow` (`ir_builder.rs`), `ValidatedStructValue`
-  (`struct_schema.rs`) -- each defending the *external* boundary and each a *unit*
-  marker that proves "a check happened", not *which* type. The unforgeable-markers
+  (`function_signature.rs`), `SelectNarrow` (`ir_builder.rs`) -- each defend the
+  *external* boundary and each is a *unit* marker that proves "a check happened",
+  not *which* type. `struct_schema.rs`'s `ValidatedStructValue` was one until the
+  type-constructor validity plan's Task 14 replaced it with `SchemaValue`, a
+  carrier that holds the checked struct value and names its schema in its type --
+  this item's shape, for struct schemas. The unforgeable-markers
   cycle made the builder's **int / float / pointer append surface** structural instead:
   a marker is attached to a freshly-appended instruction only through the typed-append
   constructor family (`append_int_{like,at,load}`, `append_fp_{like,at,load}`,
@@ -2217,7 +2295,12 @@ moves to `Constant::kind`.
   finds nothing), so a handle list cannot be typed as constants of `E`
   without a new projection. The fallible `const_array` / `const_struct` /
   `const_vector` already accept `impl IntoConstantValue` elements. The same
-  question applies to a `StructSchema`-keyed tuple-struct constant.
+  question applies to a schema's struct constant. Its receiver exists:
+  `StructOf<'ctx, S, B, C>`, which `get_or_insert_struct_of::<S>()` answers,
+  proves `%S` has `S`'s body, and a derived *build* from it is infallible
+  (`FieldArg` arguments). A constant has no such constructor on it —
+  `struct_type().const_struct(…)` is the route, fallible for the two reasons
+  above.
 
 ## Session follow-ups
 
@@ -2231,9 +2314,11 @@ deferred it.
   element typing is still deferred to T4, so `fold_gep_dyn`/`fold_select_dyn`
   stay erased + runtime-checked (documented in `ir_builder/folder.rs` trait
   rustdoc).
-- **`[F; N]` `IrField` arrays** -- fixed-size array fields in `#[derive(IrStruct)]`
-  schemas; would let derived structs model `[i32; 4]`-shaped LLVM array
-  members directly instead of requiring a hand-written wrapper.
+- ~~**`[F; N]` `IrField` arrays**~~ -- done (type-constructor validity plan,
+  Task 14): a `[T; N]` field whose kind is laid out as `bool`, `i8`…`i128` or a
+  float kind is an LLVM `[N x elem]`, read as `ArrayValue<_, ArrLen<N>>`. Arrays
+  of `Width<N>`, pointers and structs stay out: a typed array value names its
+  element by a vector-element marker (`VecElem`), and they have none.
 - **Typed vector-GEP handles** -- `IrBuilder::gep_erased` builds a `<N x ptr>`
   base and `<N x iM>` indices, and returns the erased `ValueId` because a
   vector GEP's result is no `PointerValue`. The typed tier (`gep`,
@@ -2264,7 +2349,10 @@ deferred it.
   `&Module<..., Unverified>`, so `field_gep` no longer wraps a temporary
   module token to call `S::ir_type(...)` — `Module::from_core` is gone with it.
   Type construction is preservation-neutral, which is why the view already
-  carried the constructor surface.
+  carried the constructor surface. (`IrField::ir_type` and
+  `StructSchema::field_types` / `ir_type` have since left the user-implementable
+  surface: a field names a sealed `FieldLayout` and llvmkit mints its type —
+  the type-constructor validity plan's Task 14.)
 - ~~**`proptest` `undef_var` index randomization** -- the auto-SSA property
   test suite's undefined-variable-read fixture hardcodes `Some(0)` as the
   undefined variable index instead of drawing from `0..var_count`; a one-line
@@ -2309,8 +2397,22 @@ deliberately deferred; each cites its upstream anchor.
   if wrong), so the current DCE stays conservative-but-safe. `Value::has_uses`
   also counts debug-record uses upstream ignores (upstream salvages debug info
   instead). (Unordered atomic loads are now removed.)
-- **InstSimplify freeze folds** -- no InstSimplify test covers a `freeze`
-  fold yet. (The unreachable-block skip that used to be named here is closed:
+- **InstSimplify freeze folds** -- `simplifyFreezeInst`
+  (`InstructionSimplify.cpp`) is not ported. `InstSimplifyPass` reaches a
+  `freeze` only through `constant_fold_instruction`, which returns `None` as
+  soon as an operand is not a constant, so a `freeze` of an instruction or an
+  argument never folds there; `instsimplify` folds one whenever
+  `isGuaranteedNotToBeUndefOrPoison(Op0, Q.AC, Q.CxtI, Q.DT)` holds. The gap
+  only keeps a `freeze` upstream drops. Until the pass asks it, the routine is
+  pinned at the question `simplifyFreezeInst` asks:
+  `crates/llvmkit-asmparser/tests/speculation.rs::inst_simplify_freeze_of_a_compare_is_the_compare_unless_it_can_create_poison`
+  ports `test/Transforms/InstSimplify/freeze.ll`'s `@icmp`, `@icmp_noopt`,
+  `@fcmp` and `@fcmp_noopt` there, and
+  `crates/llvmkit-asmparser/tests/constant_fold_freeze.rs` ports its
+  constant-expression functions at `ConstantFoldInstOperands`'s
+  `case Instruction::Freeze:`, which the pass does reach. (An earlier wording
+  here, "no InstSimplify test covers a `freeze` fold yet", predated both.)
+  (The unreachable-block skip that used to be named here is closed:
   the pass declares `DominatorTreeAnalysis` and carries `runImpl`'s
   `if (!SQ.DT->isReachableFromEntry(&BB)) continue;`, pinned by
   `crates/llvmkit-ir/tests/scalar_cleanup_passes.rs::instsimplify_leaves_unreachable_blocks_alone`.
@@ -2650,7 +2752,7 @@ than pending:
 ## Constant-folding parity — deferred / known divergences (2026-07-23)
 
 The `feature-29/constfold-parity` cycle fixed the divergences a three-agent
-audit found against vendored `llvmorg-22.1.4` (see CHANGELOG "Constant-folding
+audit found against vendored `llvmorg-22.1.4` (merge `75b55c5`, "constant-folding
 parity"). A whole-branch review confirmed no mis-folds and no over-folds; the
 items below are the deferred / known-remaining points.
 
@@ -2665,28 +2767,25 @@ items below are the deferred / known-remaining points.
   by design (each is a distinct pending reference); see
   `tests/constant_uniquing.rs` for the law and its exceptions.
 
-- **`ptrtoint`/`ptrtoaddr` mid-width on `pointer_size != index_size` (CHERI-like)
-  layouts — a deliberate, reasoned divergence (needs a decision).** In the
-  `isEliminableCastPair` case-11 *declined* sub-case (`MidSize < SrcSize &&
-  MidSize < DstSize`), llvmkit's `fold_ptr_to_int_pair` always two-steps through
-  the case-11 mid (`ptrtoint`→pointer size, `ptrtoaddr`→index/address size),
-  whereas upstream falls to its switch path (`ConstantFoldCastOperand`'s
-  `PtrToInt`/`PtrToAddr` case, `ConstantFolding.cpp`: `PtrToInt` takes
-  `DL.getAddressType`, `PtrToAddr` takes `DL.getIntPtrType` — the inverse).
-  Example on
-  `p:128:128:128:64`: `ptrtoaddr(inttoptr(i128 x)):i128` → llvmkit `x mod 2^64`
-  (the semantically-correct address extraction), upstream `x`. llvmkit's value is
-  arguably the *more correct* side; matching upstream would introduce a wrong
-  mask to copy an upstream quirk, only on layouts x86/bin_lift never use.
-  Deliberately NOT matched; recorded for an explicit decision if CHERI parity is
-  ever in scope.
-
 - **`SymbolicallyEvaluateGEP` sub-cases not ported (each only declines, never
   mis-folds):** `CastGEPIndices` vector-index width normalization; nested-GEP
   `in_range` preservation; the null/`inttoptr`-nonzero-base → `inttoptr` fold
   (needs `mustNotIntroduceIntToPtr` / `APInt::insertBits`); "infer inbounds for
   GEPs of globals" (needs a dereferenceable-bytes query). Each produces weaker /
   fewer folds than upstream, never a wrong one.
+
+- **Binary-intrinsic constant folding is unported (found 2026-10-29).** The
+  public `constant_fold_binary_intrinsic` (`constant_folding.rs`) admits its
+  operands and then answers `Ok(None)` for every input: its
+  `_trusting_same_module` body discards its arguments. Upstream's
+  `ConstantFoldBinaryIntrinsic` (`lib/Analysis/ConstantFolding.cpp`) hands
+  them to `ConstantFoldIntrinsicCall2`, which llvmkit has not ported (before
+  this entry, `rg -n "ConstantFoldIntrinsicCall2|ConstantFoldBinaryIntrinsic"
+  crates/llvmkit-ir/src` @ `49c95a9` found nothing; `constant_fold_call` folds
+  library calls only). No fold is always correct, so this costs strength, not
+  correctness. Found by the `clippy::unnecessary_wraps` sweep, which flagged the
+  body's always-`Ok` wrapper; the doc comment that claimed it folded "the
+  currently modelled binary intrinsic set" now says it folds nothing yet.
 
 - ~~**Proactive ApFloat bit-exactness audit (deferred to its own cycle).** No
   constant-folder fix in this cycle touched ApFloat arithmetic, and the folding
@@ -2699,12 +2798,64 @@ items below are the deferred / known-remaining points.
   top of this file, which records the fourteen defects it found and the
   `APIntTest.cpp` families deliberately not ported. This entry sat open for
   five days after its own successor closed it.
+
+## Three routines the load and global ports reach and llvmkit has not got (found 2026-10-31, type-constructor final fix wave)
+
+Each was found porting `isInterposable` and the load-from-constant routines, and is
+left to the next plan's Task 19. None changes an answer llvmkit gives today: each
+is a routine with no llvmkit caller to answer differently. The routines that do
+answer differently are in `docs/divergences.md`, D31 and D32. Before this
+section,
+`git grep -n -i -E "mayBeDerefined|may_be_derefined|simplifyRelativeLoad|simplify_relative_load|load\.relative|simplifyLoadInst|AllowInvariantGroup|invariant.group-load|simplifyBinaryIntrinsic" ae636cd -- docs`
+printed nothing (exit 1).
+
+- **`simplifyLoadInst`'s non-constant arm.** `llvm::simplifyLoadInst`
+  (`lib/Analysis/InstructionSimplify.cpp`) folds a load whose pointer is a
+  `Constant` through `ConstantFoldLoadFromConstPtr`, and otherwise looks through
+  `getUnderlyingObject` for a constant global with a definitive initializer,
+  tries `ConstantFoldLoadFromUniformValue`, then strips the pointer with
+  `stripAndAccumulateConstantOffsets(..., AllowInvariantGroup = true)` and folds
+  from the global at the offset. llvmkit has the constant arm only: a load folds
+  when its pointer operand is a constant, through
+  `constant_folding.rs::constant_fold_load_from_const_ptr_trusting_same_module`,
+  and `pointer_analysis.rs::strip_and_accumulate_constant_offsets` has no
+  `AllowInvariantGroup` parameter because nothing passes it. So `InstSimplifyPass`
+  keeps a load through `llvm.launder.invariant.group` or a non-constant
+  `getelementptr` of a constant global. **The first tests that would show it:**
+  `test/Transforms/InstSimplify/invariant.group-load.ll`, and the
+  `load_gep_const_zero_array` and `load_i8_multi_gep_const_zero_array` functions
+  of `test/Transforms/InstSimplify/load.ll`, which stay unported for this.
+- **`simplifyRelativeLoad`.** Upstream's `simplifyBinaryIntrinsic` answers
+  `llvm.load.relative(Ptr, Offset)` on two constants through
+  `simplifyRelativeLoad`, which reads `IsConstantOffsetFromGlobal` and
+  `ConstantFoldLoadFromConstPtr` to turn a relative table entry back into the
+  pointer it encodes. llvmkit has no `simplifyBinaryIntrinsic`, so no intrinsic
+  call is simplified at all; the routine has no caller to sit under, and the call
+  is kept. **The first tests that would show it:**
+  `test/Transforms/InstSimplify/load-relative.ll` and `load-relative-32.ll`.
+- **`GlobalValue::mayBeDerefined`** (`include/llvm/IR/GlobalValue.h`), with
+  `isDefinitionExact` and `Function::hasExactDefinition` over it: `weak_odr`,
+  `linkonce_odr` and `available_externally` may be derefined, and every other
+  linkage is when `isInterposable()` holds or the function is a `nobuiltin`
+  definition (`isNobuiltinFnDef`). llvmkit has none of the three. Its readers
+  upstream are interprocedural (`GlobalsModRef.cpp`, `ValueLatticeUtils.cpp`,
+  `IPO/FunctionAttrs.cpp`), which llvmkit has not got either. **The first test
+  that would show it:** none upstream isolates the predicate (`rg -n
+  "mayBeDerefined|isDefinitionExact|hasExactDefinition"
+  orig_cpp/llvm-project-llvmorg-22.1.4/llvm/unittests` prints nothing); a port
+  lands with a test of each linkage arm, then the first
+  `test/Transforms/FunctionAttrs` fixture that turns on an inexact definition.
+
 ## Tests — two CHECK oracles in one crate, and the ordered one cannot express CHECK-NEXT (found 2026-08-20, fix round 3)
 
 `crates/llvmkit-asmparser/tests` carries two substitutes for FileCheck.
-`check_directives` implements `CHECK` and `CHECK-NEXT` against
-`FileCheckString::Check` / `FileCheckString::CheckNext` / `Pattern::match` /
-`FileCheck::CanonicalizeFile`. `assert_check_lines` — byte-identical copies at
+`check_directives` implements `CHECK`, `CHECK-NEXT`, `CHECK-SAME` and
+`CHECK-LABEL`, plus `{{...}}` blocks and `[[NAME:...]]` / `[[NAME]]` variables
+whose regex holds only literal text and `.*`, against `FileCheck::checkInput` /
+`FileCheckString::Check` / `CheckNext` / `CheckSame` / `Pattern::parsePattern` /
+`Pattern::match` / `FileCheck::CanonicalizeFile`; `read_check_directives` reads
+a fixture's own block, and `tests/file_check_subset.rs` pins what the harness
+must refuse. `assert_check_lines` — byte-identical copies at
 parser_calls.rs, parser_constants.rs, parser_modifiers.rs and
 parser_remaining_opcodes.rs — has upstream's byte cursor but **no CHECK-NEXT
 concept**, so an upstream `CHECK-NEXT` ported into one of those files silently
@@ -2976,7 +3127,7 @@ The analysis above was right about the shape of the debt and right that the
 **The `docs/divergences.md` evidence blocks are not part of this debt and were
 never swept.** They are dated snapshots of one verification pass, so their
 coordinates are the record of what was checked; the guard exempts them by rule,
-as it does `CHANGELOG.md`'s released sections and all of `docs/design/`. That
+as it does all of `docs/design/`. That
 file's header now says so instead of promising a sweep.
 
 ## Docs — `mirror` rows that hand-write their IR (found 2026-08-20, fix round 3)
@@ -3183,6 +3334,24 @@ propagate with `?` has cost nothing yet") none is narrowed here. Re-derive
 before acting on any of these — several of the counts and dead-branch claims
 above superseded ones the supplement made without being able to verify them
 (see the `primitive_to_type` entry).
+
+## Tests — upstream tests that mention an address space and are not ported (found 2026-10-30)
+
+Derived at the commit that adds this entry: `rg -l
+"[Aa]ddr[Ss]pace|AddressSpace|addrspace" llvm/unittests/IR/*.cpp` names 9 files;
+taking from each the `TEST`, `TEST_F` and `TEST_P` whose body holds a match gives
+18 tests; and `rg -c -F` over `UPSTREAM.md` found no row for 6 of them. Two,
+`TEST(DataLayout, NonIntegralHelpers)` and `TEST(InstructionsTest, isEliminableCastPair)`,
+have since been ported, which leaves the 4 below.
+None tests what a type constructor does with an address space; those ports are done.
+
+- `TEST(AsmWriterTest, PrintAddrspaceWithNullOperand)` prints a `CallInst` after
+  `dropAllReferences` has nulled its operands. `rg -n "drop_all_references"
+  crates/llvmkit-ir/src` finds nothing, so llvmkit has no such state to print.
+- `TEST(InstructionsTest, CastCAPI)` tests the C API, which is out of scope.
+- `TEST_F(DIDerivedTypeTest, get)` and `getWithLargeValues` test the debug-info
+  `DIDerivedType` node, whose `dwarfAddressSpace` is a DWARF field and no IR
+  address space. Neither test has a row, like most of `MetadataTest.cpp`.
 
 ## Two-or-more adjacent `bool` parameters: the sixteen left, and why
 

@@ -164,6 +164,7 @@ pub mod target_library_info;
 pub mod term_open_state;
 pub mod r#type;
 pub mod type_components;
+pub mod type_size;
 pub mod typed_pointer_type;
 pub mod typed_pointer_value;
 pub mod r#use;
@@ -262,7 +263,8 @@ pub use derived_types::{
 pub use dominator_tree::{DominatorTree, DominatorTreeAnalysis, DominatorTreeBlock};
 pub use error::{
     Blame, BrandError, DataLayoutError, InvalidValueNameReason, IrError, IrResult, RenderedType,
-    TypeKindLabel, TypePosition, ValueCategoryLabel, VerifierRule, VerifierSubject,
+    TargetExtParameterRule, TypeKindLabel, TypePosition, ValueCategoryLabel, VerifierRule,
+    VerifierSubject,
 };
 pub use fmf::FastMathFlags;
 pub use function::{FunctionBasicBlocks, FunctionBuilder, FunctionValue, IntoCallee};
@@ -273,7 +275,7 @@ pub use function_signature::{
 pub use gep_no_wrap_flags::GepNoWrapFlags;
 pub use global_alias::{GlobalAlias, GlobalAliasBuilder};
 pub use global_ifunc::{GlobalIfunc, GlobalIfuncBuilder};
-pub use global_value::{DllStorageClass, DsoLocality, Linkage, ThreadLocalMode, Visibility};
+pub use global_value::{DllStorageClass, GlobalValue, Linkage, ThreadLocalMode, Visibility};
 pub use global_variable::{CodeModel, GlobalBuilder, GlobalVariable, SanitizerMetadata};
 pub use inline_asm::{
     AsmDialect, ConstraintInfo, ConstraintKind, ConstraintParseError, InlineAsm, InlineAsmOptions,
@@ -304,14 +306,16 @@ pub use instructions::{
     TruncInst, TypedCallInst, UdivInst, UiToFpInst, UnreachableInst, UremInst, VaArgInst, XorInst,
     ZextInst,
 };
-pub use instructions::{cast_is_valid, indexed_aggregate_type, indexed_gep_type};
+pub use instructions::{
+    cast_is_valid, indexed_aggregate_type, indexed_gep_type, is_eliminable_cast_pair,
+};
 pub use intrinsic_inst::{IntrinsicInst, LifetimeIntrinsic, MemIntrinsic};
 pub use intrinsics::{
     BinaryIntrinsic, IntrinsicDescriptor, IntrinsicId, IntrinsicNameResolution,
     descriptor_for_callee, resolve_intrinsic_name,
 };
 pub use ir_builder::constant_folder::ConstantFolder;
-pub use ir_builder::folder::IrBuilderFolder;
+pub use ir_builder::folder::{IrBuilderFolder, TrustedFolder};
 pub use ir_builder::no_folder::NoFolder;
 pub use ir_builder::{
     AllocaBuilder, BuilderPositionState, CallBuilder, CallSiteConfig, InsertPoint, IrBuilder,
@@ -382,14 +386,16 @@ pub use ssa_builder::{
 };
 pub use struct_body_state::{BodySet, Opaque, StructBodyDyn, StructBodyState};
 pub use struct_schema::{
-    FieldOf, IntoIrField, IrField, StructFieldAt, StructFields, StructSchema, StructSchemaValue,
-    ValidatedStructValue,
+    ArrayElementLayout, FieldArg, FieldLayout, FieldList, FieldOf, IntoIrField, IntoLayoutValue,
+    IrField, LayoutValue, LoweredField, SchemaValue, StructFieldAt, StructFields, StructOf,
+    StructSchema, StructSchemaValue,
 };
 pub use sync_scope::SyncScope;
 pub use target_library_info::{LibFunc, TargetLibraryInfo};
 pub use r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeKind};
 pub use type_components::{ArrayElement, VectorElement, lanes};
-pub use typed_pointer_type::TypedPointerType;
+pub use type_size::TypeSize;
+pub use typed_pointer_type::{TypedPointee, TypedPointerElement, TypedPointerType};
 pub use typed_pointer_value::TypedPointerValue;
 pub use unnamed_addr::UnnamedAddr;
 pub use r#use::Use;
@@ -426,7 +432,7 @@ pub use known_fp_class::{
 };
 pub use value_tracking::analyze_known_bits_from_and_xor_or;
 
-pub use addr_space::{AddrSpace, Space, SpaceDyn};
+pub use addr_space::{AddrSpace, AddressSpace, Space, SpaceDyn, address_space};
 pub use array_len::{ArrLen, ArrLenDyn, ArrayLen, StaticArrayLen};
 pub use assumptions::{
     Assumption, AssumptionCache, AssumptionSource, DomConditionCache,

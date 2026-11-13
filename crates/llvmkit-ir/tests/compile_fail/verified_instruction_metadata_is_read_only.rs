@@ -20,7 +20,7 @@ fn main() {
     let a = Module::dynamic("a");
     let i32_ty = a.i32_type();
     let f = a
-        .add_function_dyn("f", a.function_type_no_parameters(i32_ty), Linkage::External)
+        .add_function_dyn("f", a.function_type_no_parameters(i32_ty).expect("valid function type"), Linkage::External)
         .expect("f");
     let entry = a.view(f).append_basic_block(&a, "entry");
     let b0 = IrBuilder::with_folder(&a, NoFolder).position_at_end(entry);

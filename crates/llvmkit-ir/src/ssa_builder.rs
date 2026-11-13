@@ -827,7 +827,7 @@ where
         &mut self,
         name: Name,
     ) -> PointerVariable<crate::Space<0>, B> {
-        let ty = self.module.ptr_type(0).slot_trusting_same_module();
+        let ty = self.module.ptr_type_in::<0>().slot_trusting_same_module();
         self.declare_var_raw(ty, name, VarCategory::Pointer, false)
             .into()
     }
@@ -837,7 +837,7 @@ where
         &mut self,
         name: Name,
     ) -> PointerVariable<crate::Space<0>, B> {
-        let ty = self.module.ptr_type(0).slot_trusting_same_module();
+        let ty = self.module.ptr_type_in::<0>().slot_trusting_same_module();
         self.declare_var_raw(ty, name, VarCategory::Pointer, true)
             .into()
     }
@@ -1202,12 +1202,11 @@ where
         Ok(FloatValue::from_value_unchecked(value))
     }
 
-    /// Pointer twin of [`Self::def_int_var`]. Pointer variables pin an
-    /// address space via `var.ty` (`declare_pointer_var_in_addrspace`),
-    /// but [`PointerValue`] does not statically pin its address space --
-    /// `IntoPointerValue` happily lifts a pointer of ANY address space.
-    /// This side therefore never had a static marker to key on, and is
-    /// unconditional for the same reason the int and float sides now are:
+    /// Pointer twin of [`Self::def_int_var`]. A pointer variable keeps its
+    /// address space in `var.ty` (`declare_pointer_var_in_addrspace`) and in
+    /// its marker `A`, and `V::Space = A` holds the value to that marker by
+    /// type. A `SpaceDyn` variable's marker says nothing, so the check stays
+    /// unconditional, for the same reason the int and float sides are:
     /// a `TypeSlot` equality compare is negligible next to the rest of the
     /// work, and skipping it would silently accept a wrong-address-space
     /// write. Honest rather than optimised.
@@ -2034,7 +2033,7 @@ mod tests {
     #[test]
     fn first_created_block_is_auto_sealed() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-entry-seal")?;
-        let fn_ty = m.function_type_no_parameters(m.void_type());
+        let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -2055,7 +2054,7 @@ mod tests {
     #[test]
     fn seal_block_twice_errors() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-double-seal")?;
-        let fn_ty = m.function_type_no_parameters(m.void_type());
+        let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -2079,7 +2078,7 @@ mod tests {
     #[test]
     fn for_function_rejects_function_with_existing_blocks() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-nonempty-fn")?;
-        let fn_ty = m.function_type_no_parameters(m.void_type());
+        let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let _entry = m.view(f).append_basic_block(&m, "entry");
         match SsaState::for_function(&m, m.view(f)) {
@@ -2095,7 +2094,7 @@ mod tests {
     #[test]
     fn seal_block_rejects_foreign_block() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-foreign-block")?;
-        let fn_ty = m.function_type_no_parameters(m.void_type());
+        let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f1 = m.add_function_dyn("f1", fn_ty, Linkage::External)?;
         let f2 = m.add_function_dyn("f2", fn_ty, Linkage::External)?;
         let mut st_b1 = SsaState::for_function(&m, m.view(f1))?;
@@ -2122,7 +2121,7 @@ mod tests {
     #[test]
     fn declare_var_family_reports_owner() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-declare")?;
-        let fn_ty = m.function_type_no_parameters(m.void_type());
+        let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -2146,7 +2145,7 @@ mod tests {
     #[test]
     fn read_after_write_same_block_needs_no_phi() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-straight-line")?;
-        let fn_ty = m.function_type_no_parameters(m.void_type());
+        let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -2174,7 +2173,7 @@ mod tests {
     #[test]
     fn incomplete_phi_completes_on_seal() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-incomplete-phi")?;
-        let fn_ty = m.function_type_no_parameters(m.void_type());
+        let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -2232,7 +2231,7 @@ mod tests {
     #[test]
     fn trivial_phi_is_eliminated() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-trivial-join")?;
-        let fn_ty = m.function_type_no_parameters(m.void_type());
+        let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -2285,7 +2284,7 @@ mod tests {
     #[test]
     fn strict_variable_undefined_read_errors() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-undefined-strict")?;
-        let fn_ty = m.function_type_no_parameters(m.void_type());
+        let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -2310,7 +2309,7 @@ mod tests {
     #[test]
     fn poison_variable_undefined_read_yields_poison() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-undefined-poison")?;
-        let fn_ty = m.function_type_no_parameters(m.void_type());
+        let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -2343,7 +2342,7 @@ mod tests {
     #[test]
     fn read_variable_in_memoizes_single_pred_chase() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-chase-memoization")?;
-        let fn_ty = m.function_type_no_parameters(m.void_type());
+        let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -2424,7 +2423,7 @@ mod tests {
     #[test]
     fn def_int_var_rejects_forged_static_width_handle() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-forged-static-width")?;
-        let fn_ty = m.function_type_no_parameters(m.void_type());
+        let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -2462,7 +2461,7 @@ mod tests {
     #[test]
     fn def_float_var_rejects_forged_static_kind_handle() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-forged-static-kind")?;
-        let fn_ty = m.function_type_no_parameters(m.void_type());
+        let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -2491,8 +2490,8 @@ mod tests {
     }
 
     /// Pointer twin of [`def_int_var_rejects_forged_static_width_handle`],
-    /// completing the `def_*_var` trio. `PointerValue` pins no address space
-    /// statically, so its forge lies about the *kind*: an honest non-pointer
+    /// completing the `def_*_var` trio. A `SpaceDyn` marker claims no address
+    /// space, so its forge lies about the *kind*: an honest non-pointer
     /// cannot reach [`SsaBuilder::def_pointer_var`] (there is no
     /// `IntoPointerValue` impl for `IntValue`), and
     /// `PointerValue::from_value_unchecked` is the only door in --
@@ -2510,7 +2509,7 @@ mod tests {
     #[test]
     fn def_pointer_var_rejects_forged_non_pointer_handle() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-forged-pointer")?;
-        let fn_ty = m.function_type_no_parameters(m.void_type());
+        let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -2529,7 +2528,7 @@ mod tests {
         assert_eq!(
             err,
             IrError::TypeIdentityMismatch {
-                expected: m.ptr_type(0).as_type().rendered(),
+                expected: m.ptr_type_in::<0>().as_type().rendered(),
                 got: m.i32_type().as_type().rendered(),
             }
         );

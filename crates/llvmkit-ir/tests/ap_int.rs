@@ -7,7 +7,7 @@ use llvmkit_ir::{ApInt, ApIntTruncation, IrError, Signedness};
 
 /// Port of `llvm/unittests/ADT/APIntTest.cpp` construction and bit-count checks.
 #[test]
-fn construction_normalizes_top_word_and_counts_bits() -> Result<(), IrError> {
+fn construction_normalizes_top_word_and_counts_bits() {
     let value = ApInt::from_words(129, &[u64::MAX, u64::MAX, u64::MAX]);
 
     assert_eq!(value.bit_width(), 129);
@@ -16,8 +16,6 @@ fn construction_normalizes_top_word_and_counts_bits() -> Result<(), IrError> {
     assert_eq!(value.count_leading_zeros(), 0);
     assert_eq!(value.popcount(), 129);
     assert!(value.is_all_ones());
-
-    Ok(())
 }
 
 /// Port of `llvm/unittests/ADT/APIntTest.cpp` arithmetic wrap coverage.
@@ -189,4 +187,91 @@ fn ashr_at_or_beyond_the_width_fills_with_the_sign_bit() {
 
     // `checked_ashr` keeps its stricter contract and declines out of range.
     assert!(negative.checked_ashr(4).is_none());
+}
+
+/// A wide integer with a small value prints in the time of its value's words,
+/// and a multi-word value prints every digit.
+///
+/// **No upstream test isolates the cost.** `APInt::toString` divides by the
+/// radix through `udivrem(Tmp, Radix, Tmp, Digit)`, a division by one word
+/// over the dividend's active words; llvmkit divided through a full-width
+/// long division, so `i65536 1` took seconds to print and `i8388608 1` far
+/// longer. The digits are upstream's: `UINT128_MAX` in decimal and in hex.
+#[test]
+fn a_wide_integer_prints_in_the_time_of_its_value() {
+    let (done, finished) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let one = ApInt::from_words(1 << 23, &[1]);
+        assert_eq!(one.to_string_radix(10, Signedness::Unsigned), "1");
+        let max = ApInt::from_words(128, &[u64::MAX, u64::MAX]);
+        assert_eq!(
+            max.to_string_radix(10, Signedness::Unsigned),
+            "340282366920938463463374607431768211455"
+        );
+        assert_eq!(
+            max.to_string_radix(16, Signedness::Unsigned),
+            "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+        );
+        // Every radix over a value whose digits cross word and chunk edges.
+        let mixed = ApInt::from_words(128, &[0x0123_4567_89AB_CDEF, 0x0000_0000_0000_0042]);
+        assert_eq!(
+            mixed.to_string_radix(10, Signedness::Unsigned),
+            "1217567094394046893551"
+        );
+        assert_eq!(
+            mixed.to_string_radix(16, Signedness::Unsigned),
+            "420123456789ABCDEF"
+        );
+        assert_eq!(
+            mixed.to_string_radix(8, Signedness::Unsigned),
+            "204004432126361152746757"
+        );
+        // A lower chunk that needs its leading zeros: 10^19 + 5 divides by
+        // 10^19 into 1 and 5, and 36^12 + 7 and 36^25 + 1 split the same way
+        // in radix 36. Expected digits from Python's integer formatting.
+        let ten_19_plus_5 = ApInt::from_words(128, &[10_000_000_000_000_000_005]);
+        assert_eq!(
+            ten_19_plus_5.to_string_radix(10, Signedness::Unsigned),
+            "10000000000000000005"
+        );
+        let base36_chunk = ApInt::from_words(128, &[36_u64.pow(12) + 7]);
+        assert_eq!(
+            base36_chunk.to_string_radix(36, Signedness::Unsigned),
+            "1000000000007"
+        );
+        let base36_chunks =
+            ApInt::from_words(192, &[0x8f24_0000_0000_0001, 0x6015_4fc3_6cbf_4277, 0x2]);
+        assert_eq!(
+            base36_chunks.to_string_radix(36, Signedness::Unsigned),
+            "10000000000000000000000001"
+        );
+        let wide_ones = ApInt::all_ones(1 << 16);
+        assert_eq!(
+            wide_ones.to_string_radix(2, Signedness::Unsigned).len(),
+            1 << 16
+        );
+        done.send(()).ok();
+    });
+    match finished.recv_timeout(std::time::Duration::from_secs(60)) {
+        Ok(()) => {}
+        // The worker cannot be stopped, so the binary exits rather than keep it
+        // running behind a failed test, at the cost of the other tests'
+        // results in this binary (see `long_splat_folds.rs::within_a_minute`).
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            // Straight to the process's stderr: the test harness captures
+            // `eprintln!`, and the exit below would drop what it captured.
+            use std::io::Write as _;
+            let _ = writeln!(
+                std::io::stderr(),
+                "a_wide_integer_prints_in_the_time_of_its_value: still printing after a \
+                 minute: a full-width division per digit"
+            );
+            std::process::exit(1);
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            if let Err(panic) = worker.join() {
+                std::panic::resume_unwind(panic);
+            }
+        }
+    }
 }

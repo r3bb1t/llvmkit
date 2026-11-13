@@ -435,6 +435,87 @@ fn upstream_swifterror_fixture_messages_match() {
     }
 }
 
+/// The two swifterror rules that ask `Call.paramHasAttr(i,
+/// Attribute::SwiftError)` read the callee's declaration when the call site
+/// carries no `swifterror`.
+///
+/// **No upstream counterpart.** `test/Verifier/swifterror.ll` marks every call
+/// site it tests. The oracle is `CallBase::paramHasAttr` (`Instructions.cpp`),
+/// `if (Attrs.hasParamAttr(ArgNo, Kind)) return true;` and then
+/// `getCalledFunction()`'s `hasParamAttr`, as both `Verifier::verifySwiftErrorCall`
+/// and `Verifier::visitCallBase`'s swifterror loop call it.
+///
+/// - `@passes_unmarked` hands a swifterror `alloca` to a callee declared
+///   `swifterror`, at an unmarked call site. `verifySwiftErrorCall`'s `Check`
+///   holds through the declaration, so the module verifies.
+/// - `@caller_unmarked` is `swifterror.ll`'s `@caller` with the call site's
+///   `swifterror` removed. `visitCallBase`'s loop still finds the attribute on
+///   `@foo`'s declaration and reports the same mismatched `alloca` that
+///   `swifterror.ll` checks for.
+#[test]
+fn the_swifterror_rules_read_the_callee_s_declaration() {
+    const PRELUDE: &str = "declare float @foo(ptr swifterror)\n";
+    let passes = r"
+define void @passes_unmarked() {
+  %e = alloca swifterror ptr
+  %call = call float @foo(ptr %e)
+  ret void
+}
+";
+    let source = format!("{PRELUDE}{passes}");
+    let module = Module::dynamic("swifterror_unmarked");
+    Parser::new(source.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    module
+        .verify_borrowed()
+        .unwrap_or_else(|e| panic!("the declaration marks the argument swifterror: {e}"));
+
+    let caller = r"
+define float @caller_unmarked(ptr %error_ref) {
+entry:
+  %error_ptr_ref = alloca ptr
+  store ptr null, ptr %error_ptr_ref
+  %call = call float @foo(ptr %error_ptr_ref)
+  ret float 1.0
+}
+";
+    assert_fixture_case_verifies(
+        caller,
+        PRELUDE,
+        "define float @caller_unmarked(",
+        Some("swifterror argument for call has mismatched alloca"),
+    );
+}
+
+/// The swifterror rules read a callee declared *after* the call.
+///
+/// **No upstream counterpart**: `the_swifterror_rules_read_the_callee_s_declaration`'s
+/// `@passes_unmarked` with `@foo`'s declaration moved below it, where clang
+/// writes it. `paramHasAttr`'s `getCalledFunction()` half sees the same
+/// `Function` whichever comes first, so `Verifier::verifySwiftErrorCall`'s
+/// `Check` still holds and the module verifies.
+#[test]
+fn the_swifterror_rules_read_a_callee_declared_after_the_call() {
+    let source = r"
+define void @passes_unmarked() {
+  %e = alloca swifterror ptr
+  %call = call float @foo(ptr %e)
+  ret void
+}
+declare float @foo(ptr swifterror)
+";
+    let module = Module::dynamic("swifterror_declared_after");
+    Parser::new(source.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    module
+        .verify_borrowed()
+        .unwrap_or_else(|e| panic!("the later declaration marks the argument swifterror: {e}"));
+}
+
 /// Parse `prelude` plus the `define` beginning at `marker`, verify it, and
 /// assert either that it verifies clean (`expected` is `None`) or that the
 /// failure carries `expected`.

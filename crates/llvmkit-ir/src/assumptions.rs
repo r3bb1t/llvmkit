@@ -33,7 +33,8 @@ use crate::constant::ConstantData;
 use crate::dominator_tree::DominatorTree;
 use crate::function::FunctionValue;
 use crate::instr_types::{
-    BinaryOpData, BranchKind, CallAttributesSlot, CastOpcode, SelectInstData, call_site_has_fn_attr,
+    BinaryOpData, BranchKind, CallAttributesSlot, CastOpcode, SelectInstData,
+    call_site_has_function_attribute,
 };
 use crate::instruction::{InstructionKindData, InstructionView};
 use crate::intrinsics::descriptor_for_callee;
@@ -453,7 +454,7 @@ fn has_no_free_calls<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             continue;
         };
         let module = anchor.module;
-        if !call_site_has_fn_attr(
+        if !call_site_has_function_attribute(
             module,
             callee,
             module.call_attributes(attrs),

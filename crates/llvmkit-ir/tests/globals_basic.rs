@@ -344,7 +344,7 @@ fn address_space_one() {
     let i32_ty = m.i32_type();
     let zero = i32_ty.const_int(0i32);
     m.global_builder("g.addrspace", i32_ty.as_type())
-        .address_space(1)
+        .address_space(llvmkit_ir::address_space::<1>())
         .initializer(zero)
         .build()
         .expect("build");
@@ -496,7 +496,8 @@ fn an_unnamed_object_in_an_empty_named_comdat_prints_a_bare_comdat() {
     let f = m
         .add_function_dyn(
             "",
-            m.function_type_no_parameters(m.void_type()),
+            m.function_type_no_parameters(m.void_type())
+                .expect("valid function type"),
             Linkage::External,
         )
         .expect("unnamed function");
@@ -746,7 +747,7 @@ fn const_vector_initializer() {
 fn function_pointer_global_initializer_verifies() -> Result<(), IrError> {
     let m = module_new!("fnptr_init")?;
     let void_ty = m.void_type();
-    let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
     let init = m.view(callee).as_global_constant_ptr();
     m.add_global_constant("slot", init)?;
@@ -766,11 +767,13 @@ fn function_pointer_global_initializer_verifies() -> Result<(), IrError> {
 fn function_pointer_aggregate_initializer_prints_ptr_base() -> Result<(), IrError> {
     let m = module_new!("fnptr_agg")?;
     let void_ty = m.void_type();
-    let ptr_ty = m.ptr_type(0);
-    let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
+    let ptr_ty = m.ptr_type_in::<0>();
+    let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
     let arr_ty = ArrayType::of(ptr_ty, 1);
-    let elem = m.view(callee).as_aggregate_ptr(0);
+    let elem = m
+        .view(callee)
+        .as_aggregate_ptr(llvmkit_ir::AddressSpace::DEFAULT);
     let init = arr_ty.const_array([elem])?;
     m.add_global_constant("table", init)?;
     let text = format!("{m}");
@@ -812,7 +815,7 @@ fn ptr_offset_preserves_global_address_space() -> Result<(), IrError> {
     let zero = i8_ty.const_int(0i8);
     let target = m
         .global_builder("target", i8_ty.as_type())
-        .address_space(1)
+        .address_space(llvmkit_ir::address_space::<1>())
         .initializer(zero)
         .build()?;
     let init = m.view(target).ptr_offset(4);
@@ -994,6 +997,7 @@ fn common_linkage_target_none_initializer_accepted() {
     let m = module_new!("m").expect("fresh module");
     let target = m
         .target_ext_type("spirv.foo", Vec::<Type<'_, _>>::new(), Vec::<u32>::new())
+        .expect("valid target type")
         .as_type();
     let none = m.target_ext_none(target).expect("target none");
     m.global_builder("c", target)
@@ -1185,20 +1189,25 @@ fn alias_builder_refuses_an_extern_weak_linkage() {
 fn an_ifunc_resolver_is_stripped_through_a_compact_zero_offset_getelementptr() -> Result<(), IrError>
 {
     let m = module_new!("m")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let resolver = m.add_function_dyn(
         "resolver",
-        m.function_type_no_parameters(ptr_ty),
+        m.function_type_no_parameters(ptr_ty)?,
         Linkage::Internal,
     )?;
     let entry = m.view(resolver).append_basic_block(&m, "entry");
     IrBuilder::with_folder(&m, NoFolder)
         .position_at_end(entry)
         .ret(ptr_ty.const_null())?;
-    let ifunc_ty = m.function_type_no_parameters(m.void_type());
+    let ifunc_ty = m.function_type_no_parameters(m.void_type())?;
 
-    m.ifunc_builder("zero", ifunc_ty, m.view(resolver).as_aggregate_ptr(0))
-        .build()?;
+    m.ifunc_builder(
+        "zero",
+        ifunc_ty,
+        m.view(resolver)
+            .as_aggregate_ptr(llvmkit_ir::AddressSpace::DEFAULT),
+    )
+    .build()?;
     // `AssemblyWriter::printIFunc` writes a `ConstantExpr` resolver without
     // its type: `writeOperand(Resolver, !isa<ConstantExpr>(Resolver))`.
     let text = module_text(&m);

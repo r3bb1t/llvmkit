@@ -8,7 +8,7 @@ use llvmkit_ir::Module;
 
 pub mod support;
 
-use support::{Check, check_directives};
+use support::{Check, check_directives, rejection_at};
 
 fn parse_render(module_name: &str, src: &[u8]) -> String {
     let module = Module::dynamic(module_name);
@@ -98,6 +98,166 @@ fn a_forward_referenced_alias_is_rejected() {
         parse_err(b"%s = type { %t }\n%t = type i32\n").to_string(),
         "forward references to non-struct type"
     );
+}
+
+/// `LLParser::parseStructDefinition` creates the struct into `Entry.first`
+/// before `parseStructBody` runs, so a body that names its own definition
+/// reaches the struct being defined, and `StructType::setBodyOrError` refuses
+/// it. The message goes to `tokError`: it is anchored at the token after the
+/// definition, the `@g`, and not at the definition. llvmkit created the struct
+/// after the body, so `%0 = type { %0 }` made two structs and was accepted.
+///
+/// llvmkit-specific (rule anchor): no upstream fixture has a numbered type name
+/// itself in its body —
+/// `rg -n "%[0-9]+ = type \{[^}]*%[0-9]" llvm/test/Assembler llvm/test/Verifier`
+/// finds only `unnamed.ll`, whose bodies name other types.
+#[test]
+fn a_struct_containing_itself_is_recursive_at_the_next_token() {
+    for (source, message) in [
+        (
+            "%0 = type { %0 }\n@g = global i32 0\n",
+            "identified structure type '' is recursive",
+        ),
+        (
+            "%t = type { %t }\n@g = global i32 0\n",
+            "identified structure type 't' is recursive",
+        ),
+        (
+            "%0 = type <{ %0 }>\n@g = global i32 0\n",
+            "identified structure type '' is recursive",
+        ),
+    ] {
+        assert_eq!(rejection_at(source), (message.to_owned(), (2, 1)));
+    }
+}
+
+/// `%0 = type { %0* }` is legal: `%0*` lowers to `ptr`. It is one struct, because
+/// the reference in the body meets the entry the definition made, so the module
+/// prints `%0`. llvmkit made a stray struct for the reference, took `%0` for it
+/// because it prints every identified struct, and printed the real type as `%1`.
+/// Same anchor as `a_struct_containing_itself_is_recursive_at_the_next_token`.
+#[test]
+fn a_struct_holding_a_pointer_to_itself_is_one_struct() {
+    assert_eq!(
+        parse_render(
+            "self_pointer",
+            b"%0 = type { %0* }\n@g = global %0 zeroinitializer\n",
+        ),
+        "; ModuleID = 'self_pointer'\n\n%0 = type { ptr }\n\n@g = global %0 zeroinitializer\n"
+    );
+}
+
+/// Each syntax error of `LLParser::parseStructBody` and the `>` that follows
+/// it, at the token it is raised on. The closing `}` is one message for all
+/// three callers: `parseStructDefinition` and both arms of `parseType` share
+/// the routine, where llvmkit worded it twice.
+///
+/// llvmkit-specific (rule anchor): no upstream fixture pins these —
+/// `rg -n "at end of struct|in packed struct|at end of packed struct" llvm/test/Assembler llvm/test/Verifier`
+/// prints nothing against the vendored `llvmorg-22.1.4` tree.
+#[test]
+fn a_struct_body_reports_upstream_syntax_errors() {
+    for (source, message, position) in [
+        (
+            "%t = type { i32\n@g = global i32 0\n",
+            "expected '}' at end of struct",
+            (2, 1),
+        ),
+        (
+            "%t = type <{ i32\n@g = global i32 0\n",
+            "expected '}' at end of struct",
+            (2, 1),
+        ),
+        (
+            "%t = type <{ i32 }\n@g = global i32 0\n",
+            "expected '>' in packed struct",
+            (2, 1),
+        ),
+        (
+            "@g = global { i32 zeroinitializer\n",
+            "expected '}' at end of struct",
+            (1, 19),
+        ),
+        (
+            "@g = global <{ i32 zeroinitializer\n",
+            "expected '}' at end of struct",
+            (1, 20),
+        ),
+        (
+            "@g = global <{ i32 } zeroinitializer\n",
+            "expected '>' at end of packed struct",
+            (1, 22),
+        ),
+    ] {
+        assert_eq!(
+            rejection_at(source),
+            (message.to_owned(), position),
+            "{source}"
+        );
+    }
+}
+
+/// The tail `LLParser::parseNamedType` and `parseUnnamedType` share: a
+/// non-struct right-hand side that named itself finds its entry already filled
+/// by the forward reference, and is refused at the definition. llvmkit had no
+/// such check and overwrote the entry.
+///
+/// llvmkit-specific (rule anchor): no upstream fixture pins it —
+/// `rg -n "may not be recursive" llvm/test/Assembler llvm/test/Verifier` prints
+/// nothing against the vendored `llvmorg-22.1.4` tree.
+#[test]
+fn a_non_struct_type_may_not_name_itself() {
+    for source in ["%t = type [2 x %t]\n", "%0 = type [2 x %0]\n"] {
+        assert_eq!(
+            rejection_at(source),
+            ("non-struct types may not be recursive".to_owned(), (1, 1)),
+            "{source}"
+        );
+    }
+}
+
+/// The same tail tests `!isa<StructType>(Result)`, so an alias to a struct
+/// records nothing: the entry stays empty, and `%a` is undefined when it is used.
+/// Nor does `%0 = type %0` define `%0`: the reference it makes is the only entry.
+/// llvmkit recorded both as defined.
+///
+/// llvmkit-specific (rule anchor): no upstream fixture aliases a struct —
+/// `rg -n "^%[A-Za-z0-9_.]+ = type %" llvm/test/Assembler llvm/test/Verifier`
+/// prints nothing against the vendored `llvmorg-22.1.4` tree.
+#[test]
+fn an_alias_to_a_struct_defines_nothing() {
+    assert_eq!(
+        rejection_at("%a = type %b\n%b = type { i32 }\n%c = type { %a }\n"),
+        ("use of undefined type named 'a'".to_owned(), (3, 13))
+    );
+    assert_eq!(
+        rejection_at("%0 = type %0\n"),
+        ("use of undefined type '%0'".to_owned(), (1, 11))
+    );
+}
+
+/// `StructType::create(Context, Name)` makes a new struct and `setName` keeps it
+/// unique, so a definition whose name is taken in the module gets `.0` rather
+/// than meeting the struct that holds the name. `LLParser` reaches this through
+/// `parseAssemblyInto` on a module that already has types. llvmkit took the
+/// existing struct, and failed on its body.
+///
+/// llvmkit-specific (rule anchor): upstream's fixtures parse each into a new
+/// `LLVMContext`, so none of them meets a taken name.
+#[test]
+fn a_definition_takes_a_new_name_beside_a_struct_of_the_module() {
+    let module = Module::dynamic("taken_name");
+    Parser::new(b"%t = type { i32 }\n", &module)
+        .expect("parse constructor")
+        .parse_module()
+        .expect("first parse");
+    Parser::new(b"%t = type { i64 }\n", &module)
+        .expect("parse constructor")
+        .parse_module()
+        .expect("second parse");
+    let text = format!("{module}");
+    assert!(text.contains("%t = type { i32 }"), "{text}");
+    assert!(text.contains("%t.0 = type { i64 }"), "{text}");
 }
 
 /// The same alias without a prior reference is legal, and the alias resolves
@@ -633,13 +793,14 @@ fn undef_like_constants_reject_a_non_first_class_type() {
 
 // ── Aggregate initializers (`LLParser::parseValID`'s aggregate arms) ──────
 
-/// `constant vector must not be empty`, and the element-type allow-list the
-/// vector arm applies to element 0. llvmkit accepted `<>` outright.
+/// `constant vector must not be empty`, at `ID.Loc`, the `<`, and the
+/// element-type allow-list the vector arm applies to element 0. llvmkit
+/// accepted `<>` outright, then anchored the refusal at the token after `>`.
 #[test]
 fn vector_constant_shape_is_checked() {
     assert_eq!(
-        parse_err(b"@g = global <2 x i32> <>\n").to_string(),
-        "constant vector must not be empty"
+        rejection_at("@g = global <2 x i32> <>\n"),
+        ("constant vector must not be empty".to_owned(), (1, 23))
     );
 }
 

@@ -11,7 +11,88 @@
 use core::fmt;
 use core::str::FromStr;
 
+use crate::Branded;
+use crate::capability::{Capability, Mutable};
+use crate::constant_fold::{global_is_dso_local, global_is_interposable};
 use crate::error::IrError;
+use crate::function::FunctionValue;
+use crate::global_alias::GlobalAlias;
+use crate::global_ifunc::GlobalIfunc;
+use crate::global_variable::GlobalVariable;
+use crate::marker::Dyn;
+use crate::module::{ModuleBrand, ModuleView};
+use crate::pointer_analysis::global_value_or_self;
+use crate::value::{Value, ValueKindData, ValueSlot, ValueSlotAccess};
+
+/// A global of any kind: upstream's `GlobalValue *`, whose four subclasses are
+/// the four handles here.
+#[derive(Branded)]
+#[branded(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GlobalValue<'ctx, B: ModuleBrand, C: Capability = Mutable> {
+    /// `GlobalVariable`.
+    Variable(GlobalVariable<'ctx, B, C>),
+    /// `Function`.
+    Function(FunctionValue<'ctx, Dyn, B, C>),
+    /// `GlobalAlias`.
+    Alias(GlobalAlias<'ctx, B, C>),
+    /// `GlobalIFunc`.
+    Ifunc(GlobalIfunc<'ctx, B, C>),
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GlobalValue<'ctx, B, C> {
+    /// `dyn_cast<GlobalValue>(V)`, which is true of `ptr @g` as of `@g`
+    /// (`docs/divergences.md` D3).
+    pub(crate) fn of(value: Value<'ctx, B, C>) -> Option<Self> {
+        let global = global_value_or_self(value);
+        match &global.data().kind {
+            ValueKindData::GlobalVariable(_) => {
+                GlobalVariable::try_from(global).ok().map(Self::Variable)
+            }
+            ValueKindData::Function(_) => FunctionValue::<Dyn, B, C>::try_from(global)
+                .ok()
+                .map(Self::Function),
+            ValueKindData::GlobalAlias(_) => GlobalAlias::try_from(global).ok().map(Self::Alias),
+            ValueKindData::GlobalIfunc(_) => GlobalIfunc::try_from(global).ok().map(Self::Ifunc),
+            _ => None,
+        }
+    }
+
+    /// Widen to the erased [`Value`] handle, at the same capability.
+    #[inline]
+    pub fn as_erased(self) -> Value<'ctx, B, C> {
+        match self {
+            Self::Variable(global) => global.as_erased(),
+            Self::Function(function) => function.as_erased(),
+            Self::Alias(alias) => alias.as_erased(),
+            Self::Ifunc(ifunc) => ifunc.as_erased(),
+        }
+    }
+
+    fn module_and_slot(self) -> (ModuleView<'ctx, B>, ValueSlot) {
+        let value = self.as_erased();
+        (value.module(), value.slot_trusting_same_module())
+    }
+
+    /// Whether the global's definition may be replaced by something
+    /// non-equivalent at link time. Mirrors `GlobalValue::isInterposable`.
+    pub fn is_interposable(self) -> bool {
+        let (module, slot) = self.module_and_slot();
+        global_is_interposable(module, slot)
+    }
+
+    /// Whether the global resolves within its own linkage unit. Mirrors
+    /// `GlobalValue::isDSOLocal`.
+    pub fn is_dso_local(self) -> bool {
+        let (module, slot) = self.module_and_slot();
+        global_is_dso_local(module, slot)
+    }
+}
+
+/// Ports `GlobalValue::isImplicitDSOLocal`, on the two fields it reads.
+pub(crate) const fn is_implicit_dso_local(linkage: Linkage, visibility: Visibility) -> bool {
+    linkage.is_local()
+        || (!matches!(visibility, Visibility::Default) && !matches!(linkage, Linkage::ExternalWeak))
+}
 
 /// Linkage type. Mirrors `GlobalValue::LinkageTypes`. The discriminant
 /// values are not stable across LLVM bitcode versions, so we encode
@@ -259,59 +340,6 @@ impl FromStr for DllStorageClass {
     }
 }
 
-/// DSO locality marker. Mirrors `GlobalValue::DSOLocalEquivalent`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum DsoLocality {
-    /// No explicit DSO-locality marker.
-    #[default]
-    Default,
-    /// `dso_local`.
-    Local,
-    /// `dso_preemptable`.
-    Preemptable,
-}
-
-impl DsoLocality {
-    /// Every variant, in declaration order. See
-    /// [`Linkage::VARIANTS`] for why it exists.
-    pub const VARIANTS: [Self; 3] = [Self::Default, Self::Local, Self::Preemptable];
-
-    pub const fn keyword(self) -> Option<&'static str> {
-        match self {
-            Self::Default => None,
-            Self::Local => Some("dso_local"),
-            Self::Preemptable => Some("dso_preemptable"),
-        }
-    }
-}
-
-impl fmt::Display for DsoLocality {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.keyword() {
-            Some(s) => f.write_str(s),
-            None => Ok(()),
-        }
-    }
-}
-
-impl FromStr for DsoLocality {
-    type Err = IrError;
-
-    /// Inverse of [`Display`](fmt::Display) / [`DsoLocality::keyword`] over
-    /// [`VARIANTS`](Self::VARIANTS); `""` resolves to the keyword-less
-    /// [`Default`](Self::Default). Mirrors the `dso_local` /
-    /// `dso_preemptable` keyword block in `LLLexer.cpp`.
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::VARIANTS
-            .into_iter()
-            .find(|locality| locality.keyword().unwrap_or("") == s)
-            .ok_or_else(|| IrError::InvalidKeyword {
-                target: "dso locality",
-                keyword: s.to_string(),
-            })
-    }
-}
-
 /// Thread-local mode. Mirrors `GlobalValue::ThreadLocalMode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ThreadLocalMode {
@@ -463,20 +491,6 @@ mod tests {
         assert_eq!("".parse::<DllStorageClass>(), Ok(DllStorageClass::Default));
     }
 
-    /// llvmkit-specific: Display/FromStr drift lock for [`DsoLocality`].
-    #[test]
-    fn dso_locality_display_and_from_str_round_trip() {
-        for locality in DsoLocality::VARIANTS {
-            match locality {
-                DsoLocality::Default | DsoLocality::Local | DsoLocality::Preemptable => {}
-            }
-            assert_eq!(locality.to_string().parse::<DsoLocality>(), Ok(locality));
-        }
-        // One entry per arm above.
-        assert_eq!(DsoLocality::VARIANTS.len(), 3);
-        assert_eq!("".parse::<DsoLocality>(), Ok(DsoLocality::Default));
-    }
-
     /// llvmkit-specific: Display/FromStr drift lock for [`ThreadLocalMode`].
     /// The parenthesised models round-trip whole, since that is the form
     /// `printThreadLocalModel` prints.
@@ -519,7 +533,6 @@ mod tests {
         );
         assert!("hiddenish".parse::<Visibility>().is_err());
         assert!("dllmaybe".parse::<DllStorageClass>().is_err());
-        assert!("dso_whatever".parse::<DsoLocality>().is_err());
         // The bare model name is not a printed form, so it is not accepted.
         assert!("localdynamic".parse::<ThreadLocalMode>().is_err());
     }

@@ -3,12 +3,11 @@
 //!
 //! ## Upstream provenance
 //!
-//! Tests in this file mirror coverage spread across
-//! `unittests/IR/TypesTest.cpp` (`StructType`, `LayoutIdenticalEmptyStructs`)
-//! and `unittests/IR/VectorTypesTest.cpp` (`FixedLength`, `Scalable`).
-//! Per-test citations below. Tests that exercise llvmkit's typestate
-//! narrowing / `IrError` surface have no dedicated upstream `TEST` and
-//! are tagged `llvmkit-specific:` with the closest functional reference.
+//! Every test here is llvmkit's own, tagged `llvmkit-specific:` with the
+//! closest upstream reference. The upstream tests they resemble are ported
+//! whole elsewhere: `tests/vector_types.rs` holds all of
+//! `unittests/IR/VectorTypesTest.cpp`, and `tests/type_components.rs` holds all
+//! of `unittests/IR/TypesTest.cpp`.
 
 use llvmkit_ir::{
     AggregateType, AnyTypeEnum, ArrayType, BasicTypeEnum, DynBrand, IntDyn, IntType, IrError,
@@ -72,9 +71,9 @@ fn integer_width_validation() {
     assert!(m.custom_width_int_type(MAX_INT_BITS).is_ok());
 }
 
-/// Port of `unittests/IR/VectorTypesTest.cpp::TEST(VectorTypesTest, FixedLength)`
-/// and `TEST(VectorTypesTest, Scalable)` for vector identity, plus the array
-/// uniquing pattern from `unittests/IR/TypesTest.cpp`.
+/// llvmkit-specific: interning identity for one array and one vector of each
+/// kind, a sliver of what `TEST(VectorTypesTest, FixedLength)` and
+/// `TEST(VectorTypesTest, Scalable)` check; `tests/vector_types.rs` ports both.
 #[test]
 fn array_and_vector_intern() {
     let m = module_new!("t").expect("fresh module");
@@ -103,23 +102,30 @@ fn function_type_round_trip() {
     let i32 = m.i32_type();
     let i64 = m.i64_type();
     let void = m.void_type();
-    let ft = m.function_type(void.as_type(), [i32.as_type(), i64.as_type()]);
+    let ft = m
+        .function_type(void.as_type(), [i32.as_type(), i64.as_type()])
+        .expect("valid function type");
     assert_eq!(ft.return_type(), void.as_type());
     assert_eq!(ft.params().count(), 2);
     assert!(!ft.is_var_arg());
 
     // Same shape interns to the same handle.
-    let ft2 = m.function_type(void.as_type(), [i32.as_type(), i64.as_type()]);
+    let ft2 = m
+        .function_type(void.as_type(), [i32.as_type(), i64.as_type()])
+        .expect("valid function type");
     assert_eq!(ft.as_type(), ft2.as_type());
 
     // varargs differs.
-    let ft_va = m.variadic_function_type(void.as_type(), [i32.as_type(), i64.as_type()]);
+    let ft_va = m
+        .variadic_function_type(void.as_type(), [i32.as_type(), i64.as_type()])
+        .expect("valid function type");
     assert_ne!(ft.as_type(), ft_va.as_type());
     assert!(ft_va.is_var_arg());
 }
 
-/// Port of `unittests/IR/TypesTest.cpp::TEST(TypesTest, LayoutIdenticalEmptyStructs)`
-/// applied to literal (anonymous) struct interning + packed-bit distinction.
+/// llvmkit-specific: literal struct interning and the packed bit, which
+/// `StructType::get` uniques on. `TEST(TypesTest, LayoutIdenticalEmptyStructs)`
+/// asks something else; `tests/type_components.rs` ports it.
 #[test]
 fn literal_struct_intern() {
     let m = module_new!("t").expect("fresh module");
@@ -143,10 +149,10 @@ fn literal_struct_intern() {
     assert!(s_packed.is_packed());
 }
 
-/// Port of `unittests/IR/TypesTest.cpp::TEST(TypesTest, StructType)` —
-/// `StructType::create` forward declaration, lookup identity, and
-/// `setBody` lifecycle (llvmkit reports a second `setBody` as
-/// `IrError::StructBodyAlreadySet`).
+/// llvmkit-specific: forward declaration, lookup identity and the `setBody`
+/// lifecycle (llvmkit reports a second `setBody` as
+/// `IrError::StructBodyAlreadySet`). `TEST(TypesTest, StructType)` is about
+/// `setName`; `tests/type_components.rs` ports it.
 #[test]
 fn named_struct_forward_decl_then_set_body() {
     let m = module_new!("t").expect("fresh module");
@@ -199,8 +205,10 @@ fn type_kind_discriminator_is_correct() {
         TypeKind::Integer { bits: 32 }
     );
     assert_eq!(
-        m.ptr_type(0).as_type().kind(),
-        TypeKind::Pointer { addr_space: 0 }
+        m.ptr_type_in::<0>().as_type().kind(),
+        TypeKind::Pointer {
+            addr_space: llvmkit_ir::AddressSpace::DEFAULT
+        }
     );
     assert_eq!(m.f32_type().as_type().kind(), TypeKind::Float);
     assert_eq!(m.f64_type().as_type().kind(), TypeKind::Double);
@@ -228,6 +236,7 @@ fn sized_refinement_accepts_sized_rejects_unsized() {
         m.token_type().as_type(),
         m.wasm_exnref_type().as_type(),
         m.function_type_no_parameters(m.void_type().as_type())
+            .expect("valid function type")
             .as_type(),
         m.get_or_insert_named_struct("Opaque").as_type(),
     ];
@@ -246,6 +255,7 @@ fn first_class_predicate_rejects_function_void_opaque() {
     assert!(!m.void_type().as_type().is_first_class());
     assert!(
         !m.function_type_no_parameters(m.void_type().as_type())
+            .expect("valid function type")
             .as_type()
             .is_first_class()
     );
@@ -263,7 +273,7 @@ fn first_class_predicate_rejects_function_void_opaque() {
 
     assert!(m.i32_type().as_type().is_first_class());
     assert!(m.f64_type().as_type().is_first_class());
-    assert!(m.ptr_type(0).as_type().is_first_class());
+    assert!(m.ptr_type_in::<0>().as_type().is_first_class());
 }
 
 /// llvmkit-specific: typestate `try_from` narrowing on typed handles.
@@ -394,7 +404,7 @@ fn ir_type_trait_unifies_handles() {
     // and to the erased Type.
     let _ = _accepts_any(m.i32_type());
     let _ = _accepts_any(m.f64_type());
-    let _ = _accepts_any(m.ptr_type(0));
+    let _ = _accepts_any(m.ptr_type_in::<0>());
     let _ = _accepts_any(m.void_type());
     let _ = _accepts_any(m.i32_type().as_type());
     // (smoke test that it compiles; runtime values not checked)

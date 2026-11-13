@@ -17,7 +17,7 @@ fn main() {
     let m = Module::dynamic("m");
     let f32_ty = m.f32_type();
     let f = m
-        .add_function_dyn("f", m.function_type_no_parameters(f32_ty), Linkage::External)
+        .add_function_dyn("f", m.function_type_no_parameters(f32_ty).expect("valid function type"), Linkage::External)
         .expect("f");
     let entry = m.view(f).append_basic_block(&m, "entry");
     let (join, params) = IrBuilder::new_for::<Dyn>(&m)

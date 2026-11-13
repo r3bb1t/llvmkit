@@ -19,7 +19,7 @@ use crate::{Dyn, IntValue, IrBuilder, IrError, Linkage, VerifierRule};
 fn verify_phi_predecessors_through_switch_passes() -> Result<(), IrError> {
     let m = crate::module_new!("phi_switch_ok")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let join = m.view(f).append_basic_block(&m, "join");
@@ -36,7 +36,7 @@ fn verify_phi_predecessors_through_switch_passes() -> Result<(), IrError> {
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
-        .view(b.int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p"))
         .add_incoming(x, entry_label)?
         .add_incoming(x, entry_label)?;
     b.ret(phi.as_int_value())?;
@@ -51,7 +51,7 @@ fn verify_phi_predecessors_through_switch_passes() -> Result<(), IrError> {
 fn verify_phi_predecessors_through_switch_rejects_missing_edge() -> Result<(), IrError> {
     let m = crate::module_new!("phi_switch_bad")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let join = m.view(f).append_basic_block(&m, "join");
@@ -68,7 +68,7 @@ fn verify_phi_predecessors_through_switch_rejects_missing_edge() -> Result<(), I
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
-        .view(b.int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p"))
         .add_incoming(x, entry_label)?;
     b.ret(phi.as_int_value())?;
 
@@ -103,16 +103,16 @@ fn verify_phi_predecessors_through_invoke_passes() -> Result<(), IrError> {
     let m = crate::module_new!("phi_invoke_ok")?;
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let callee_ty = m.function_type(void_ty.as_type(), Vec::<crate::Type<'_, _>>::new());
+    let callee_ty = m.function_type(void_ty.as_type(), Vec::<crate::Type<'_, _>>::new())?;
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
-    let caller_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let caller_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", caller_ty, Linkage::External)?;
     // `personality ptr null`, the spelling
     // `test/Verifier/inline-asm-indirect-operand.ll` uses: the `Check` is
     // `F->hasPersonalityFn()`, which says nothing about what the personality
     // is.
     m.view(f)
-        .set_personality_fn(&m, m.ptr_type(0).const_null())?;
+        .set_personality_fn(&m, m.ptr_type_in::<0>().const_null())?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let join = m.view(f).append_basic_block(&m, "join");
     let unwind = m.view(f).append_basic_block(&m, "unwind");
@@ -142,7 +142,7 @@ fn verify_phi_predecessors_through_invoke_passes() -> Result<(), IrError> {
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
-        .view(b.int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p"))
         .add_incoming(x, entry_label)?;
     b.ret(phi.as_int_value())?;
 
@@ -157,16 +157,16 @@ fn verify_phi_predecessors_through_invoke_rejects_wrong_block() -> Result<(), Ir
     let m = crate::module_new!("phi_invoke_bad")?;
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let callee_ty = m.function_type(void_ty.as_type(), Vec::<crate::Type<'_, _>>::new());
+    let callee_ty = m.function_type(void_ty.as_type(), Vec::<crate::Type<'_, _>>::new())?;
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
-    let caller_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let caller_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", caller_ty, Linkage::External)?;
     // `personality ptr null`, the spelling
     // `test/Verifier/inline-asm-indirect-operand.ll` uses: the `Check` is
     // `F->hasPersonalityFn()`, which says nothing about what the personality
     // is.
     m.view(f)
-        .set_personality_fn(&m, m.ptr_type(0).const_null())?;
+        .set_personality_fn(&m, m.ptr_type_in::<0>().const_null())?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let join = m.view(f).append_basic_block(&m, "join");
     let unwind = m.view(f).append_basic_block(&m, "unwind");
@@ -200,7 +200,7 @@ fn verify_phi_predecessors_through_invoke_rejects_wrong_block() -> Result<(), Ir
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
-        .view(b.int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p"))
         .add_incoming(x, other_label)?;
     b.ret(phi.as_int_value())?;
 
@@ -233,14 +233,14 @@ fn verify_phi_predecessors_through_callbr_passes() -> Result<(), IrError> {
     // accepts. The callee is inline asm with one label constraint, matching
     // the one indirect destination — the shape `test/Verifier/callbr.ll`
     // spells `@correct_label_constraints`.
-    let asm_ty = m.function_type(void_ty.as_type(), Vec::<crate::Type<'_, _>>::new());
+    let asm_ty = m.function_type(void_ty.as_type(), Vec::<crate::Type<'_, _>>::new())?;
     let asm = m.inline_asm(
         asm_ty,
         "",
         "!i",
         crate::InlineAsmOptions::new().side_effects(),
     );
-    let caller_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let caller_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", caller_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let join = m.view(f).append_basic_block(&m, "join");
@@ -260,7 +260,7 @@ fn verify_phi_predecessors_through_callbr_passes() -> Result<(), IrError> {
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
-        .view(b.int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p"))
         .add_incoming(x, entry_label)?
         .add_incoming(x, entry_label)?;
     b.ret(phi.as_int_value())?;
@@ -282,14 +282,14 @@ fn verify_phi_predecessors_through_callbr_rejects_missing_edge() -> Result<(), I
     // accepts. The callee is inline asm with one label constraint, matching
     // the one indirect destination — the shape `test/Verifier/callbr.ll`
     // spells `@correct_label_constraints`.
-    let asm_ty = m.function_type(void_ty.as_type(), Vec::<crate::Type<'_, _>>::new());
+    let asm_ty = m.function_type(void_ty.as_type(), Vec::<crate::Type<'_, _>>::new())?;
     let asm = m.inline_asm(
         asm_ty,
         "",
         "!i",
         crate::InlineAsmOptions::new().side_effects(),
     );
-    let caller_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let caller_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", caller_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let join = m.view(f).append_basic_block(&m, "join");
@@ -309,7 +309,7 @@ fn verify_phi_predecessors_through_callbr_rejects_missing_edge() -> Result<(), I
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
-        .view(b.int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p"))
         .add_incoming(x, entry_label)?;
     b.ret(phi.as_int_value())?;
 
@@ -337,7 +337,7 @@ fn verify_phi_incoming_edge_dominance_fails() -> Result<(), IrError> {
     let m = crate::module_new!("dom_phi_bad")?;
     let i32_ty = m.i32_type();
     let bool_ty = m.bool_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), bool_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), bool_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let then_bb = m.view(f).append_basic_block(&m, "then");
@@ -360,7 +360,7 @@ fn verify_phi_incoming_edge_dominance_fails() -> Result<(), IrError> {
         .br(join_label)?;
     let bj = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bj
-        .view(bj.int_phi::<i32, _>("p")?)
+        .view(bj.int_phi::<i32, _>("p"))
         .add_incoming(x, then_label)?
         .add_incoming(y, else_label)?;
     bj.ret(phi.as_int_value())?;

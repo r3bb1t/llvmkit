@@ -1319,12 +1319,8 @@ fn replace_instruction_operand<'ctx, B: ModuleBrand + 'ctx>(
     operand.set(new_id);
     let module = user.module().core_ref();
     let edge = ValueUse::Instruction(user.slot_trusting_same_module());
-    let mut old_uses = module.context().value_data(old_id).use_list.borrow_mut();
-    if let Some(pos) = old_uses.iter().position(|candidate| *candidate == edge) {
-        old_uses.remove(pos);
-    }
-    drop(old_uses);
-    module.context().value_data(new_id).add_use(edge);
+    module.context().remove_use(old_id, edge);
+    module.context().add_use(new_id, edge);
     Ok(true)
 }
 
@@ -1452,7 +1448,6 @@ fn int_scalar_bit_width<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         | TypeKind::Array
         | TypeKind::Pointer { .. }
         | TypeKind::Struct
-        | TypeKind::TypedPointer
         | TypeKind::TargetExt => None,
     }
 }
@@ -1464,5 +1459,11 @@ fn value_scalar_size_in_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     if let Some(width) = int_scalar_bit_width(value.ty()) {
         return width;
     }
-    u32::try_from(dl.type_size_in_bits(erase_type(value.ty()))).unwrap_or(0)
+    // `DL.getTypeSizeInBits(T->getScalarType())`, read through `unsigned`. A
+    // scalar whose size is scalable, which upstream cannot convert, answers
+    // the 0 this has always answered a size that does not fit.
+    dl.type_size_in_bits(erase_type(value.ty().scalar_type()))
+        .fixed_value()
+        .and_then(|bits| u32::try_from(bits).ok())
+        .unwrap_or(0)
 }

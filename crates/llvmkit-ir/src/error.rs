@@ -18,6 +18,7 @@
 
 use core::fmt;
 
+use crate::addr_space::AddressSpace;
 use crate::instr_types::{CastOpcode, OperandBundleTag};
 
 /// Whether a failure indicates a bug in llvmkit.
@@ -92,8 +93,6 @@ pub enum TypeKindLabel {
     FixedVector,
     /// A scalable vector type (`<vscale x N x T>`).
     ScalableVector,
-    /// A typed (non-opaque) pointer type.
-    TypedPointer,
     /// A target extension type (`target("...")`).
     TargetExt,
 }
@@ -122,7 +121,6 @@ impl fmt::Display for TypeKindLabel {
             TypeKindLabel::Array => "array",
             TypeKindLabel::FixedVector => "fixed-vector",
             TypeKindLabel::ScalableVector => "scalable-vector",
-            TypeKindLabel::TypedPointer => "typed-pointer",
             TypeKindLabel::TargetExt => "target-ext",
         };
         f.write_str(s)
@@ -174,6 +172,56 @@ impl fmt::Display for TypePosition {
     }
 }
 
+/// A target type rule `TargetExtType::checkParams` (`lib/IR/Type.cpp`)
+/// enforces on the parameter counts of a named target type. `Display` is
+/// upstream's message, verbatim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TargetExtParameterRule {
+    /// `aarch64.svcount` takes no parameters.
+    Aarch64Svcount,
+    /// `riscv.vector.tuple` takes one type parameter and one integer parameter.
+    RiscvVectorTuple,
+    /// `amdgcn.named.barrier` takes no type parameters and one integer parameter.
+    AmdgcnNamedBarrier,
+}
+
+impl TargetExtParameterRule {
+    /// The rule `name` breaks with these parameter counts, if any — the
+    /// branches of `TargetExtType::checkParams`, in its order.
+    pub(crate) fn broken_by(name: &str, types: usize, ints: usize) -> Option<Self> {
+        match (name, types, ints) {
+            ("aarch64.svcount", types, ints) if types != 0 || ints != 0 => {
+                Some(Self::Aarch64Svcount)
+            }
+            ("riscv.vector.tuple", types, ints) if types != 1 || ints != 1 => {
+                Some(Self::RiscvVectorTuple)
+            }
+            ("amdgcn.named.barrier", types, ints) if types != 0 || ints != 1 => {
+                Some(Self::AmdgcnNamedBarrier)
+            }
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for TargetExtParameterRule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Aarch64Svcount => {
+                "target extension type aarch64.svcount should have no parameters"
+            }
+            Self::RiscvVectorTuple => {
+                "target extension type riscv.vector.tuple should have one type parameter and one \
+                 integer parameter"
+            }
+            Self::AmdgcnNamedBarrier => {
+                "target extension type amdgcn.named.barrier should have no type parameters and \
+                 one integer parameter"
+            }
+        })
+    }
+}
+
 /// A type's kind together with its printed form, captured where a diagnostic
 /// is raised.
 ///
@@ -192,8 +240,10 @@ impl fmt::Display for TypePosition {
 /// facts, so a public pair would make `RenderedType { kind: Integer, spelling:
 /// "float" }` writable — a representable state that no `Type` can produce, and
 /// the same disease the variants using this type exist to cure.
-/// [`Type::rendered`](crate::Type::rendered) is the only constructor;
-/// [`kind`](Self::kind) and [`spelling`](Self::spelling) read it back.
+/// [`Type::rendered`](crate::Type::rendered) is the public constructor;
+/// [`kind`](Self::kind) and [`spelling`](Self::spelling) read it back. A
+/// schema's type is rendered from its name alone (`of_named_struct`), so a
+/// check can name the type it wanted without creating it.
 ///
 /// llvmkit-specific: upstream passes a `Type *` into its `Twine` and prints it
 /// at render time, which needs the context llvmkit's errors deliberately do
@@ -206,11 +256,19 @@ pub struct RenderedType {
 }
 
 impl RenderedType {
-    /// Captures a type's kind and spelling. Crate-internal so that
-    /// [`Type::rendered`](crate::Type::rendered), which cannot produce a
-    /// disagreeing pair, stays the only way to build one.
+    /// Captures a type's kind and spelling. Crate-internal so that no caller
+    /// outside llvmkit can write a disagreeing pair.
     pub(crate) fn new(kind: TypeKindLabel, spelling: Box<str>) -> Self {
         Self { kind, spelling }
+    }
+
+    /// What [`Type::rendered`](crate::Type::rendered) answers for the
+    /// identified struct `%name`, with no such struct in hand.
+    pub(crate) fn of_named_struct(name: &str) -> Self {
+        Self::new(
+            TypeKindLabel::Struct,
+            crate::asm_writer::struct_name_spelling(name).into_boxed_str(),
+        )
     }
 
     /// The type's kind — branch on this rather than on the spelling.
@@ -1197,8 +1255,8 @@ impl DataLayoutError {
 /// Crate-wide error.
 ///
 /// Variants are added incrementally as new subsystems land, and the enum is
-/// **exhaustive**: a new variant is a breaking change, flagged in
-/// `CHANGELOG.md` under the pre-1.0 policy.
+/// **exhaustive**: a new variant is a breaking change, flagged as one (`!`)
+/// in its commit under the pre-1.0 policy.
 ///
 /// That is the deliberate trade. `#[non_exhaustive]` would make each addition
 /// non-breaking, but it does so by handing every downstream `match` a `_ =>`
@@ -1343,9 +1401,9 @@ pub enum IrError {
     #[error("pointer address space mismatch: expected addrspace({expected}), got addrspace({got})")]
     AddressSpaceMismatch {
         /// Address space the API required.
-        expected: u32,
+        expected: AddressSpace,
         /// Address space actually supplied.
-        got: u32,
+        got: AddressSpace,
     },
 
     /// `set_struct_body_dyn` called twice on the same named struct.
@@ -1368,6 +1426,23 @@ pub enum IrError {
     /// the question; `set_struct_body_dyn`'s `StructBodyDyn` marker erases it.
     #[error("a literal struct type has no settable body")]
     LiteralStructBodyNotSettable,
+
+    /// A name was set on a literal struct. Upstream's header says not to:
+    /// `StructType::setName` is documented "Do not call this on an literal
+    /// type", and a literal struct is uniqued by its shape, so it has no
+    /// identity for a name to attach to.
+    #[error("a literal struct type has no settable name")]
+    LiteralStructNameNotSettable,
+
+    /// A name was set on a struct a schema minted, or a whole check confirmed.
+    /// llvmkit-only: upstream has no schemas, and `StructType::setName` renames anything. A
+    /// `StructOf` or a `SchemaValue` proves its struct is `%S`, and the
+    /// infallible builds rest on that proof, so the name has to stay.
+    #[error("the struct type {name:?} is held by a schema and has no settable name")]
+    SchemaStructNameNotSettable {
+        /// Name of the struct the schema holds.
+        name: String,
+    },
 
     /// An identified struct's body reaches the struct being defined. Port of
     /// `StructType::checkBody` (`lib/IR/Type.cpp`), whose message this
@@ -1409,6 +1484,16 @@ pub enum IrError {
         position: TypePosition,
         /// The kind of the refused component type.
         kind: TypeKindLabel,
+    },
+
+    /// A named target type was given parameter counts its rule forbids —
+    /// `target("aarch64.svcount", i32)`. Mirrors the errors
+    /// `TargetExtType::checkParams` returns through `TargetExtType::getOrError`;
+    /// the message is upstream's.
+    #[error("{rule}")]
+    TargetExtTypeParameters {
+        /// The rule the counts break.
+        rule: TargetExtParameterRule,
     },
 
     /// A `shufflevector` mask whose length is not a vector lane count: empty,
@@ -2120,6 +2205,7 @@ impl IrError {
             | Self::AddressSpaceMismatch { .. }
             | Self::UnsizedType { .. }
             | Self::InvalidTypeComponent { .. }
+            | Self::TargetExtTypeParameters { .. }
             | Self::InvalidShuffleMaskLength { .. }
             | Self::InvalidCast { .. }
             | Self::NotIntOrPointerType { .. }
@@ -2131,6 +2217,8 @@ impl IrError {
             // Struct bodies the caller set, reset, or described inconsistently.
             Self::StructBodyAlreadySet { .. }
             | Self::LiteralStructBodyNotSettable
+            | Self::LiteralStructNameNotSettable
+            | Self::SchemaStructNameNotSettable { .. }
             | Self::RecursiveStructBody { .. }
             | Self::StructBodyMismatch { .. } => Blame::UsageError,
 

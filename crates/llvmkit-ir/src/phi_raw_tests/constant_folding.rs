@@ -15,13 +15,13 @@ fn phi_same_constant_folds() -> Result<(), IrError> {
     let m = crate::module_new!("analysis-phi")?;
     let dl = DataLayout::default();
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let entry_label = entry.id();
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let phi = b
-        .view(b.int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p"))
         .add_incoming(7_i32, entry_label)?
         .add_incoming(7_i32, entry_label)?;
     let instruction = InstructionView::try_from(phi.as_int_value().as_erased())?;
@@ -43,7 +43,7 @@ fn phi_poison_and_undef_incomings_fold_to_undef() -> Result<(), IrError> {
     let m = crate::module_new!("analysis-phi-poison-undef")?;
     let dl = DataLayout::default();
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let other = m.view(f).append_basic_block(&m, "other");
@@ -56,7 +56,7 @@ fn phi_poison_and_undef_incomings_fold_to_undef() -> Result<(), IrError> {
     // the *same* block is ill-formed (AmbiguousPhi); the folder arm under
     // test folds by value regardless of predecessor identity.
     let phi = b
-        .view(b.int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p"))
         .add_incoming(poison, entry_label)?
         .add_incoming(undef, other_label)?;
     let instruction = InstructionView::try_from(phi.as_int_value().as_erased())?;
@@ -74,7 +74,7 @@ fn phi_poison_beside_constant_folds_to_the_constant() -> Result<(), IrError> {
     let m = crate::module_new!("analysis-phi-poison-const")?;
     let dl = DataLayout::default();
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let other = m.view(f).append_basic_block(&m, "other");
@@ -86,7 +86,7 @@ fn phi_poison_beside_constant_folds_to_the_constant() -> Result<(), IrError> {
     // ill-formed (AmbiguousPhi); the poison-skipping folder arm folds by
     // value regardless of predecessor identity.
     let phi = b
-        .view(b.int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p"))
         .add_incoming(poison, entry_label)?
         .add_incoming(7_i32, other_label)?;
     let instruction = InstructionView::try_from(phi.as_int_value().as_erased())?;

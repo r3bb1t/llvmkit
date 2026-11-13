@@ -130,7 +130,7 @@ impl ApInt {
     }
 
     pub fn from_string(bit_width: u32, text: &str, radix: u8) -> IrResult<Self> {
-        if !matches!(radix, 2 | 8 | 10 | 16 | 36) {
+        if Radix::of(radix).is_none() {
             return Err(IrError::InvalidOperation {
                 message: "APInt string radix must be 2, 8, 10, 16, or 36",
             });
@@ -1758,9 +1758,11 @@ impl ApInt {
     }
 
     pub fn to_string_radix(&self, radix: u8, signedness: Signedness) -> String {
-        if !matches!(radix, 2 | 8 | 10 | 16 | 36) {
+        // Upstream asserts the radix is one of five; any other answers the
+        // empty string.
+        let Some(radix) = Radix::of(radix) else {
             return String::new();
-        }
+        };
         if matches!(signedness, Signedness::Signed) && self.is_negative() {
             let mut out = String::from("-");
             out.push_str(&self.negate().to_unsigned_string(radix));
@@ -1770,22 +1772,88 @@ impl ApInt {
         }
     }
 
-    fn to_unsigned_string(&self, radix: u8) -> String {
+    /// The digits of `APInt::toString`'s unsigned path. For radix 2, 8 and
+    /// 16 upstream shifts rather than divides ("the number of bits per digit
+    /// divides equally"), and so does this, reading each digit's bits off the
+    /// words. For 10 and 36 it divides by the radix through
+    /// `udivrem(Tmp, Radix, Tmp, Digit)`, a division by one word that costs
+    /// the dividend's active words; this divides the same way, by the largest
+    /// power of the radix that fits a word, and splits each remainder into
+    /// that many digits, which are the same digits.
+    fn to_unsigned_string(&self, radix: Radix) -> String {
         if self.is_zero() {
             return String::from("0");
         }
-        let radix_bits = 64u32.saturating_sub(u64::from(radix).leading_zeros());
-        let work_width = self.bit_width.max(radix_bits);
-        let divisor = Self::from_words(work_width, &[u64::from(radix)]);
-        let mut n = self.zext(work_width).unwrap_or_else(|| self.clone());
+        // `radix^per_chunk`, the largest power below `2^64`, for the two
+        // radices upstream divides by.
+        let (chunk, per_chunk) = match radix {
+            Radix::Binary => return self.shifted_digits(1),
+            Radix::Octal => return self.shifted_digits(3),
+            Radix::Hexadecimal => return self.shifted_digits(4),
+            Radix::Decimal => (10_000_000_000_000_000_000_u64, 19),
+            Radix::Base36 => (36_u64.pow(12), 12),
+        };
+        let radix = u64::from(radix.value());
+        let divisor = u128::from(chunk);
         let mut digits = Vec::new();
-        while !n.is_zero() {
-            let Some(qr) = n.udivrem(&divisor) else {
-                return String::new();
+        let mut words: Vec<u64> = self.words.to_vec();
+        loop {
+            while words.last() == Some(&0) {
+                words.pop();
+            }
+            if words.is_empty() {
+                break;
+            }
+            // `udivrem(Tmp, Radix, Tmp, Digit)`: most significant word first,
+            // each step dividing the running remainder and one word.
+            let mut remainder = 0_u128;
+            for word in words.iter_mut().rev() {
+                let current = (remainder << 64) | u128::from(*word);
+                // `current / divisor < 2^64`: the remainder before the shift
+                // is below the divisor.
+                *word = match u64::try_from(current / divisor) {
+                    Ok(quotient) => quotient,
+                    Err(_) => unreachable!(
+                        "invariant: the running remainder is below the divisor, so \
+                         (remainder << 64 | word) / divisor < 2^64"
+                    ),
+                };
+                remainder = current % divisor;
+            }
+            let mut remainder = match u64::try_from(remainder) {
+                Ok(remainder) => remainder,
+                Err(_) => unreachable!("invariant: a remainder is below the u64 divisor"),
             };
-            let digit = qr.remainder.try_zext_u64().unwrap_or(0);
-            digits.push(digit_char(u8::try_from(digit).unwrap_or(0)));
-            n = qr.quotient;
+            let last = words.iter().all(|word| *word == 0);
+            for _ in 0..per_chunk {
+                if last && remainder == 0 {
+                    break;
+                }
+                let digit = match u8::try_from(remainder % radix) {
+                    Ok(digit) => digit,
+                    Err(_) => unreachable!("invariant: a digit is below the radix, at most 36"),
+                };
+                digits.push(digit_char(digit));
+                remainder /= radix;
+            }
+        }
+        digits.iter().rev().collect()
+    }
+
+    /// `while (Tmp.getBoolValue()) { Digit = Tmp.getRawData()[0] & MaskAmt;
+    /// …; Tmp.lshrInPlace(ShiftAmt); }` for radix 2, 8 and 16, without the
+    /// shifts: digit `n` is bits `n * shift ..` of the value.
+    fn shifted_digits(&self, shift: u32) -> String {
+        let active_bits = self.active_bits();
+        let mut digits = Vec::new();
+        let mut bit = 0;
+        while bit < active_bits {
+            let mut digit = 0_u8;
+            for offset in (0..shift).rev() {
+                digit = (digit << 1) | u8::from(self.bit(bit + offset));
+            }
+            digits.push(digit_char(digit));
+            bit += shift;
         }
         digits.iter().rev().collect()
     }
@@ -2132,6 +2200,39 @@ fn digit_value(ch: char) -> Option<u8> {
         'a'..='z' => u8::try_from(u32::from(ch) - u32::from('a') + 10).ok(),
         'A'..='Z' => u8::try_from(u32::from(ch) - u32::from('A') + 10).ok(),
         _ => None,
+    }
+}
+
+/// The five radices `APInt::toString` accepts.
+#[derive(Clone, Copy)]
+enum Radix {
+    Binary,
+    Octal,
+    Decimal,
+    Hexadecimal,
+    Base36,
+}
+
+impl Radix {
+    fn of(radix: u8) -> Option<Self> {
+        Some(match radix {
+            2 => Self::Binary,
+            8 => Self::Octal,
+            10 => Self::Decimal,
+            16 => Self::Hexadecimal,
+            36 => Self::Base36,
+            _ => return None,
+        })
+    }
+
+    fn value(self) -> u8 {
+        match self {
+            Self::Binary => 2,
+            Self::Octal => 8,
+            Self::Decimal => 10,
+            Self::Hexadecimal => 16,
+            Self::Base36 => 36,
+        }
     }
 }
 

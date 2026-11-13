@@ -23,7 +23,7 @@ use llvmkit_ir::{BinaryOpcode, IntBinOpFlags, IrBuilder, IrError, Linkage, NoFol
 fn rauw_repoints_instruction_operands() -> Result<(), IrError> {
     let m = module_new!("fwd-instruction")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -62,7 +62,7 @@ fn rauw_reinterns_constant_users() -> Result<(), IrError> {
     let m = module_new!("fwd-constant")?;
     let i32_ty = m.i32_type();
     let array_ty = m.array_type_n::<i32, 2>();
-    let fn_ty = m.function_type(array_ty.as_type(), [i32_ty.as_type()]);
+    let fn_ty = m.function_type(array_ty.as_type(), [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -99,7 +99,7 @@ fn rauw_reinterns_constant_users() -> Result<(), IrError> {
 fn rauw_survives_a_self_reference() -> Result<(), IrError> {
     let m = module_new!("fwd-self")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -190,7 +190,7 @@ fn a_global_initializer_is_a_use() -> Result<(), IrError> {
 #[test]
 fn rauw_reaches_a_global_initializer() -> Result<(), IrError> {
     let m = module_new!("global-field-rauw")?;
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let placeholder = m.forward_ref_value_placeholder(ptr_ty.as_type())?;
     let holder = m.add_global("holder", placeholder.as_constant())?;
 
@@ -220,7 +220,7 @@ fn rauw_reaches_a_global_initializer() -> Result<(), IrError> {
 fn rauw_reaches_an_alias_target() -> Result<(), IrError> {
     let m = module_new!("alias-field-rauw")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let placeholder = m.forward_ref_value_placeholder(ptr_ty.as_type())?;
     let alias = m
         .alias_builder("a", i32_ty.as_type(), placeholder.as_constant())
@@ -248,7 +248,7 @@ fn rauw_inside_a_constant_rejects_a_non_constant_replacement() -> Result<(), IrE
     let m = module_new!("fwd-constant-mismatch")?;
     let i32_ty = m.i32_type();
     let array_ty = m.array_type_n::<i32, 2>();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     m.view(f).append_basic_block(&m, "entry");
 
@@ -260,6 +260,53 @@ fn rauw_inside_a_constant_rejects_a_non_constant_replacement() -> Result<(), IrE
             .replace_all_uses_with(m.view(f).param(0)?.as_erased())
             .is_err(),
         "an argument cannot stand in a constant aggregate"
+    );
+    Ok(())
+}
+
+/// A placeholder resolved to the other lane of a `ConstantVector` makes the
+/// list a splat, and the vector is updated where it stands: its users keep
+/// their order. Upstream's `ConstantVector::handleOperandChangeImpl` asks
+/// `getImpl`, which answers `nullptr` for `ptr` lanes, so
+/// `replaceOperandsInPlace` updates the vector in place (no equal vector
+/// exists) and no user moves. llvmkit stores the result as a one-operand
+/// splat, so the in-place test must see past the operand count.
+///
+/// **No upstream counterpart** at this layer (see the module comment).
+#[test]
+fn a_vector_made_a_splat_by_rauw_keeps_its_users_in_order() -> Result<(), IrError> {
+    let m = module_new!("fwd-splat")?;
+    let ptr_ty = m.ptr_type_in::<0>();
+    let target = m.add_global("target", m.i32_type().const_int(1))?;
+    let target_ptr = m.view(target).as_global_constant_ptr();
+    let placeholder = m.forward_ref_value_placeholder(ptr_ty.as_type())?;
+    let vector_ty = m.vector_type(ptr_ty.as_type(), llvmkit_ir::lanes::<2>())?;
+    let list = vector_ty
+        .const_vector([target_ptr, placeholder.as_constant()])?
+        .as_constant();
+    let no_params: [llvmkit_ir::Type<'_, _>; 0] = [];
+    let fn_ty = m.function_type(vector_ty.as_type(), no_params)?;
+    for name in ["first", "second", "third"] {
+        let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        IrBuilder::with_folder(&m, NoFolder)
+            .position_at_end(entry)
+            .ret(list)?;
+    }
+    let before: Vec<_> = list.as_erased().users().map(|user| user.parent()).collect();
+
+    placeholder.replace_all_uses_with(target_ptr.as_erased())?;
+
+    let splat = vector_ty.const_splat(target_ptr)?.as_constant();
+    let after: Vec<_> = splat
+        .as_erased()
+        .users()
+        .map(|user| user.parent())
+        .collect();
+    assert_eq!(after, before);
+    assert!(
+        format!("{m}").contains("ret <2 x ptr> <ptr @target, ptr @target>"),
+        "{m}"
     );
     Ok(())
 }

@@ -36,7 +36,7 @@ fn build_dead_add<'ctx, B: ModuleBrand + 'ctx>(
     m: &'ctx Module<B, Unverified>,
 ) -> Result<FunctionId<Dyn, B>, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let b = IrBuilder::with_folder(m, NoFolder).position_at_end(entry);
@@ -51,7 +51,7 @@ fn build_ret_i32<'ctx, B: ModuleBrand + 'ctx>(
     m: &'ctx Module<B, Unverified>,
 ) -> Result<FunctionId<Dyn, B>, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
@@ -65,7 +65,7 @@ fn build_ret_i32<'ctx, B: ModuleBrand + 'ctx>(
 /// hides.
 fn erase_dead_instructions<'m, 'ctx, B: ModuleBrand + 'ctx>(
     patch: &mut FnPatch<'m, '_, 'ctx, B, ()>,
-) -> IrResult<()> {
+) {
     let mut dead: Vec<InstructionView<'m, B, ReadOnly>> = Vec::new();
     for block in patch.function_mut().basic_blocks() {
         for view in block.instructions() {
@@ -81,7 +81,6 @@ fn erase_dead_instructions<'m, 'ctx, B: ModuleBrand + 'ctx>(
                 .expect("filtered to non-terminators"),
         );
     }
-    Ok(())
 }
 
 /// Meta reader: yields a function pass's `NAME`/`REQUIRED` consts. The `witness`
@@ -116,7 +115,7 @@ struct MacroEraser;
 impl MacroEraser {
     fn run(&mut self, cx: FnCx<Self>) -> IrResult<FnReport> {
         let mut patch = cx.mutate();
-        erase_dead_instructions(&mut patch)?;
+        erase_dead_instructions(&mut patch);
         Ok(patch.done())
     }
 }
@@ -135,7 +134,7 @@ impl<B: ModuleBrand> FunctionPass<B> for HandEraser {
         Self: 'ctx,
     {
         let mut patch = cx.mutate();
-        erase_dead_instructions(&mut patch)?;
+        erase_dead_instructions(&mut patch);
         Ok(patch.done())
     }
 }

@@ -68,6 +68,25 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/ir_struct_accessor_type_mismatch.rs");
     t.compile_fail("tests/compile_fail/ir_struct_cross_module_brand.rs");
     t.compile_fail("tests/compile_fail/ir_struct_try_from_cross_module_brand.rs");
+    // A derived schema names its struct: an empty `name` is the derive's error.
+    t.compile_fail("tests/compile_fail/ir_struct_empty_name.rs");
+    // A field kind's `Layout` is a sealed `FieldLayout`, or it does not compile.
+    t.compile_fail("tests/compile_fail/field_layout_not_a_layout.rs");
+    // A hand-written schema's empty `NAME` is a const-evaluation error when its
+    // type is minted (needs this harness's build mode).
+    t.compile_fail("tests/compile_fail/schema_name_empty.rs");
+    // A derived field reads without `?` on a `UniqueBrand` module only, and
+    // through llvmkit's own folders only.
+    t.compile_fail("tests/compile_fail/field_read_on_dyn_brand.rs");
+    t.compile_fail("tests/compile_fail/field_read_with_custom_folder.rs");
+    // A build without `?` takes view handles of the field's own type only:
+    // no `SpaceDyn` pointer for a `Ptr` field, no storable id.
+    t.compile_fail("tests/compile_fail/build_with_dyn_pointer.rs");
+    t.compile_fail("tests/compile_fail/try_build_with_dyn_pointer.rs");
+    t.compile_fail("tests/compile_fail/type_size_has_no_order.rs");
+    t.compile_fail("tests/compile_fail/data_layout_takes_an_address_space.rs");
+    t.compile_fail("tests/compile_fail/build_with_id.rs");
+    t.compile_fail("tests/compile_fail/typed_pointer_is_not_an_ir_type.rs");
     t.compile_fail("tests/compile_fail/cross_module_value_brand.rs");
     t.compile_fail("tests/compile_fail/cross_module_global_initializer_brand.rs");
     t.compile_fail("tests/compile_fail/cross_module_branch_target.rs");
@@ -259,6 +278,9 @@ fn typestate_compile_fail() {
     // reported everything preserved. The token is now required, matching the
     // metadata setters on `FunctionValue`/`GlobalVariable` and `set_name`.
     t.compile_fail("tests/compile_fail/verified_module_metadata_is_immutable.rs");
+    t.compile_fail("tests/compile_fail/verified_module_cannot_mint_a_schema_struct.rs");
+    t.compile_fail("tests/compile_fail/verified_module_cannot_create_an_identified_struct.rs");
+    t.compile_fail("tests/compile_fail/address_space_past_24_bits.rs");
     // Capability typestate (D1, D8): a verified module's value is `ReadOnly`,
     // and a `ReadOnly` handle has no setter — even beside a second module's
     // mutation token of the same brand, which the run-time id check alone

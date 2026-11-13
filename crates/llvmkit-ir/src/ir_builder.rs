@@ -67,7 +67,7 @@ use super::function::{FunctionValue, IntoCallee};
 use super::function_signature::token::ValidatedFunctionParams;
 use super::function_signature::{
     CallArgs, FunctionParamList, FunctionReturn, FunctionSignature, IntoTypedCallee,
-    IntoVarArgsCallee, TypedFunctionValue,
+    IntoVarArgsCallee, TypedFunctionValue, plan_signature_mint,
 };
 use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::inline_asm::InlineAsm;
@@ -102,7 +102,7 @@ use super::int_width::{IntDyn, IntWidth, IntoIntValue, StaticIntWidth};
 use super::intrinsic_inst::IntrinsicInst;
 use super::intrinsics::{BinaryIntrinsic, IntrinsicDescriptor, IntrinsicId};
 use super::ir_builder::constant_folder::ConstantFolder;
-use super::ir_builder::folder::IrBuilderFolder;
+use super::ir_builder::folder::{IrBuilderFolder, TrustedFolder};
 use super::marker::ExpectedRetKind;
 use super::marker::{Dyn, Ptr, ReturnMarker};
 use super::module::{
@@ -110,7 +110,10 @@ use super::module::{
     Unverified,
 };
 use super::struct_body_state::StructBodyDyn;
-use super::struct_schema::{FieldOf, IntoIrField, IrField, StructFieldAt, StructSchema};
+use super::struct_schema::{
+    FieldArg, FieldLayout, FieldOf, IntoIrField, IrField, SchemaValue, StructFieldAt, StructOf,
+    StructSchema, StructSchemaValue,
+};
 use super::sync_scope::SyncScope;
 use super::term_open_state::{Closed, Open};
 use super::r#type::TypeSlotAccess;
@@ -118,7 +121,7 @@ use super::r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeSlot
 use super::typed_pointer_value::TypedPointerValue;
 use super::value::{
     ArrayValue, FloatValue, IntValue, IntoErasedValue, IntoPointerValue, IsValue, PointerValue,
-    Value, ValueKindData, ValueSlot, ValueSlotAccess, ValueUse, VectorValue,
+    StructValue, Value, ValueKindData, ValueSlot, ValueSlotAccess, ValueUse, VectorValue,
 };
 use super::value_id::{
     AtomicCmpXchgInstId, AtomicRmwInstId, BlockId, CallInstId, FloatValueId, FpPhiInstId,
@@ -811,8 +814,8 @@ where
     }
 
     /// The builder's [`ModuleView`], which is how it reaches the
-    /// user-implementable schema traits ([`IrField::ir_type`],
-    /// [`StructSchema::ir_type`], [`FunctionReturn::ir_type`], …).
+    /// user-implementable typed-signature traits ([`FunctionReturn::ir_type`],
+    /// `FunctionParam::ir_type`, …).
     ///
     /// Those traits used to be declared against `&Module<Unverified>`, and the
     /// builder — which stores only `&'ctx ModuleCore`, because
@@ -856,23 +859,25 @@ where
         Ok(Type::new(slot, self.mutable_ref()))
     }
 
-    /// [`IrField::ir_type`] for `T`.
+    /// The type of field kind `T`, minted in this builder's module from its
+    /// layout — so it needs no admission.
     #[inline]
     fn schema_ir_type<T>(&self) -> IrResult<Type<'ctx, B>>
     where
         T: IrField,
     {
-        self.admit_type(T::ir_type(self.schema_view())?)
+        self.mutable_ref().mint_layout::<T::Layout>()
     }
 
-    /// [`StructSchema::ir_type`] for `S`.
+    /// Schema `S`'s struct type, minted in this builder's module.
     #[inline]
     fn schema_struct_type<Sch>(&self) -> IrResult<StructType<'ctx, StructBodyDyn, B>>
     where
         Sch: StructSchema,
     {
-        let ty = self.admit_type(Sch::ir_type(self.schema_view())?)?;
-        Ok(StructType::new(ty.slot_trusting_same_module(), ty.module))
+        let module = self.mutable_ref();
+        let ty = module.mint_layout::<Sch>()?;
+        Ok(StructType::new(ty.slot_trusting_same_module(), module))
     }
 
     /// Position the builder at the end of the block named by a storable
@@ -1189,8 +1194,7 @@ where
         // Register phi as a user of the incoming value.
         self.module
             .context()
-            .value_data(val_id)
-            .add_use(ValueUse::Instruction(phi_id));
+            .add_use(val_id, ValueUse::Instruction(phi_id));
         Ok(())
     }
 
@@ -1224,10 +1228,7 @@ where
         };
         let id = self.module.context().push_value(value);
         for op in operand_ids {
-            self.module
-                .context()
-                .value_data(op)
-                .add_use(ValueUse::Instruction(id));
+            self.module.context().add_use(op, ValueUse::Instruction(id));
         }
         let label_ty = self
             .module
@@ -1392,7 +1393,8 @@ where
         // Build the parameter IR types first, so a failure here appends no
         // block (the erased sibling admits its `&[Type]` up front for the
         // same reason).
-        let param_types = Params::ir_types(self.schema_view())?;
+        plan_signature_mint::<(), Params, B>(self.mutable_ref())?;
+        let param_types = Params::ir_types(self.mutable_ref())?;
         let bb = function.append_basic_block_unchecked(name);
         // Internal: the block was minted in this module just above.
         let bb_id = bb.slot_trusting_same_module();
@@ -3889,20 +3891,197 @@ where
             &[index],
         )?;
         let leaf = Type::<B, ReadOnly>::new(leaf_ty, self.module);
-        if !Field::matches_ir_type(leaf) {
-            // `matches_ir_type` is finer than the kind for every schema marker
-            // that has structure — an integer marker compares the width, a
-            // struct schema compares the name — so a rejection whose kind
-            // agrees is reachable, and `expected_kind_label` alone rendered
-            // "expected integer, got integer". `ir_type` is the schema's own
-            // type, which is what the check actually compares against.
+        if !<Field::Layout as FieldLayout>::matches_type(leaf, CrateOnly(())) {
+            // The layout match is finer than the kind for every layout that
+            // has structure — an integer layout compares the width, a struct
+            // schema compares the name — so a rejection whose kind agrees is
+            // reachable, and `expected_kind_label` alone rendered "expected
+            // integer, got integer". The layout's own type is what the check
+            // actually compares against.
             return Err(IrError::TypeIdentityMismatch {
-                expected: Field::ir_type(ModuleView::<B>::new(self.module))?.rendered(),
+                expected: <Field::Layout as FieldLayout>::rendered(leaf.module, CrateOnly(())),
                 got: leaf.rendered(),
             });
         }
+        // The value this answers with proves the leaf is the layout's type.
+        <Field::Layout as FieldLayout>::hold_type(leaf, CrateOnly(()));
         let raw = self.view(self.extract_value(aggregate, [index], name)?);
-        Field::value_from_ir_value(raw)
+        // The read has the leaf's type — `extract_value` refuses a fold of
+        // any other — and the leaf is the layout's type.
+        Ok(Field::wrap(<Field::Layout as FieldLayout>::value_of(
+            raw,
+            CrateOnly(()),
+        )))
+    }
+
+    /// Read field `I` of a schema value — `extractvalue %S %aggregate, I`,
+    /// folded by the builder's folder — with no `Result`. The derived
+    /// getters' entry: a struct's `point.x(&b)` is
+    /// `b.read_field::<Point, 0, _>(…)`.
+    ///
+    /// Nothing here can fail. The aggregate needs no admission: the registry
+    /// keeps one live module per [`UniqueBrand`](crate::UniqueBrand) brand, and
+    /// both this builder and `aggregate` borrow a live module of brand `B`, so
+    /// they borrow the same one. The index needs no check: `aggregate` is a
+    /// [`SchemaValue`] of `S`, so its type has `S`'s body, which has field `I`
+    /// ([`StructFieldAt`] is implemented only for an index in range) of
+    /// [`FieldOf<S, I>`]'s layout. And the folder is one of llvmkit's own
+    /// ([`TrustedFolder`]), whose field fold is of that type by construction.
+    /// Mirrors `IRBuilderBase::CreateExtractValue`, which always consults its
+    /// folder (`Folder.FoldExtractValue`) first. Any brand and any folder read
+    /// through [`extract_field`](Self::extract_field) instead, which checks.
+    pub fn read_field<S, const I: u32, Name>(
+        &self,
+        aggregate: SchemaValue<'ctx, S, B, impl Capability>,
+        name: Name,
+    ) -> <FieldOf<S, I> as IrField>::Value<'ctx, B, Mutable>
+    where
+        S: StructSchema,
+        S::Fields: StructFieldAt<I>,
+        B: crate::UniqueBrand,
+        F: TrustedFolder<'ctx, B>,
+        Name: AsRef<str>,
+    {
+        // The `UniqueBrand` argument above: `aggregate` is a value of this
+        // builder's module, so it is re-minted here with no module check.
+        let aggregate = aggregate
+            .as_erased()
+            .reminted_trusting_same_module(self.mutable_ref());
+        let read = match self.folder.fold_field(aggregate, I, CrateOnly(())) {
+            Some(folded) => folded,
+            None => {
+                // Internal: `aggregate` is this module's (the argument above).
+                let leaf_ty = walk_aggregate_for_builder(
+                    self.module,
+                    aggregate.ty().slot_trusting_same_module(),
+                    &[I],
+                )
+                .unwrap_or_else(|_| {
+                    unreachable!("a SchemaValue<S> has S's body, which has field I")
+                });
+                let payload =
+                    ExtractValueInstData::new(aggregate.slot_trusting_same_module(), vec![I]);
+                self.append_instruction(leaf_ty, InstructionKindData::ExtractValue(payload), name)
+                    .to_erased()
+            }
+        };
+        // The read has field `I`'s type — the element of `S`'s body, or a
+        // trusted fold of it — and that is `FieldOf<S, I>`'s layout type.
+        <FieldOf<S, I> as IrField>::wrap(
+            <<FieldOf<S, I> as IrField>::Layout as FieldLayout>::value_of(read, CrateOnly(())),
+        )
+    }
+
+    /// `poison` of schema `S`'s struct type — the aggregate a derived build
+    /// starts from — with no `Result`. The type needs no admission: the
+    /// registry keeps one live module per [`UniqueBrand`](crate::UniqueBrand)
+    /// brand, and both this builder and `of` borrow a live module of brand
+    /// `B`. Any brand goes through [`try_struct_poison`](Self::try_struct_poison).
+    pub fn struct_poison<S>(
+        &self,
+        of: StructOf<'ctx, S, B, impl Capability>,
+    ) -> SchemaValue<'ctx, S, B, Mutable>
+    where
+        S: StructSchema,
+        B: crate::UniqueBrand,
+    {
+        // The `UniqueBrand` argument above: `of` is a type of this builder's
+        // module, so it is re-minted here with no module check.
+        let ty =
+            Type::<B, Mutable>::new(of.as_type().slot_trusting_same_module(), self.mutable_ref());
+        Self::schema_poison(ty)
+    }
+
+    /// `poison` of schema `S`'s struct type, `of` admitted at this builder's
+    /// module first.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::ForeignType`] when another module minted `of`.
+    pub fn try_struct_poison<S>(
+        &self,
+        of: StructOf<'ctx, S, B, impl Capability>,
+    ) -> IrResult<SchemaValue<'ctx, S, B, Mutable>>
+    where
+        S: StructSchema,
+    {
+        // Boundary: the caller's struct type, admitted against this module.
+        let slot = of.as_type().slot_in(self.module.id())?;
+        Ok(Self::schema_poison(Type::<B, Mutable>::new(
+            slot,
+            self.mutable_ref(),
+        )))
+    }
+
+    /// `poison` of `ty`, which is `%S` with `S`'s body — the one proof
+    /// `struct_poison` and `try_struct_poison` share.
+    fn schema_poison<S: StructSchema>(
+        ty: Type<'ctx, B, Mutable>,
+    ) -> SchemaValue<'ctx, S, B, Mutable> {
+        SchemaValue::new_unchecked(StructValue::from_value_unchecked(ty.poison().as_erased()))
+    }
+
+    /// Write field `I` of a schema value — `insertvalue %S %aggregate, %value,
+    /// I`, folded by the builder's folder — with no `Result`. The derived
+    /// builds' step: `point.build(&b, x, 7_i32, "p")` is a
+    /// [`struct_poison`](Self::struct_poison) and one `write_field` per field.
+    ///
+    /// Nothing here can fail, by [`read_field`](Self::read_field)'s argument:
+    /// `aggregate` and the lowered `value` are this builder's module's, as a
+    /// [`UniqueBrand`](crate::UniqueBrand) brand's two live values are; field
+    /// `I` is in range of `S`'s body ([`StructFieldAt`]); `value` is of field
+    /// `I`'s layout type, because a [`FieldArg`] lowers only to a
+    /// [`LoweredField`](crate::LoweredField) of that layout, and a nested
+    /// schema's struct cannot have moved off its name
+    /// ([`IrError::SchemaStructNameNotSettable`]); and the folder is one of
+    /// llvmkit's own ([`TrustedFolder`]), whose fold rebuilds `aggregate`'s type. Mirrors
+    /// `IRBuilderBase::CreateInsertValue`, which consults its folder
+    /// (`Folder.FoldInsertValue`) first. Any brand, any folder and any
+    /// argument its field admits write through
+    /// [`insert_field`](Self::insert_field) instead, which checks.
+    pub fn write_field<S, const I: u32, Arg, Name>(
+        &self,
+        aggregate: SchemaValue<'ctx, S, B, impl Capability>,
+        value: Arg,
+        name: Name,
+    ) -> SchemaValue<'ctx, S, B, Mutable>
+    where
+        S: StructSchema,
+        S::Fields: StructFieldAt<I>,
+        B: crate::UniqueBrand,
+        F: TrustedFolder<'ctx, B>,
+        Arg: FieldArg<'ctx, <FieldOf<S, I> as IrField>::Layout, B>,
+        Name: AsRef<str>,
+    {
+        let module = self.mutable_ref();
+        // The `UniqueBrand` argument above: `aggregate` is a value of this
+        // builder's module, so it is re-minted here with no module check.
+        let aggregate = aggregate.as_erased().reminted_trusting_same_module(module);
+        let value = value.lower(module).value();
+        let written = match self
+            .folder
+            .fold_field_insert(aggregate, value, I, CrateOnly(()))
+        {
+            Some(folded) => folded,
+            None => {
+                // Internal: `aggregate` and `value` are this module's (the
+                // argument above).
+                let payload = InsertValueInstData::new(
+                    aggregate.slot_trusting_same_module(),
+                    value.slot_trusting_same_module(),
+                    vec![I],
+                );
+                self.append_instruction(
+                    aggregate.ty().slot_trusting_same_module(),
+                    InstructionKindData::InsertValue(payload),
+                    name,
+                )
+                .to_erased()
+            }
+        };
+        // The write has `aggregate`'s type — the instruction's result type,
+        // or a trusted fold that rebuilds it — and that is `S`'s.
+        SchemaValue::new_unchecked(StructValue::from_value_unchecked(written))
     }
 
     /// Insert a typed field value into a named-struct schema aggregate.
@@ -3924,7 +4103,15 @@ where
         let aggregate = aggregate.into_ir_field(module)?;
         let value = value.into_ir_field(module)?;
         let raw = self.view(self.insert_value(aggregate, value, [index], name)?);
-        <S as IrField>::value_from_ir_value(raw)
+        // `IntoLayoutValue` is open — the derive implements it in the user's
+        // crate — so an aggregate lift may hand back a struct of another type;
+        // the result is checked against `S` before it is wrapped.
+        Ok(<S::Value<'ctx, B, Mutable> as StructSchemaValue<
+            'ctx,
+            S,
+            B,
+            Mutable,
+        >>::from_schema_value(SchemaValue::try_new(raw)?))
     }
 
     // ---- Vector ops: extractelement / insertelement / shufflevector ----
@@ -4400,13 +4587,13 @@ where
 
     /// Produce `fence <ordering>` (or
     /// `fence syncscope("...") <ordering>`). Mirrors
-    /// `IRBuilder::CreateFence`.
+    /// `IRBuilder::CreateFence`, which cannot fail.
     pub fn fence<Name>(
         &self,
         ordering: AtomicOrdering,
         sync_scope: SyncScope,
         name: Name,
-    ) -> IrResult<FenceInst<'ctx, B>>
+    ) -> FenceInst<'ctx, B>
     where
         Name: AsRef<str>,
     {
@@ -4417,11 +4604,11 @@ where
             .as_type()
             .slot_trusting_same_module();
         let inst = self.append_instruction(void_ty, InstructionKindData::Fence(payload), name);
-        Ok(FenceInst::from_raw(
+        FenceInst::from_raw(
             inst.to_erased().slot_trusting_same_module(),
             self.mutable_ref(),
             void_ty,
-        ))
+        )
     }
 
     /// Produce `cmpxchg [weak] [volatile] <ptr-ty> <ptr>, <cmp-ty> <cmp>,
@@ -4920,7 +5107,7 @@ where
 
     /// The DataLayout alloca address space (`IRBuilder::CreateAlloca` uses
     /// `getAllocaAddrSpace`).
-    fn alloca_addr_space(&self) -> u32 {
+    fn alloca_addr_space(&self) -> crate::AddressSpace {
         self.module.data_layout().alloca_addr_space()
     }
 
@@ -4939,7 +5126,7 @@ where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
     {
-        self.alloca_inner(
+        Ok(self.alloca_inner(
             // Boundary: the caller's allocated type.
             ty.slot_in(self.module.id())?,
             None,
@@ -4947,7 +5134,7 @@ where
             self.mutable_ref().ptr_type_in::<N>(),
             AllocaFlags::none(),
             name,
-        )
+        ))
     }
 
     /// Produce `alloca <ty>`. Mirrors `IRBuilder::CreateAlloca`.
@@ -4961,7 +5148,7 @@ where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
     {
-        self.alloca_inner(
+        Ok(self.alloca_inner(
             // Boundary: the caller's allocated type.
             ty.slot_in(self.module.id())?,
             None,
@@ -4969,7 +5156,7 @@ where
             self.mutable_ref().ptr_type(self.alloca_addr_space()),
             AllocaFlags::none(),
             name,
-        )
+        ))
     }
 
     /// Produce `alloca <ty>, <size-ty> <num_elements>`. Mirrors
@@ -4986,7 +5173,7 @@ where
         N: IntoIntValue<'ctx, IntDyn, B>,
     {
         let n = num_elements.into_int_value(self.mutable_ref())?;
-        self.alloca_inner(
+        Ok(self.alloca_inner(
             // Boundary: the caller's allocated type.
             ty.slot_in(self.module.id())?,
             Some(n.slot_trusting_same_module()),
@@ -4994,7 +5181,7 @@ where
             self.mutable_ref().ptr_type(self.alloca_addr_space()),
             AllocaFlags::none(),
             name,
-        )
+        ))
     }
 
     /// Produce `alloca <ty>, <size-ty> <num_elements>, align <N>`. The
@@ -5012,7 +5199,7 @@ where
         N: IntoIntValue<'ctx, IntDyn, B>,
     {
         let n = num_elements.into_int_value(self.mutable_ref())?;
-        self.alloca_inner(
+        Ok(self.alloca_inner(
             // Boundary: the caller's allocated type.
             ty.slot_in(self.module.id())?,
             Some(n.slot_trusting_same_module()),
@@ -5020,7 +5207,7 @@ where
             self.mutable_ref().ptr_type(self.alloca_addr_space()),
             AllocaFlags::none(),
             name,
-        )
+        ))
     }
 
     /// Produce `alloca <ty>, align <N>`. Mirrors
@@ -5035,7 +5222,7 @@ where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
     {
-        self.alloca_inner(
+        Ok(self.alloca_inner(
             // Boundary: the caller's allocated type.
             ty.slot_in(self.module.id())?,
             None,
@@ -5043,7 +5230,7 @@ where
             self.mutable_ref().ptr_type(self.alloca_addr_space()),
             AllocaFlags::none(),
             name,
-        )
+        ))
     }
 
     /// The alloca's result pointer type `ptr_ty` names its address space; the
@@ -5057,7 +5244,7 @@ where
         ptr_ty: PointerType<'ctx, A, B>,
         flags: AllocaFlags,
         name: N,
-    ) -> IrResult<PointerValueId<A, B>>
+    ) -> PointerValueId<A, B>
     where
         N: AsRef<str>,
     {
@@ -5072,9 +5259,8 @@ where
         };
         let payload =
             AllocaInstData::new_with_flags(allocated_ty, num_elements, align, addr_space, flags);
-        Ok(self
-            .append_ptr(ptr_ty, InstructionKindData::Alloca(payload), name)
-            .id())
+        self.append_ptr(ptr_ty, InstructionKindData::Alloca(payload), name)
+            .id()
     }
 
     /// Builder-pattern `alloca` construction: array size, alignment,
@@ -5092,7 +5278,7 @@ where
     ///
     /// let m = module_new!("allocas")?;
     /// let i32_ty = m.i32_type();
-    /// let fn_ty = m.function_type(m.void_type(), [i32_ty.as_type()]);
+    /// let fn_ty = m.function_type(m.void_type(), [i32_ty.as_type()])?;
     /// let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     /// let entry = m.view(f).append_basic_block(&m, "entry");
     /// let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -5168,7 +5354,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.load_inner(payload, name)?;
+        let inst = self.load_inner(payload, name);
         Ok(inst.to_erased().id())
     }
 
@@ -5197,7 +5383,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.load_inner(payload, name)?;
+        let inst = self.load_inner(payload, name);
         Ok(inst.to_erased().id())
     }
 
@@ -5220,7 +5406,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        self.append_int_load(ty, payload, name).map(|v| v.id())
+        Ok(self.append_int_load(ty, payload, name).id())
     }
 
     /// Runtime-width integer load. Takes the type explicitly because
@@ -5248,7 +5434,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        self.append_int_load(ty, payload, name).map(|v| v.id())
+        Ok(self.append_int_load(ty, payload, name).id())
     }
 
     /// Typed float load: `load <fpty>, ptr <ptr>`. Marker-only.
@@ -5268,7 +5454,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        self.append_fp_load(ty, payload, name).map(|v| v.id())
+        Ok(self.append_fp_load(ty, payload, name).id())
     }
 
     /// Runtime-kind float load. Takes the type explicitly because
@@ -5296,7 +5482,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        self.append_fp_load(ty, payload, name).map(|v| v.id())
+        Ok(self.append_fp_load(ty, payload, name).id())
     }
 
     /// Pointer-typed load: `load ptr, ptr <ptr>`. The loaded pointer is in
@@ -5335,7 +5521,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        self.append_ptr_load(ty, payload, name).map(|v| v.id())
+        Ok(self.append_ptr_load(ty, payload, name).id())
     }
 
     /// Same as [`Self::int_load`] plus an explicit alignment.
@@ -5360,7 +5546,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        self.append_int_load(ty, payload, name).map(|v| v.id())
+        Ok(self.append_int_load(ty, payload, name).id())
     }
 
     /// Typed `load`: the result type is derived from the pointer's
@@ -5376,9 +5562,15 @@ where
         A: crate::AddrSpace,
         Name: AsRef<str>,
     {
+        // Lifted first: a refused pointer mints no part of `T`.
+        let ptr = ptr.into_pointer_value(self.mutable_ref())?;
         let ty = self.schema_ir_type::<T>()?;
-        let raw = self.view(self.load(ty, ptr.as_pointer_value(), name)?);
-        T::value_from_ir_value(raw)
+        let raw = self.view(self.load(ty, ptr, name)?);
+        // A load's result has the type it loads: the layout's.
+        Ok(T::wrap(<T::Layout as FieldLayout>::value_of(
+            raw,
+            CrateOnly(()),
+        )))
     }
 
     /// Same as [`Self::typed_load`] plus an explicit alignment.
@@ -5393,16 +5585,18 @@ where
         A: crate::AddrSpace,
         Name: AsRef<str>,
     {
+        // Lifted first: a refused pointer mints no part of `T`.
+        let ptr = ptr.into_pointer_value(self.mutable_ref())?;
         let ty = self.schema_ir_type::<T>()?;
-        let raw = self.view(self.load_with_align(ty, ptr.as_pointer_value(), align, name)?);
-        T::value_from_ir_value(raw)
+        let raw = self.view(self.load_with_align(ty, ptr, align, name)?);
+        // A load's result has the type it loads: the layout's.
+        Ok(T::wrap(<T::Layout as FieldLayout>::value_of(
+            raw,
+            CrateOnly(()),
+        )))
     }
 
-    fn load_inner<N>(
-        &self,
-        mut payload: LoadInstData,
-        name: N,
-    ) -> IrResult<Instruction<'ctx, Attached, B>>
+    fn load_inner<N>(&self, mut payload: LoadInstData, name: N) -> Instruction<'ctx, Attached, B>
     where
         N: AsRef<str>,
     {
@@ -5413,7 +5607,7 @@ where
         if payload.align.align().is_none() {
             payload.align = self.default_abi_align(pointee_ty);
         }
-        Ok(self.append_instruction(pointee_ty, InstructionKindData::Load(payload), name))
+        self.append_instruction(pointee_ty, InstructionKindData::Load(payload), name)
     }
 
     /// Builder-pattern `load` construction: `volatile`, alignment, atomic
@@ -5433,8 +5627,8 @@ where
     /// use llvmkit_ir::{Align, AtomicOrdering, Dyn, IrBuilder, IrError, Linkage, module_new};
     ///
     /// let m = module_new!("loads")?;
-    /// let ptr_ty = m.ptr_type(0);
-    /// let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()]);
+    /// let ptr_ty = m.ptr_type_in::<0>();
+    /// let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()])?;
     /// let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     /// let entry = m.view(f).append_basic_block(&m, "entry");
     /// let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -5494,7 +5688,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         )?;
-        self.store_inner(payload)
+        Ok(self.store_inner(payload))
     }
 
     /// Same as `store` plus an explicit alignment slot.
@@ -5516,7 +5710,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         )?;
-        self.store_inner(payload)
+        Ok(self.store_inner(payload))
     }
 
     /// Typed `store`: the value lifts through the schema's
@@ -5570,8 +5764,8 @@ where
     ///
     /// let m = module_new!("stores")?;
     /// let i32_ty = m.i32_type();
-    /// let ptr_ty = m.ptr_type(0);
-    /// let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()]);
+    /// let ptr_ty = m.ptr_type_in::<0>();
+    /// let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()])?;
     /// let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     /// let entry = m.view(f).append_basic_block(&m, "entry");
     /// let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -5613,18 +5807,18 @@ where
     /// Inner store: caller has already computed the payload and validated
     /// the pointer/value modules. Single-arg helper used by the four
     /// public store builders.
-    fn store_inner(&self, payload: StoreInstData) -> IrResult<StoreInst<'ctx, B>> {
+    fn store_inner(&self, payload: StoreInstData) -> StoreInst<'ctx, B> {
         let void_ty = self
             .module
             .void_type::<B>()
             .as_type()
             .slot_trusting_same_module();
         let inst = self.append_instruction(void_ty, InstructionKindData::Store(payload), "");
-        Ok(StoreInst::from_raw(
+        StoreInst::from_raw(
             inst.to_erased().slot_trusting_same_module(),
             self.mutable_ref(),
             inst.ty().slot_trusting_same_module(),
-        ))
+        )
     }
 
     fn store_payload<V, P>(
@@ -5974,6 +6168,87 @@ where
         self.intrinsic_call_builder(&descriptor)
     }
 
+    /// A private, constant, NUL-terminated `[N x i8]` global holding `text`,
+    /// in `address_space`. Mirrors `IRBuilderBase::CreateGlobalString`, whose
+    /// `AddressSpace` defaults to 0 rather than to the data layout's: the
+    /// global is `unnamed_addr` and aligned as the layout prefers `i8`.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::DuplicateGlobalName`] if the name is taken.
+    pub fn global_string<Text, Name>(
+        &self,
+        text: Text,
+        name: Name,
+        address_space: crate::AddressSpace,
+    ) -> IrResult<crate::GlobalId<B>>
+    where
+        Text: AsRef<[u8]>,
+        Name: Into<String>,
+    {
+        let module = self.mutable_ref();
+        let i8_ty = module.i8_type();
+        let bytes: Vec<_> = text
+            .as_ref()
+            .iter()
+            .chain(core::iter::once(&0_u8))
+            .map(|byte| i8_ty.const_int(*byte).as_constant())
+            .collect();
+        let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let constant = crate::ArrayType::of(i8_ty, len)
+            .const_array(bytes)?
+            .as_constant();
+        let align = self.module.data_layout().pref_type_align(i8_ty.as_type());
+        crate::GlobalBuilder::new(module, name, constant.ty())
+            .constant()
+            .initializer(constant)
+            .linkage(crate::Linkage::Private)
+            .unnamed_addr(crate::UnnamedAddr::Global)
+            .address_space(address_space)
+            .align(crate::MaybeAlign::new(align))
+            .build()
+    }
+
+    /// A call to the intrinsic `id`, its overloads deduced from `return_type`
+    /// and the types of `args`. Mirrors
+    /// `IRBuilderBase::CreateIntrinsic(RetTy, ID, Args, FMFSource, Name)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Module::get_or_insert_intrinsic_declaration_by_signature`], then as
+    /// the call builder's `build`.
+    pub fn intrinsic_call_by_signature<T, I, V, Name>(
+        &self,
+        return_type: T,
+        id: IntrinsicId,
+        args: I,
+        name: Name,
+    ) -> IrResult<IntrinsicInstId<Dyn, B>>
+    where
+        T: IrType<'ctx, B>,
+        I: IntoIterator<Item = V>,
+        V: IntoErasedValue<'ctx, B>,
+        Name: AsRef<str>,
+    {
+        let module = self.mutable_ref();
+        let args = args
+            .into_iter()
+            .map(|arg| arg.into_erased_value(module))
+            .collect::<IrResult<Vec<_>>>()?;
+        let callee = module.get_or_insert_intrinsic_declaration_by_signature(
+            id,
+            return_type,
+            args.iter().map(|arg| arg.ty()),
+        )?;
+        let descriptor =
+            callee
+                .intrinsic_descriptor()
+                .ok_or_else(|| IrError::IntrinsicSignatureMismatch {
+                    name: callee.name().unwrap_or_default(),
+                })?;
+        self.intrinsic_call(&descriptor, &args, name)
+    }
+
     fn intrinsic_callee_by_id<Name>(
         &self,
         id: IntrinsicId,
@@ -6150,12 +6425,14 @@ where
         Callee: IntoPointerValue<'ctx, B>,
     {
         let callee = callee.into_pointer_value(self.mutable_ref())?;
-        let module = self.schema_view();
+        let module = self.mutable_ref();
+        plan_signature_mint::<Sig::Ret, Sig::Params, B>(module)?;
+        // Lowered before the mint: a refused argument mints no part of `Sig`.
+        let arg_ids = args.lower(self.mutable_ref(), CrateOnly(()))?.0;
         let ret = <Sig::Ret as FunctionReturn>::ir_type(module)?;
         let params = <Sig::Params as FunctionParamList>::ir_types(module)?;
-        let fn_ty = module.function_type(ret, params);
+        let fn_ty = self.schema_view().function_type(ret, params)?;
         let callee_v = IsValue::as_erased(callee);
-        let arg_ids = args.lower(self.mutable_ref(), CrateOnly(()))?.0;
         let payload = CallInstData::new(
             callee_v.slot_trusting_same_module(),
             fn_ty.slot_trusting_same_module(),
@@ -6341,11 +6618,13 @@ where
     where
         S: StructSchema,
         A: crate::AddrSpace,
-        S::FieldParams: StructFieldAt<I>,
+        S::Fields: StructFieldAt<I>,
         Name: AsRef<str>,
     {
+        // Lifted first: a refused pointer mints no part of `S`.
+        let ptr = ptr.into_pointer_value(self.mutable_ref())?;
         let struct_ty = self.schema_struct_type::<S>()?;
-        let raw = self.view(self.struct_gep(struct_ty, ptr.as_pointer_value(), I, name)?);
+        let raw = self.view(self.struct_gep(struct_ty, ptr, I, name)?);
         Ok(raw.with_pointee::<FieldOf<S, I>>())
     }
 
@@ -6366,14 +6645,11 @@ where
         Idx: IntoIntValue<'ctx, W, B>,
         Name: AsRef<str>,
     {
-        let elem_ty = self.schema_ir_type::<T>()?;
+        // Lifted first: a refused operand mints no part of `T`.
+        let ptr = ptr.into_pointer_value(self.mutable_ref())?;
         let idx_value = index.into_int_value(self.mutable_ref())?;
-        let raw = self.view(self.gep(
-            elem_ty,
-            ptr.as_pointer_value(),
-            core::iter::once(idx_value.as_dyn()),
-            name,
-        )?);
+        let elem_ty = self.schema_ir_type::<T>()?;
+        let raw = self.view(self.gep(elem_ty, ptr, core::iter::once(idx_value.as_dyn()), name)?);
         Ok(raw.with_pointee::<T>())
     }
 
@@ -6393,11 +6669,13 @@ where
         Idx: IntoIntValue<'ctx, W, B>,
         Name: AsRef<str>,
     {
-        let elem_ty = self.schema_ir_type::<T>()?;
+        // Lifted first: a refused operand mints no part of `T`.
+        let ptr = ptr.into_pointer_value(self.mutable_ref())?;
         let idx_value = index.into_int_value(self.mutable_ref())?;
+        let elem_ty = self.schema_ir_type::<T>()?;
         let raw = self.view(self.inbounds_gep(
             elem_ty,
-            ptr.as_pointer_value(),
+            ptr,
             core::iter::once(idx_value.as_dyn()),
             name,
         )?);
@@ -7427,8 +7705,8 @@ where
     ///
     /// Both operands share one address-space marker, so comparing a
     /// `Space<0>` pointer with a `Space<1>` one is a type error; a `SpaceDyn`
-    /// pair in different address spaces is left to the verifier's
-    /// same-type check on `icmp`, as before.
+    /// pair in different address spaces is [`IrError::TypeIdentityMismatch`],
+    /// as a [`select`](Self::select)'s two arms are.
     pub fn pointer_cmp<L, R2, Name>(
         &self,
         pred: super::cmp_predicate::IntPredicate,
@@ -7443,6 +7721,15 @@ where
     {
         let lhs = lhs.into_pointer_value(self.mutable_ref())?;
         let rhs = rhs.into_pointer_value(self.mutable_ref())?;
+        // `CmpInst::AssertOK`: the marker settles this for two `Space<N>`
+        // pointers, and two `SpaceDyn` ones only know at run time.
+        let (lhs_ty, rhs_ty) = (IsValue::as_erased(lhs).ty(), IsValue::as_erased(rhs).ty());
+        if lhs_ty != rhs_ty {
+            return Err(IrError::TypeIdentityMismatch {
+                expected: lhs_ty.rendered(),
+                got: rhs_ty.rendered(),
+            });
+        }
         let folded = self.folder.fold_cmp_dyn(
             pred.into(),
             IsValue::as_erased(lhs),
@@ -7879,7 +8166,7 @@ where
     /// Produce `phi <ty>` with no initial incoming edges. Marker-only
     /// form: the result type comes from the `W` type parameter via
     /// [`crate::StaticIntWidth`], so callers spell it as
-    /// `b.int_phi::<i32, _>("acc")?` without first binding
+    /// `b.int_phi::<i32, _>("acc")` without first binding
     /// `let i32_ty = m.i32_type();`. Mirrors `IRBuilder::CreatePHI`
     /// followed by zero `PHINode::addIncoming` calls. Returns the storable
     /// [`PhiInstId<W, B>`](crate::PhiInstId); view it
@@ -7893,7 +8180,7 @@ where
     /// `dead_code` is allowed in non-test builds; the in-crate raw-phi tests
     /// exercise it.
     #[cfg(test)]
-    pub(crate) fn int_phi<W, Name>(&self, name: Name) -> IrResult<PhiInstId<W, B>>
+    pub(crate) fn int_phi<W, Name>(&self, name: Name) -> PhiInstId<W, B>
     where
         Name: AsRef<str>,
         W: StaticIntWidth,
@@ -7905,10 +8192,10 @@ where
             InstructionKindData::Phi(payload),
             name,
         );
-        Ok(PhiInstId::from_raw(
+        PhiInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
-        ))
+        )
     }
 
     /// Runtime-width phi for the [`crate::IntDyn`] case. Takes the
@@ -7951,7 +8238,7 @@ where
     /// `dead_code` is allowed in non-test builds; the in-crate raw-phi tests
     /// exercise it.
     #[cfg(test)]
-    pub(crate) fn fp_phi<K, Name>(&self, name: Name) -> IrResult<FpPhiInstId<K, B>>
+    pub(crate) fn fp_phi<K, Name>(&self, name: Name) -> FpPhiInstId<K, B>
     where
         Name: AsRef<str>,
         K: super::float_kind::StaticFloatKind,
@@ -7963,10 +8250,10 @@ where
             InstructionKindData::Phi(payload),
             name,
         );
-        Ok(FpPhiInstId::from_raw(
+        FpPhiInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
-        ))
+        )
     }
 
     /// Runtime-kind float phi: takes the type explicitly because
@@ -8008,24 +8295,21 @@ where
     /// `dead_code` is allowed in non-test builds; the in-crate raw-phi tests
     /// exercise it.
     #[cfg(test)]
-    pub(crate) fn pointer_phi<Name>(
-        &self,
-        name: Name,
-    ) -> IrResult<PointerPhiInstId<crate::Space<0>, B>>
+    pub(crate) fn pointer_phi<Name>(&self, name: Name) -> PointerPhiInstId<crate::Space<0>, B>
     where
         Name: AsRef<str>,
     {
-        let ty = self.module.ptr_type::<B>(0);
+        let ty = self.module.ptr_type::<B>(crate::AddressSpace::DEFAULT);
         let payload = super::instr_types::PhiData::new();
         let inst = self.append_phi_instruction(
             ty.slot_trusting_same_module(),
             InstructionKindData::Phi(payload),
             name,
         );
-        Ok(PointerPhiInstId::from_raw(
+        PointerPhiInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
-        ))
+        )
     }
 
     /// Pointer-typed phi in a caller-specified address space. Mirrors
@@ -9828,11 +10112,11 @@ where
     {
         let cleanup_pad = cleanup_pad.into_erased_value(self.mutable_ref())?;
         let unwind_dest = unwind_dest.into_basic_block_label(self.mutable_ref())?;
-        self.cleanup_ret_raw(
+        Ok(self.cleanup_ret_raw(
             cleanup_pad.slot_trusting_same_module(),
             Some(unwind_dest.slot_trusting_same_module()),
             name,
-        )
+        ))
     }
 
     /// Produce `cleanupret from <cleanuppad> unwind to caller`.
@@ -9847,7 +10131,7 @@ where
         Pad: IntoErasedValue<'ctx, B>,
     {
         let cleanup_pad = cleanup_pad.into_erased_value(self.mutable_ref())?;
-        self.cleanup_ret_raw(cleanup_pad.slot_trusting_same_module(), None, name)
+        Ok(self.cleanup_ret_raw(cleanup_pad.slot_trusting_same_module(), None, name))
     }
 
     fn cleanup_ret_raw<Name>(
@@ -9855,7 +10139,7 @@ where
         cleanup_pad_id: ValueSlot,
         unwind_id: Option<ValueSlot>,
         name: Name,
-    ) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
+    ) -> TerminatedBlockInst<'ctx, R, B>
     where
         Name: AsRef<str>,
     {
@@ -9868,7 +10152,7 @@ where
         let inst =
             self.append_instruction(void_ty, InstructionKindData::CleanupReturn(payload), name);
         let bb = self.into_insert_block();
-        Ok((bb.retag_termination::<Terminated>(), inst))
+        (bb.retag_termination::<Terminated>(), inst)
     }
 
     /// Produce `catchswitch within <parent> [...] unwind label <bb>`.
@@ -9886,11 +10170,11 @@ where
     {
         let parent_pad = parent_pad.into_erased_value(self.mutable_ref())?;
         let unwind_dest = unwind_dest.into_basic_block_label(self.mutable_ref())?;
-        self.catch_switch_raw(
+        Ok(self.catch_switch_raw(
             Some(parent_pad.slot_trusting_same_module()),
             Some(unwind_dest.slot_trusting_same_module()),
             name,
-        )
+        ))
     }
 
     /// Produce `catchswitch within <parent> [...] unwind to caller`.
@@ -9905,7 +10189,7 @@ where
         Pad: IntoErasedValue<'ctx, B>,
     {
         let parent_pad = parent_pad.into_erased_value(self.mutable_ref())?;
-        self.catch_switch_raw(Some(parent_pad.slot_trusting_same_module()), None, name)
+        Ok(self.catch_switch_raw(Some(parent_pad.slot_trusting_same_module()), None, name))
     }
 
     /// Produce `catchswitch within none [...] unwind label <bb>`.
@@ -9920,15 +10204,16 @@ where
         Name: AsRef<str>,
     {
         let unwind_dest = unwind_dest.into_basic_block_label(self.mutable_ref())?;
-        self.catch_switch_raw(None, Some(unwind_dest.slot_trusting_same_module()), name)
+        Ok(self.catch_switch_raw(None, Some(unwind_dest.slot_trusting_same_module()), name))
     }
 
     /// Produce `catchswitch within none [...] unwind to caller`.
-    /// Mirrors `IRBuilder::CreateCatchSwitch`.
+    /// Mirrors `IRBuilder::CreateCatchSwitch`. With no parent pad and no
+    /// unwind block there is no operand to admit, so nothing can fail.
     pub fn catch_switch_within_none_to_caller<Name>(
         self,
         name: Name,
-    ) -> IrResult<TerminatedBlockCatchSwitch<'ctx, R, B>>
+    ) -> TerminatedBlockCatchSwitch<'ctx, R, B>
     where
         Name: AsRef<str>,
     {
@@ -9940,7 +10225,7 @@ where
         parent_id: Option<ValueSlot>,
         unwind_id: Option<ValueSlot>,
         name: Name,
-    ) -> IrResult<TerminatedBlockCatchSwitch<'ctx, R, B>>
+    ) -> TerminatedBlockCatchSwitch<'ctx, R, B>
     where
         Name: AsRef<str>,
     {
@@ -9954,14 +10239,14 @@ where
             self.append_instruction(token_ty, InstructionKindData::CatchSwitch(payload), name);
         let module_ref = self.mutable_ref();
         let bb = self.into_insert_block();
-        Ok((
+        (
             bb.retag_termination::<Terminated>(),
             CatchSwitchInst::<Open, B>::from_raw(
                 inst.to_erased().slot_trusting_same_module(),
                 module_ref,
                 token_ty,
             ),
-        ))
+        )
     }
 
     pub fn unreachable(
@@ -10106,11 +10391,11 @@ where
         ty: IntType<'ctx, W, B>,
         mut payload: LoadInstData,
         name: N,
-    ) -> IrResult<IntValue<'ctx, W, B>> {
+    ) -> IntValue<'ctx, W, B> {
         // Internal: every caller mints `ty` or admits it at its own entry.
         payload.pointee_ty = ty.slot_trusting_same_module();
-        let inst = self.load_inner(payload, name)?;
-        Ok(IntValue::<W, B>::from_value_unchecked(inst.to_erased()))
+        let inst = self.load_inner(payload, name);
+        IntValue::<W, B>::from_value_unchecked(inst.to_erased())
     }
 
     /// Float analogue of `append_int_load`. Re-stamps `payload.pointee_ty` with `ty`
@@ -10121,11 +10406,11 @@ where
         ty: FloatType<'ctx, K, B>,
         mut payload: LoadInstData,
         name: N,
-    ) -> IrResult<FloatValue<'ctx, K, B>> {
+    ) -> FloatValue<'ctx, K, B> {
         // Internal: every caller mints `ty` or admits it at its own entry.
         payload.pointee_ty = ty.slot_trusting_same_module();
-        let inst = self.load_inner(payload, name)?;
-        Ok(FloatValue::<K, B>::from_value_unchecked(inst.to_erased()))
+        let inst = self.load_inner(payload, name);
+        FloatValue::<K, B>::from_value_unchecked(inst.to_erased())
     }
 
     /// Append `kind` at `ptr_ty` and wrap the result as a `PointerValue`.
@@ -10155,10 +10440,10 @@ where
         ptr_ty: PointerType<'ctx, A, B>,
         mut payload: LoadInstData,
         name: N,
-    ) -> IrResult<PointerValue<'ctx, A, B>> {
+    ) -> PointerValue<'ctx, A, B> {
         payload.pointee_ty = ptr_ty.slot_trusting_same_module();
-        let inst = self.load_inner(payload, name)?;
-        Ok(PointerValue::from_value_unchecked(inst.to_erased()))
+        let inst = self.load_inner(payload, name);
+        PointerValue::from_value_unchecked(inst.to_erased())
     }
 
     /// Crate-internal: append a freshly-built phi to the insertion block.
@@ -10191,10 +10476,7 @@ where
         };
         let id = self.module.context().push_value(value);
         for op in operand_ids {
-            self.module
-                .context()
-                .value_data(op)
-                .add_use(ValueUse::Instruction(id));
+            self.module.context().add_use(op, ValueUse::Instruction(id));
         }
         // Unlike `append_instruction`, placement ignores the builder's
         // insert cursor: phis always land at the block's phi head.
@@ -10242,7 +10524,7 @@ where
     fn ptr_to_addr_source_shape(
         &self,
         src_ty: Type<'ctx, B>,
-    ) -> IrResult<(u32, Option<(NonZeroU32, bool)>)> {
+    ) -> IrResult<(crate::AddressSpace, Option<(NonZeroU32, bool)>)> {
         match src_ty.data() {
             TypeData::Pointer { addr_space } => Ok((*addr_space, None)),
             TypeData::FixedVector { elem, n } => match self.module.context().type_data(*elem) {
@@ -11240,7 +11522,7 @@ where
         let parent = self.parent;
         let ty = W::ir_type(parent.mutable_ref());
         let payload = self.payload(ty.as_type().slot_trusting_same_module())?;
-        parent.append_int_load(ty, payload, name).map(|v| v.id())
+        Ok(parent.append_int_load(ty, payload, name).id())
     }
 
     /// Emit with the result typed by the static float-kind marker `K`.
@@ -11251,7 +11533,7 @@ where
         let parent = self.parent;
         let ty = K::ir_type(parent.mutable_ref());
         let payload = self.payload(ty.as_type().slot_trusting_same_module())?;
-        parent.append_fp_load(ty, payload, name).map(|v| v.id())
+        Ok(parent.append_fp_load(ty, payload, name).id())
     }
 
     /// Emit a `ptr`-typed load in the default address space. Other
@@ -11262,7 +11544,7 @@ where
         let parent = self.parent;
         let ty = parent.mutable_ref().ptr_type_in::<0>();
         let payload = self.payload(ty.as_type().slot_trusting_same_module())?;
-        parent.append_ptr_load(ty, payload, name).map(|v| v.id())
+        Ok(parent.append_ptr_load(ty, payload, name).id())
     }
 
     /// Emit with the result type derived from the pointee schema `T`,
@@ -11273,10 +11555,18 @@ where
         T: IrField,
     {
         let parent = self.parent;
+        // Replayed first: a pointer `load_from` refused mints no part of `T`.
+        if let Err(error) = &self.ptr {
+            return Err(error.clone());
+        }
         let ty = parent.schema_ir_type::<T>()?;
         let payload = self.payload(ty.slot_trusting_same_module())?;
-        let inst = parent.load_inner(payload, name)?;
-        T::value_from_ir_value(inst.to_erased())
+        let inst = parent.load_inner(payload, name);
+        // A load's result has the type it loads: the layout's.
+        Ok(T::wrap(<T::Layout as FieldLayout>::value_of(
+            inst.to_erased(),
+            CrateOnly(()),
+        )))
     }
 
     /// Emit with an explicit pointee type; the caller narrows the
@@ -11291,7 +11581,7 @@ where
         // ordering to follow.
         let pointee_ty = ty.slot_in(parent.module.id())?;
         let payload = self.payload(pointee_ty)?;
-        let inst = parent.load_inner(payload, name)?;
+        let inst = parent.load_inner(payload, name);
         Ok(inst.to_erased().id())
     }
 
@@ -11409,7 +11699,7 @@ where
             self.ordering,
             self.sync_scope,
         );
-        parent.store_inner(payload)
+        Ok(parent.store_inner(payload))
     }
 }
 
@@ -11439,7 +11729,7 @@ where
     /// [`LoadBuilder::ptr`].
     num_elements: IrResult<Option<ValueSlot>>,
     align: MaybeAlign,
-    addr_space: u32,
+    addr_space: crate::AddressSpace,
     flags: AllocaFlags,
     name: String,
 }
@@ -11497,7 +11787,7 @@ where
     /// Override the result pointer's address space. Defaults to
     /// `DataLayout::getAllocaAddrSpace`, which is what
     /// `IRBuilder::CreateAlloca` uses.
-    pub fn addr_space(mut self, addr_space: u32) -> Self {
+    pub fn addr_space(mut self, addr_space: crate::AddressSpace) -> Self {
         self.addr_space = addr_space;
         self
     }
@@ -11532,14 +11822,14 @@ where
     pub fn build(self) -> IrResult<PointerValueId<crate::SpaceDyn, B>> {
         let allocated_ty = self.allocated_ty?;
         let num_elements = self.num_elements?;
-        self.parent.alloca_inner(
+        Ok(self.parent.alloca_inner(
             allocated_ty,
             num_elements,
             self.align,
             self.parent.mutable_ref().ptr_type(self.addr_space),
             self.flags,
             &self.name,
-        )
+        ))
     }
 }
 
@@ -11557,8 +11847,8 @@ pub mod select_narrow_token {
     /// against the arm type. Only this crate can mint it (private field,
     /// `pub(crate)` constructor), so downstream code can *name* the type in
     /// trait impls but cannot call `from_select_value` with a forged value.
-    /// Follows the `ValidatedStructValue` capability-token precedent
-    /// (`struct_schema.rs`).
+    /// Follows the precedent of `struct_schema.rs`'s `ValidatedStructValue`
+    /// token, since replaced there by the `SchemaValue` carrier.
     #[derive(Debug)]
     pub struct SelectNarrow<'a> {
         _private: PhantomData<&'a ()>,
@@ -12057,7 +12347,7 @@ mod tests {
         let m = crate::module_new!("hostile-typed-folder")?;
         let i32_dyn_ty = m.custom_width_int_type(32)?;
         let i64_dyn_ty = m.custom_width_int_type(64)?;
-        let fn_ty = m.function_type_no_parameters(m.i32_type());
+        let fn_ty = m.function_type_no_parameters(m.i32_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -12100,7 +12390,7 @@ mod tests {
         let m = crate::module_new!("hostile-typed-folder-static")?;
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
-        let fn_ty = m.function_type_no_parameters(m.i32_type());
+        let fn_ty = m.function_type_no_parameters(m.i32_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -12147,7 +12437,7 @@ mod tests {
         let m = crate::module_new!("hostile-typed-folder-cast-int")?;
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
-        let fn_ty = m.function_type_no_parameters(m.i32_type());
+        let fn_ty = m.function_type_no_parameters(m.i32_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -12180,7 +12470,7 @@ mod tests {
         let m = crate::module_new!("hostile-typed-fp-folder")?;
         let f32_ty = m.f32_type();
         let f64_ty = m.f64_type();
-        let fn_ty = m.function_type_no_parameters(m.i32_type());
+        let fn_ty = m.function_type_no_parameters(m.i32_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -12224,7 +12514,7 @@ mod tests {
         let m = crate::module_new!("hostile-typed-fp-folder-cast")?;
         let f32_ty = m.f32_type();
         let f64_ty = m.f64_type();
-        let fn_ty = m.function_type_no_parameters(m.i32_type());
+        let fn_ty = m.function_type_no_parameters(m.i32_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
 

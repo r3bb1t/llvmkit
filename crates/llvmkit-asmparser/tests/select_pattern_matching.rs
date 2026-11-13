@@ -232,6 +232,132 @@ define float @test(float %a) {
     ]);
 }
 
+/// The vector floating-point cases: `VectorFMinimum`, `VectorFMinOtherOrdered`,
+/// `VectorNotFMinimum`, `VectorNotFMinZero`. Their constants are
+/// `ConstantDataVector`s, which the static `isKnownNonNaN` and
+/// `isKnownNonZero` read lane by lane (`dyn_cast<ConstantDataVector>`).
+#[test]
+fn vector_floating_point_min_max_fixtures() {
+    check(&[
+        (
+            "VectorFMinimum",
+            r"
+define <4 x float> @test(<4 x float> %a) {
+  %1 = fcmp ule <4 x float> %a,
+    <float 5.0, float 5.0, float 5.0, float 5.0>
+  %A = select <4 x i1> %1, <4 x float> %a,
+     <4 x float> <float 5.0, float 5.0, float 5.0, float 5.0>
+  ret <4 x float> %A
+}
+",
+            Some((
+                SelectPatternFlavor::FminNum,
+                SelectPatternNanBehavior::ReturnsNaN,
+                false,
+            )),
+        ),
+        (
+            "VectorFMinOtherOrdered",
+            r"
+define <4 x float> @test(<4 x float> %a) {
+  %1 = fcmp ole <4 x float> %a,
+    <float 5.0, float 5.0, float 5.0, float 5.0>
+  %A = select <4 x i1> %1, <4 x float> %a,
+     <4 x float> <float 5.0, float 5.0, float 5.0, float 5.0>
+  ret <4 x float> %A
+}
+",
+            Some((
+                SelectPatternFlavor::FminNum,
+                SelectPatternNanBehavior::ReturnsOther,
+                true,
+            )),
+        ),
+        (
+            "VectorNotFMinimum",
+            r"
+define <4 x float> @test(<4 x float> %a) {
+  %1 = fcmp ule <4 x float> %a,
+    <float 5.0, float 0x7ff8000000000000, float 5.0, float 5.0>
+  %A = select <4 x i1> %1, <4 x float> %a,
+     <4 x float> <float 5.0, float 0x7ff8000000000000, float 5.0, float 5.0>
+  ret <4 x float> %A
+}
+",
+            None,
+        ),
+        (
+            "VectorNotFMinZero",
+            r"
+define <4 x float> @test(<4 x float> %a) {
+  %1 = fcmp ule <4 x float> %a,
+    <float 5.0, float -0.0, float 5.0, float 5.0>
+  %A = select <4 x i1> %1, <4 x float> %a,
+     <4 x float> <float 5.0, float 0.0, float 5.0, float 5.0>
+  ret <4 x float> %A
+}
+",
+            None,
+        ),
+    ]);
+}
+
+/// The static `isKnownNonNaN` and `isKnownNonZero` read a vector constant only
+/// through `dyn_cast<ConstantDataVector>`, and an `x86_fp80` vector is a
+/// `ConstantVector` (`ConstantDataSequential::isElementTypeCompatible` has no
+/// `x86_fp80`), so neither knows anything of it. Under `ole` the signed-zero
+/// guard then declines, and under `olt` the NaN arm does, since `%a` is no
+/// better known. Regression: both read any vector list of floats. The `float`
+/// fixtures above are the positive control. llvmkit-specific (D11): no upstream
+/// test uses an `x86_fp80` vector here.
+///
+/// The plain `ole` row declines twice over: if the signed-zero guard let it
+/// through, the NaN arm would decline it, since `ole` is ordered and neither
+/// side is known not to be NaN. So it cannot tell `isKnownNonZero` apart. The
+/// `select nnan` row can: `matchSelectPattern` hands the select's
+/// `FastMathFlags` to `matchDecomposedSelectPattern`, so `isKnownNonNaN(V,
+/// FMF)` holds of both sides, and only the guard's `isKnownNonZero` of the
+/// constant decides. It matches `fminnum` if that reads the `x86_fp80`
+/// `ConstantVector` as a `ConstantDataVector`.
+#[test]
+fn an_x86_fp80_vector_constant_is_no_constant_data_vector_to_the_select_matcher() {
+    check(&[
+        (
+            "x86_fp80 ole",
+            r"
+define <2 x x86_fp80> @test(<2 x x86_fp80> %a) {
+  %1 = fcmp ole <2 x x86_fp80> %a, <x86_fp80 0xK3FFF8000000000000000, x86_fp80 0xK40008000000000000000>
+  %A = select <2 x i1> %1, <2 x x86_fp80> %a, <2 x x86_fp80> <x86_fp80 0xK3FFF8000000000000000, x86_fp80 0xK40008000000000000000>
+  ret <2 x x86_fp80> %A
+}
+",
+            None,
+        ),
+        (
+            "x86_fp80 olt",
+            r"
+define <2 x x86_fp80> @test(<2 x x86_fp80> %a) {
+  %1 = fcmp olt <2 x x86_fp80> %a, <x86_fp80 0xK3FFF8000000000000000, x86_fp80 0xK40008000000000000000>
+  %A = select <2 x i1> %1, <2 x x86_fp80> %a, <2 x x86_fp80> <x86_fp80 0xK3FFF8000000000000000, x86_fp80 0xK40008000000000000000>
+  ret <2 x x86_fp80> %A
+}
+",
+            None,
+        ),
+        (
+            "x86_fp80 ole nnan",
+            r"
+define <2 x x86_fp80> @test(<2 x x86_fp80> %a) {
+  %1 = fcmp ole <2 x x86_fp80> %a, <x86_fp80 0xK3FFF8000000000000000, x86_fp80 0xK40008000000000000000>
+  %A = select nnan <2 x i1> %1, <2 x x86_fp80> %a, <2 x x86_fp80> <x86_fp80 0xK3FFF8000000000000000, x86_fp80 0xK40008000000000000000>
+  ret <2 x x86_fp80> %A
+}
+",
+            None,
+        ),
+    ]);
+}
+
 /// `DoubleCastU`, `DoubleCastS` and `DoubleCastBad` — the `look_through_cast`
 /// path.
 ///

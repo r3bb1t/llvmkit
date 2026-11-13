@@ -8,27 +8,37 @@
 //! error in `LLParser` — and an `assert` is compiled out of a release build.
 //!
 //! Over the agreement grid below (6 containers × 25 element kinds, 150 cells),
-//! llvmkit's builder accepts every cell its parser refuses outside the vector,
-//! array and struct containers: 7 cells are built but not parsed, none is
-//! parsed but not built, and where both accept they make the same type.
-//! Measured at the commit that makes the struct constructors refuse an invalid
-//! element (parent `9b4bce3`) by running
+//! llvmkit's builder and parser agree on every cell: none is built but not
+//! parsed, none is parsed but not built, where both accept they make the same
+//! type, and where both refuse each gives upstream's reason — the law below pins
+//! it against `lib/IR/Type.cpp`'s rules, written out by hand, because the two
+//! halves share one predicate. Measured at the commit that makes the
+//! function-type constructors refuse an invalid result or parameter (parent
+//! `ad8261a`) by running
 //! `cargo +1.96.0 test --release -p llvmkit-asmparser --test type_validity`
-//! with `KNOWN_DISAGREEMENTS` emptied; it was 46 at `5ce065f`, before the
-//! vector constructors refused their 28, 18 at the commit that adds
-//! `llvmkit_ir::VectorType::of` (parent `dcde8b6`), before the array
-//! constructor refused its 6, and 12 at the commit that adds
+//! with the list of cells allowed to disagree empty; the list has since been
+//! deleted. Built but not parsed, it was 46 at
+//! `5ce065f`, before the vector constructors refused their 28; 18 at the
+//! commit that adds `llvmkit_ir::VectorType::of` (parent `dcde8b6`), before the
+//! array constructor refused its 6; 12 at the commit that adds
 //! `llvmkit_ir::ArrayType::of` (parent `bb7e518`), before the struct
-//! constructors refused their 5. Each of those cells is a type a module built
-//! in Rust can hold and print, and no parser reads back.
+//! constructors refused their 5; and 7 at the commit that makes them refuse
+//! (parent `9b4bce3`), before the function-type constructors refused their 7.
+//! Each of those cells was a type a module built in Rust could hold and print,
+//! and no parser read back.
+
+use core::num::NonZeroU32;
 
 use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_asmparser::{SlotMapping, parse_type, parse_type_at_beginning, parse_type_with_slots};
-use llvmkit_ir::{AnyTypeEnum, ArrayType, DynBrand, IrError, Module, Type, VectorType, lanes};
+use llvmkit_ir::{
+    AddressSpace, AnyTypeEnum, ArrayType, DynBrand, IrError, MAX_INT_BITS, Module, Type,
+    VectorType, lanes,
+};
 
 pub mod support;
 
-use support::rejection_at;
+use support::{check_directives, read_check_directives, rejection_at};
 
 /// Ports `test/Verifier/x86_amx1.ll`: `llvm-as` rejects `[10 x x86_amx]`
 /// with `LLParser::parseArrayVectorType`'s `invalid array element type`,
@@ -86,25 +96,20 @@ fn upstream_label_parameter_is_rejected() {
     );
 }
 
-/// Ports `test/Verifier/target-ext-vector.ll`'s `RUN` half: a vector of
+/// Ports `test/Verifier/target-ext-vector.ll` whole: a vector of
 /// `target("llvm.test.vectorelement")` — the test type that declares
-/// `CanBeVectorElement` — parses and verifies (`opt -passes=verify`).
-///
-/// **Blocked half, by name:** the fixture's check block uses `CHECK-LABEL`,
-/// `CHECK-SAME` and `{{...}}` / `[[...]]` patterns, which
-/// `tests/support/mod.rs::check_directives` does not implement; the printed
-/// output is not compared.
+/// `CanBeVectorElement` — parses and verifies (`opt -passes=verify`), and the
+/// printed module matches the fixture's own `CHECK` block.
 #[test]
 fn upstream_target_type_with_the_vector_property_verifies() {
+    const SOURCE: &str = include_str!("fixtures/upstream/Verifier/target-ext-vector.ll");
     let m = Module::dynamic("type_validity");
-    Parser::new(
-        include_bytes!("fixtures/upstream/Verifier/target-ext-vector.ll").as_slice(),
-        &m,
-    )
-    .expect("lexer primes")
-    .parse_module()
-    .expect("fixture parses");
+    Parser::new(SOURCE.as_bytes(), &m)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("fixture parses");
     m.verify_borrowed().expect("fixture verifies");
+    check_directives(&m.to_string(), &read_check_directives(SOURCE));
 }
 
 /// An array constant whose elements are first-class yet no array element —
@@ -185,11 +190,81 @@ fn a_bare_void_is_refused_by_the_standalone_type_parser() {
     }
 }
 
+/// Each syntax error of `LLParser::parseArrayVectorType`, with upstream's text,
+/// at the token it is raised on. `expected number in address space` is the
+/// routine's own wording for a size: it refuses a token that is no `APSInt`, a
+/// signed one, and one wider than 64 bits, whose first failure llvmkit used to
+/// saturate into a count of `u64::MAX`.
+///
+/// llvmkit-specific (rule anchor): no upstream fixture pins these —
+/// `rg -n "expected 'x' after|expected number in address space|expected end of sequential" llvm/test/Assembler llvm/test/Verifier`
+/// prints nothing against the vendored `llvmorg-22.1.4` tree. The widest count
+/// that fits in 64 bits is the positive control.
+#[test]
+fn an_array_or_vector_type_reports_upstream_syntax_errors() {
+    for (source, message, position) in [
+        (
+            "@g = global <vscale 4 x i32> undef\n",
+            "expected 'x' after vscale",
+            (1, 21),
+        ),
+        (
+            "@g = global [i32 x i32] zeroinitializer\n",
+            "expected number in address space",
+            (1, 14),
+        ),
+        (
+            "@g = global <vscale x i32 x i32> undef\n",
+            "expected number in address space",
+            (1, 23),
+        ),
+        (
+            "@g = global [-1 x i32] zeroinitializer\n",
+            "expected number in address space",
+            (1, 14),
+        ),
+        (
+            "@g = global [s0x1 x i32] zeroinitializer\n",
+            "expected number in address space",
+            (1, 14),
+        ),
+        (
+            "@g = global [18446744073709551616 x i32] zeroinitializer\n",
+            "expected number in address space",
+            (1, 14),
+        ),
+        (
+            "@g = global [4 i32] zeroinitializer\n",
+            "expected 'x' after element count",
+            (1, 16),
+        ),
+        (
+            "@g = global [4 x i32> zeroinitializer\n",
+            "expected end of sequential type",
+            (1, 21),
+        ),
+        (
+            "@g = global <4 x i32] undef\n",
+            "expected end of sequential type",
+            (1, 21),
+        ),
+    ] {
+        assert_eq!(
+            rejection_at(source),
+            (message.to_owned(), position),
+            "{source}"
+        );
+    }
+    let m = Module::dynamic("type_validity");
+    let widest = parse_type(b"[18446744073709551615 x i8]", &m).expect("the count fits");
+    assert_eq!(widest.to_string(), "[18446744073709551615 x i8]");
+}
+
 /// The module every grid test parses first: it declares the grid's one named
-/// type. Mirrors `unittests/AsmParser/AsmParserTest.cpp`'s
-/// `TEST(AsmParserTest, TypeWithSlotMappingParsing)`, which parses a module
-/// with `parseAssemblyString(Source, Error, Ctx, &Mapping)` and then resolves
-/// `%st` in a standalone type through `parseType(…, &Mapping)`.
+/// type. llvmkit-specific; it borrows the shape of
+/// `TEST(AsmParserTest, TypeWithSlotMappingParsing)`, a module parsed first and
+/// a standalone type resolved through its mapping, which
+/// `tests/parser_type_slot_mapping.rs` ports whole.
 const GRID_SOURCE: &[u8] = b"%opaque = type opaque\n";
 
 /// Parses [`GRID_SOURCE`] into `m` and returns the `SlotMapping` every grid
@@ -235,9 +310,11 @@ const ELEMENTS: &[&str] = &[
 /// `m` must already hold [`GRID_SOURCE`], where `%opaque` is looked up.
 fn element<'m>(m: &'m Module<DynBrand>, text: &str) -> Result<Type<'m, DynBrand>, IrError> {
     let i32_ty = m.i32_type().as_type();
-    let target = |name: &str| {
-        m.target_ext_type(name, Vec::<Type<'_, DynBrand>>::new(), Vec::<u32>::new())
-            .as_type()
+    let target = |name: &str| -> Result<Type<'m, DynBrand>, IrError> {
+        Ok(
+            m.target_ext_type(name, Vec::<Type<'_, DynBrand>>::new(), Vec::<u32>::new())?
+                .as_type(),
+        )
     };
     Ok(match text {
         "i1" => m.i1_type().as_type(),
@@ -249,7 +326,7 @@ fn element<'m>(m: &'m Module<DynBrand>, text: &str) -> Result<Type<'m, DynBrand>
         "x86_fp80" => m.x86_fp80_type().as_type(),
         "fp128" => m.fp128_type().as_type(),
         "ppc_fp128" => m.ppc_fp128_type().as_type(),
-        "ptr" => m.ptr_type(0).as_type(),
+        "ptr" => m.ptr_type_in::<0>().as_type(),
         "void" => m.void_type().as_type(),
         "label" => m.label_type().as_type(),
         "metadata" => m.metadata_type().as_type(),
@@ -264,10 +341,10 @@ fn element<'m>(m: &'m Module<DynBrand>, text: &str) -> Result<Type<'m, DynBrand>
             .as_type(),
         "<2 x i32>" => VectorType::of(m.i32_type(), lanes::<2>()).as_type(),
         "<vscale x 2 x i32>" => VectorType::scalable_of(m.i32_type(), lanes::<2>()).as_type(),
-        "i32 ()" => m.function_type_no_parameters(i32_ty).as_type(),
-        "target(\"llvm.test.vectorelement\")" => target("llvm.test.vectorelement"),
-        "target(\"spirv.Image\")" => target("spirv.Image"),
-        "target(\"aarch64.svcount\")" => target("aarch64.svcount"),
+        "i32 ()" => m.function_type_no_parameters(i32_ty)?.as_type(),
+        "target(\"llvm.test.vectorelement\")" => target("llvm.test.vectorelement")?,
+        "target(\"spirv.Image\")" => target("spirv.Image")?,
+        "target(\"aarch64.svcount\")" => target("aarch64.svcount")?,
         other => panic!("`{other}` is not in ELEMENTS"),
     })
 }
@@ -327,31 +404,86 @@ impl Container {
             Container::ScalableVector => m.scalable_vector_type(element, lanes::<2>())?.as_type(),
             Container::Array => m.array_type(element, 2)?.as_type(),
             Container::Struct => m.struct_type([element])?.as_type(),
-            Container::FunctionReturn => m.function_type_no_parameters(element).as_type(),
-            Container::FunctionParameter => m.function_type(m.void_type(), [element]).as_type(),
+            Container::FunctionReturn => m.function_type_no_parameters(element)?.as_type(),
+            Container::FunctionParameter => m.function_type(m.void_type(), [element])?.as_type(),
         })
     }
 }
 
-/// `(container, element)` pairs the builder still accepts while the parser
-/// refuses them. Each task of the type-constructor plan removes its own rows;
-/// the list ends empty and is then deleted. A task that removes rows here
-/// re-measures the module doc's "built but not parsed" count in that commit.
-const KNOWN_DISAGREEMENTS: &[(&str, &str)] = &[
-    // function return — removed by Task 5.
-    ("function return", "label"),
-    ("function return", "metadata"),
-    ("function return", "i32 ()"),
-    // function parameter — removed by Task 5.
-    ("function parameter", "void"),
-    ("function parameter", "label"),
-    ("function parameter", "%opaque"),
-    ("function parameter", "i32 ()"),
-];
+impl Container {
+    /// `lib/IR/Type.cpp`'s rule for this container, written out over the grid's
+    /// spellings instead of called. The law reads this rather than either
+    /// half's own predicate, because the builder and the parser share one: a
+    /// wrong predicate would agree with itself on every cell.
+    fn upstream_accepts(self, element: &str) -> bool {
+        match self {
+            // `VectorType::isValidElementType`: an integer, a float, a pointer,
+            // or a target type declaring `CanBeVectorElement`.
+            Container::Vector | Container::ScalableVector => matches!(
+                element,
+                "i1" | "i32"
+                    | "half"
+                    | "bfloat"
+                    | "float"
+                    | "double"
+                    | "x86_fp80"
+                    | "fp128"
+                    | "ppc_fp128"
+                    | "ptr"
+                    | "target(\"llvm.test.vectorelement\")"
+            ),
+            // `ArrayType::isValidElementType`.
+            Container::Array => !matches!(
+                element,
+                "void" | "label" | "metadata" | "i32 ()" | "token" | "x86_amx"
+            ),
+            // `StructType::isValidElementType`.
+            Container::Struct => {
+                !matches!(element, "void" | "label" | "metadata" | "i32 ()" | "token")
+            }
+            // `FunctionType::isValidReturnType`.
+            Container::FunctionReturn => !matches!(element, "i32 ()" | "label" | "metadata"),
+            // `FunctionType::isValidArgumentType`: `Type::isFirstClassType`,
+            // which refuses a function, `void` and an opaque struct, and
+            // `!isLabelTy`.
+            Container::FunctionParameter => {
+                !matches!(element, "i32 ()" | "void" | "%opaque" | "label")
+            }
+        }
+    }
 
-/// The builder accepts a derived type exactly when the parser accepts its
-/// spelling, over every container × element kind of the grid — and where both
-/// accept, they make the same type.
+    /// The text `LLParser` refuses this container with, which is
+    /// `TypePosition`'s `Display` without llvmkit's index suffix.
+    fn upstream_message(self) -> &'static str {
+        match self {
+            Container::Vector | Container::ScalableVector => "invalid vector element type",
+            Container::Array => "invalid array element type",
+            Container::Struct => "invalid element type for struct",
+            Container::FunctionReturn => "invalid function return type",
+            Container::FunctionParameter => "invalid type for function argument",
+        }
+    }
+
+    /// The text `LLParser` refuses `element` here with. `void` is the one
+    /// exception: every position but a function's result reads its element with
+    /// `parseType`, whose `AllowVoid` defaults to `false`, so `parseType`
+    /// refuses it before the position's own rule runs.
+    fn parser_message(self, element: &str) -> &'static str {
+        if element == "void" && !matches!(self, Container::FunctionReturn) {
+            "void type only allowed for function results"
+        } else {
+            self.upstream_message()
+        }
+    }
+}
+
+/// The builder and the parser give `lib/IR/Type.cpp`'s answer for a derived
+/// type, over every container × element kind of the grid: where the rule
+/// accepts, both make the same type; where it refuses, each refuses for the
+/// reason upstream's routine would, the builder naming the container's position
+/// and the parser with `LLParser`'s text. Pins all 150 cells. The list of cells
+/// allowed to disagree, which the type-constructor plan emptied task by task,
+/// is gone, so any cell where they part is a failure naming it.
 ///
 /// llvmkit-specific law (D10, D11), no upstream counterpart: LLVM's builder
 /// half is an `assert`, and no upstream unit test exercises one of these
@@ -363,42 +495,120 @@ fn the_builder_and_the_parser_agree_on_every_derived_type() {
     let m = Module::dynamic("agreement");
     let slots = grid_slots(&m);
     let mut unexpected = Vec::new();
-    let mut seen = Vec::new();
     for container in Container::ALL {
         for &text in ELEMENTS {
             let element = element(&m, text).expect("every grid element builds");
             let spelled = container.spell(text);
+            let label = container.label();
             let built = container.build(&m, element);
             let parsed = parse_type_with_slots(spelled.as_bytes(), &m, &slots);
-            let pair = (container.label(), text);
             match (built, parsed) {
                 (Ok(built), Ok(parsed)) => {
                     if built != parsed {
                         unexpected.push(format!(
-                            "{}: `{spelled}` built `{built}` but parsed `{parsed}`",
-                            container.label()
+                            "{label}: `{spelled}` built `{built}` but parsed `{parsed}`"
+                        ));
+                    }
+                    if !container.upstream_accepts(text) {
+                        unexpected.push(format!("{label}: `{spelled}` is refused by Type.cpp"));
+                    }
+                }
+                (Err(built), Err(parsed)) => {
+                    if container.upstream_accepts(text) {
+                        unexpected.push(format!("{label}: `{spelled}` is accepted by Type.cpp"));
+                    }
+                    let IrError::InvalidTypeComponent { position, .. } = built else {
+                        unexpected.push(format!("{label}: `{spelled}` built `{built:?}`"));
+                        continue;
+                    };
+                    if !position
+                        .to_string()
+                        .starts_with(container.upstream_message())
+                    {
+                        unexpected.push(format!(
+                            "{label}: `{spelled}` refused by the builder at `{position}`"
+                        ));
+                    }
+                    let message = parsed.to_string();
+                    if message != container.parser_message(text) {
+                        unexpected.push(format!(
+                            "{label}: `{spelled}` refused by the parser with `{message}`"
                         ));
                     }
                 }
-                (Err(_), Err(_)) => {}
-                (Ok(_), Err(_)) if KNOWN_DISAGREEMENTS.contains(&pair) => seen.push(pair),
                 (built, parsed) => unexpected.push(format!(
-                    "{}: `{spelled}` built={} parsed={}",
-                    container.label(),
+                    "{label}: `{spelled}` built={} parsed={}",
                     built.is_ok(),
                     parsed.is_ok()
                 )),
             }
         }
     }
-    let stale: Vec<_> = KNOWN_DISAGREEMENTS
-        .iter()
-        .filter(|pair| !seen.contains(pair))
-        .collect();
-    assert!(
-        unexpected.is_empty() && stale.is_empty(),
-        "unexpected: {unexpected:#?}\nstale: {stale:#?}"
+    assert!(unexpected.is_empty(), "unexpected: {unexpected:#?}");
+}
+
+/// The builder and the parser agree at each numeric limit of a derived type:
+/// the largest address space, integer width and vector count, and the first
+/// past each. A law over element kinds says nothing here, because the two halves
+/// compare these numbers separately. `LLParser::parseOptionalAddrSpace`,
+/// `LLLexer::LexIdentifier` and `LLParser::parseArrayVectorType` raise the
+/// parser's messages; `AddressSpace`, `IntegerType::MAX_INT_BITS` and
+/// `NonZeroU32` hold the builder's limits. llvmkit-specific law (D10), no
+/// upstream counterpart, for the reason the law above gives.
+#[test]
+fn the_builder_and_the_parser_agree_at_the_numeric_limits() {
+    let m = Module::dynamic("agreement");
+
+    let parsed = parse_type(b"ptr addrspace(16777215)", &m).expect("the largest space parses");
+    assert_eq!(parsed, m.ptr_type(AddressSpace::MAX).as_type());
+    assert_eq!(
+        parse_type(b"ptr addrspace(16777216)", &m)
+            .expect_err("one past the largest space")
+            .to_string(),
+        "invalid address space, must be a 24-bit integer"
     );
+    assert_eq!(AddressSpace::new(16_777_216), None);
+
+    let parsed = parse_type(b"i8388608", &m).expect("the widest integer parses");
+    let built = m
+        .custom_width_int_type(MAX_INT_BITS)
+        .expect("the widest integer builds");
+    assert_eq!(parsed, built.as_type());
+    for (spelled, bits) in [("i8388609", MAX_INT_BITS + 1), ("i0", 0)] {
+        assert_eq!(
+            parse_type(spelled.as_bytes(), &m)
+                .expect_err("out of range")
+                .to_string(),
+            "bitwidth for integer type out of range",
+            "{spelled}"
+        );
+        assert!(
+            matches!(
+                m.custom_width_int_type(bits),
+                Err(IrError::InvalidIntegerWidth { .. })
+            ),
+            "{spelled}"
+        );
+    }
+
+    let parsed = parse_type(b"<4294967295 x i8>", &m).expect("the longest vector parses");
+    let built = m
+        .vector_type(m.i8_type(), NonZeroU32::MAX)
+        .expect("the longest vector builds");
+    assert_eq!(parsed, built.as_type());
+    assert_eq!(
+        parse_type(b"<4294967296 x i8>", &m)
+            .expect_err("one past the longest vector")
+            .to_string(),
+        "size too large for vector"
+    );
+    assert_eq!(
+        parse_type(b"<0 x i8>", &m)
+            .expect_err("no vector has zero elements")
+            .to_string(),
+        "zero element vector is illegal"
+    );
+    assert_eq!(NonZeroU32::new(0), None);
 }
 
 /// Each element's spelling parses to the very type [`element`] builds — the

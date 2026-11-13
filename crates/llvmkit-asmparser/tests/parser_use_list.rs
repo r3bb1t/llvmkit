@@ -429,3 +429,251 @@ fn plain_display_emits_no_directives() {
 
     assert!(!format!("{module}").contains("uselistorder"));
 }
+
+// --------------------------------------------------------------------------
+// A global's uses are one list
+// --------------------------------------------------------------------------
+
+/// Parse `printed` into a fresh module named `module_name`, and print that
+/// with use-list order preserved: the assembly half of `verify-uselistorder`'s
+/// `verifyUseListOrder` (`tools/verify-uselistorder/verify-uselistorder.cpp`),
+/// which writes `M.print(OS, nullptr, /*ShouldPreserveUseListOrder=*/true)`
+/// and reads it back with `parseAssemblyFile`.
+///
+/// Upstream then compares the two modules' use lists, user by user and
+/// operand by operand (`matches`). llvmkit has no public view of a use list's
+/// order, so a caller compares the two prints instead. Those agree exactly
+/// when the orders do wherever the printer can tell two orders apart, which
+/// is everywhere but between two uses by one instruction or one constant
+/// (`docs/divergences.md` D4); each caller says why its case is not that one.
+fn reprint_preserving(module_name: &str, printed: &str) -> String {
+    parse_and_print_preserving(module_name, printed.as_bytes())
+}
+
+/// Ports the `verify-uselistorder` RUN line of
+/// `test/Assembler/function-operand-uselistorder.ll`, for the steps that tool
+/// takes deterministically: `verifyUseListOrder` on the order as parsed, then
+/// `reverseUseLists` and `verifyUseListOrder` again. Its `NumShuffles` random
+/// shuffles are not ported: they draw from `std::minstd_rand0` through
+/// `std::uniform_int_distribution<short>`, whose mapping the C++ standard
+/// leaves to the library. Only the assembly half of `verifyUseListOrder` runs,
+/// since llvmkit has no bitcode.
+///
+/// `@g` is the only value here with two or more uses, so reversing its list is
+/// all `reverseUseLists` does. Its six uses are the personality, prefix and
+/// prologue of two functions, so only `getOperandNo` orders the three of one
+/// function, and the printer reads it off the field each edge names. The
+/// printed shuffle, `{ 5, 4, 3, 2, 1, 0 }`, is derived from
+/// `predictValueUseListOrder`, not run. `uselistorder.ll`, the other fixture a
+/// function's `uselistorder` might come from, states no directive on a
+/// function.
+#[test]
+fn function_operand_uses_survive_a_reversal_round_trip() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/uselistorder/function_operand_uselistorder.ll");
+    const NAME: &str = "function_operand_round_trip";
+
+    let module = Module::dynamic(NAME);
+    Parser::new(FIXTURE, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("fixture parses");
+
+    // As parsed, the order is the one a parse rebuilds: nothing to state.
+    let printed = module.preserving_use_list_order().to_string();
+    assert!(
+        !printed.contains("uselistorder"),
+        "the parsed order needs no directive, got:\n{printed}"
+    );
+    assert_eq!(reprint_preserving(NAME, &printed), printed);
+
+    // `reverseUseLists`.
+    let g = module.global("g").expect("@g is defined");
+    module
+        .view(g)
+        .as_erased()
+        .sort_use_list(&[5, 4, 3, 2, 1, 0])
+        .expect("@g has six uses");
+    let printed = module.preserving_use_list_order().to_string();
+    assert!(
+        printed.contains("\nuselistorder ptr @g, { 5, 4, 3, 2, 1, 0 }\n"),
+        "expected the reversal to be stated, got:\n{printed}"
+    );
+    assert_eq!(reprint_preserving(NAME, &printed), printed);
+}
+
+/// llvmkit-specific: a function's uses are one list, whatever names it, as
+/// upstream's `Function` has one `UseList` — a direct call, a `ptr @f` store
+/// operand, a global's initializer and a `getelementptr` constant, the callee
+/// known when the call is read or forward-referenced.
+///
+/// Before, the direct call and the initializer registered on the function,
+/// and the store, the expression and a forward-referenced call on the
+/// interned `ptr @f` wrapper (`docs/divergences.md` D3), so `uselistorder` saw
+/// half the uses or none: `value has no uses` for the known callee called
+/// twice, `wrong number of indexes, expected 2` for the four uses below, and a
+/// forward-referenced callee's directive was accepted and then never printed.
+/// No `test/Assembler` fixture states a directive on a function; the upstream
+/// ones are inputs to `opt`, as in
+/// [`a_directive_on_an_invoked_function_parses`]. Each printed shuffle is
+/// derived from `predictValueUseListOrder`, not run, and the round trip is
+/// `verify-uselistorder`'s, as [`reprint_preserving`] says; no two uses here
+/// share a user.
+#[test]
+fn a_function_called_and_named_by_constants_orders_every_use() {
+    const CASES: [(&str, &str, &str); 3] = [
+        (
+            "known_callee",
+            "declare void @f()\n\
+             define void @g() {\n  call void @f()\n  call void @f()\n  ret void\n}\n\
+             uselistorder ptr @f, { 1, 0 }\n",
+            "\nuselistorder ptr @f, { 1, 0 }\n",
+        ),
+        (
+            "forward_callee",
+            "define void @g() {\n  call void @f()\n  call void @f()\n  ret void\n}\n\
+             declare void @f()\n\
+             uselistorder ptr @f, { 1, 0 }\n",
+            "\nuselistorder ptr @f, { 1, 0 }\n",
+        ),
+        (
+            "called_and_named_by_constants",
+            "declare void @f()\n\
+             @k = global ptr @f\n\
+             @e = global ptr getelementptr (i8, ptr @f, i64 1)\n\
+             define void @g() {\n  call void @f()\n  store ptr @f, ptr @k\n  ret void\n}\n\
+             uselistorder ptr @f, { 3, 2, 1, 0 }\n",
+            "\nuselistorder ptr @f, { 3, 2, 0, 1 }\n",
+        ),
+    ];
+    for (name, source, directive) in CASES {
+        let printed = parse_and_print_preserving(name, source.as_bytes());
+        assert!(
+            printed.contains(directive),
+            "{name}: expected `{}`, got:\n{printed}",
+            directive.trim()
+        );
+        assert_eq!(reprint_preserving(name, &printed), printed, "{name}");
+    }
+}
+
+/// Ports the `verify-uselistorder` RUN line of
+/// `test/Assembler/alias-use-list-order.ll` the way
+/// [`function_operand_uses_survive_a_reversal_round_trip`] ports its fixture's:
+/// the parsed order, then `reverseUseLists`, each through the assembly round
+/// trip, the shuffles and the bitcode half left out for the reasons given
+/// there.
+///
+/// The value with two or more uses is the uniqued
+/// `getelementptr inbounds (i32, ptr @alias, i64 1)`, named by two
+/// initializers ahead of `@alias` and two aliasees after it. Resolving the
+/// forward reference re-interns it, and llvmkit used to hand its users over the
+/// way `replaceAllUsesWith` does, reversed. Upstream's
+/// `ConstantUniqueMap::replaceOperandsInPlace` updates the constant where it
+/// stands, so its users keep their order, and the parsed order is the one
+/// `predictValueUseListOrder` predicts: llvmkit printed a directive for it, and
+/// the re-parse applied that directive to the order it predicted, so the round
+/// trip changed the order. The reversed order's shuffle, `{ 3, 2, 1, 0 }`, is
+/// derived, not run. No two uses here share a user.
+#[test]
+fn a_forward_referenced_constant_keeps_its_users_order() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/assembler-corpus/alias-use-list-order.ll");
+    const NAME: &str = "alias_use_list_order_round_trip";
+
+    let module = Module::dynamic(NAME);
+    Parser::new(FIXTURE, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("fixture parses");
+
+    let printed = module.preserving_use_list_order().to_string();
+    assert!(
+        !printed.contains("uselistorder"),
+        "the parsed order needs no directive, got:\n{printed}"
+    );
+    assert_eq!(reprint_preserving(NAME, &printed), printed);
+
+    // `reverseUseLists`: the expression is the only value with two uses.
+    let reference = module.global("alias.ref1").expect("@alias.ref1 is defined");
+    module
+        .view(reference)
+        .initializer()
+        .expect("@alias.ref1 has an initializer")
+        .as_erased()
+        .sort_use_list(&[3, 2, 1, 0])
+        .expect("the expression has four uses");
+    let printed = module.preserving_use_list_order().to_string();
+    assert!(
+        printed.contains(
+            "\nuselistorder ptr getelementptr inbounds (i32, ptr @alias, i64 1), { 3, 2, 1, 0 }\n"
+        ),
+        "expected the reversal to be stated, got:\n{printed}"
+    );
+    assert_eq!(reprint_preserving(NAME, &printed), printed);
+}
+
+/// llvmkit-specific: a constant re-interned for a forward reference takes the
+/// place the old one held on every other operand's list, as upstream's
+/// `replaceOperandsInPlace` leaves its `Use` where it was, and the old one
+/// leaves no edge behind.
+///
+/// `@x`'s `getelementptr` names `@a` and, through a `ptrtoint`, `@b` before
+/// `@b` is defined. Resolving `@b` used to intern a second `getelementptr` and
+/// register it at the head of `@a`'s list beside the first, so `@a` had three
+/// uses where upstream's has two, the initializer of `@y` and the expression,
+/// and `uselistorder ptr @a, { 1, 0 }` was refused as `wrong number of indexes,
+/// expected 3`. The printed shuffle is derived from `predictValueUseListOrder`,
+/// not run; the round trip is `verify-uselistorder`'s, as
+/// [`reprint_preserving`] says.
+#[test]
+fn a_constant_rewritten_for_a_forward_reference_keeps_its_place() {
+    const SOURCE: &str = "@a = global i32 0\n\
+         @x = global ptr getelementptr (i8, ptr @a, i64 ptrtoint (ptr @b to i64))\n\
+         @y = global ptr @a\n\
+         @b = global i32 0\n\
+         uselistorder ptr @a, { 1, 0 }\n";
+    const NAME: &str = "rewritten_constant_place";
+
+    let printed = parse_and_print_preserving(NAME, SOURCE.as_bytes());
+    assert!(
+        printed.contains("\nuselistorder ptr @a, { 1, 0 }\n"),
+        "expected the directive back, got:\n{printed}"
+    );
+    assert_eq!(reprint_preserving(NAME, &printed), printed);
+}
+
+/// Ports the parse half of `test/Transforms/GVNHoist/pr36787.ll`, whose input
+/// states `uselistorder ptr @f0, { 1, 0 }` inside `@func`, on a function
+/// invoked twice there. `opt` reads the file with the assembly parser before
+/// `gvn-hoist` runs; the pass and the fixture's `CHECK` lines are not ported,
+/// since llvmkit has no `gvn-hoist`.
+///
+/// What is asserted is the parser's half: the file parses, so the directive on
+/// the function is accepted, and the order it set prints back, at module
+/// level as `predictUseListOrder` files a global's directive. The printed
+/// shuffle is derived from `predictValueUseListOrder`, not run: `@f0` is
+/// declared before `@func`, so both invokes are numbered after it, and the
+/// later one is predicted first.
+///
+/// The file's `catch ptr @g` names a global variable, which
+/// `LLParser::parseLandingPad` accepts because a `GlobalValue` is a
+/// `Constant`. llvmkit refused it as `clause argument must be a constant`
+/// until the clause check asked about the global's own value category too.
+#[test]
+fn a_directive_on_an_invoked_function_parses() {
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/Transforms/GVNHoist/pr36787.ll");
+
+    let printed = parse_and_print_preserving("invoked_function_directive", FIXTURE);
+    assert!(
+        printed.contains("\n          catch ptr @g\n"),
+        "expected the global catch clause back, got:\n{printed}"
+    );
+    let (_, module_level) = printed
+        .rsplit_once("\n}\n")
+        .expect("the module prints a function body");
+    assert!(
+        module_level.contains("\nuselistorder ptr @f0, { 1, 0 }\n"),
+        "expected the function's directive at module level, got:\n{printed}"
+    );
+}

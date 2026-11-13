@@ -14,9 +14,9 @@
 
 use llvmkit_asmparser::parser;
 use llvmkit_ir::{
-    DynBrand, KnownBits, Module, Unverified, Value, ValueTrackingQuery,
-    analyze_known_bits_from_and_xor_or, compute_known_bits, have_no_common_bits_set,
-    is_known_non_equal, is_known_to_be_a_power_of_two,
+    DynBrand, KnownBits, Module, NswRequirement, PoisonPolicy, Unverified, Value,
+    ValueTrackingQuery, analyze_known_bits_from_and_xor_or, compute_known_bits,
+    have_no_common_bits_set, is_known_negation, is_known_non_equal, is_known_to_be_a_power_of_two,
 };
 
 fn parse(source: &str) -> Module<DynBrand, Unverified> {
@@ -591,4 +591,76 @@ define void @ops(i8 %a, i8 %b) {
         .expect("no error"),
         None
     );
+}
+
+/// Pins `cstval_pred_ty<is_all_ones, ConstantInt, /*AllowPoison=*/true>`, the
+/// matcher under `m_Not`'s `m_AllOnes()`: a vector constant whose strict
+/// splat is no `ConstantInt` matches lane by lane, skipping a `poison` lane and
+/// needing one lane that is not. So `xor %x, <i32 -1, i32 poison>` is `~%x`,
+/// and `haveNoCommonBitsSetSpecialCases`' `X op (Y & ~X)` case holds for a
+/// `noundef` `%x`. A splat of `-1` is the positive control, and `<i32 -1, i32
+/// 0>`, whose defined second lane is not all ones, the negative one.
+/// Regression: a `poison` lane was a lane that is not all ones.
+/// llvmkit-specific (D11): no upstream test puts a `poison` lane there.
+#[test]
+fn m_all_ones_skips_a_poison_lane() {
+    for (mask, expected) in [
+        ("<i32 -1, i32 poison>", true),
+        ("splat (i32 -1)", true),
+        ("<i32 -1, i32 0>", false),
+    ] {
+        let module = parse(&format!(
+            r"
+define <2 x i32> @f(<2 x i32> noundef %x, <2 x i32> %y) {{
+  %not = xor <2 x i32> %x, {mask}
+  %masked = and <2 x i32> %y, %not
+  ret <2 x i32> %masked
+}}
+"
+        ));
+        let data_layout = module.data_layout();
+        let query = ValueTrackingQuery::new(&data_layout);
+        assert_eq!(
+            have_no_common_bits_set(named(&module, "x"), named(&module, "masked"), &query)
+                .expect("query"),
+            expected,
+            "{mask}"
+        );
+    }
+}
+
+/// Pins `cstval_pred_ty<is_zero_int, ConstantInt, /*AllowPoison=*/true>`,
+/// `m_ZeroInt()`, under `isKnownNegation`'s `m_Neg`: a scalar `poison` is no
+/// `ConstantInt` and no vector, and an all-`poison` vector has no lane that is
+/// not `poison`, so neither `sub` negates. A vector with a zero lane and a
+/// `poison` lane matches, and negates only while poison is allowed
+/// (`if (!AllowPoison && !Zero->isNullValue()) return false;`). A
+/// `zeroinitializer` is the positive control. Regression: a `poison` matched as
+/// a zero. llvmkit-specific (D11): no upstream test negates by `poison`.
+#[test]
+fn m_zero_int_needs_a_lane_that_is_not_poison() {
+    let module = parse(
+        r"
+define void @f(i32 %y, <2 x i32> %v) {
+  %scalar = sub i32 poison, %y
+  %all = sub <2 x i32> poison, %v
+  %some = sub <2 x i32> <i32 0, i32 poison>, %v
+  %zero = sub <2 x i32> zeroinitializer, %v
+  ret void
+}
+",
+    );
+    let negates = |name: &str, other: &str, poison: PoisonPolicy| {
+        is_known_negation(
+            named(&module, name),
+            named(&module, other),
+            NswRequirement::NotRequired,
+            poison,
+        )
+    };
+    assert!(!negates("scalar", "y", PoisonPolicy::Allow));
+    assert!(!negates("all", "v", PoisonPolicy::Allow));
+    assert!(negates("some", "v", PoisonPolicy::Allow));
+    assert!(!negates("some", "v", PoisonPolicy::Disallow));
+    assert!(negates("zero", "v", PoisonPolicy::Disallow));
 }

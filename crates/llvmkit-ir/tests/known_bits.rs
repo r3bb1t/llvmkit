@@ -206,11 +206,10 @@ fn exact_reduce_add(width: u32, known: &KnownBits, num_elts: u32) -> Option<Know
 
 /// Port of `llvm/lib/Support/KnownBits.cpp::KnownBits::print`.
 #[test]
-fn display_prints_msb_to_lsb_with_conflict_marker() -> Result<(), IrError> {
+fn display_prints_msb_to_lsb_with_conflict_marker() {
     assert_eq!(kb(4, 0b1001, 0b1010).to_string(), "!?10");
     assert_eq!(KnownBits::unknown(4).to_string(), "????");
     assert_eq!(KnownBits::from_ap_int(ap(4, 0b1010)).to_string(), "1010");
-    Ok(())
 }
 
 /// Port of `llvm/unittests/Support/KnownBitsTest.cpp::TEST(KnownBitsTest, UnaryExhaustive)`.

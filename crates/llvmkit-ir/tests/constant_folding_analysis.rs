@@ -12,17 +12,22 @@ use llvmkit_ir::{
     ApFloat, ApFloatSemantics, ApInt, AttrIndex, Attribute, BinaryIntrinsic, BinaryOpcode,
     CmpPredicate, ConstantExprFlags, ConstantExprOpcode, ConstantExprOptions, ConstantFloatValue,
     ConstantIntValue, DataLayout, DenormalMode, DenormalModeKind, DenormalModeSide, DynBrand,
-    FastMathFlags, FoldNonDeterminism, GepNoWrapFlags, InstructionView, IntDyn, IntPredicate,
-    IrBuilder, IrError, LibFunc, Linkage, NoFolder, PreservedCastFlags, RoundingMode,
+    FastMathFlags, FoldNonDeterminism, GepNoWrapFlags, GlobalValue, InstructionView, IntDyn,
+    IntPredicate, IrBuilder, IrError, LibFunc, Linkage, NoFolder, PreservedCastFlags, RoundingMode,
     TargetLibraryInfo, UnaryOpcode, attributes::AttributeStorage, constant_fold_binary_intrinsic,
     constant_fold_binary_op_operands, constant_fold_compare_inst_operands, constant_fold_constant,
     constant_fold_extract_element_instruction, constant_fold_fp_inst_operands,
-    constant_fold_inst_operands, constant_fold_integer_cast, constant_fold_load_from_uniform_value,
-    constant_fold_load_through_bitcast, constant_fold_unary_op_operand,
-    constant_offset_from_global, is_constant_offset_from_global, lossless_inv_cast,
-    lossless_signed_trunc, lossless_unsigned_trunc, module_new,
+    constant_fold_inst_operands, constant_fold_integer_cast, constant_fold_load_from_const,
+    constant_fold_load_from_uniform_value, constant_fold_load_through_bitcast,
+    constant_fold_unary_op_operand, constant_offset_from_global, is_constant_offset_from_global,
+    is_eliminable_cast_pair, lossless_inv_cast, lossless_signed_trunc, lossless_unsigned_trunc,
+    module_new,
 };
-use llvmkit_ir::{ArrayType, VectorType, lanes};
+use llvmkit_ir::{ArrayType, Constant, Type, VectorType, lanes};
+use llvmkit_ir::{
+    ValueTrackingQuery, can_create_poison, can_create_undef_or_poison, is_known_not_poison,
+    is_known_not_undef,
+};
 
 /// llvmkit-specific subset of `ConstantFolding.cpp::ConstantFoldLoadFromConstPtr`:
 /// byte extraction from constant globals uses the module `DataLayout` endianness.
@@ -52,10 +57,12 @@ fn load_from_const_ptr_uses_little_endian_layout() -> Result<(), IrError> {
     Ok(())
 }
 
-/// llvmkit-specific subset of `ConstantFolding.cpp::ConstantFoldLoadFromConst`:
-/// bytes past the end of a constant aggregate load as poison.
+/// llvmkit-specific subset of `ConstantFolding.cpp::FoldReinterpretLoadFromConst`:
+/// a load that starts inside a constant and runs past its end folds, because
+/// `ReadDataFromGlobal` leaves the bytes it cannot read zero. Upstream's answer
+/// for `load i32` of `[1 x i8] [i8 7]` is `i32 7`.
 #[test]
-fn load_from_const_ptr_oob_returns_poison() -> Result<(), IrError> {
+fn a_load_past_the_end_of_a_constant_reads_zero_bytes() -> Result<(), IrError> {
     let m = module_new!("analysis-load-oob")?;
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let i8_ty = m.i8_type();
@@ -70,9 +77,149 @@ fn load_from_const_ptr_oob_returns_poison() -> Result<(), IrError> {
         ApInt::zero(64),
         &dl,
     )?
-    .expect("oob constant load folds to poison");
+    .expect("a load that starts inside the constant folds");
 
-    assert_eq!(folded, i32_ty.as_type().poison().as_constant());
+    assert_eq!(folded, i32_ty.const_int(7_i32).as_constant());
+    Ok(())
+}
+
+/// Port of `TEST(InstructionsTest, isEliminableCastPair)`, on upstream's two
+/// layouts, with `None` for its `0U`.
+#[test]
+fn is_eliminable_cast_pair_answers_as_upstream() -> Result<(), IrError> {
+    use CastOpcode::{AddrSpaceCast, BitCast, IntToPtr, PtrToAddr, PtrToInt, Trunc, Zext};
+
+    let m = module_new!("analysis-eliminable-cast-pair")?;
+    let dl1 = DataLayout::parse("p1:32:32-p2:64:64:64:32")?;
+    let int16_ty = m.i16_type().as_type();
+    let int32_ty = m.i32_type().as_type();
+    let int64_ty = m.i64_type().as_type();
+    let ptr_ty64 = m.ptr_type_in::<0>().as_type();
+    let ptr_ty32 = m.ptr_type_in::<1>().as_type();
+    let ptr_ty64_32 = m.ptr_type_in::<2>().as_type();
+
+    // Source and destination pointers have same size -> bitcast.
+    assert_eq!(
+        is_eliminable_cast_pair(PtrToInt, IntToPtr, ptr_ty32, int64_ty, ptr_ty32, Some(&dl1)),
+        Some(BitCast)
+    );
+
+    // Source and destination have unknown sizes.
+    assert_eq!(
+        is_eliminable_cast_pair(PtrToInt, IntToPtr, ptr_ty32, int64_ty, ptr_ty32, None),
+        None
+    );
+
+    // Middle pointer big enough -> bitcast.
+    assert_eq!(
+        is_eliminable_cast_pair(IntToPtr, PtrToInt, int64_ty, ptr_ty64, int64_ty, Some(&dl1)),
+        Some(BitCast)
+    );
+
+    // Middle pointer too small -> fail.
+    assert_eq!(
+        is_eliminable_cast_pair(IntToPtr, PtrToInt, int64_ty, ptr_ty32, int64_ty, Some(&dl1)),
+        None
+    );
+
+    // Destination larger than source. Pointer type same as destination.
+    assert_eq!(
+        is_eliminable_cast_pair(IntToPtr, PtrToInt, int16_ty, ptr_ty64, int64_ty, Some(&dl1)),
+        Some(Zext)
+    );
+
+    // Destination larger than source. Pointer type different from destination.
+    assert_eq!(
+        is_eliminable_cast_pair(IntToPtr, PtrToInt, int16_ty, ptr_ty32, int64_ty, Some(&dl1)),
+        Some(Zext)
+    );
+
+    // Destination smaller than source. Pointer type same as source.
+    assert_eq!(
+        is_eliminable_cast_pair(IntToPtr, PtrToInt, int64_ty, ptr_ty64, int16_ty, Some(&dl1)),
+        Some(Trunc)
+    );
+
+    // Destination smaller than source. Pointer type different from source.
+    assert_eq!(
+        is_eliminable_cast_pair(IntToPtr, PtrToInt, int64_ty, ptr_ty32, int16_ty, Some(&dl1)),
+        Some(Trunc)
+    );
+
+    // ptrtoaddr with address size != pointer size. Truncating case.
+    assert_eq!(
+        is_eliminable_cast_pair(
+            IntToPtr,
+            PtrToAddr,
+            int64_ty,
+            ptr_ty64_32,
+            int32_ty,
+            Some(&dl1)
+        ),
+        Some(Trunc)
+    );
+
+    // ptrtoaddr with address size != pointer size. Non-truncating case.
+    assert_eq!(
+        is_eliminable_cast_pair(
+            IntToPtr,
+            PtrToAddr,
+            int32_ty,
+            ptr_ty64_32,
+            int32_ty,
+            Some(&dl1)
+        ),
+        Some(BitCast)
+    );
+
+    // Test that we don't eliminate bitcasts between different address spaces,
+    // or if we don't have available pointer size information.
+    let dl2 = DataLayout::parse(
+        "e-p:32:32:32-p1:16:16:16-p2:64:64:64-i1:8:8-i8:8:8-i16:16:16\
+         -i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64\
+         -v128:128:128-a:0:64-s:64:64-f80:128:128-n8:16:32:64-S128",
+    )?;
+    let int64_ptr_ty_as1 = m.ptr_type_in::<1>().as_type();
+    let int64_ptr_ty_as2 = m.ptr_type_in::<2>().as_type();
+
+    // Cannot simplify inttoptr, addrspacecast
+    assert_eq!(
+        is_eliminable_cast_pair(
+            IntToPtr,
+            AddrSpaceCast,
+            int16_ty,
+            int64_ptr_ty_as1,
+            int64_ptr_ty_as2,
+            Some(&dl2)
+        ),
+        None
+    );
+
+    // Cannot simplify addrspacecast, ptrtoint
+    assert_eq!(
+        is_eliminable_cast_pair(
+            AddrSpaceCast,
+            PtrToInt,
+            int64_ptr_ty_as1,
+            int64_ptr_ty_as2,
+            int16_ty,
+            Some(&dl2)
+        ),
+        None
+    );
+
+    // Pass since the bitcast address spaces are the same
+    assert_eq!(
+        is_eliminable_cast_pair(
+            IntToPtr,
+            BitCast,
+            int16_ty,
+            int64_ptr_ty_as1,
+            int64_ptr_ty_as1,
+            None
+        ),
+        Some(IntToPtr)
+    );
     Ok(())
 }
 
@@ -81,14 +228,14 @@ fn load_from_const_ptr_oob_returns_poison() -> Result<(), IrError> {
 /// index size — even though this layout's index size (32) is narrower than
 /// its pointer size (64), the round trip preserves the bit set above the
 /// index-size boundary (bit 32), because case 11 sizes the collapse using
-/// `getPointerTypeSizeInBits`, reached before the (unimplemented in llvmkit)
-/// index-size-based switch-fallback in `ConstantFoldCastOperand`.
+/// `getPointerTypeSizeInBits`, reached before the index-size arm of
+/// `ConstantFoldCastOperand`.
 #[test]
 fn ptrtoint_of_inttoptr_uses_pointer_size() -> Result<(), IrError> {
     let m = module_new!("analysis-ptr-index")?;
     let dl = DataLayout::parse("e-p:64:64:64:32")?;
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let wide = i64_ty.const_ap_int(&ApInt::from_words(64, &[0x1_0000_0001]))?;
     let ptr = constant_fold_cast_operand(
         CastOpcode::IntToPtr,
@@ -118,7 +265,7 @@ fn ptrtoint_of_inttoptr_i128_collapses_to_original_value() -> Result<(), IrError
     let m = module_new!("analysis-ptr-i128-pointer-size")?;
     let dl = DataLayout::parse("e-p:128:128:128:64")?;
     let i128_ty = m.i128_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     // Bit 64 (above the 64-bit index boundary, within the 128-bit
     // pointer boundary) must survive the round trip.
     let x = i128_ty.const_ap_int(&ApInt::from_words(128, &[1, 1]))?;
@@ -132,11 +279,14 @@ fn ptrtoint_of_inttoptr_i128_collapses_to_original_value() -> Result<(), IrError
     Ok(())
 }
 
-/// llvmkit-specific subset of `ConstantFolding.cpp::ConstantFoldLoadThroughBitcast`:
-/// PPC fp128 bit reinterpretation is DataLayout-aware analysis folding, not a
-/// target-independent `ConstantFold.cpp` fold.
+/// llvmkit-specific subset of `ConstantFolding.cpp::FoldBitCast`: a `ppc_fp128`
+/// has no bitcast fold. `FoldBitCast` ends in `ConstantExpr::getBitCast`, whose
+/// fold in `ConstantFold.cpp` answers null for `isPPC_FP128Ty`, because the two
+/// doubles keep their memory order on every target and an `i128` does not. So
+/// the answer is the `bitcast` constant expression, the one
+/// `loads.ll::test_ppc_fp128` prints going the other way.
 #[test]
-fn ppc_fp128_bitcast_requires_datalayout_path() -> Result<(), IrError> {
+fn a_ppc_fp128_bitcast_stays_a_constant_expression() -> Result<(), IrError> {
     let m = module_new!("analysis-ppc-bitcast")?;
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let ppc_ty = m.ppc_fp128_type();
@@ -146,10 +296,12 @@ fn ppc_fp128_bitcast_requires_datalayout_path() -> Result<(), IrError> {
     let ppc = ppc_ty.const_ap_float(&fp)?.as_constant();
 
     let folded = constant_fold_cast_operand(CastOpcode::BitCast, ppc, i128_ty.as_type(), &dl)?
-        .expect("DataLayout-aware PPC bitcast folds");
-    let int = ConstantIntValue::<IntDyn, _>::try_from(folded)?;
+        .expect("FoldBitCast always answers a constant");
 
-    assert_eq!(int.ap_int(), bits);
+    assert!(
+        folded.to_string().starts_with("i128 bitcast (ppc_fp128 "),
+        "{folded}"
+    );
     Ok(())
 }
 
@@ -166,6 +318,48 @@ fn dynamic_denormal_mode_declines_flush() -> Result<(), IrError> {
     assert_eq!(
         flush_fp_constant(operand, mode, DenormalModeSide::Input)?,
         None
+    );
+    Ok(())
+}
+
+/// `FlushFPConstant`'s splat fast path flushes a scalable splat, and its
+/// `isa<ConstantExpr>(Operand)` check returns a scalable splat of a
+/// non-`ConstantFP` as it is.
+///
+/// **No upstream counterpart as a unit test.** The oracle is
+/// `llvm/lib/Analysis/ConstantFolding.cpp::FlushFPConstant`: for any vector,
+/// `if (auto *Splat = dyn_cast_or_null<ConstantFP>(Operand->getSplatValue()))`
+/// flushes the splat value and returns `ConstantVector::getSplat` of it, and
+/// only then `if (isa<ConstantExpr>(Operand)) return Operand;`, which a scalable
+/// splat is upstream (a `shufflevector`). The smallest positive denormal
+/// flushed with `preserve-sign` input is `+0.0`, so the flushed splat is the
+/// zero vector. Before the fast path was ported, a scalable vector declined.
+#[test]
+fn a_scalable_splat_is_flushed_and_an_expression_is_kept() -> Result<(), IrError> {
+    let m = module_new!("analysis-flush-splat")?;
+    let f32_ty = m.f32_type();
+    let denormal = ApFloat::from_bits(ApFloatSemantics::IeeeSingle, &ApInt::from_words(32, &[1]))?;
+    let element = f32_ty.const_ap_float(&denormal)?.as_constant();
+    let splat = m
+        .scalable_vector_type(f32_ty, lanes::<2>())?
+        .const_splat(element)?
+        .as_constant();
+    let mode = DenormalMode::new(
+        DenormalModeKind::PreserveSign,
+        DenormalModeKind::PreserveSign,
+    );
+    let flushed = flush_fp_constant(splat, mode, DenormalModeSide::Input)?
+        .expect("a ConstantFP splat flushes");
+    assert!(flushed.is_null_value(), "{flushed}");
+    assert_eq!(flushed.ty(), splat.ty());
+
+    let integers = m
+        .scalable_vector_type(m.i32_type(), lanes::<2>())?
+        .const_splat(m.i32_type().const_int(1_i32))?
+        .as_constant();
+    assert_eq!(
+        flush_fp_constant(integers, mode, DenormalModeSide::Input)?,
+        Some(integers)
     );
     Ok(())
 }
@@ -566,7 +760,7 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
     assert_eq!(signed_trunc, i8_ty.const_int(127_i8).as_constant());
     assert_eq!(signed_flags, PreservedCastFlags::none());
 
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("api_fold_inst", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -597,7 +791,7 @@ fn crate_root_constant_offset_from_global_resolves_global_pointer() -> Result<()
     let resolved = constant_offset_from_global(m.view(g).ptr_offset(3), &dl)
         .expect("global pointer plus constant offset resolves");
 
-    assert_eq!(resolved.global(), m.view(g));
+    assert_eq!(resolved.global(), GlobalValue::Variable(m.view(g)));
     assert_eq!(resolved.offset(), &ApInt::from_words(64, &[3]));
     Ok(())
 }
@@ -610,7 +804,7 @@ fn freeze_folds_only_non_undef_non_poison_constants() -> Result<(), IrError> {
     let m = module_new!("analysis-freeze")?;
     let dl = DataLayout::default();
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("freeze_fold", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -629,6 +823,138 @@ fn freeze_folds_only_non_undef_non_poison_constants() -> Result<(), IrError> {
     );
     assert_eq!(constant_fold_instruction(&undef_inst, &dl, None)?, None);
     assert_eq!(constant_fold_instruction(&poison_inst, &dl, None)?, None);
+    Ok(())
+}
+
+/// Pins the constant arm of `isGuaranteedNotToBeUndefOrPoison`, which
+/// `ConstantFoldInstOperandsImpl`'s `case Instruction::Freeze:` asks with its
+/// defaults. Among aggregates only a vector is analysed (`if
+/// (C->getType()->isVectorTy())`): one folds when it holds no `undef`
+/// (`containsUndefElement`), no `poison` and no constant expression
+/// (`containsConstantExpression`), and a zero holds none. A struct or an array
+/// of integers is no vector, falls through every later arm, and does not fold.
+/// Regression: the folder kept its own copy of the routine, which walked
+/// arrays and structs and counted a `getelementptr` lane as well defined.
+/// llvmkit-specific (D11): no upstream fixture freezes these constants.
+#[test]
+fn freeze_folds_a_vector_constant_but_no_other_aggregate() -> Result<(), IrError> {
+    let m = module_new!("analysis-freeze-aggregates")?;
+    let dl = DataLayout::default();
+    let i32_ty = m.i32_type();
+    let ptr_ty = m.ptr_type_in::<0>();
+    let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
+    let fn_ty = m.function_type_no_parameters(m.void_type())?;
+    let f = m.add_function_dyn("freeze_aggregates", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let one = i32_ty.const_int(1_i32).as_constant();
+    let two = i32_ty.const_int(2_i32).as_constant();
+    let undef = i32_ty.as_type().undef().as_constant();
+    let pair = VectorType::of(i32_ty, lanes::<2>());
+    let folds = |operand: Constant<'_, _>| -> Result<bool, IrError> {
+        let frozen = b.freeze(operand, "frozen")?;
+        Ok(constant_fold_instruction(&b.view(frozen).as_view(), &dl, None)? == Some(operand))
+    };
+
+    assert!(folds(pair.const_vector([one, two])?.as_constant())?);
+    assert!(folds(pair.as_type().null_value().expect("a zero vector"))?);
+    assert!(!folds(pair.const_vector([undef, one])?.as_constant())?);
+    let global = m.view(g).as_global_constant_ptr();
+    let offset = m.view(g).ptr_offset(4);
+    assert!(!folds(
+        VectorType::of(ptr_ty, lanes::<2>())
+            .const_vector([global, offset])?
+            .as_constant()
+    )?);
+    assert!(folds(
+        VectorType::of(ptr_ty, lanes::<2>())
+            .const_vector([global, global])?
+            .as_constant()
+    )?);
+
+    let record = m
+        .struct_type([i32_ty.as_type(), i32_ty.as_type()])?
+        .const_struct([one, two])?
+        .as_constant();
+    assert!(!folds(record)?);
+    let array = ArrayType::of(i32_ty, 2)
+        .const_array([one, two])?
+        .as_constant();
+    assert!(!folds(array)?);
+    b.ret_void()?;
+    Ok(())
+}
+
+/// A `freeze` of one of llvmkit's compact constants folds as a `freeze` of the
+/// constant expression it prints as. `isGuaranteedNotToBeUndefOrPoison` reaches
+/// that expression through its `dyn_cast<Operator>` arm:
+///
+/// - `try_delta_from` prints as the operand
+///   `test/Transforms/InstSimplify/freeze.ll::ptrdiff`'s `CHECK` block
+///   returns, `sub (i64 ptrtoint (ptr @a to i64), i64 ptrtoint (ptr @b to
+///   i64))`. A `sub` without `nuw` or `nsw` and two casts create nothing, and
+///   the casts' operands are global variables, so it folds.
+/// - `try_delta_from_plus` adds an `i64` to that `sub`, and an `add` without
+///   flags creates nothing either. A zero addend is the `sub` itself
+///   (`Constant::kind` classifies it so, after `getBinOpIdentity`'s fold).
+/// - `ptr_offset` prints as `getelementptr inbounds (i8, ptr @a, i64 4)`.
+///   `inbounds` is a poison-generating flag (`Operator::hasPoisonGeneratingFlags`),
+///   so `canCreateUndefOrPoison` says it can create poison and the `freeze`
+///   stays, as `test/Transforms/SCCP/freeze.ll::maybe_poison`'s `add nuw` does.
+///   The flag says nothing about `undef`, so it is not `undef`.
+///
+/// llvmkit-specific (D11): no upstream fixture can spell a compact form.
+/// Regression: at `beeaa68` the routine reached its operator arm only for an
+/// instruction, so neither delta folded, where the folder's own copy of the
+/// routine, deleted in that commit, had folded both.
+#[test]
+fn freeze_reads_a_compact_constant_as_the_expression_it_prints_as() -> Result<(), IrError> {
+    let m = module_new!("analysis-freeze-compact")?;
+    let dl = DataLayout::default();
+    let i32_ty = m.i32_type();
+    let a = m.add_global_constant("a", i32_ty.const_int(0_i32))?;
+    let other = m.add_global_constant("b", i32_ty.const_int(0_i32))?;
+    let fn_ty = m.function_type_no_parameters(m.void_type())?;
+    let f = m.add_function_dyn("freeze_compact", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let folds = |operand: Constant<'_, _>| -> Result<bool, IrError> {
+        let frozen = b.freeze(operand, "frozen")?;
+        Ok(constant_fold_instruction(&b.view(frozen).as_view(), &dl, None)? == Some(operand))
+    };
+    let query = ValueTrackingQuery::new(&dl);
+
+    let delta = m.view(a).try_delta_from(m.view(other))?.as_constant();
+    assert_eq!(
+        delta.to_string(),
+        "i64 sub (i64 ptrtoint (ptr @a to i64), i64 ptrtoint (ptr @b to i64))"
+    );
+    assert!(!can_create_poison(delta.as_erased(), true));
+    assert!(folds(delta)?);
+
+    let delta_plus = m
+        .view(a)
+        .try_delta_from_plus(m.view(other), 7)?
+        .as_constant();
+    assert!(!can_create_undef_or_poison(delta_plus.as_erased(), true));
+    assert!(folds(delta_plus)?);
+    let delta_plus_zero = m
+        .view(a)
+        .try_delta_from_plus(m.view(other), 0)?
+        .as_constant();
+    assert!(folds(delta_plus_zero)?);
+
+    let offset = m.view(a).ptr_offset(4);
+    assert_eq!(
+        offset.to_string(),
+        "ptr getelementptr inbounds (i8, ptr @a, i64 4)"
+    );
+    assert!(can_create_poison(offset.as_erased(), true));
+    assert!(!can_create_poison(offset.as_erased(), false));
+    assert!(!folds(offset)?);
+    assert!(!is_known_not_poison(offset.as_erased(), &query)?);
+    assert!(is_known_not_undef(offset.as_erased(), &query)?);
+    b.ret_void()?;
     Ok(())
 }
 
@@ -652,7 +978,7 @@ fn recursive_gep_load_through_bitcast_from_global_folds() -> Result<(), IrError>
     let zero = i64_ty.const_zero();
     let one = i64_ty.const_int(1_i64);
     let gep = m.constant_expr_with_options(
-        m.ptr_type(0).as_type(),
+        m.ptr_type_in::<0>().as_type(),
         ConstantExprOpcode::GetElementPtr,
         [
             m.view(g).as_global_constant_ptr().as_erased(),
@@ -666,7 +992,7 @@ fn recursive_gep_load_through_bitcast_from_global_folds() -> Result<(), IrError>
 
     let resolved = constant_offset_from_global(gep, &dl)
         .expect("recursive GEP offset resolves to the base global");
-    assert_eq!(resolved.global(), m.view(g));
+    assert_eq!(resolved.global(), GlobalValue::Variable(m.view(g)));
     assert_eq!(resolved.offset(), &ApInt::from_words(64, &[4]));
 
     let folded = constant_fold_load_from_const_ptr(gep, f32_ty.as_type(), ApInt::zero(64), &dl)?
@@ -685,15 +1011,15 @@ fn non_integral_pointer_load_through_bitcast_declines() -> Result<(), IrError> {
     let dl = DataLayout::parse("e-p:64:64:64-p1:64:64:64-ni:1")?;
     let i8_ty = m.i8_type();
     let i64_ty = m.i64_type();
-    let ptr1_ty = m.ptr_type(1);
+    let ptr1_ty = m.ptr_type_in::<1>();
     let g = m
         .global_builder("ni_global", i8_ty.as_type())
         .constant()
-        .address_space(1)
+        .address_space(llvmkit_ir::address_space::<1>())
         .initializer(i8_ty.const_int(0_i8))
         .build()?;
 
-    assert!(dl.is_non_integral_address_space(1));
+    assert!(dl.is_non_integral_address_space(llvmkit_ir::address_space::<1>()));
     assert_eq!(
         constant_fold_load_through_bitcast(
             m.view(g).as_global_constant_ptr(),
@@ -722,7 +1048,7 @@ fn function_denormal_f32_attribute_overrides_generic_mode() -> Result<(), IrErro
     let m = module_new!("analysis-denormal-attrs")?;
     let dl = DataLayout::default();
     let f32_ty = m.f32_type();
-    let fn_ty = m.function_type_no_parameters(f32_ty);
+    let fn_ty = m.function_type_no_parameters(f32_ty)?;
     let f = m.add_function_dyn("denormal_attr", fn_ty, Linkage::External)?;
     m.view(f)
         .set_string_attribute(&m, AttrIndex::Function, "denormal-fp-math", "ieee,ieee");
@@ -757,7 +1083,7 @@ fn function_denormal_attribute_group_overrides_generic_mode() -> Result<(), IrEr
     let m = module_new!("analysis-denormal-attr-group")?;
     let dl = DataLayout::default();
     let f32_ty = m.f32_type();
-    let fn_ty = m.function_type_no_parameters(f32_ty);
+    let fn_ty = m.function_type_no_parameters(f32_ty)?;
     let mut group = AttributeStorage::new();
     group.add(
         AttrIndex::Function,
@@ -858,7 +1184,7 @@ fn deny_declines_fp_binop_with_nsz_flag() -> Result<(), IrError> {
     let m = module_new!("analysis-fp-determinism-nsz")?;
     let dl = DataLayout::default();
     let f32_ty = m.f32_type();
-    let fn_ty = m.function_type_no_parameters(f32_ty);
+    let fn_ty = m.function_type_no_parameters(f32_ty)?;
     let f = m.add_function_dyn("nsz_fadd", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -899,7 +1225,7 @@ fn inttoptr_vs_null_folds_via_integer_compare() -> Result<(), IrError> {
     let m = module_new!("analysis-inttoptr-vs-null")?;
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let five = i64_ty.const_int(5_i64).as_constant();
     let lhs = m.constant_expr(
         ptr_ty.as_type(),
@@ -966,7 +1292,7 @@ fn inttoptr_pair_ult_folds_via_integer_compare() -> Result<(), IrError> {
     let m = module_new!("analysis-inttoptr-pair-ult")?;
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let four = i64_ty.const_int(4_i64).as_constant();
     let eight = i64_ty.const_int(8_i64).as_constant();
     let lhs = m.constant_expr(
@@ -1051,7 +1377,7 @@ fn same_base_inbounds_gep_ult_folds_via_offset_compare() -> Result<(), IrError> 
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let i8_ty = m.i8_type();
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
     let base = m.view(g).as_global_constant_ptr();
     let four = i64_ty.const_int(4_i64).as_constant();
@@ -1098,7 +1424,7 @@ fn non_inbounds_same_base_gep_eq_still_folds() -> Result<(), IrError> {
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let i8_ty = m.i8_type();
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
     let base = m.view(g).as_global_constant_ptr();
     let four = i64_ty.const_int(4_i64).as_constant();
@@ -1144,7 +1470,7 @@ fn non_inbounds_same_base_gep_ult_declines_to_fold() -> Result<(), IrError> {
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let i8_ty = m.i8_type();
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
     let base = m.view(g).as_global_constant_ptr();
     let four = i64_ty.const_int(4_i64).as_constant();
@@ -1233,7 +1559,7 @@ fn nested_gep_over_gep_offset_mid_folds_via_offset_compare() -> Result<(), IrErr
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let i8_ty = m.i8_type();
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
     let mid_lhs = m.view(g).ptr_offset(4);
     let mid_rhs = m.view(g).ptr_offset(4);
@@ -1316,7 +1642,7 @@ fn gep_i32_index_canonicalizes_to_i8_offset() -> Result<(), IrError> {
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
     let four = i64_ty.const_int(4_i64).as_constant();
     let gep = m.constant_expr_with_options(
@@ -1338,8 +1664,62 @@ fn gep_i32_index_canonicalizes_to_i8_offset() -> Result<(), IrError> {
     assert_eq!(folded.to_string(), m.view(g).ptr_offset(16).to_string());
     let resolved = constant_offset_from_global(folded, &dl)
         .expect("canonical i8 GEP resolves to base + offset");
-    assert_eq!(resolved.global(), m.view(g));
+    assert_eq!(resolved.global(), GlobalValue::Variable(m.view(g)));
     assert_eq!(resolved.offset(), &ApInt::from_words(64, &[16]));
+    Ok(())
+}
+
+/// Pins `ConstantFoldConstantImpl`'s opening `if (!isa<ConstantVector>(C) &&
+/// !isa<ConstantExpr>(C)) return const_cast<Constant *>(C);`, and the
+/// `ConstantVector::get(Ops)` it ends with. The `getelementptr i32` that
+/// `gep_i32_index_canonicalizes_to_i8_offset` folds is left alone inside an
+/// array and inside a struct, because neither is a `ConstantVector`, and is
+/// folded inside a vector, which is. Regression: every element list was
+/// folded. llvmkit-specific (D11): no upstream test isolates the gate.
+#[test]
+fn only_a_vector_or_an_expression_is_folded_as_a_constant() -> Result<(), IrError> {
+    let m = module_new!("analysis-fold-constant-gate")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i32_ty = m.i32_type();
+    let ptr_ty = m.ptr_type_in::<0>();
+    let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
+    let gep = m.constant_expr_with_options(
+        ptr_ty.as_type(),
+        ConstantExprOpcode::GetElementPtr,
+        [
+            m.view(g).as_global_constant_ptr().as_erased(),
+            m.i64_type().const_int(4_i64).as_constant().as_erased(),
+        ],
+        [],
+        [],
+        ConstantExprOptions::new()
+            .source_ty(i32_ty.as_type())
+            .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS)),
+    )?;
+    let canonical = m.view(g).ptr_offset(16).to_string();
+    assert_eq!(
+        constant_fold_constant(gep, &dl, None)?.to_string(),
+        canonical
+    );
+
+    let array = ArrayType::of(ptr_ty, 1).const_array([gep])?.as_constant();
+    assert_eq!(constant_fold_constant(array, &dl, None)?, array);
+    let pair = m.struct_type([ptr_ty.as_type()])?;
+    let record = pair.const_struct([gep])?.as_constant();
+    assert_eq!(constant_fold_constant(record, &dl, None)?, record);
+
+    let vector = VectorType::of(ptr_ty, lanes::<1>())
+        .const_vector([gep])?
+        .as_constant();
+    let folded = constant_fold_constant(vector, &dl, None)?;
+    assert_ne!(folded, vector);
+    assert_eq!(
+        folded
+            .aggregate_element(0)
+            .expect("a one-lane vector")
+            .to_string(),
+        canonical
+    );
     Ok(())
 }
 
@@ -1353,7 +1733,7 @@ fn nested_gep_merges_into_single_i8_offset() -> Result<(), IrError> {
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
     let one = i64_ty.const_int(1_i64).as_constant();
     let inbounds = ConstantExprOptions::new()
@@ -1384,7 +1764,7 @@ fn nested_gep_merges_into_single_i8_offset() -> Result<(), IrError> {
     assert_eq!(folded.to_string(), m.view(g).ptr_offset(8).to_string());
     let resolved = constant_offset_from_global(folded, &dl)
         .expect("merged nested GEP resolves to base + offset");
-    assert_eq!(resolved.global(), m.view(g));
+    assert_eq!(resolved.global(), GlobalValue::Variable(m.view(g)));
     assert_eq!(resolved.offset(), &ApInt::from_words(64, &[8]));
     Ok(())
 }
@@ -1403,7 +1783,7 @@ fn nested_gep_cancelling_offsets_fold_to_base_pointer() -> Result<(), IrError> {
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
     let g_ptr = m.view(g).as_global_constant_ptr();
     let one = i64_ty.const_int(1_i64).as_constant();
@@ -1439,7 +1819,7 @@ fn nested_gep_cancelling_offsets_fold_to_base_pointer() -> Result<(), IrError> {
     assert_eq!(folded.to_string(), g_ptr.to_string());
     let resolved =
         constant_offset_from_global(folded, &dl).expect("cancelling GEP resolves to base");
-    assert_eq!(resolved.global(), m.view(g));
+    assert_eq!(resolved.global(), GlobalValue::Variable(m.view(g)));
     assert_eq!(resolved.offset(), &ApInt::zero(64));
     Ok(())
 }
@@ -1472,7 +1852,7 @@ fn nested_gep_non_constant_index_intersects_inner_no_wrap_flags() -> Result<(), 
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
     let h = m.add_global_constant("h", i32_ty.const_int(0_i32))?;
     let h_int = m.constant_expr(
@@ -1545,5 +1925,443 @@ fn nested_gep_non_constant_index_intersects_inner_no_wrap_flags() -> Result<(), 
     )?;
     assert_ne!(folded.to_string(), wrongly_inbounds.to_string());
 
+    Ok(())
+}
+
+/// **No upstream counterpart**: no fixture loads from a scalable constant at a
+/// non-zero offset (a global cannot hold one, `Verifier::visitGlobalVariable`).
+/// Pins `ConstantFoldLoadFromConst`'s `!Size.isScalable()`, and that the uniform
+/// fold after it then answers. A scalable constant's size is not known here, so
+/// an offset past its known minimum is not out of bounds. The fixed vector of
+/// the same known minimum is the positive control: there the offset is past
+/// the end and the load is poison, even though the constant is uniform.
+#[test]
+fn a_load_past_the_known_minimum_of_a_scalable_constant_is_not_poison() -> Result<(), IrError> {
+    let m = module_new!("analysis-load-scalable-bounds")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i32_ty = m.i32_type();
+    let scalable = VectorType::scalable_of(i32_ty, lanes::<4>());
+    let fixed = VectorType::of(i32_ty, lanes::<4>());
+    let sixteen = ApInt::from_words(64, &[16]);
+
+    let scalable_zero = scalable.const_vector([i32_ty.const_zero(); 4])?;
+    assert_eq!(
+        constant_fold_load_from_const(
+            scalable_zero.as_constant(),
+            i32_ty.as_type(),
+            sixteen.clone(),
+            &dl,
+        )?,
+        Some(i32_ty.const_zero().as_constant())
+    );
+    assert_eq!(
+        constant_fold_load_from_const(
+            scalable.as_type().undef().as_constant(),
+            i32_ty.as_type(),
+            sixteen.clone(),
+            &dl,
+        )?,
+        Some(i32_ty.as_type().undef().as_constant())
+    );
+
+    let fixed_zero = fixed.const_vector([i32_ty.const_zero(); 4])?;
+    assert_eq!(
+        constant_fold_load_from_const(fixed_zero.as_constant(), i32_ty.as_type(), sixteen, &dl)?,
+        Some(i32_ty.as_type().poison().as_constant())
+    );
+    Ok(())
+}
+
+/// Pins `ConstantFoldLoadFromUniformValue`'s `Constant::getNullValue(Ty)`, one
+/// assertion per type class no fixture loads from a uniform constant: an array,
+/// a struct with a nested array, a token and a target type. Upstream's
+/// `llvm_unreachable` for a type with no null constant, the assert in
+/// `ConstantTargetNone::get` and the `isX86_AMXTy` guard each answer `None`. A
+/// struct with no body is the `ConstantAggregateZero` `getNullValue` builds for
+/// any `StructTyID`.
+#[test]
+fn a_uniform_zero_loads_as_the_null_of_any_type() -> Result<(), IrError> {
+    let m = module_new!("analysis-uniform-null")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i8_ty = m.i8_type();
+    let i32_ty = m.i32_type();
+    let zero = i32_ty.const_zero().as_constant();
+    let load = |ty| -> Result<Option<String>, IrError> {
+        Ok(constant_fold_load_from_uniform_value(zero, ty, &dl)?.map(|c| c.to_string()))
+    };
+
+    let array = ArrayType::of(i8_ty, 2);
+    assert_eq!(
+        load(array.as_type())?.as_deref(),
+        Some("[2 x i8] zeroinitializer")
+    );
+    let pair = m.struct_type([i32_ty.as_type(), array.as_type()])?;
+    assert_eq!(
+        load(pair.as_type())?.as_deref(),
+        Some("{ i32, [2 x i8] } zeroinitializer")
+    );
+    assert_eq!(
+        load(m.token_type().as_type())?.as_deref(),
+        Some("token none")
+    );
+    let target = m.target_ext_type("spirv.Event", Vec::<Type<'_, _>>::new(), [])?;
+    assert_eq!(
+        load(target.as_type())?.as_deref(),
+        Some("target(\"spirv.Event\") zeroinitializer")
+    );
+
+    let no_zero = m.target_ext_type("other", Vec::<Type<'_, _>>::new(), [])?;
+    assert_eq!(load(no_zero.as_type())?, None);
+    assert_eq!(load(m.x86_amx_type())?, None);
+    assert_eq!(
+        load(m.opaque_struct("opaque")?.as_type())?.as_deref(),
+        Some("%opaque zeroinitializer")
+    );
+    Ok(())
+}
+
+/// **No upstream counterpart**: a `ConstantAggregateZero` of any length costs
+/// upstream nothing, and costs llvmkit nothing either, so a uniform zero loads
+/// as the zero of an array too long to list. It used to be one element per
+/// lane here, and this fold declined rather than abort on the allocation.
+/// `a_uniform_zero_loads_as_the_null_of_any_type` covers the short types.
+#[test]
+fn a_zero_load_too_long_to_list_still_folds() -> Result<(), IrError> {
+    let m = module_new!("analysis-uniform-null-length")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let too_long = ArrayType::of(m.i8_type(), u64::MAX);
+    let zero = m.i32_type().const_zero().as_constant();
+    assert_eq!(
+        constant_fold_load_from_uniform_value(zero, too_long.as_type(), &dl)?
+            .map(|folded| folded.to_string())
+            .as_deref(),
+        Some("[18446744073709551615 x i8] zeroinitializer")
+    );
+    Ok(())
+}
+
+/// Pins `ConstantFoldLoadThroughBitcast`'s closing step at a scalable vector:
+/// `if (auto *VT = dyn_cast<VectorType>(SrcTy)) if
+/// (!DL.typeSizeEqualsStoreSize(VT->getElementType())) return nullptr; C =
+/// C->getAggregateElement(0u);`, which `dyn_cast<VectorType>` lets a scalable
+/// vector reach. A load of `x86_amx` gets there from a scalable zero, because
+/// `ConstantFoldLoadFromUniformValue` refuses a null source for that type
+/// (`!Ty->isX86_AMXTy()`), and the scalable and fixed sizes are not equal.
+/// `getAggregateElement` answers a scalable `ConstantAggregateZero`, so the
+/// drill reaches `i8192 0`, whose 8192 bits `CastInst::castIsValid` lets
+/// bitcast to `x86_amx`; `FoldBitCast` has no fold for it and answers the
+/// expression. A scalable splat of a non-zero value is the `shufflevector`
+/// expression, whose `getAggregateElement` is `nullptr`, so its drill stops.
+/// The fixed `<1 x i8192>` zero is the contrast: its size equals the load's, so
+/// the step before, `if (SrcSize == DestSize && ...)`, casts it as it is and the
+/// loop never drills. llvmkit-specific (D11): no upstream fixture loads
+/// `x86_amx` from a constant.
+#[test]
+fn a_scalable_zero_drills_to_its_element_for_an_x86_amx_load() -> Result<(), IrError> {
+    let m = module_new!("analysis-amx-scalable-zero")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let wide = m.custom_width_int_type(8192)?;
+    let amx = m.x86_amx_type();
+    let drill = |source: Constant<'_, _>| -> Result<Option<String>, IrError> {
+        Ok(constant_fold_load_through_bitcast(source, amx, &dl)?.map(|c| c.to_string()))
+    };
+
+    let scalable = VectorType::scalable_of(wide, lanes::<1>()).as_type();
+    let fixed = VectorType::of(wide, lanes::<1>()).as_type();
+    assert_eq!(
+        drill(scalable.null_value().expect("a vector has a null value"))?.as_deref(),
+        Some("x86_amx bitcast (i8192 0 to x86_amx)")
+    );
+    assert_eq!(
+        drill(fixed.null_value().expect("a vector has a null value"))?.as_deref(),
+        Some("x86_amx bitcast (<1 x i8192> zeroinitializer to x86_amx)")
+    );
+
+    let one = wide.const_int_arbitrary_precision(&[1])?.as_constant();
+    let scalable_one = VectorType::scalable_of(wide, lanes::<1>())
+        .const_vector([one])?
+        .as_constant();
+    assert_eq!(drill(scalable_one)?, None);
+    Ok(())
+}
+
+/// Pins `FoldReinterpretLoadFromConst`'s `InitializerSize.isScalable()`. The
+/// splat is not uniform to the load, so the fold gets that far, and an offset
+/// past the known minimum is not out of bounds there either: the next line's
+/// `getFixedValue` would read the size as if it were fixed. The fixed vector is
+/// the positive control. No fixture has a load at such an offset.
+#[test]
+fn a_reinterpreted_load_past_the_known_minimum_is_not_poison() -> Result<(), IrError> {
+    let m = module_new!("analysis-reinterpret-scalable-bounds")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i32_ty = m.i32_type();
+    let sixteen = ApInt::from_words(64, &[16]);
+
+    let scalable = VectorType::scalable_of(i32_ty, lanes::<4>());
+    let splat = scalable.const_vector([i32_ty.const_int(1_i32); 4])?;
+    assert_eq!(
+        constant_fold_load_from_const(splat.as_constant(), i32_ty.as_type(), sixteen.clone(), &dl,)?,
+        None
+    );
+
+    let fixed = VectorType::of(i32_ty, lanes::<4>());
+    let lanes_of_one = fixed.const_vector([i32_ty.const_int(1_i32); 4])?;
+    assert_eq!(
+        constant_fold_load_from_const(lanes_of_one.as_constant(), i32_ty.as_type(), sixteen, &dl)?,
+        Some(i32_ty.as_type().poison().as_constant())
+    );
+    Ok(())
+}
+
+/// Ports the default-configuration results of the `store` of a scalable splat
+/// followed by a `load` in `test/Transforms/InstCombine/load-store-forward.ll`:
+/// `load_i32_store_nxv4i32`, `load_i64_store_nxv8i8`, `load_i64_store_nxv4i32`,
+/// `load_i8_store_nxv4i32`, `load_f32_store_nxv4f32`, `load_i32_store_nxv4f32`,
+/// `load_v4i32_store_nxv4i32`, `load_v4i16_store_nxv4i32`,
+/// `load_nxv4i8_store_nxv4i32`. Each stays a `load`, so each
+/// `ConstantFoldLoadFromConst(C, AccessTy, DL)` that
+/// `getAvailableLoadStore` (`Loads.cpp`) calls answers null.
+/// `load_i64_store_nxv4i8` is left out because its `isKnownLE` fails, so that
+/// fixture never reaches the routine. `load_v4i32_store_nxv4i32` is the one
+/// `operator==` decides: a fixed and a scalable size of 128 are different sizes.
+#[test]
+fn a_load_from_a_scalable_splat_is_not_folded() -> Result<(), IrError> {
+    let m = module_new!("analysis-load-scalable-splat")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i8_ty = m.i8_type();
+    let i16_ty = m.i16_type();
+    let i32_ty = m.i32_type();
+    let i64_ty = m.i64_type();
+    let f32_ty = m.f32_type();
+    let nxv4i32 = VectorType::scalable_of(i32_ty, lanes::<4>())
+        .const_vector([i32_ty.const_int(1_i32); 4])?
+        .as_constant();
+    let nxv8i8 = VectorType::scalable_of(i8_ty, lanes::<8>())
+        .const_vector([i8_ty.const_int(1_i8); 8])?
+        .as_constant();
+    let nxv4f32 = VectorType::scalable_of(f32_ty, lanes::<4>())
+        .const_vector([f32_ty.const_float(1.0); 4])?
+        .as_constant();
+
+    for (stored, load_ty) in [
+        (nxv4i32, i32_ty.as_type()),
+        (nxv8i8, i64_ty.as_type()),
+        (nxv4i32, i64_ty.as_type()),
+        (nxv4i32, i8_ty.as_type()),
+        (nxv4f32, f32_ty.as_type()),
+        (nxv4f32, i32_ty.as_type()),
+        (nxv4i32, VectorType::of(i32_ty, lanes::<4>()).as_type()),
+        (nxv4i32, VectorType::of(i16_ty, lanes::<4>()).as_type()),
+        (
+            nxv4i32,
+            VectorType::scalable_of(i8_ty, lanes::<4>()).as_type(),
+        ),
+    ] {
+        assert_eq!(
+            constant_fold_load_from_const(stored, load_ty, ApInt::zero(64), &dl)?,
+            None,
+            "load {load_ty} from {stored}"
+        );
+    }
+    Ok(())
+}
+
+/// **No upstream counterpart for the routine**: the input and the expected
+/// constant are `test/Transforms/GVN/vscale.ll`'s
+/// `load_v16i8_store_v4i32_forward_constant`, but GVN reaches that constant
+/// through `VNCoercion`, not `ConstantFoldLoadThroughBitcast`. Pins the routine's
+/// `SrcSize == DestSize` and `isKnownGE` on two scalable sizes, and `FoldBitCast`'s
+/// "`!isa<FixedVectorType>(C->getType())` returns `ConstantExpr::getBitCast`".
+#[test]
+fn a_scalable_splat_loads_through_a_bitcast_of_its_own_size() -> Result<(), IrError> {
+    let m = module_new!("analysis-load-scalable-bitcast")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i8_ty = m.i8_type();
+    let i32_ty = m.i32_type();
+    let nxv16i8 = VectorType::scalable_of(i8_ty, lanes::<16>()).as_type();
+    let splat =
+        VectorType::scalable_of(i32_ty, lanes::<4>()).const_vector([i32_ty.const_int(4_i32); 4])?;
+    let expected = m.constant_expr(
+        nxv16i8,
+        ConstantExprOpcode::BitCast,
+        [splat.as_erased()],
+        [],
+        [],
+        ConstantExprFlags::none(),
+    )?;
+
+    assert_eq!(
+        constant_fold_load_through_bitcast(splat.as_constant(), nxv16i8, &dl)?,
+        Some(expected)
+    );
+
+    // `FoldBitCast`'s first step, "Catch the obvious splat cases": a uniform
+    // operand answers as a constant of the new type, never as a `bitcast`.
+    let i64_ty = m.i64_type();
+    let nxv2i64 = VectorType::scalable_of(i64_ty, lanes::<2>());
+    let all_ones = VectorType::scalable_of(i32_ty, lanes::<4>())
+        .const_vector([i32_ty.const_all_ones(); 4])?
+        .as_constant();
+    assert_eq!(
+        constant_fold_cast_operand(CastOpcode::BitCast, all_ones, nxv2i64.as_type(), &dl)?,
+        Some(
+            nxv2i64
+                .const_vector([i64_ty.const_all_ones(); 2])?
+                .as_constant()
+        )
+    );
+    Ok(())
+}
+
+/// **No upstream counterpart**: pins the order of `ConstantFoldLoadFromConst`, whose
+/// uniform fold comes before `FoldReinterpretLoadFromConst` and so before any byte
+/// is read. A zero constant reads as zero bytes either way, so the order shows
+/// where the two disagree: a load ending before the constant, at offset `-4`,
+/// which `FoldReinterpretLoadFromConst` calls poison. A partial overlap at each
+/// end agrees. An offset past the end is the positive control: that check comes
+/// first.
+#[test]
+fn a_uniform_constant_answers_before_its_bytes_are_read() -> Result<(), IrError> {
+    let m = module_new!("analysis-load-uniform-order")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i8_ty = m.i8_type();
+    let i32_ty = m.i32_type();
+    let zero = ArrayType::of(i8_ty, 4)
+        .const_array([i8_ty.const_zero(); 4])?
+        .as_constant();
+    let load = |offset: u64| {
+        constant_fold_load_from_const(
+            zero,
+            i32_ty.as_type(),
+            ApInt::from_words(64, &[offset]),
+            &dl,
+        )
+    };
+
+    assert_eq!(load(2)?, Some(i32_ty.const_zero().as_constant()));
+    assert_eq!(load(u64::MAX)?, Some(i32_ty.const_zero().as_constant()));
+    assert_eq!(load(u64::MAX - 3)?, Some(i32_ty.const_zero().as_constant()));
+    assert_eq!(load(4)?, Some(i32_ty.as_type().poison().as_constant()));
+    Ok(())
+}
+
+/// **No upstream counterpart**: pins `ConstantFoldLoadThroughBitcast`'s
+/// `TypeSize::isKnownGE(SrcSize, DestSize)`. A fixed 128 bits is not known to
+/// hold a scalable 128 bits, whose run-time size can be larger, so the routine
+/// stops before its uniform fold. `ConstantFoldLoadFromConst` carries on to its
+/// own uniform fold, which does not read the load's size, and folds; that
+/// second answer is the positive control, and the reverse direction (a
+/// scalable source holds a fixed load) folds in the routine itself.
+#[test]
+fn a_fixed_constant_does_not_load_through_a_bitcast_to_a_scalable_type() -> Result<(), IrError> {
+    let m = module_new!("analysis-load-known-ge")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i32_ty = m.i32_type();
+    let i64_ty = m.i64_type();
+    let fixed_zero = VectorType::of(i32_ty, lanes::<4>())
+        .const_vector([i32_ty.const_zero(); 4])?
+        .as_constant();
+    let scalable = VectorType::scalable_of(i64_ty, lanes::<2>());
+    let scalable_zero = scalable
+        .const_vector([i64_ty.const_zero(); 2])?
+        .as_constant();
+
+    assert_eq!(
+        constant_fold_load_through_bitcast(fixed_zero, scalable.as_type(), &dl)?,
+        None
+    );
+    assert_eq!(
+        constant_fold_load_from_const(fixed_zero, scalable.as_type(), ApInt::zero(64), &dl)?,
+        Some(scalable_zero)
+    );
+    assert_eq!(
+        constant_fold_load_through_bitcast(scalable_zero, fixed_zero.ty(), &dl)?,
+        Some(fixed_zero)
+    );
+    Ok(())
+}
+
+/// **No upstream counterpart**: pins `getElementIndex` (`DataLayout.cpp`), whose
+/// "Skip over scalable or zero size elements" leaves an offset unsplit, so
+/// `getConstantAtOffset` finds no element at any non-zero offset into an array
+/// of scalable vectors. Offset 16 is element 1 only when `vscale` is 1. Offset 0
+/// is the positive control: the routine walks to the first element from there.
+#[test]
+fn a_load_at_an_offset_into_an_array_of_scalable_vectors_is_not_folded() -> Result<(), IrError> {
+    let m = module_new!("analysis-load-scalable-array")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i32_ty = m.i32_type();
+    let scalable = VectorType::scalable_of(i32_ty, lanes::<4>());
+    let splat = scalable.const_vector([i32_ty.const_int(1_i32); 4])?;
+    let array = ArrayType::of(scalable, 2)
+        .const_array([splat, splat])?
+        .as_constant();
+
+    assert_eq!(
+        constant_fold_load_from_const(
+            array,
+            scalable.as_type(),
+            ApInt::from_words(64, &[16]),
+            &dl,
+        )?,
+        None
+    );
+    assert_eq!(
+        constant_fold_load_from_const(array, scalable.as_type(), ApInt::zero(64), &dl)?,
+        Some(splat.as_constant())
+    );
+    Ok(())
+}
+
+/// **No upstream counterpart**: upstream reports a fatal error on both inputs,
+/// through the implicit `uint64_t` conversion of a scalable `TypeSize`.
+/// `getGEPIndexForOffset` compares the offset with a scalable struct's
+/// `getSizeInBytes`. `ReadDataFromGlobal` reads `getTypeAllocSize` of the empty
+/// array of scalable vectors, which ends a struct whose own size is fixed, when
+/// a load crosses into it. llvmkit declines instead (Doctrine D10). The array
+/// is aligned to offset 16, so an `i128` at offset 1 crosses and an `i32` does
+/// not: that load stops short of the array, upstream's
+/// `BytesLeft <= NextEltOffset - CurEltOffset - ByteOffset`, and folds.
+#[test]
+fn a_load_at_an_offset_into_a_scalable_struct_is_not_folded() -> Result<(), IrError> {
+    let m = module_new!("analysis-load-scalable-struct")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i32_ty = m.i32_type();
+    let scalable = VectorType::scalable_of(i32_ty, lanes::<4>());
+    let splat = scalable.const_vector([i32_ty.const_int(1_i32); 4])?;
+    let pair = m
+        .struct_type([scalable.as_type(), scalable.as_type()])?
+        .const_struct([splat, splat])?
+        .as_constant();
+
+    assert_eq!(
+        constant_fold_load_from_const(pair, scalable.as_type(), ApInt::from_words(64, &[16]), &dl,)?,
+        None
+    );
+
+    let empty_ty = ArrayType::of(scalable, 0);
+    let empty = empty_ty.const_array::<Constant<'_, _>, _>([])?;
+    let trailing = m
+        .struct_type([i32_ty.as_type(), empty_ty.as_type()])?
+        .const_struct([i32_ty.const_int(1_i32).as_constant(), empty.as_constant()])?
+        .as_constant();
+    assert_eq!(
+        constant_fold_load_from_const(
+            trailing,
+            m.i128_type().as_type(),
+            ApInt::from_words(64, &[1]),
+            &dl,
+        )?,
+        None
+    );
+    assert_eq!(
+        constant_fold_load_from_const(
+            trailing,
+            i32_ty.as_type(),
+            ApInt::from_words(64, &[1]),
+            &dl,
+        )?,
+        Some(i32_ty.const_zero().as_constant())
+    );
     Ok(())
 }

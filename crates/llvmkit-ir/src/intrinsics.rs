@@ -10,14 +10,15 @@
 use core::num::NonZeroU32;
 
 use crate::Branded;
+use crate::addr_space::{AddressSpace, address_space};
 use crate::attributes::{
     AttrIndex, AttrKind, Attribute, AttributeStorage, CaptureInfo, MemoryEffects,
 };
 use crate::capability::{Capability, CapabilityOf, ModuleState, Mutable};
 use crate::derived_types::FunctionType;
-use crate::error::{IrError, IrResult};
+use crate::error::{IrError, IrResult, TargetExtParameterRule};
 use crate::module::{Module, ModuleBrand, ModuleId, ModuleRef};
-use crate::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
+use crate::r#type::{MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeSlot, TypeSlotAccess};
 use crate::type_components::lanes;
 use crate::value::{Value, ValueKindData};
 use std::borrow::Cow;
@@ -354,6 +355,22 @@ impl IntrinsicId {
     /// `Verifier::visitIntrinsicCall`'s per-intrinsic `switch` that is ported.
     pub(crate) const CALLBR_LANDINGPAD: Self =
         checked_intrinsic_id(generated::SEMANTIC_CALLBR_LANDINGPAD);
+
+    /// `Intrinsic::sshl_sat` and `Intrinsic::ushl_sat`, the second case of
+    /// `canCreateUndefOrPoison`'s intrinsic `switch` (`ValueTracking.cpp`).
+    pub(crate) const SSHL_SAT: Self = checked_intrinsic_id(generated::SEMANTIC_SSHL_SAT);
+    pub(crate) const USHL_SAT: Self = checked_intrinsic_id(generated::SEMANTIC_USHL_SAT);
+
+    /// The intrinsics `Instruction::isVolatile`'s `case Instruction::Call:` arm
+    /// names (`Instruction.cpp`): `MemIntrinsic::classof`'s two `inline`
+    /// cases, beside [`Self::MEMCPY`], [`Self::MEMMOVE`] and [`Self::MEMSET`],
+    /// and the two matrix intrinsics whose volatile flag it reads.
+    pub(crate) const MEMCPY_INLINE: Self = checked_intrinsic_id(generated::SEMANTIC_MEMCPY_INLINE);
+    pub(crate) const MEMSET_INLINE: Self = checked_intrinsic_id(generated::SEMANTIC_MEMSET_INLINE);
+    pub(crate) const MATRIX_COLUMN_MAJOR_LOAD: Self =
+        checked_intrinsic_id(generated::SEMANTIC_MATRIX_COLUMN_MAJOR_LOAD);
+    pub(crate) const MATRIX_COLUMN_MAJOR_STORE: Self =
+        checked_intrinsic_id(generated::SEMANTIC_MATRIX_COLUMN_MAJOR_STORE);
 
     /// The ObjC ARC intrinsics named by `IntrinsicInst::mayLowerToFunctionCall`
     /// and `Verifier::verifyAttachedCallBundle`. Crate-internal: they exist to
@@ -932,8 +949,9 @@ enum Unmangleable {
     /// unique name, which llvmkit does not do.
     UnnamedStruct,
     /// A type `getMangledTypeStr` reaches its `llvm_unreachable("Unhandled
-    /// type")` arm with: `token`, `label`, and a typed pointer, which is not a
-    /// `PointerType` and has no arm of its own.
+    /// type")` arm with: `token` and `label`. (Upstream reaches it with a
+    /// typed pointer too, which is not a `PointerType` and has no arm of its
+    /// own; in llvmkit a typed pointer is no `Type`, so none arrives here.)
     Unhandled,
 }
 
@@ -944,7 +962,7 @@ fn append_mangled_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     out: &mut String,
 ) -> Result<(), Unmangleable> {
     match ty.data() {
-        TypeData::Token | TypeData::Label | TypeData::TypedPointer { .. } => {
+        TypeData::Token | TypeData::Label => {
             return Err(Unmangleable::Unhandled);
         }
         TypeData::Void => out.push_str("isVoid"),
@@ -997,7 +1015,7 @@ fn append_mangled_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             out.push('f');
         }
         TypeData::Struct(data) => {
-            if let Some(name) = data.identity.name() {
+            if let Some(name) = data.identity.name(ty.module.context()) {
                 out.push_str("s_");
                 out.push_str(name);
                 out.push('s');
@@ -1042,47 +1060,112 @@ fn admit_overload_types<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     Ok(())
 }
 
-pub(crate) fn match_intrinsic_signature<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+/// What `Intrinsic::matchIntrinsicSignature` leaves behind: the overload types
+/// it found, and the descriptors it did not consume, `TableRef` upstream.
+pub(crate) struct FixedTypesMatch<'ctx, B: ModuleBrand, C: Capability> {
+    descriptors: Vec<IitDescriptor>,
+    consumed: usize,
+    overloads: Vec<Option<Type<'ctx, B, C>>>,
+}
+
+/// Mirrors `Intrinsic::matchIntrinsicSignature`: the return type, then each
+/// parameter, matched off the descriptor table. A parameter with no descriptor
+/// left, or against `IIT_VARARG`, is `matchIntrinsicType`'s failure for those.
+/// Whether the table's tail is variadic is
+/// [`var_arg_matches`](FixedTypesMatch::var_arg_matches)'s question, as it is
+/// `matchIntrinsicVarArg`'s upstream.
+pub(crate) fn match_intrinsic_fixed_types<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     id: IntrinsicId,
     module: ModuleRef<'ctx, B, C>,
     fn_ty: FunctionType<'ctx, B, C>,
-) -> IrResult<Box<[Type<'ctx, B, C>]>> {
+) -> IrResult<FixedTypesMatch<'ctx, B, C>> {
     let descriptors = iit_descriptors(id.record())?;
     let mut cursor = descriptors.as_slice();
     let mut overloads = vec![None; overload_slot_count(&descriptors)];
     match_fixed_type(module, &mut cursor, &mut overloads, fn_ty.return_type())?;
 
-    let params: Vec<_> = fn_ty.params().collect();
-    let mut param_index = 0;
-    let mut is_var_arg = false;
-    while !cursor.is_empty() {
-        if matches!(cursor[0], IitDescriptor::VarArg) {
-            cursor = &cursor[1..];
-            is_var_arg = true;
-            break;
+    for param in fn_ty.params() {
+        if matches!(cursor.first(), None | Some(IitDescriptor::VarArg)) {
+            return Err(intrinsic_mismatch_for_id(id));
         }
-        let Some(param) = params.get(param_index).copied() else {
-            return Err(intrinsic_mismatch_for_id(id));
-        };
         match_fixed_type(module, &mut cursor, &mut overloads, param)?;
-        param_index += 1;
     }
-    if !cursor.is_empty() || param_index != params.len() || fn_ty.is_var_arg() != is_var_arg {
-        return Err(intrinsic_mismatch_for_id(id));
+    let consumed = descriptors.len() - cursor.len();
+    Ok(FixedTypesMatch {
+        descriptors,
+        consumed,
+        overloads,
+    })
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> FixedTypesMatch<'ctx, B, C> {
+    /// Mirrors `Intrinsic::matchIntrinsicVarArg`, whose `false` is a match: this
+    /// is `true` when the table's tail agrees with `is_var_arg`, and consumes
+    /// the `IIT_VARARG` it finds.
+    pub(crate) fn var_arg_matches(&mut self, is_var_arg: bool) -> bool {
+        let remaining = &self.descriptors[self.consumed..];
+        // If there are no descriptors left, then it can't be a vararg.
+        if remaining.is_empty() {
+            return !is_var_arg;
+        }
+
+        // There should be only one descriptor remaining at this point.
+        if remaining.len() != 1 {
+            return false;
+        }
+
+        // Check and verify the descriptor.
+        let descriptor = remaining[0];
+        self.consumed += 1;
+        if matches!(descriptor, IitDescriptor::VarArg) {
+            return is_var_arg;
+        }
+
+        false
     }
-    let mut resolved = Vec::with_capacity(overloads.len());
-    for overload in overloads {
-        let Some(overload) = overload else {
+
+    /// The overload types, once `fn_ty` is the final signature. Upstream's
+    /// `assert(TableRef.empty())` and its `assert` on the match are an error
+    /// here, and `validate_intrinsic_overload_constraints` and the comparison
+    /// with the generated type stand for `matchIntrinsicType`'s deferred checks.
+    pub(crate) fn into_overloads(
+        self,
+        id: IntrinsicId,
+        module: ModuleRef<'ctx, B, C>,
+        fn_ty: FunctionType<'ctx, B, C>,
+    ) -> IrResult<Box<[Type<'ctx, B, C>]>> {
+        if self.consumed != self.descriptors.len() {
             return Err(intrinsic_mismatch_for_id(id));
-        };
-        resolved.push(overload);
+        }
+        let mut resolved = Vec::with_capacity(self.overloads.len());
+        for overload in self.overloads {
+            let Some(overload) = overload else {
+                return Err(intrinsic_mismatch_for_id(id));
+            };
+            resolved.push(overload);
+        }
+        validate_intrinsic_overload_constraints(&self.descriptors, &resolved)?;
+        let expected =
+            generated_function_type_from_descriptors(module, &self.descriptors, &resolved)?;
+        if expected != fn_ty {
+            return Err(intrinsic_mismatch_for_id(id));
+        }
+        Ok(resolved.into_boxed_slice())
     }
-    validate_intrinsic_overload_constraints(&descriptors, &resolved)?;
-    let expected = generated_function_type_from_descriptors(module, &descriptors, &resolved)?;
-    if expected != fn_ty {
+}
+
+/// `Intrinsic::getIntrinsicSignature`'s order: the fixed types, then whether
+/// `fn_ty`'s variadic flag agrees with the table's tail.
+fn match_intrinsic_signature<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    id: IntrinsicId,
+    module: ModuleRef<'ctx, B, C>,
+    fn_ty: FunctionType<'ctx, B, C>,
+) -> IrResult<Box<[Type<'ctx, B, C>]>> {
+    let mut matched = match_intrinsic_fixed_types(id, module, fn_ty)?;
+    if !matched.var_arg_matches(fn_ty.is_var_arg()) {
         return Err(intrinsic_mismatch_for_id(id));
     }
-    Ok(resolved.into_boxed_slice())
+    matched.into_overloads(id, module, fn_ty)
 }
 
 fn match_fixed_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
@@ -1535,7 +1618,7 @@ where
     Type::new(module.module().context().int_type(bits), module)
 }
 
-fn ptr_type<'ctx, B, C>(module: ModuleRef<'ctx, B, C>, addr_space: u32) -> Type<'ctx, B, C>
+fn ptr_type<'ctx, B, C>(module: ModuleRef<'ctx, B, C>, addr_space: AddressSpace) -> Type<'ctx, B, C>
 where
     B: ModuleBrand + 'ctx,
     C: Capability,
@@ -1722,10 +1805,19 @@ where
         return Ok(parsed);
     }
 
-    if let Some((bits, consumed)) = parse_prefixed_u32(text, "i", false) {
+    // `getMangledTypeStr` spells `"i" + utostr(BitWidth)` from an integer that
+    // exists, and `IntegerType::get` asserts `MIN_INT_BITS` and `MAX_INT_BITS`,
+    // so a width past either falls through to the mismatch.
+    if let Some((bits, consumed)) = parse_prefixed_u32(text, "i", false)
+        && (MIN_INT_BITS..=MAX_INT_BITS).contains(&bits)
+    {
         return Ok((int_type(module, bits), consumed));
     }
-    if let Some((addr_space, consumed)) = parse_prefixed_u32(text, "p", true) {
+    // Likewise `"p" + utostr(AddressSpace)`, from a pointer that exists: a
+    // number past 24 bits falls through to the mismatch.
+    if let Some((addr_space, consumed)) = parse_prefixed_u32(text, "p", true)
+        && let Some(addr_space) = AddressSpace::new(addr_space)
+    {
         return Ok((ptr_type(module, addr_space), consumed));
     }
     // `getMangledTypeStr` spells a vector `"v" + utostr(EC.getKnownMinValue())`
@@ -1782,17 +1874,22 @@ where
             continue;
         }
         let body = body_and_rest.get(..end).ok_or_else(intrinsic_mismatch)?;
-        if let Some(ty) = parse_target_ext_type_body(module, body)? {
+        if let Some(ty) = parse_target_ext_type_body(module, body) {
             return Ok(Some((ty, end + 2)));
         }
     }
     Ok(None)
 }
 
+/// The target type `body` spells (`name`, then `_` + parameter for each type
+/// and integer parameter), or `None` when it spells none — including a name
+/// whose parameter counts `TargetExtType::checkParams` refuses
+/// ([`TargetExtParameterRule`]): `getMangledTypeStr` spells only types that
+/// exist, and `TargetExtType::get` would not build that one.
 fn parse_target_ext_type_body<'ctx, B, C: Capability>(
     module: ModuleRef<'ctx, B, C>,
     body: &str,
-) -> IrResult<Option<Type<'ctx, B, C>>>
+) -> Option<Type<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
 {
@@ -1801,14 +1898,14 @@ where
         None => (body, None),
     };
     if name.is_empty() {
-        return Ok(None);
+        return None;
     }
 
     let mut type_params = Vec::new();
     let mut int_params = Vec::new();
     while let Some(rest) = params {
         if rest.is_empty() {
-            return Ok(None);
+            return None;
         }
         if let Some((value, consumed)) = parse_prefixed_u32(rest, "", true)
             && (consumed == rest.len() || rest.as_bytes().get(consumed) == Some(&b'_'))
@@ -1820,19 +1917,22 @@ where
 
         let (ty, consumed) = match parse_mangled_type_prefix(module, rest) {
             Ok(parsed) => parsed,
-            Err(_) => return Ok(None),
+            Err(_) => return None,
         };
         if consumed == rest.len() {
             type_params.push(ty);
             break;
         }
         if rest.as_bytes().get(consumed) != Some(&b'_') {
-            return Ok(None);
+            return None;
         }
         type_params.push(ty);
         params = rest.get(consumed + 1..);
     }
-    Ok(Some(target_ext_type(module, name, type_params, int_params)))
+    if TargetExtParameterRule::broken_by(name, type_params.len(), int_params.len()).is_some() {
+        return None;
+    }
+    Some(target_ext_type(module, name, type_params, int_params))
 }
 
 fn parse_function_type_prefix<'ctx, B, C: Capability>(
@@ -1862,10 +1962,16 @@ where
             Some(params) => params,
             None => continue,
         };
-        let Some(params) = parse_mangled_type_sequence(module, params)? else {
+        let Some(params) = parse_mangled_type_sequence(module, params) else {
             continue;
         };
-        let fn_ty = fn_type_with_var_arg(module, ret, params, is_var_arg)?;
+        // As for the literal-struct arm: `getMangledTypeStr` spells `"f_"` +
+        // result + parameters + `"f"` from a function type that exists, so a
+        // candidate no function type can have builds nothing and the scan
+        // moves to the next `f`.
+        let Ok(fn_ty) = fn_type_with_var_arg(module, ret, params, is_var_arg) else {
+            continue;
+        };
         return Ok(Some((fn_ty.as_type(), end + 3)));
     }
     Ok(None)
@@ -1922,7 +2028,7 @@ where
             continue;
         }
         let body = body_and_rest.get(..end).ok_or_else(intrinsic_mismatch)?;
-        let Some(elements) = parse_mangled_type_sequence(module, body)? else {
+        let Some(elements) = parse_mangled_type_sequence(module, body) else {
             continue;
         };
         // As for the vector and array arms: `getMangledTypeStr` spells
@@ -1954,26 +2060,20 @@ where
 fn parse_mangled_type_sequence<'ctx, B, C: Capability>(
     module: ModuleRef<'ctx, B, C>,
     mut text: &str,
-) -> IrResult<Option<Vec<Type<'ctx, B, C>>>>
+) -> Option<Vec<Type<'ctx, B, C>>>
 where
     B: ModuleBrand + 'ctx,
 {
     let mut types = Vec::new();
     while !text.is_empty() {
-        let (ty, consumed) = match parse_mangled_type_prefix(module, text) {
-            Ok(parsed) => parsed,
-            Err(_) => return Ok(None),
-        };
+        let (ty, consumed) = parse_mangled_type_prefix(module, text).ok()?;
         if consumed == 0 {
-            return Ok(None);
+            return None;
         }
         types.push(ty);
-        let Some(rest) = text.get(consumed..) else {
-            return Ok(None);
-        };
-        text = rest;
+        text = text.get(consumed..)?;
     }
-    Ok(Some(types))
+    Some(types)
 }
 
 fn parse_prefixed_u32(text: &str, prefix: &str, allow_zero: bool) -> Option<(u32, usize)> {
@@ -2053,7 +2153,7 @@ enum IitDescriptor {
         width: NonZeroU32,
         scalable: bool,
     },
-    Pointer(u32),
+    Pointer(AddressSpace),
     Struct {
         elements: usize,
     },
@@ -2129,7 +2229,7 @@ fn decode_iit_type(
         11 => decode_iit_vector(entries, pos, info, out, lanes::<8>(), scalable)?,
         12 => decode_iit_vector(entries, pos, info, out, lanes::<16>(), scalable)?,
         13 => decode_iit_vector(entries, pos, info, out, lanes::<32>(), scalable)?,
-        14 => out.push(IitDescriptor::Pointer(0)),
+        14 => out.push(IitDescriptor::Pointer(AddressSpace::DEFAULT)),
         15 => {
             let (index, kind) = decode_argument_info(next_iit_usize_or_zero(entries, pos))?;
             out.push(IitDescriptor::Argument { index, kind });
@@ -2152,7 +2252,7 @@ fn decode_iit_type(
         23 => out.push(IitDescriptor::TruncArgument(decode_argument_index(
             next_iit_usize_or_zero(entries, pos),
         )?)),
-        24 => out.push(IitDescriptor::Pointer(u32::from(next_iit_byte(
+        24 => out.push(IitDescriptor::Pointer(AddressSpace::from(next_iit_byte(
             entries, pos,
         )?))),
         25 => decode_iit_vector(entries, pos, info, out, lanes::<1>(), scalable)?,
@@ -2192,8 +2292,8 @@ fn decode_iit_type(
         42 => out.push(IitDescriptor::Amx),
         43 => out.push(IitDescriptor::PpcQuad),
         44 => decode_iit_vector(entries, pos, info, out, lanes::<3>(), scalable)?,
-        45 => out.push(IitDescriptor::Pointer(10)),
-        46 => out.push(IitDescriptor::Pointer(20)),
+        45 => out.push(IitDescriptor::Pointer(address_space::<10>())),
+        46 => out.push(IitDescriptor::Pointer(address_space::<20>())),
         47 => out.push(IitDescriptor::Integer(2)),
         48 => out.push(IitDescriptor::Integer(4)),
         49 => out.push(IitDescriptor::Aarch64Svcount),
@@ -2355,6 +2455,10 @@ where
     }
 }
 
+/// `FunctionType::get`, for the decoders and the demangler here. The two
+/// asserts in `FunctionType::FunctionType` — `isValidReturnType`, then
+/// `isValidArgumentType` for each parameter in order — are checked and refused
+/// as a mismatch, for the reasons [`fixed_vector_type`] gives.
 fn fn_type_with_var_arg<'ctx, B, C, I>(
     module: ModuleRef<'ctx, B, C>,
     ret: Type<'ctx, B, C>,
@@ -2366,13 +2470,22 @@ where
     C: Capability,
     I: IntoIterator<Item = Type<'ctx, B, C>>,
 {
-    let param_ids: Vec<_> = params
+    if !ret.is_valid_function_return() {
+        return Err(intrinsic_mismatch());
+    }
+    let param_ids = params
         .into_iter()
-        .map(TypeSlotAccess::slot_trusting_same_module)
-        .collect();
+        .map(|param| {
+            if param.is_valid_function_argument() {
+                Ok(param.slot_trusting_same_module())
+            } else {
+                Err(intrinsic_mismatch())
+            }
+        })
+        .collect::<IrResult<Box<[_]>>>()?;
     let id = module.module().context().function_type(
         ret.slot_trusting_same_module(),
-        param_ids.into_boxed_slice(),
+        param_ids,
         is_var_arg,
     );
     Ok(FunctionType::new(id, module))
@@ -2452,7 +2565,7 @@ where
     )
 }
 
-fn extend_integer_type<'ctx, B, C>(
+pub(crate) fn extend_integer_type<'ctx, B, C>(
     module: ModuleRef<'ctx, B, C>,
     ty: Type<'ctx, B, C>,
 ) -> IrResult<Type<'ctx, B, C>>
@@ -2461,8 +2574,11 @@ where
     C: Capability,
 {
     match ty.data() {
+        // `Type::getExtendedType` doubles the width through `IntegerType::get`,
+        // which asserts `MAX_INT_BITS`.
         TypeData::Integer { bits } => bits
             .checked_mul(2)
+            .filter(|width| *width <= MAX_INT_BITS)
             .map(|width| int_type(module, width))
             .ok_or_else(intrinsic_mismatch),
         TypeData::FixedVector { elem, n } => {
@@ -2477,7 +2593,7 @@ where
     }
 }
 
-fn trunc_argument_type<'ctx, B, C>(
+pub(crate) fn trunc_argument_type<'ctx, B, C>(
     module: ModuleRef<'ctx, B, C>,
     ty: Type<'ctx, B, C>,
 ) -> IrResult<Type<'ctx, B, C>>
@@ -2535,47 +2651,25 @@ where
     }
 }
 
-fn primitive_size_in_bits<'ctx, B, C>(
-    module: ModuleRef<'ctx, B, C>,
-    ty: Type<'ctx, B, C>,
-) -> Option<u32>
-where
-    B: ModuleBrand + 'ctx,
-    C: Capability,
-{
-    match ty.data() {
-        TypeData::Integer { bits } => Some(*bits),
-        TypeData::Half | TypeData::Bfloat => Some(16),
-        TypeData::Float => Some(32),
-        TypeData::Double => Some(64),
-        TypeData::X86Fp80 => Some(80),
-        TypeData::PpcFp128 | TypeData::Fp128 => Some(128),
-        TypeData::X86Amx => Some(8192),
-        TypeData::FixedVector { elem, n } | TypeData::ScalableVector { elem, min: n } => {
-            primitive_size_in_bits(module, Type::new(*elem, module))?.checked_mul(n.get())
-        }
-        _ => None,
-    }
-}
-
+/// `IntegerType::get` of an element's `getPrimitiveSizeInBits`, as
+/// `VectorType::getInteger` reads it. `element` is a vector's element, so its
+/// scalar size is its primitive size.
 fn integer_type_matching_primitive_size<'ctx, B, C>(
     module: ModuleRef<'ctx, B, C>,
-    ty: Type<'ctx, B, C>,
+    element: Type<'ctx, B, C>,
 ) -> IrResult<Type<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
     C: Capability,
 {
-    let Some(bits) = primitive_size_in_bits(module, ty) else {
-        return Err(intrinsic_mismatch());
-    };
+    let bits = element.scalar_size_in_bits();
     if bits == 0 {
         return Err(intrinsic_mismatch());
     }
     Ok(int_type(module, bits))
 }
 
-fn vector_of_bitcasts_to_int<'ctx, B, C>(
+pub(crate) fn vector_of_bitcasts_to_int<'ctx, B, C>(
     module: ModuleRef<'ctx, B, C>,
     ty: Type<'ctx, B, C>,
 ) -> IrResult<Type<'ctx, B, C>>
@@ -2604,7 +2698,7 @@ where
     }
 }
 
-fn one_nth_vector_type<'ctx, B, C>(
+pub(crate) fn one_nth_vector_type<'ctx, B, C>(
     module: ModuleRef<'ctx, B, C>,
     ty: Type<'ctx, B, C>,
     divisor: u32,
@@ -2652,10 +2746,8 @@ where
         | TypeData::PpcFp128
         | TypeData::Fp128 => Err(intrinsic_mismatch()),
         _ => {
-            let Some(bits) = primitive_size_in_bits(module, elem) else {
-                return Err(intrinsic_mismatch());
-            };
-            if bits == 0 || bits % 2 != 0 {
+            let bits = elem.scalar_size_in_bits();
+            if bits == 0 || !bits.is_multiple_of(2) {
                 return Err(intrinsic_mismatch());
             }
             Ok(int_type(module, bits / 2))
@@ -2663,33 +2755,46 @@ where
     }
 }
 
-fn subdivide_vector_type<'ctx, B, C>(
+pub(crate) fn double_elements_vector_type<'ctx, B, C>(
     module: ModuleRef<'ctx, B, C>,
     ty: Type<'ctx, B, C>,
+) -> IrResult<Type<'ctx, B, C>>
+where
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+{
+    // `VectorType::getDoubleElementsVectorType` asserts the doubled count fits
+    // in `unsigned`; doubling a non-zero count stays non-zero.
+    let doubled = |count: NonZeroU32| {
+        count
+            .checked_mul(lanes::<2>())
+            .ok_or_else(intrinsic_mismatch)
+    };
+    match ty.data() {
+        TypeData::FixedVector { elem, n } => {
+            fixed_vector_type(module, Type::new(*elem, module), doubled(*n)?)
+        }
+        TypeData::ScalableVector { elem, min } => {
+            scalable_vector_type(module, Type::new(*elem, module), doubled(*min)?)
+        }
+        _ => Err(intrinsic_mismatch()),
+    }
+}
+
+pub(crate) fn subdivide_vector_type<'ctx, B, C>(
+    module: ModuleRef<'ctx, B, C>,
+    mut ty: Type<'ctx, B, C>,
     subdivisions: u32,
 ) -> IrResult<Type<'ctx, B, C>>
 where
     B: ModuleBrand + 'ctx,
     C: Capability,
 {
-    let (mut elem, mut lane_count, scalable) = match ty.data() {
-        TypeData::FixedVector { elem, n } => (Type::new(*elem, module), *n, false),
-        TypeData::ScalableVector { elem, min } => (Type::new(*elem, module), *min, true),
-        _ => return Err(intrinsic_mismatch()),
-    };
     for _ in 0..subdivisions {
-        // `VectorType::getDoubleElementsVectorType` asserts the doubled count
-        // fits in `unsigned`; doubling a non-zero count stays non-zero.
-        lane_count = lane_count
-            .checked_mul(lanes::<2>())
-            .ok_or_else(intrinsic_mismatch)?;
-        elem = truncated_vector_element_type(module, elem)?;
+        ty = double_elements_vector_type(module, ty)?;
+        ty = trunc_argument_type(module, ty)?;
     }
-    if scalable {
-        scalable_vector_type(module, elem, lane_count)
-    } else {
-        fixed_vector_type(module, elem, lane_count)
-    }
+    Ok(ty)
 }
 
 fn intrinsic_mismatch() -> IrError {
@@ -2748,7 +2853,10 @@ mod tests {
                 "ppcf128" => Type::new(module.module().context().ppc_fp128(), module),
                 other => panic!("unsupported generated sample float `{other}`"),
             },
-            IntrinsicSampleType::Pointer(addr_space) => ptr_type(module, *addr_space),
+            IntrinsicSampleType::Pointer(addr_space) => ptr_type(
+                module,
+                AddressSpace::new(*addr_space).expect("a generated sample's space fits 24 bits"),
+            ),
             IntrinsicSampleType::FixedVector {
                 lanes: count,
                 element,
@@ -2869,7 +2977,7 @@ mod tests {
         let context = module_ref.module().context();
         let i32_ty = module.i32_type().as_type();
         let f32_ty = module.f32_type().as_type();
-        let ptr_ty = ptr_type(module_ref, 0);
+        let ptr_ty = ptr_type(module_ref, AddressSpace::DEFAULT);
         let spelled = [
             void_type(module_ref),
             metadata_type(module_ref),
@@ -2886,7 +2994,7 @@ mod tests {
             i32_ty,
             int_type(module_ref, 128),
             ptr_ty,
-            ptr_type(module_ref, 3),
+            ptr_type(module_ref, address_space::<3>()),
             array_type(module_ref, i32_ty, 0)?,
             array_type(module_ref, i32_ty, 2)?,
             array_type(module_ref, array_type(module_ref, f32_ty, 3)?, 2)?,
@@ -2924,6 +3032,19 @@ mod tests {
             );
         }
 
+        // The function arm's whole spelling: `"f_"`, the result, a named
+        // struct's `"s_" + name + "s"`, a pointer, `"vararg"`, and the closing
+        // `"f"`.
+        let point = module.get_or_insert_named_struct("Point");
+        module.set_struct_body_dyn(point, [i32_ty], false)?;
+        let with_struct =
+            fn_type_with_var_arg(module_ref, i32_ty, [point.as_type(), ptr_ty], true)?.as_type();
+        let mut name = String::new();
+        assert!(append_mangled_type(with_struct, &mut name).is_ok());
+        assert_eq!(name, "f_i32s_Pointsp0varargf");
+        let (back, consumed) = parse_mangled_type_prefix(module_ref, &name)?;
+        assert_eq!((back, consumed), (with_struct, name.len()));
+
         let packed = module.packed_struct_type([i32_ty])?.as_type();
         let mut name = String::new();
         assert!(append_mangled_type(packed, &mut name).is_ok());
@@ -2943,8 +3064,18 @@ mod tests {
 
         // Spellings no type mangles to: the demangler refuses them rather
         // than build the type they describe — a literal struct of an element
-        // no struct may hold, and a struct the module does not hold.
-        for name in ["sl_isVoids", "sl_Metadatas", "s_absents"] {
+        // no struct may hold, a function type no function may have, an integer
+        // outside `IntegerType`'s bounds, and a struct the module does not
+        // hold.
+        for name in [
+            "sl_isVoids",
+            "sl_Metadatas",
+            "f_i32isVoidf",
+            "f_Metadataf",
+            "i16777216",
+            "p16777216",
+            "s_absents",
+        ] {
             assert!(
                 parse_mangled_type_prefix(module_ref, name).is_err(),
                 "`{name}` spells no type"
@@ -2958,7 +3089,6 @@ mod tests {
         for ty in [
             Type::new(context.token(), module_ref),
             Type::new(context.label(), module_ref),
-            module.typed_pointer_type(i32_ty, 0).as_type(),
         ] {
             assert!(
                 matches!(

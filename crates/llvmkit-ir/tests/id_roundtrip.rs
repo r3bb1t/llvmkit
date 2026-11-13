@@ -26,8 +26,8 @@ use llvmkit_ir::{
 fn handles_round_trip_through_to_id_and_view() -> Result<(), IrError> {
     let m = module_new!("id-round-trip")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), ptr_ty.as_type()]);
+    let ptr_ty = m.ptr_type_in::<0>();
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
 
     // Int value (a function argument narrowed to its static width).
@@ -83,7 +83,7 @@ fn handles_round_trip_through_to_id_and_view() -> Result<(), IrError> {
 fn try_view_returns_some_for_owned_ids() -> Result<(), IrError> {
     let m = module_new!("id-try-view")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
@@ -102,7 +102,7 @@ fn try_view_returns_some_for_owned_ids() -> Result<(), IrError> {
 fn view_works_on_verified_module() -> Result<(), IrError> {
     let m = module_new!("id-verified-view")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let g: GlobalVariable<'_, _> = m.view(m.add_global("g", i32_ty.const_int(7_u32))?);
     let g_id = g.id();
 
@@ -149,7 +149,7 @@ fn ids_are_copy_and_send() {
 fn id_debug_prints_tag_and_slot() -> Result<(), IrError> {
     let m = module_new!("id-debug")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let rendered = format!("{:?}", a.id());
@@ -176,7 +176,7 @@ fn try_view_returns_none_for_a_foreign_tag() -> Result<(), IrError> {
     assert_ne!(a.id(), b.id());
 
     let i32_ty = a.i32_type();
-    let fn_ty = a.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = a.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = a.add_function_dyn("f", fn_ty, Linkage::External)?;
     let x: IntValue<'_, i32, _> = a.view(f).param(0)?.try_into()?;
     let x_id: IntValueId<i32, _> = x.id();
@@ -200,7 +200,9 @@ fn view_panics_on_a_foreign_tag() {
     let b = Module::dynamic("panic-b");
 
     let i32_ty = a.i32_type();
-    let fn_ty = a.function_type(i32_ty, [i32_ty.as_type()]);
+    let fn_ty = a
+        .function_type(i32_ty, [i32_ty.as_type()])
+        .expect("valid function type");
     let f = a
         .add_function_dyn("f", fn_ty, Linkage::External)
         .expect("add");
@@ -224,8 +226,8 @@ fn view_panics_on_a_foreign_tag() {
 fn builder_view_agrees_with_module_view() -> Result<(), IrError> {
     let m = module_new!("builder-view")?;
     let i32_ty = m.i32_type();
-    let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), ptr_ty.as_type()]);
+    let ptr_ty = m.ptr_type_in::<0>();
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
 
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
@@ -266,11 +268,11 @@ fn typed_ids_lift_at_operand_positions() -> Result<(), IrError> {
     let m = module_new!("id-operand")?;
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
-    let ptr_ty = m.ptr_type(0);
+    let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(
         i32_ty,
         [i32_ty.as_type(), f32_ty.as_type(), ptr_ty.as_type()],
-    );
+    )?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
 
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
@@ -331,11 +333,13 @@ fn typed_ids_are_call_args() -> Result<(), IrError> {
     let m = module_new!("id-call-arg")?;
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
-    let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.function_type(
-        i32_ty,
-        [i32_ty.as_type(), f32_ty.as_type(), ptr_ty.as_type()],
-    );
+    let ptr_ty = m.ptr_type_in::<0>();
+    let fn_ty = m
+        .function_type(
+            i32_ty,
+            [i32_ty.as_type(), f32_ty.as_type(), ptr_ty.as_type()],
+        )
+        .expect("valid function type");
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let x: FloatValue<'_, f32, _> = m.view(f).param(1)?.try_into()?;
@@ -360,14 +364,14 @@ fn operand_lifts_reject_a_foreign_tag() -> Result<(), IrError> {
 
     // An `i32` value that belongs to module A.
     let a_i32 = a.i32_type();
-    let a_fn_ty = a.function_type(a_i32, [a_i32.as_type()]);
+    let a_fn_ty = a.function_type(a_i32, [a_i32.as_type()])?;
     let a_f = a.add_function_dyn("f", a_fn_ty, Linkage::External)?;
     let a_param: IntValue<'_, i32, _> = a.view(a_f).param(0)?.try_into()?;
     let foreign: IntValueId<i32, _> = a_param.id();
 
     // A build site inside module B.
     let b_i32 = b.i32_type();
-    let b_fn_ty = b.function_type(b_i32, [b_i32.as_type()]);
+    let b_fn_ty = b.function_type(b_i32, [b_i32.as_type()])?;
     let b_f = b.add_function_dyn("f", b_fn_ty, Linkage::External)?;
     let b_entry = b.view(b_f).append_basic_block(&b, "entry");
     let builder = IrBuilder::new_for::<Dyn>(&b).position_at_end(b_entry);
@@ -409,11 +413,13 @@ fn every_id_is_an_erased_operand() {
     let m = module_new!("id-erased-operand").expect("fresh module");
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
-    let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.function_type(
-        i32_ty,
-        [i32_ty.as_type(), f32_ty.as_type(), ptr_ty.as_type()],
-    );
+    let ptr_ty = m.ptr_type_in::<0>();
+    let fn_ty = m
+        .function_type(
+            i32_ty,
+            [i32_ty.as_type(), f32_ty.as_type(), ptr_ty.as_type()],
+        )
+        .expect("valid function type");
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
     let g: GlobalVariable<'_, _> = m.view(m.add_global("g", i32_ty.const_int(0_u32)).unwrap());
 
@@ -451,8 +457,8 @@ fn every_id_is_an_erased_operand() {
 #[test]
 fn ids_drive_erased_operand_slots_without_a_view() -> Result<(), IrError> {
     let m = module_new!("id-erased-store")?;
-    let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()]);
+    let ptr_ty = m.ptr_type_in::<0>();
+    let fn_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("inc", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -491,7 +497,7 @@ fn ids_drive_erased_operand_slots_without_a_view() -> Result<(), IrError> {
 fn declaration_ids_round_trip_through_view_and_id() -> Result<(), IrError> {
     let m = module_new!("id-declarations")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.function_type_no_parameters(i32_ty);
+    let fn_ty = m.function_type_no_parameters(i32_ty)?;
 
     // Erased function declaration, and the chainable builder's tail.
     let raw: FunctionId<Dyn, _> = m.add_function_dyn("raw", fn_ty, Linkage::External)?;
