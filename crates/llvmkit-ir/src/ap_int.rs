@@ -121,14 +121,34 @@ impl ApInt {
         }
     }
 
+    /// The value of `words`, least significant first, truncated to
+    /// `bit_width`.
+    ///
+    /// Allocates exactly the words the value keeps: the high zero words are
+    /// found before anything is copied, so a wide value with few significant
+    /// words (a wide zero, `one_bit_set`, a long logical shift right) holds
+    /// only those, however long it lives, and no copy is made to be trimmed.
     pub fn from_words(bit_width: u32, words: &[u64]) -> Self {
         let limit = words_for_bits_usize(bit_width);
-        let mut v: Vec<u64> = words.iter().take(limit).copied().collect();
-        canonicalize_words(bit_width, &mut v);
-        Self {
-            bit_width,
-            words: v,
-        }
+        let top = top_mask(bit_width);
+        // The word at `limit - 1` holds the width's top bits; the rest of it
+        // is dropped, as `clearUnusedBits` drops it.
+        let masked = |index: usize, word: u64| {
+            if index + 1 == limit { word & top } else { word }
+        };
+        let kept = words
+            .iter()
+            .take(limit)
+            .enumerate()
+            .rposition(|(index, word)| masked(index, *word) != 0)
+            .map_or(0, |position| position + 1);
+        let words = words
+            .iter()
+            .take(kept)
+            .enumerate()
+            .map(|(index, word)| masked(index, *word))
+            .collect();
+        Self { bit_width, words }
     }
 
     pub fn from_string(bit_width: u32, text: &str, radix: u8) -> IrResult<Self> {
@@ -247,9 +267,8 @@ impl ApInt {
         {
             *word &= u64::MAX >> (WORD_BITS - tail);
         }
-        // The words are already within the width; trimming is all that
-        // `from_words` would add, and it would copy them first.
-        canonicalize_words(bit_width, &mut words);
+        // Already canonical: every word is within the width, and the top one
+        // holds bit `end - 1`, so none is a high zero word to trim.
         Self { bit_width, words }
     }
 
@@ -2311,21 +2330,6 @@ fn bits_used_in_words(words: &[u64]) -> u32 {
         }
     }
     0
-}
-
-fn canonicalize_words(bit_width: u32, words: &mut Vec<u64>) {
-    let limit = words_for_bits_usize(bit_width);
-    if words.len() > limit {
-        words.truncate(limit);
-    }
-    if bit_width == 0 {
-        words.clear();
-        return;
-    }
-    if let Some(top) = words.get_mut(limit.saturating_sub(1)) {
-        *top &= top_mask(bit_width);
-    }
-    trim_trailing_zeros(words);
 }
 
 fn trim_trailing_zeros(words: &mut Vec<u64>) {

@@ -981,6 +981,44 @@ Closing it means
 a mask type that can say "every lane is `k`" without listing the lanes, threaded
 through every reader of the mask.
 
+## Erasing many users of one value is quadratic (found 2026-11-13, resource-bounds Phase 0)
+
+`Context::add_use` became a constant-time `push_front` on a `VecDeque`
+(`46362565`), as upstream's `Use::addToList` is. The other half was not:
+`Context::remove_use` finds the edge with a linear scan from the head and
+removes it with `VecDeque::remove`, and `BasicBlock::remove_instruction` finds
+the instruction with a scan of the block and removes it with `Vec::remove`.
+Upstream's `Use::removeFromList` and `iplist::erase` are constant time. So
+erasing K users of one value, all in one block, is quadratic twice over.
+
+Measured at `46362565` (release, rustc 1.96.0) by a scratch integration test,
+not committed, that built one function `foo(i32 %x)` of K `add i32 %x, 0`
+through `IrBuilder::int_add`, collected the K instructions with a
+`BlockCursor`, and timed `erase_from_parent` over all of them with
+`std::time::Instant`: K = 80,000 took 22.6 s front to back (each `remove_use`
+walks to the list's tail, where the oldest use sits) and 2.66 s back to front
+(each `remove_instruction` walks the block to its end); K = 20,000 took 1.36 s
+and 0.16 s. Fixing it needs an edge to know its position: an intrusive list,
+or indices that removal keeps up to date. Not started because neither
+representation is a local change: every use-list reader indexes the list
+(`sort_use_list`, `predictValueUseListOrder`'s positions).
+
+## A block named before it is defined is moved from far from the end (found 2026-11-13, resource-bounds Phase 0)
+
+`LLParser::PerFunctionState::defineBB` splices a block to the end of the
+function when its label is defined; `Function::splice` on the intrusive block
+list is constant time. llvmkit's `FunctionValue::move_basic_block_to_end` finds
+the block with a scan and moves it with `Vec::remove` and `push`. `fdd4ba75`
+made the scan start from the back, so a block defined as it is appended costs
+nothing, but a block created early by a forward reference is moved from far
+from the end: a `switch` naming 80,000 labels before any is defined took
+7.54 s to parse, and 20,000 took 0.55 s (wall time of
+`target/release/examples/parse_file` at `fdd4ba75`, rustc 1.96.0, on files
+made by
+`python3 -c 'n=80000; print("define void @f(i32 %x) {\n  switch i32 %x, label %b0 [" + "".join(f" i32 {i}, label %b{i}" for i in range(n)) + " ]"); print("".join(f"b{i}:\n  ret void\n" for i in range(n)) + "}")'`).
+A constant-time move needs the block list to be a linked list or to carry
+positions; the same representation would also serve the use list above.
+
 ## `computeConstantRange` is a partial port (found 2026-11-06, crash-proofing Task 1b review)
 
 `value_tracking.rs::compute_constant_range` ports the depth cutoff, the

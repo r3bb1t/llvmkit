@@ -1391,6 +1391,34 @@ which asserts the `u64::MAX` alloc and store sizes of a `4 * 2^64`-byte struct, 
 `resource_bounds.rs::a_size_past_sixty_four_bits_saturates_without_shrinking_its_bytes`, which
 asserts exact 2^62-byte alloc and store sizes and a saturated bit size for a 2^62-byte struct.
 
+### D43 — A struct's opaque field is laid out empty, where upstream asserts
+
+**Severity:** model-gap, on a query upstream does not allow: `DataLayout`'s size and alignment
+of a struct that holds an opaque struct answer as if the opaque field had size 0 and alignment 1.
+**Where:** `crates/llvmkit-ir/src/data_layout.rs` — `struct_layout_inner`, and `layout_of`'s
+refusal to cache such a layout.
+
+**LLVM:** the query is refused by assertion three times over: `DataLayout::getTypeSizeInBits`
+(`DataLayout.h`) and `DataLayout::getAlignment` (`DataLayout.cpp`) assert `Ty->isSized()`, which
+a struct holding an opaque struct is not, and `StructLayout::StructLayout` asserts
+`!ST->isOpaque()`. A release build skips the asserts and lays the opaque struct out with no
+elements, the same empty layout, and caches it in `getStructLayout`'s `StructLayoutMap`.
+
+**llvmkit:** the empty layout is answered, and neither it nor any layout holding it is cached
+(`StructLayouts::reached_opaque`), so once the opaque struct gets a body the next query answers
+the real layout. Before this entry `struct_layout_inner` reached an `unreachable!` here, a panic
+on a public query (`DataLayout::type_alloc_size` of `{ i8, %opaque }`).
+
+**Why:** no runtime panic in a production path (CLAUDE.md), and a cache that cannot go stale:
+caching the empty layout, as upstream's release build does, would keep answering it after the
+body is set.
+
+**Fix:** none owed; this is hardening of an assert, as D17 and D18 are.
+
+**Guarded by:**
+`crates/llvmkit-ir/tests/data_layout_round_trip.rs::struct_layout_of_an_opaque_field_is_empty_and_not_cached`,
+which fails if the layout is cached.
+
 ---
 
 ---

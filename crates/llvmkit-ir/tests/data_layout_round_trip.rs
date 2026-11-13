@@ -1124,3 +1124,28 @@ fn equal_layouts_hash_equal() {
     assert_eq!(cache.get(&b), Some(&1));
     assert_eq!(cache.get(&other), None);
 }
+
+/// `llvmkit-specific` (`docs/divergences.md` D43): a struct holding an
+/// opaque struct is laid out with the opaque field empty, where upstream
+/// asserts (`isSized` in `getTypeSizeInBits` / `getAlignment`, and
+/// `!ST->isOpaque()` in `StructLayout::StructLayout`); and that answer is
+/// not cached, so once the opaque struct gets a body the layout is the real
+/// one. A cached answer would go stale here, and a panic (the `unreachable!`
+/// this replaced) would abort a public query.
+#[test]
+fn struct_layout_of_an_opaque_field_is_empty_and_not_cached() {
+    let m = module_new!("m").expect("fresh module");
+    let dl = DataLayout::default();
+    let opaque = m.opaque_struct("O").expect("fresh name");
+    let outer = m
+        .struct_type([m.i8_type().as_type(), opaque.as_type()])
+        .expect("valid struct elements");
+    assert_eq!(dl.type_alloc_size(outer.as_type()), TypeSize::fixed(1));
+    m.set_struct_body(opaque, [m.i32_type().as_type()], false)
+        .expect("the body is set once");
+    assert_eq!(dl.type_alloc_size(outer.as_type()), TypeSize::fixed(8));
+    assert_eq!(
+        dl.struct_layout(outer.as_type()).element_offset(1),
+        TypeSize::fixed(4)
+    );
+}
