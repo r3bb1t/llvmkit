@@ -1406,22 +1406,36 @@ queries it calls reach, as read in the vendored `DataLayout.cpp` and `DataLayout
 - in a non-packed struct, an unsized field (`getABITypeAlign`'s `isSized`; for example an opaque
   struct or a struct holding one, a target extension type with no layout, or a struct that
   mixes a scalable vector with other types);
-- in any struct, a field whose `getTypeAllocSize` asserts (`alloc_size_defined`). That query asks
-  no `isSized` of a struct, only that it has a layout, or of an array, only of its element. So
-  a packed struct, which asks no field's alignment, lays out an unsized field that has a layout;
+- in any struct, a field whose `getTypeAllocSize` asserts (`alloc_size_or_refusal`). That
+  query asks no `isSized` of a struct, only that it has a layout, or of an array, only of its
+  element. So a packed struct, which asks no field's alignment, lays out an unsized field that
+  has a layout;
 - a field whose nonzero size cannot be added to the struct's nonzero size so far, because one is
   scalable and the other fixed (`TypeSize::operator+=`'s "Incompatible types"), as in
-  `{ <vscale x 4 x i32>, i8 }`. That refusal is permanent and kept in the struct-layout map.
+  `{ <vscale x 4 x i32>, i8 }`.
+
+A refusal that rests on an opaque struct at any depth (`LayoutRefusal::AwaitingBody`) is not kept,
+since the body may come later. Every other refusal is permanent, since a body is set once, and
+the struct-layout map keeps it beside the layouts, so a refused struct is measured once. Those are
+the incompatible sum, and a field that is unsized without reaching an opaque struct or has no
+alloc size (`LayoutRefusal::Permanent`). The same `getTypeAllocSize` is public as
+`DataLayout::try_type_alloc_size`, which takes any type and answers `None` where upstream asserts.
+`type_alloc_size` takes a `SizedType` and answers a plain `TypeSize`. The crate's folds that
+mirror `getTypeAllocSize` (`ConstantFoldLoadFromConst`, `ReadDataFromGlobal`,
+`getGEPIndicesForOffset`, `getSequentialElementStride`) go through `try_type_alloc_size`.
 
 An unsized struct can have a layout, as upstream's can: `{ <vscale x 4 x i32>, <vscale x 8 x i16> }`
 (scalable, but not homogeneous) and `{ <vscale x 4 x i32>, [0 x i8] }` both do, so
-`struct_layout(s).is_some()` is no proof that `s` is sized. Three earlier statements were
-wrong, and this list corrects them:
+`struct_layout(s).is_some()` is no proof that `s` is sized. Four earlier states were wrong, and
+this list corrects them:
 - commit `f54f4825`'s message said `None` "exactly when the struct is unsized";
 - commit `a5fecaaa` wrote here that every struct mixing a scalable vector with sized fields has
   a layout;
 - commit `3f1e8822` refused every unsized field, packed or not, which rejected packed structs
-  upstream lays out.
+  upstream lays out;
+- commit `e4baafdc` kept only the incompatible-sum refusal, and its folds took an alloc size only
+  from a `SizedType`, so they declined a load through an unsized struct with a layout that
+  upstream folds.
 
 At `a5fecaaa`, `{ <vscale x 4 x i32>, i8 }` was laid out with a scalable offset and a fixed
 32-byte size.
@@ -1478,7 +1492,12 @@ once the opaque struct got a body.
 `crates/llvmkit-ir/tests/data_layout_round_trip.rs::a_packed_struct_lays_out_an_unsized_field_that_has_an_alloc_size`
 (a packed struct's unsized field with a layout is laid out; a non-packed one's is refused),
 `crates/llvmkit-asmparser/tests/resource_bounds.rs::a_refused_struct_layout_is_kept_as_refused`
-(the permanent refusal is kept, not measured again on every query),
+(each kind of permanent refusal is kept, not measured again on every query),
+`crates/llvmkit-ir/tests/data_layout_round_trip.rs::a_refusal_waiting_on_an_opaque_body_is_not_kept`
+(a refusal that rests on an opaque struct below a field gives way to the layout once the body is
+set),
+`crates/llvmkit-ir/tests/constant_folding_analysis.rs::a_load_through_an_unsized_struct_with_a_layout_is_folded`
+(a fold that asks `getTypeAllocSize` of an unsized struct with a layout goes through),
 `crates/llvmkit-ir/tests/constant_folding_analysis.rs::a_load_from_a_constant_of_unsized_type_is_not_folded`
 (the two folds that read the empty layout's numbers),
 `crates/llvmkit-ir/tests/builder_alloca.rs::alloca_load_and_store_refuse_to_guess_an_unsized_alignment`,

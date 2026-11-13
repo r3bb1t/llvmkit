@@ -2843,14 +2843,18 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GepTypeCursor<'ctx, B, C> {
 
     /// `getSequentialElementStride`, whose `assert` that a vector's element is
     /// byte-addressable is not a release build's behaviour and is not ported.
-    /// `None` for an unsized element, where upstream's `getTypeAllocSize`
-    /// asserts `isSized`.
+    /// `None` where upstream asserts: a vector's unsized element
+    /// (`getTypeStoreSize`'s `isSized`), or an element whose
+    /// `getTypeAllocSize` asserts, which an unsized struct with a layout does
+    /// not.
     pub(crate) fn sequential_element_stride(self, data_layout: &DataLayout) -> Option<TypeSize> {
-        let element = crate::derived_types::erase_sized(self.ty)?;
-        Some(match self.kind {
-            GepStepKind::Vector => data_layout.type_store_size(element),
-            GepStepKind::Sequential | GepStepKind::Struct => data_layout.type_alloc_size(element),
-        })
+        match self.kind {
+            GepStepKind::Vector => crate::derived_types::erase_sized(self.ty)
+                .map(|element| data_layout.type_store_size(element)),
+            GepStepKind::Sequential | GepStepKind::Struct => {
+                data_layout.try_type_alloc_size(self.ty)
+            }
+        }
     }
 }
 

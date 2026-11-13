@@ -1128,6 +1128,51 @@ fn a_packed_struct_lays_out_an_unsized_field_that_has_an_alloc_size() {
             .packed_struct_type([field])
             .expect("valid struct elements");
         assert!(dl.struct_layout(packed).is_none(), "{packed}");
+        assert_eq!(dl.try_type_alloc_size(field), None, "{field}");
+    }
+    // `getTypeAllocSize` answers the unsized struct with a layout, and its
+    // array, as it answers any sized type.
+    assert_eq!(dl.try_type_alloc_size(mixed), Some(TypeSize::scalable(32)));
+    assert_eq!(dl.try_type_alloc_size(array), Some(TypeSize::scalable(32)));
+    assert_eq!(
+        dl.try_type_alloc_size(m.i32_type()),
+        Some(TypeSize::fixed(4))
+    );
+}
+
+/// llvmkit-specific, no upstream counterpart (`docs/divergences.md` D43): a
+/// refusal that rests on an opaque struct anywhere below a field is not kept,
+/// so the layout appears once the opaque struct gets a body. Upstream asserts
+/// on each of these before the body is set and lays each out after. The
+/// structs reach `%O` through an array in a non-packed struct, a struct in a
+/// packed one, and an array of structs in a packed one. A refusal kept for
+/// good here would answer `None` after the body is set.
+#[test]
+fn a_refusal_waiting_on_an_opaque_body_is_not_kept() {
+    let m = module_new!("m").expect("fresh module");
+    let dl = DataLayout::default();
+    let opaque = m.opaque_struct("O").expect("fresh name");
+    let holder = m
+        .struct_type([opaque.as_type()])
+        .expect("valid struct elements")
+        .as_type();
+    let array_of_opaque = m.array_type(opaque, 2).expect("a valid element").as_type();
+    let array_of_holder = m.array_type(holder, 2).expect("a valid element").as_type();
+    let structs = [
+        m.struct_type([array_of_opaque])
+            .expect("valid struct elements"),
+        m.packed_struct_type([holder])
+            .expect("valid struct elements"),
+        m.packed_struct_type([array_of_holder])
+            .expect("valid struct elements"),
+    ];
+    for ty in structs {
+        assert!(dl.struct_layout(ty).is_none(), "{ty}: `%O` is opaque");
+    }
+    m.set_struct_body(opaque, [m.i32_type().as_type()], false)
+        .expect("the body is set once");
+    for ty in structs {
+        assert!(dl.struct_layout(ty).is_some(), "{ty}: `%O` has a body");
     }
 }
 
@@ -1337,10 +1382,13 @@ fn copy_assignment_invalidates_struct_layout() {
 /// without reaching an unsized type. The walks under the queries treat an
 /// unsized type as unreachable (`reached_unsized`), which holds only while
 /// `Type::is_sized` (`StructType::isSized`, `Type::isSizedDerivedType`), the
-/// target extension layout table, `struct_layout_inner`'s refusals and
-/// `alloc_size_defined` agree; a disagreement aborts a public query. So the
-/// test also pins that a sized struct has a layout (`layout_of` relies on
-/// it) and that a non-packed struct with an unsized field has none. The
+/// target extension layout table and `struct_layout_inner`'s refusals agree;
+/// a disagreement aborts a public query. So the test also pins that a sized
+/// struct has a layout (`layout_of` relies on it), that a non-packed struct
+/// with an unsized field has none, that a packed struct with an opaque field
+/// has none and one of fixed sized fields has one, and, with one
+/// `DataLayout` across both passes, that no refusal kept in the first pass
+/// outlives the opaque struct's body. The
 /// types here are every leaf kind, the target extension types
 /// `getTargetTypeInfo` lays out and the ones it cannot, two levels of array,
 /// vector, scalable vector, struct and packed struct nesting over them, and
@@ -1422,8 +1470,11 @@ fn every_sized_type_answers_every_size_query() {
         all.extend(next);
     }
 
+    // One layout for both passes, so what the first pass kept is what the
+    // second reads: a refusal kept for good although it waited on `%O`'s
+    // body would leave a struct sized after the body with no layout.
+    let dl = DataLayout::default();
     let check = |all: &[Type<'_, _>]| {
-        let dl = DataLayout::default();
         let (mut sized_count, mut unsized_count) = (0_usize, 0_usize);
         for &ty in all {
             if let Ok(struct_ty) = StructType::try_from(ty) {
@@ -1442,6 +1493,23 @@ fn every_sized_type_answers_every_size_query() {
                         && struct_ty.fields().any(|field| !field.is_sized()));
                 if has_unsized_field {
                     assert!(layout.is_none(), "{ty}: an unsized field has no layout");
+                }
+                if struct_ty.is_packed() {
+                    // An opaque field has no alloc size (`getStructLayout`'s
+                    // `!isOpaque()`); sized fields with no scalable size in
+                    // them add up, and are laid out.
+                    let opaque_field = struct_ty.fields().any(|field| {
+                        StructType::try_from(field).is_ok_and(|field| field.is_opaque())
+                    });
+                    if opaque_field {
+                        assert!(layout.is_none(), "{ty}: an opaque field has no alloc size");
+                    }
+                    let fixed_sized_fields = struct_ty
+                        .fields()
+                        .all(|field| field.is_sized() && !field.is_scalable());
+                    if fixed_sized_fields {
+                        assert!(layout.is_some(), "{ty}: fixed sized fields are laid out");
+                    }
                 }
             }
             let Ok(sized) = SizedType::try_from(ty) else {

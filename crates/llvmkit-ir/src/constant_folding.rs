@@ -444,12 +444,12 @@ pub(crate) fn constant_fold_load_from_const_trusting_same_module<
 
     // Explicitly check for out-of-bounds access, so we return poison even if
     // the constant is a uniform value. A scalable size is not known here.
-    // An unsized constant has no size to check against, where upstream's
-    // `getTypeAllocSize` asserts `isSized`: nothing is read from it.
-    let Some(constant_ty) = erase_sized(constant.ty()) else {
+    // A constant with no alloc size has nothing to check against, where
+    // upstream's `getTypeAllocSize` asserts: nothing is read from it.
+    let Some(constant_size) = dl.try_type_alloc_size(constant.ty()) else {
         return Ok(None);
     };
-    if let Some(size) = dl.type_alloc_size(constant_ty).fixed_value()
+    if let Some(size) = constant_size.fixed_value()
         && offset_sge(&offset, size)
     {
         return Ok(Some(ty.poison().as_constant()));
@@ -597,9 +597,10 @@ fn read_struct_data_from_global<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     let Ok(struct_ty) = StructType::try_from(constant.ty()) else {
         return Ok(false);
     };
-    // No layout where upstream's `StructLayout` constructor asserts (an
-    // unsized field, or a scalable size added to a fixed one; D43 lists
-    // them): its bytes are not read.
+    // No layout where upstream's `StructLayout` constructor asserts (D43
+    // lists where): its bytes are not read. A layout is no proof that every
+    // field is sized, since a packed struct lays out an unsized field that
+    // has an alloc size, so each element's size is asked below.
     let Some(layout) = dl.struct_layout(struct_ty) else {
         return Ok(false);
     };
@@ -621,10 +622,12 @@ fn read_struct_data_from_global<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         else {
             return Ok(false);
         };
-        // An unsized element has no size, where upstream's `getTypeAllocSize`
-        // asserts `isSized`: no bytes are read.
-        let Some(element_size) =
-            erase_sized(element.ty()).and_then(|ty| dl.type_alloc_size(ty).fixed_value())
+        // An element with no alloc size, where upstream's `getTypeAllocSize`
+        // asserts, has no bytes to read; an unsized struct with a layout,
+        // which a packed struct may hold, has one.
+        let Some(element_size) = dl
+            .try_type_alloc_size(element.ty())
+            .and_then(TypeSize::fixed_value)
         else {
             return Ok(false);
         };
@@ -672,10 +675,11 @@ fn read_sequence_data_from_global<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 ) -> IrResult<bool> {
     let module = constant.module;
     let (num_elts, elt_size) = if let Some((element, length)) = constant.ty().data().as_array() {
-        // An unsized element has no size, where upstream's `getTypeAllocSize`
-        // asserts `isSized`: no bytes are read.
-        let Some(size) = erase_sized(Type::new(element, module))
-            .and_then(|ty| dl.type_alloc_size(ty).fixed_value())
+        // An element with no alloc size, where upstream's `getTypeAllocSize`
+        // asserts, has no bytes to read.
+        let Some(size) = dl
+            .try_type_alloc_size(Type::new(element, module))
+            .and_then(TypeSize::fixed_value)
         else {
             return Ok(false);
         };
@@ -759,10 +763,11 @@ fn fold_reinterpret_load_from_const<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }
 
     // TODO: We should be able to support scalable types.
-    // An unsized initializer has no size either, where upstream's
-    // `getTypeAllocSize` asserts `isSized`.
-    let Some(initializer_size) =
-        erase_sized(constant.ty()).and_then(|ty| dl.type_alloc_size(ty).fixed_value())
+    // An initializer with no alloc size has none to compare, where upstream's
+    // `getTypeAllocSize` asserts.
+    let Some(initializer_size) = dl
+        .try_type_alloc_size(constant.ty())
+        .and_then(TypeSize::fixed_value)
     else {
         return Ok(None);
     };
@@ -2951,18 +2956,15 @@ fn constant_at_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     Some(constant)
 }
 
-/// Mirrors `DataLayout::getGEPIndicesForOffset`, with `None` for an unsized
-/// `ty`, where upstream's `getTypeAllocSize` asserts `isSized`.
+/// Mirrors `DataLayout::getGEPIndicesForOffset`, with `None` for a `ty`
+/// whose `getTypeAllocSize` asserts.
 fn gep_indices_for_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     ty: Type<'ctx, B, C>,
     offset: &mut ApInt,
     dl: &DataLayout,
 ) -> Option<Vec<ApInt>> {
     let mut element_ty = ty;
-    let mut indices = vec![element_index(
-        dl.type_alloc_size(erase_sized(element_ty)?),
-        offset,
-    )];
+    let mut indices = vec![element_index(dl.try_type_alloc_size(element_ty)?, offset)];
     while !offset.is_zero() {
         let Some(index) = gep_index_for_offset(&mut element_ty, offset, dl) else {
             break;
@@ -3009,12 +3011,9 @@ fn gep_index_for_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     match element_ty.data() {
         TypeData::Array { elem, .. } => {
             *element_ty = Type::new(*elem, module);
-            // `None` for an unsized element, which has no stride to divide by,
-            // where upstream's `getTypeAllocSize` asserts `isSized`.
-            Some(element_index(
-                dl.type_alloc_size(erase_sized(*element_ty)?),
-                offset,
-            ))
+            // `None` for an element with no stride to divide by, where
+            // upstream's `getTypeAllocSize` asserts.
+            Some(element_index(dl.try_type_alloc_size(*element_ty)?, offset))
         }
         TypeData::Struct(data) => {
             // No layout where upstream's `StructLayout` constructor asserts

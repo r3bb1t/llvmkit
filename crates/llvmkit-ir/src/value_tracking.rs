@@ -6291,8 +6291,9 @@ where
             // `TypeSize` conversion, fatal on a scalable offset. Nothing is
             // known about such a field's address instead.
             // No layout where upstream's `StructLayout` constructor asserts
-            // (an unsized field, or a scalable size added to a fixed one;
-            // D43 lists them): nothing is known.
+            // (D43 lists where): nothing is known. Only the field's offset
+            // is read, which a layout always has, whatever the field's
+            // sizedness.
             let Some(layout) = data_layout.struct_layout_of(erase_type(struct_ty)) else {
                 return Ok(KnownBits::unknown(width));
             };

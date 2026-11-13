@@ -340,32 +340,41 @@ fn a_kept_struct_layout_is_answered_without_rechecking_its_fields() {
     });
 }
 
-/// One struct of 100,000 `i8` fields and a scalable vector, whose layout is
-/// asked 100,000 times.
+/// Structs of 100,000 `i8` fields and one last field upstream asserts on,
+/// each struct's layout asked 100,000 times.
 ///
-/// **No upstream counterpart.** Upstream asserts on this struct's layout
-/// (`TypeSize::operator+=`'s "Incompatible types" when the vector's scalable
-/// size meets the fixed 100,000 bytes before it), and llvmkit refuses it
-/// (`docs/divergences.md` D43). That refusal comes only after every field
-/// before the vector is measured, and it can never change, since a body is
-/// set once; so the refusal is kept in the struct-layout map beside the
-/// layouts. Not kept, every query would measure the 100,000 fields again.
+/// **No upstream counterpart.** Upstream asserts on each of these layouts,
+/// and llvmkit refuses them (`docs/divergences.md` D43):
+/// - a scalable vector last (`TypeSize::operator+=`'s "Incompatible types"
+///   when its scalable size meets the fixed 100,000 bytes before it);
+/// - `{ <vscale x 4 x i32>, <vscale x 8 x i16> }` last, which is unsized
+///   without reaching an opaque struct (`getABITypeAlign`'s `isSized`);
+/// - in a packed struct, `{ <vscale x 4 x i32>, i8 }` last, a struct refused
+///   for an incompatible sum, so `getTypeAllocSize` asserts on it.
+///
+/// Each refusal comes only after every field before the last is measured,
+/// and none can change, since a body is set once and none of these reaches
+/// an opaque struct; so each is kept in the struct-layout map beside the
+/// layouts. Before `e4baafdc` only the first was kept, and a query of either
+/// of the other two measured the 100,000 fields again.
 #[test]
 fn a_refused_struct_layout_is_kept_as_refused() {
     support::deadline::within_a_minute("a refused layout is measured again", || {
         const FIELDS: usize = 100_000;
         const QUERIES: usize = 100_000;
-        let mut fields = vec!["i8"; FIELDS];
-        fields.push("<vscale x 4 x i32>");
-        let source = format!("%t = type {{ {} }}\n", fields.join(", "));
+        let fixed = vec!["i8"; FIELDS].join(", ");
+        let source = format!(
+            "%scalable_last = type {{ {fixed}, <vscale x 4 x i32> }}\n\
+             %unsized_last = type {{ {fixed}, {{ <vscale x 4 x i32>, <vscale x 8 x i16> }} }}\n\
+             %packed_refused_last = type <{{ {fixed}, {{ <vscale x 4 x i32>, i8 }} }}>\n"
+        );
         let module = parse(&source);
-        let ty = module.named_struct("t").expect("%t is defined");
         let data_layout = DataLayout::default();
-        for _ in 0..QUERIES {
-            assert!(
-                data_layout.struct_layout(ty).is_none(),
-                "a scalable size added to a fixed one"
-            );
+        for name in ["scalable_last", "unsized_last", "packed_refused_last"] {
+            let ty = module.named_struct(name).expect("the struct is defined");
+            for _ in 0..QUERIES {
+                assert!(data_layout.struct_layout(ty).is_none(), "%{name}");
+            }
         }
     });
 }

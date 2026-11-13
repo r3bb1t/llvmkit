@@ -794,6 +794,23 @@ impl DataLayout {
         self.type_alloc_size_inner(module, id)
     }
 
+    /// Mirrors `DataLayout::getTypeAllocSize` for a type of any sizedness,
+    /// with `None` where it asserts. Out of line in `DataLayout.cpp`, it asks
+    /// no `isSized` of a struct, only that it has a layout, or of an array,
+    /// only of its element, so it answers some unsized types:
+    /// `{ <vscale x 4 x i32>, <vscale x 8 x i16> }`, two scalable vector
+    /// types that are not one, is unsized but has a scalable 32-byte alloc
+    /// size. [`Self::type_alloc_size`] answers every sized type, and needs no
+    /// `Option` for it.
+    pub fn try_type_alloc_size<'t, B: ModuleBrand, C: Capability>(
+        &self,
+        ty: impl Into<Type<'t, B, C>>,
+    ) -> Option<TypeSize> {
+        let ty = ty.into();
+        self.alloc_size_or_refusal(ty.module().core_ref(), ty.slot_trusting_same_module())
+            .ok()
+    }
+
     /// Mirrors `DataLayout::getTypeAllocSizeInBits`.
     pub fn type_alloc_size_in_bits<'t, B: ModuleBrand, C: Capability>(
         &self,
@@ -907,35 +924,32 @@ type SlotMap<K, V> = HashMap<K, V, core::hash::BuildHasherDefault<SlotHasher>>;
 struct ModuleLayouts {
     /// Dead once the module is dropped (`ModuleCore::liveness`).
     alive: Weak<()>,
-    layouts: SlotMap<TypeSlot, KeptLayout>,
+    /// A struct's layout, or its refusal when the refusal is permanent.
+    layouts: SlotMap<TypeSlot, Result<Arc<StructLayoutInfo>, PermanentRefusal>>,
 }
 
-/// What the map keeps for one struct: its layout, or the one refusal that
-/// can never turn into a layout.
-#[derive(Clone)]
-enum KeptLayout {
-    /// The struct's layout.
-    Laid(Arc<StructLayoutInfo>),
-    /// [`LayoutRefusal::IncompatibleSizes`]: every field up to the refused
-    /// one had its size, and sizes never change once a body is set, so the
-    /// sum is refused for good.
-    IncompatibleSizes,
-}
-
-/// Why `StructLayout::StructLayout` would assert on a struct, which is why
-/// llvmkit has no layout for it.
+/// Where `StructLayout::StructLayout`, or the `getTypeAllocSize` it calls,
+/// would assert on a struct, which is why llvmkit has no layout for it,
+/// told apart by whether the answer can still change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LayoutRefusal {
-    /// An opaque body (`!ST->isOpaque()`), or a field with no size yet: an
-    /// unsized field of a non-packed struct (`getABITypeAlign`'s
-    /// `isSized`), or a field whose `getTypeAllocSize` asserts. Not kept: an
-    /// opaque struct may get a body.
-    NotYetSized,
-    /// A field's nonzero size added to the struct's nonzero size so far, one
-    /// scalable and the other fixed (`TypeSize::operator+=`'s "Incompatible
-    /// types"). Kept.
-    IncompatibleSizes,
+    /// The walk reached an opaque struct: the struct's own body, or a
+    /// field's at any depth. The opaque struct may get a body, after which
+    /// the struct may have a layout, so the refusal is not kept.
+    AwaitingBody,
+    /// Every other refusal: a field that is unsized without reaching an
+    /// opaque struct (a struct mixing scalable vectors with other types, a
+    /// target extension type with no layout, a vector of one), or a scalable
+    /// size added to a fixed one (`TypeSize::operator+=`'s "Incompatible
+    /// types"). A body is set once and nothing else these depend on changes,
+    /// so the refusal is kept.
+    Permanent(PermanentRefusal),
 }
+
+/// The proof that a [`LayoutRefusal`] can never become a layout, the only
+/// refusal the struct-layout map keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PermanentRefusal;
 
 /// The struct layouts one [`DataLayout`] has computed. Mirrors
 /// `DataLayout::LayoutMap` (`DataLayout.cpp`), the `StructLayoutMap` keyed by
@@ -1012,7 +1026,11 @@ impl StructLayoutMap {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn get(&self, module: &ModuleCore, id: TypeSlot) -> Option<KeptLayout> {
+    fn get(
+        &self,
+        module: &ModuleCore,
+        id: TypeSlot,
+    ) -> Option<Result<Arc<StructLayoutInfo>, PermanentRefusal>> {
         let mut maps = self.lock();
         maps.tick();
         maps.modules
@@ -1021,8 +1039,13 @@ impl StructLayoutMap {
             .cloned()
     }
 
-    /// Keep `layout` as `module`'s struct `id`'s.
-    fn insert(&self, module: &ModuleCore, id: TypeSlot, layout: KeptLayout) {
+    /// Keep `layout` as `module`'s struct `id`'s answer.
+    fn insert(
+        &self,
+        module: &ModuleCore,
+        id: TypeSlot,
+        layout: Result<Arc<StructLayoutInfo>, PermanentRefusal>,
+    ) {
         let mut maps = self.lock();
         maps.tick();
         maps.modules
@@ -1049,15 +1072,46 @@ impl fmt::Debug for StructLayoutMap {
 /// The arm of a walk under a [`SizedType`] for a type with no size. A sized
 /// type reaches only sized types through its elements, fields and layout
 /// type (`Type::isSizedDerivedType`, `StructType::isSized`), and every walk
-/// below starts from a `SizedType`, from a field `struct_layout_inner` found
-/// sized, or from a packed struct's field `alloc_size_defined` accepted
-/// (whose alloc-size walk reaches only arrays of such, structs with a
-/// layout, and sized types), so the arm is dead by construction. A sized
-/// struct also has a layout, which [`DataLayout`]'s `layout_of` relies on:
+/// below starts from a `SizedType` or from a field `struct_layout_inner`
+/// found sized. A packed struct's field that may be unsized goes through
+/// `alloc_size_or_refusal`, which refuses instead of reaching this arm. So
+/// the arm is dead by construction. A sized struct also has a layout,
+/// which [`DataLayout`]'s `layout_of` relies on:
 /// `every_sized_type_answers_every_size_query` in
 /// `tests/data_layout_round_trip.rs` pins both.
 fn reached_unsized() -> ! {
     unreachable!("a DataLayout walk under a SizedType reaches only sized types")
+}
+
+/// Whether `id` reaches an opaque struct through array and vector elements,
+/// struct fields, and a target extension type's layout type: the only part
+/// of a type a later `set_struct_body` can change, so the only reason an
+/// unsized type may become sized. Each struct is entered once (`visited`).
+fn reaches_opaque_struct(
+    module: &ModuleCore,
+    id: TypeSlot,
+    visited: &mut HashSet<TypeSlot>,
+) -> bool {
+    match module.context().type_data(id) {
+        TypeData::Array { elem, .. }
+        | TypeData::FixedVector { elem, .. }
+        | TypeData::ScalableVector { elem, .. } => reaches_opaque_struct(module, *elem, visited),
+        TypeData::Struct(s) => {
+            if !visited.insert(id) {
+                return false;
+            }
+            match s.body.borrow().as_ref() {
+                None => true,
+                Some(body) => body
+                    .elements
+                    .iter()
+                    .any(|&field| reaches_opaque_struct(module, field, visited)),
+            }
+        }
+        TypeData::TargetExt(_) => target_ext_layout_type(module, id)
+            .is_some_and(|layout| reaches_opaque_struct(module, layout, visited)),
+        _ => false,
+    }
 }
 
 // The walks below are entered only from a `SizedType` (the public queries)
@@ -1107,43 +1161,11 @@ impl DataLayout {
         }
     }
 
+    /// [`Self::alloc_size_or_refusal`] under a [`SizedType`], where it
+    /// cannot refuse.
     fn type_alloc_size_inner(&self, module: &ModuleCore, id: TypeSlot) -> TypeSize {
-        match module.context().type_data(id) {
-            TypeData::Array { elem, n } => self
-                .type_alloc_size_inner(module, *elem)
-                .saturating_scaled(*n),
-            TypeData::Struct(_) => {
-                let layout = self.layout_of(module, id);
-                let (size, alignment) = (layout.size_in_bytes(), layout.alignment());
-                let is_packed = matches!(
-                    module.context().type_data(id),
-                    TypeData::Struct(s) if s.body.borrow().as_ref().is_some_and(|b| b.packed)
-                );
-                if is_packed {
-                    size
-                } else {
-                    let a = std::cmp::max(self.struct_abi_align, alignment);
-                    align_type_size(size, a)
-                }
-            }
-            TypeData::Integer { bits } => {
-                let bytes = TypeSize::fixed(u64::from(div_ceil_u32(*bits, 8)));
-                let a = self.integer_alignment(*bits, AlignmentKind::Abi);
-                align_type_size(bytes, a)
-            }
-            TypeData::Pointer { addr_space } => {
-                let size = TypeSize::fixed(u64::from(self.pointer_size(*addr_space)));
-                align_type_size(size, self.pointer_abi_align(*addr_space))
-            }
-            TypeData::TargetExt(_) => match target_ext_layout_type(module, id) {
-                Some(layout) => self.type_alloc_size_inner(module, layout),
-                None => reached_unsized(),
-            },
-            _ => {
-                let store = self.type_store_size_inner(module, id);
-                align_type_size(store, self.alignment(module, id, AlignmentKind::Abi))
-            }
-        }
+        self.alloc_size_or_refusal(module, id)
+            .unwrap_or_else(|_| reached_unsized())
     }
 
     fn type_store_size_in_bits_inner(&self, module: &ModuleCore, id: TypeSlot) -> TypeSize {
@@ -1304,69 +1326,122 @@ impl DataLayout {
         &self,
         ty: Type<'_, B, C>,
     ) -> Option<Arc<StructLayoutInfo>> {
+        // Why there is no layout is llvmkit's own bookkeeping (whether to keep
+        // the refusal); the caller's answer is upstream's, an assert, so
+        // `None`.
         self.layout_or_refusal(ty.module().core_ref(), ty.slot_trusting_same_module())
+            .ok()
     }
 
     /// Struct `id`'s layout, from this `DataLayout`'s map or laid out and kept
-    /// there; `None` where `StructLayout::StructLayout` would assert. Mirrors
+    /// there; a [`LayoutRefusal`] where `StructLayout::StructLayout` would
+    /// assert, kept too when it is permanent. Mirrors
     /// `DataLayout::getStructLayout`'s `StructLayoutMap` lookup, and the `new
-    /// StructLayout` on a miss. A kept layout was laid out once and a body is
-    /// set once, so a hit is answered without looking at the fields again.
-    /// Laid out with no lock held: the fields' own layouts are looked up and
-    /// kept along the way.
+    /// StructLayout` on a miss. A kept answer was found once and a body is set
+    /// once, so a hit is answered without looking at the fields again. Laid
+    /// out with no lock held: the fields' own layouts are looked up and kept
+    /// along the way.
     fn layout_or_refusal(
         &self,
         module: &ModuleCore,
         id: TypeSlot,
-    ) -> Option<Arc<StructLayoutInfo>> {
+    ) -> Result<Arc<StructLayoutInfo>, LayoutRefusal> {
         match self.struct_layouts.get(module, id) {
-            Some(KeptLayout::Laid(layout)) => return Some(layout),
-            Some(KeptLayout::IncompatibleSizes) => return None,
+            Some(Ok(layout)) => return Ok(layout),
+            Some(Err(permanent)) => return Err(LayoutRefusal::Permanent(permanent)),
             None => {}
         }
         match self.struct_layout_inner(module, id) {
             Ok(layout) => {
                 let layout = Arc::new(layout);
                 self.struct_layouts
-                    .insert(module, id, KeptLayout::Laid(Arc::clone(&layout)));
-                Some(layout)
+                    .insert(module, id, Ok(Arc::clone(&layout)));
+                Ok(layout)
             }
-            Err(LayoutRefusal::IncompatibleSizes) => {
-                self.struct_layouts
-                    .insert(module, id, KeptLayout::IncompatibleSizes);
-                None
+            Err(LayoutRefusal::Permanent(permanent)) => {
+                self.struct_layouts.insert(module, id, Err(permanent));
+                Err(LayoutRefusal::Permanent(permanent))
             }
-            Err(LayoutRefusal::NotYetSized) => None,
+            Err(LayoutRefusal::AwaitingBody) => Err(LayoutRefusal::AwaitingBody),
         }
     }
 
-    /// [`Self::layout_or_refusal`] for a struct whose `getTypeAllocSize` or
-    /// alignment a walk needs: one reached under a [`SizedType`], or a field
-    /// [`Self::alloc_size_defined`] accepted. A sized struct has a layout: it
-    /// is either a homogeneous struct of scalable vectors, whose sizes add as
-    /// scalable sizes, or one with no scalable type in it at all, whose fields
-    /// are sized; and `alloc_size_defined` accepts a struct only with one.
+    /// [`Self::layout_or_refusal`] for a struct a walk under a [`SizedType`]
+    /// reaches. A sized struct has a layout: it is either a homogeneous
+    /// struct of scalable vectors, whose sizes add as scalable sizes, or one
+    /// with no scalable type in it at all, whose fields are sized.
     fn layout_of(&self, module: &ModuleCore, id: TypeSlot) -> Arc<StructLayoutInfo> {
         self.layout_or_refusal(module, id)
-            .unwrap_or_else(|| reached_unsized())
+            .unwrap_or_else(|_| reached_unsized())
     }
 
-    /// Whether upstream's `DataLayout::getTypeAllocSize` answers for `id`
-    /// rather than asserting. Out of line in `DataLayout.cpp`, it asks no
-    /// `isSized` itself: an array asks its element's, a struct its layout
-    /// (`getStructLayout`), a target extension type its layout type's, an
-    /// integer or a pointer always answers, and every other type reaches
-    /// `getTypeStoreSize` and `getABITypeAlign`, which assert `isSized`. So
-    /// an unsized struct with a layout (one mixing scalable vectors) has an
-    /// alloc size, which a packed struct's field may use.
-    fn alloc_size_defined(&self, module: &ModuleCore, id: TypeSlot) -> bool {
+    /// Mirrors `DataLayout::getTypeAllocSize`, refusing where it asserts.
+    /// Out of line in `DataLayout.cpp`, it asks no `isSized` itself: an array
+    /// asks its element's alloc size, a struct its layout
+    /// (`getStructLayout`), a target extension type its layout type's alloc
+    /// size, an integer or a pointer always answers, and every other type
+    /// reaches `getTypeStoreSize` and `getABITypeAlign`, which assert
+    /// `isSized`. So an unsized struct with a layout (one mixing scalable
+    /// vectors) has an alloc size, which a packed struct's field may use.
+    /// The one dispatch for alloc sizes: [`Self::type_alloc_size_inner`] is
+    /// this under a [`SizedType`].
+    fn alloc_size_or_refusal(
+        &self,
+        module: &ModuleCore,
+        id: TypeSlot,
+    ) -> Result<TypeSize, LayoutRefusal> {
         match module.context().type_data(id) {
-            TypeData::Array { elem, .. } => self.alloc_size_defined(module, *elem),
-            TypeData::Struct(_) => self.layout_or_refusal(module, id).is_some(),
-            TypeData::TargetExt(_) => target_ext_layout_type(module, id)
-                .is_some_and(|layout| self.alloc_size_defined(module, layout)),
-            TypeData::Integer { .. } | TypeData::Pointer { .. } => true,
-            _ => is_sized(module, id, &mut HashSet::new()),
+            TypeData::Array { elem, n } => Ok(self
+                .alloc_size_or_refusal(module, *elem)?
+                .saturating_scaled(*n)),
+            TypeData::Struct(s) => {
+                let layout = self.layout_or_refusal(module, id)?;
+                let (size, alignment) = (layout.size_in_bytes(), layout.alignment());
+                if s.body.borrow().as_ref().is_some_and(|b| b.packed) {
+                    Ok(size)
+                } else {
+                    let a = std::cmp::max(self.struct_abi_align, alignment);
+                    Ok(align_type_size(size, a))
+                }
+            }
+            TypeData::Integer { bits } => {
+                let bytes = TypeSize::fixed(u64::from(div_ceil_u32(*bits, 8)));
+                let a = self.integer_alignment(*bits, AlignmentKind::Abi);
+                Ok(align_type_size(bytes, a))
+            }
+            TypeData::Pointer { addr_space } => {
+                let size = TypeSize::fixed(u64::from(self.pointer_size(*addr_space)));
+                Ok(align_type_size(size, self.pointer_abi_align(*addr_space)))
+            }
+            // The layout type of one with none is `void`, which reaches
+            // `getTypeStoreSize`'s `isSized`; no struct is involved.
+            TypeData::TargetExt(_) => match target_ext_layout_type(module, id) {
+                Some(layout) => self.alloc_size_or_refusal(module, layout),
+                None => Err(LayoutRefusal::Permanent(PermanentRefusal)),
+            },
+            // A vector, a float, `x86_amx` and the rest: no struct inside.
+            _ if is_sized(module, id, &mut HashSet::new()) => {
+                let store = self.type_store_size_inner(module, id);
+                Ok(align_type_size(
+                    store,
+                    self.alignment(module, id, AlignmentKind::Abi),
+                ))
+            }
+            _ => Err(LayoutRefusal::Permanent(PermanentRefusal)),
+        }
+    }
+
+    /// Why a non-packed struct cannot lay out its unsized field `id`
+    /// (`getABITypeAlign`'s `isSized`): [`LayoutRefusal::AwaitingBody`] if
+    /// `id` reaches an opaque struct, whose body may make it sized, and
+    /// [`LayoutRefusal::Permanent`] otherwise. A type that is unsized for
+    /// another reason as well, and reaches an opaque struct, is not kept:
+    /// the refusal is permanent then, but nothing is lost by asking again.
+    fn unsized_refusal(&self, module: &ModuleCore, id: TypeSlot) -> LayoutRefusal {
+        if reaches_opaque_struct(module, id, &mut HashSet::new()) {
+            LayoutRefusal::AwaitingBody
+        } else {
+            LayoutRefusal::Permanent(PermanentRefusal)
         }
     }
 
@@ -1374,8 +1449,8 @@ impl DataLayout {
     /// opaque body (`!ST->isOpaque()`); a field of a non-packed struct that
     /// is unsized (`getABITypeAlign`'s `isSized`; a packed struct asks no
     /// field's alignment); a field whose `getTypeAllocSize` asserts
-    /// ([`Self::alloc_size_defined`]); and a field whose size cannot be added
-    /// to the struct's so far (`TypeSize::operator+=`'s "Incompatible
+    /// ([`Self::alloc_size_or_refusal`]); and a field whose size cannot be
+    /// added to the struct's so far (`TypeSize::operator+=`'s "Incompatible
     /// types", a nonzero scalable size meeting a nonzero fixed one).
     fn struct_layout_inner(
         &self,
@@ -1386,7 +1461,7 @@ impl DataLayout {
             unreachable!("struct_layout_inner is asked only of a struct type")
         };
         let body = s.body.borrow();
-        let body = body.as_ref().ok_or(LayoutRefusal::NotYetSized)?;
+        let body = body.as_ref().ok_or(LayoutRefusal::AwaitingBody)?;
         let elements: &[TypeSlot] = &body.elements;
         let packed = body.packed;
 
@@ -1405,7 +1480,7 @@ impl DataLayout {
             } else if is_sized(module, elem, &mut HashSet::new()) {
                 self.alignment(module, elem, AlignmentKind::Abi)
             } else {
-                return Err(LayoutRefusal::NotYetSized);
+                return Err(self.unsized_refusal(module, elem));
             };
             // Only a homogeneous struct of scalable vectors has a scalable
             // size, and its members need no padding.
@@ -1417,17 +1492,15 @@ impl DataLayout {
                 alignment = ty_align;
             }
             member_offsets.push(size);
-            // A non-packed struct's field is sized here, and a sized type's
-            // alloc size is defined; a packed struct's is asked.
-            if packed && !self.alloc_size_defined(module, elem) {
-                return Err(LayoutRefusal::NotYetSized);
-            }
-            let field_size = self.type_alloc_size_inner(module, elem);
+            // A non-packed struct's field is sized here, so its alloc size is
+            // defined; a packed struct's field passes on its own refusal, so
+            // a field refused for good refuses this struct for good.
+            let field_size = self.alloc_size_or_refusal(module, elem)?;
             if size.known_min_value() != 0
                 && field_size.known_min_value() != 0
                 && size.is_scalable() != field_size.is_scalable()
             {
-                return Err(LayoutRefusal::IncompatibleSizes);
+                return Err(LayoutRefusal::Permanent(PermanentRefusal));
             }
             size = size.saturating_add(field_size);
         }
