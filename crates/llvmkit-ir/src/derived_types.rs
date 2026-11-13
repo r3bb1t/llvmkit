@@ -1768,13 +1768,59 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> fmt::Display for AnyTypeEnum<'c
 // Refinements
 // --------------------------------------------------------------------------
 
-/// Types you can `alloca` / `load` / `store` / GEP through. Mirrors the
-/// `Type::isSized` predicate, with the additional invariant - encoded
-/// in the type system - that any `SizedType` you hold is provably
-/// sized: methods that require sizedness can take it directly without
-/// runtime checks.
+/// Types you can `alloca` / `load` / `store` / GEP through, and ask the size
+/// of. Mirrors the `Type::isSized` predicate, with the invariant encoded in
+/// the type system: any `SizedType` you hold is provably sized, so methods
+/// that require sizedness take it and need no runtime check.
+///
+/// Upstream's `DataLayout` size and alignment queries assert
+/// `Ty->isSized()`; llvmkit's take a `SizedType` instead, so an unsized type
+/// (`void`, a label, a function type, an opaque struct, a struct holding
+/// one, a struct mixing a scalable vector with other fields, a target
+/// extension type with no layout) cannot be asked, and no number stands in
+/// for a size it does not have.
+///
+/// The field is private: a `SizedType` comes only from
+/// [`TryFrom<Type>`](#impl-TryFrom%3CType%3C'ctx,+B,+C%3E%3E-for-SizedType%3C'ctx,+B,+C%3E),
+/// which asks `isSized`, or from an integer, float or pointer type, sized
+/// by construction. A proof stays true, since the only type whose
+/// sizedness changes is an opaque struct gaining a body, and that makes
+/// nothing unsized. And it holds inside: every type a sized type reaches
+/// through an element, a field or a layout type is sized too
+/// (`Type::isSizedDerivedType`, `StructType::isSized`), which is what lets
+/// the `DataLayout` walks under one treat every unsized arm as unreachable.
 #[derive(Branded)]
-pub struct SizedType<'ctx, B: ModuleBrand, C: Capability = Mutable>(pub(super) Type<'ctx, B, C>);
+pub struct SizedType<'ctx, B: ModuleBrand, C: Capability = Mutable>(Type<'ctx, B, C>);
+
+/// An integer type is sized (`Type::isSized`'s first arm).
+impl<'ctx, W: IntWidth, B: ModuleBrand, C: Capability> From<IntType<'ctx, W, B, C>>
+    for SizedType<'ctx, B, C>
+{
+    #[inline]
+    fn from(ty: IntType<'ctx, W, B, C>) -> Self {
+        Self(ty.as_type())
+    }
+}
+
+/// A floating-point type is sized (`Type::isSized`'s first arm).
+impl<'ctx, K: FloatKind, B: ModuleBrand, C: Capability> From<FloatType<'ctx, K, B, C>>
+    for SizedType<'ctx, B, C>
+{
+    #[inline]
+    fn from(ty: FloatType<'ctx, K, B, C>) -> Self {
+        Self(ty.as_type())
+    }
+}
+
+/// A pointer type is sized (`Type::isSized`'s first arm).
+impl<'ctx, A: AddrSpace, B: ModuleBrand, C: Capability> From<PointerType<'ctx, A, B, C>>
+    for SizedType<'ctx, B, C>
+{
+    #[inline]
+    fn from(ty: PointerType<'ctx, A, B, C>) -> Self {
+        Self(ty.as_type())
+    }
+}
 
 impl<B: ModuleBrand, C: Capability> CapabilityOf for SizedType<'_, B, C> {
     type Capability = C;

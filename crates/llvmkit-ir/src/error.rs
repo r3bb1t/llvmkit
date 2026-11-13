@@ -1463,8 +1463,11 @@ pub enum IrError {
     },
 
     /// An operation that requires a sized type was passed a type that has
-    /// no statically-known size (e.g. `function`, `label`, opaque struct).
-    #[error("cannot allocate value of unsized type {kind}")]
+    /// no size (e.g. `function`, `label`, an opaque struct): an `alloca`,
+    /// `load` or `store` whose alignment the builder would fill from the
+    /// `DataLayout`, or a `SizedType` asked of an unsized type. Upstream
+    /// asserts `Ty->isSized()` at the same points.
+    #[error("operation requires a sized type, got unsized type {kind}")]
     UnsizedType {
         /// Kind of the unsized type that was rejected.
         kind: TypeKindLabel,
