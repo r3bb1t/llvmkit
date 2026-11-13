@@ -981,7 +981,19 @@ Closing it means
 a mask type that can say "every lane is `k`" without listing the lanes, threaded
 through every reader of the mask.
 
-## Erasing many users of one value is quadratic (found 2026-11-13, resource-bounds Phase 0)
+## ~~Erasing many users of one value is quadratic~~ — closed (found 2026-11-13, resource-bounds Phase 0; closed the same day)
+
+**Closed.** A value's use list is now `UseList` (`use_list.rs`): edges
+stored oldest first, a removed edge left as an empty slot and compacted
+away once empty slots outnumber edges, and a per-edge index from 32 slots
+up, so removing or replacing an edge is amortised constant time. A block's
+instruction list is a `KeyedList` (`keyed_list.rs`), a list linked through a
+map from each member to its neighbours, so removing an instruction is
+constant time. The readers that indexed the list by position, the two
+use-list sorts, take a head-first copy and write it back, linear as before.
+Pinned by `crates/llvmkit-asmparser/tests/resource_bounds.rs::erasing_every_user_of_one_value_is_linear`
+(200,000 users, front to back), which ran past its deadline with the old
+head-first scan put back. The record below is kept as the measurement.
 
 `Context::add_use` became a constant-time `push_front` on a `VecDeque`
 (`46362565`), as upstream's `Use::addToList` is. The other half was not:
@@ -1044,7 +1056,17 @@ or indices that removal keeps up to date. Not started because neither
 representation is a local change: every use-list reader indexes the list
 (`sort_use_list`, `predictValueUseListOrder`'s positions).
 
-## A block named before it is defined is moved from far from the end (found 2026-11-13, resource-bounds Phase 0)
+## ~~A block named before it is defined is moved from far from the end~~ — closed (found 2026-11-13, resource-bounds Phase 0; closed the same day)
+
+**Closed.** A function's block list is a `KeyedList` (`keyed_list.rs`), so
+`move_basic_block_to_end` is constant time wherever the block sits, as
+upstream's `splice` is; a new block is placed by `BlockPlacement` (`End`,
+`Before`, `After`) rather than by index. The same parse had a second cost:
+`parse_switch` searched a list of the case values seen so far, where
+`LLParser::parseSwitch` keeps a `SmallPtrSet`; it is a set now. Pinned by
+`crates/llvmkit-asmparser/tests/resource_bounds.rs::a_switch_naming_every_block_first_parses_in_linear_time`
+(200,000 labels), which ran past its deadline with either old search put
+back. The record below is kept as the measurement.
 
 `LLParser::PerFunctionState::defineBB` splices a block to the end of the
 function when its label is defined; `Function::splice` on the intrusive block

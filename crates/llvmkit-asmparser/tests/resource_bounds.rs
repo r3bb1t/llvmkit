@@ -127,9 +127,13 @@ fn a_function_of_two_hundred_thousand_blocks_parses_in_linear_time() {
 /// searched from the back and shifted the tail, so a block created long
 /// before it was defined cost its distance from the end: a `switch` naming
 /// 80,000 labels took 7.54 s to parse at `fdd4ba75` (wall time of
-/// `target/release/examples/parse_file`, rustc 1.96.0; the generating command
-/// is in the commit that closed `docs/future-work.md`'s entry). The block
-/// list is now a keyed linked list, and the move is constant time.
+/// `target/release/examples/parse_file`, rustc 1.96.0; `docs/future-work.md`
+/// gave the generating command). A second cost sat in the same parse:
+/// `LLParser::parseSwitch` checks for a duplicate case value with a
+/// `SmallPtrSet`, and llvmkit's port searched a list of the cases seen so far.
+/// The block list is now a keyed linked list whose move is constant time, and
+/// the seen cases are a set. Each change alone left this test past its
+/// deadline, checked by putting the old search back.
 #[test]
 fn a_switch_naming_every_block_first_parses_in_linear_time() {
     support::deadline::within_a_minute("a defined block is moved from far from the end", || {
