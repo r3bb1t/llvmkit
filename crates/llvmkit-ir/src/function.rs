@@ -102,7 +102,12 @@ pub(super) struct FunctionData {
     /// LLVM does not allow adding parameters in place afterwards, so
     /// this stays effectively immutable past the constructor.
     pub(super) args: RefCell<Box<[ValueSlot]>>,
-    pub(super) basic_blocks: RefCell<Vec<ValueSlot>>,
+    /// The block value ids in layout order. A [`KeyedList`], as upstream's
+    /// block list is an intrusive list: inserting next to a block, erasing
+    /// one and `splice`-ing one to the end are constant time.
+    ///
+    /// [`KeyedList`]: crate::keyed_list::KeyedList
+    pub(super) basic_blocks: RefCell<crate::keyed_list::KeyedList<ValueSlot>>,
     pub(super) attributes: RefCell<AttributeStorage>,
     pub(super) function_attr_groups: RefCell<Vec<u32>>,
     pub(super) metadata: RefCell<MetadataAttachmentSet<StoredBrand>>,
@@ -141,7 +146,7 @@ impl FunctionData {
             personality_fn: Cell::new(None),
             comdat: RefCell::new(None),
             args: RefCell::new(Box::new([])),
-            basic_blocks: RefCell::new(Vec::new()),
+            basic_blocks: RefCell::new(crate::keyed_list::KeyedList::new()),
             attributes: RefCell::new(AttributeStorage::new()),
             function_attr_groups: RefCell::new(Vec::new()),
             metadata: RefCell::new(MetadataAttachmentSet::new()),
@@ -154,6 +159,19 @@ impl FunctionData {
 // --------------------------------------------------------------------------
 // Public handle
 // --------------------------------------------------------------------------
+
+/// Where a new block goes in its function's block list: upstream's
+/// `InsertBefore` argument to `BasicBlock::Create`, with "after" spelled
+/// rather than computed as the next block (`this->getNextNode()`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BlockPlacement {
+    /// Last, as `InsertBefore = nullptr` puts it.
+    End,
+    /// Immediately before the given block.
+    Before(ValueSlot),
+    /// Immediately after the given block.
+    After(ValueSlot),
+}
 
 /// Typed handle to a function value parametrised by its return shape.
 ///
@@ -1105,22 +1123,21 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
         Name: Into<String>,
         C: CanMutate,
     {
-        let end = self.data().basic_blocks.borrow().len();
-        self.insert_basic_block_at_unchecked(end, name)
+        self.insert_basic_block_unchecked(BlockPlacement::End, name)
     }
 
-    /// Create a fresh basic block at `index` in this function's block list,
-    /// ahead of the block currently there (or at the end when `index` is the
-    /// list's length). Mirrors `BasicBlock::Create(Context, Name, Parent,
+    /// Create a fresh basic block at `placement` in this function's block
+    /// list. Mirrors `BasicBlock::Create(Context, Name, Parent,
     /// InsertBefore)`: [`append_basic_block_unchecked`](Self::append_basic_block_unchecked)
     /// is the `InsertBefore = nullptr` case.
     ///
     /// Crate-internal, with the same capability argument as
-    /// `append_basic_block_unchecked`. `index` must be at most the list's
-    /// length; the split routines compute it from the same list.
-    pub(crate) fn insert_basic_block_at_unchecked<Name>(
+    /// `append_basic_block_unchecked`. An anchor in `placement` must be one
+    /// of this function's blocks; the split routines pass the block they are
+    /// splitting, after checking it is.
+    pub(crate) fn insert_basic_block_unchecked<Name>(
         self,
-        index: usize,
+        placement: BlockPlacement,
         name: Name,
     ) -> BasicBlock<'ctx, R, Unterminated, B>
     where
@@ -1141,8 +1158,21 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
             kind: ValueKindData::BasicBlock(BasicBlockData::new(Some(self.id))),
             use_list: core::cell::RefCell::new(UseList::new()),
         });
-        // `index` is at most the length: both callers read it off this list.
-        self.data().basic_blocks.borrow_mut().insert(index, bb_id);
+        {
+            let mut blocks = self.data().basic_blocks.borrow_mut();
+            let placed = match placement {
+                BlockPlacement::End => {
+                    blocks.push_back(bb_id);
+                    true
+                }
+                BlockPlacement::Before(anchor) => blocks.insert_before(anchor, bb_id),
+                BlockPlacement::After(anchor) => blocks.insert_after(anchor, bb_id),
+            };
+            // The split routines check the anchor is in this list first.
+            if !placed {
+                unreachable!("a block placement's anchor is one of the function's blocks");
+            }
+        }
         if !name.is_empty() {
             self.set_local_value_name(bb_id, Some(&name));
         }
@@ -1178,17 +1208,13 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
             });
         }
         let mut blocks = self.data().basic_blocks.borrow_mut();
-        // Searched from the back: the parser defines a block it has just
-        // appended, which is already last, so the common move costs nothing.
-        // Upstream's splice is constant time wherever the block sits; this
-        // is proportional to the block's distance from the end.
-        let Some(pos) = blocks.iter().rposition(|id| *id == block_id) else {
+        // Constant time, as upstream's splice is, wherever the block sits.
+        if !blocks.contains(block_id) {
             return Err(IrError::InvalidOperation {
                 message: "block does not belong to function",
             });
-        };
-        let id = blocks.remove(pos);
-        blocks.push(id);
+        }
+        blocks.push_back(block_id);
         Ok(())
     }
 
@@ -1231,14 +1257,14 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
             .as_type()
             .slot_trusting_same_module();
         let block_module = self.module;
-        let ids: Vec<ValueSlot> = self.data().basic_blocks.borrow().clone();
+        let ids: Vec<ValueSlot> = self.data().basic_blocks.borrow().to_vec();
         ids.into_iter()
             .map(move |id| BasicBlock::from_parts(id, block_module, label_ty))
     }
 
     /// The entry block, at this function's capability.
     pub fn entry_block(self) -> Option<BasicBlock<'ctx, R, Terminated, B, BlockParamsDyn, C>> {
-        let id = *self.data().basic_blocks.borrow().first()?;
+        let id = self.data().basic_blocks.borrow().first()?;
         let module = self.module.module();
         Some(BasicBlock::from_parts(
             id,
@@ -1505,7 +1531,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> IntoIterator
             .label_type::<B>()
             .as_type()
             .slot_trusting_same_module();
-        let ids: Vec<ValueSlot> = self.data().basic_blocks.borrow().clone();
+        let ids: Vec<ValueSlot> = self.data().basic_blocks.borrow().to_vec();
         FunctionBasicBlocks {
             ids: ids.into_iter(),
             module: self.module,

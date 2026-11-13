@@ -1231,7 +1231,7 @@ fn scan_origin<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                 return None;
             };
             // A declaration has no entry block to scan.
-            let entry = *data.basic_blocks.borrow().first()?;
+            let entry = data.basic_blocks.borrow().first()?;
             Some((entry, ScanStart::AfterLeadingPhis))
         }
         _ => None,
@@ -1249,24 +1249,21 @@ fn block_instructions_from<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         return Vec::new();
     };
     let instructions = data.instructions.borrow();
-    let from = match start {
-        ScanStart::AfterInstruction(slot) => match instructions.iter().position(|id| *id == slot) {
-            Some(position) => position + 1,
-            None => return Vec::new(),
-        },
+    let slots: Vec<ValueSlot> = match start {
+        ScanStart::AfterInstruction(slot) => instructions.iter_after(slot).collect(),
         ScanStart::AfterLeadingPhis => instructions
             .iter()
-            .position(|id| {
-                !matches!(
+            .skip_while(|id| {
+                matches!(
                     instruction_kind(value_from_slot(anchor, *id)),
                     Some(InstructionKindData::Phi(_))
                 )
             })
-            .unwrap_or(instructions.len()),
+            .collect(),
     };
-    instructions[from..]
-        .iter()
-        .map(|id| value_from_slot(anchor, *id))
+    slots
+        .into_iter()
+        .map(|id| value_from_slot(anchor, id))
         .collect()
 }
 
@@ -1290,7 +1287,7 @@ fn single_successor<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     let ValueKindData::BasicBlock(data) = &module.value_data(block).kind else {
         return None;
     };
-    let terminator = *data.instructions.borrow().last()?;
+    let terminator = data.instructions.borrow().last()?;
     let kind = instruction_kind(value_from_slot(anchor, terminator))?;
     let successors = kind_successor_ids(kind);
     let first = *successors.first()?;

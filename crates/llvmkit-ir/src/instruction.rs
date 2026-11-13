@@ -1322,13 +1322,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         let self_id = self.id;
         // Snapshot the user list under a borrow so we can release it
         // before mutating each user's operand slots.
-        let user_edges: Vec<ValueUse> = module
-            .context()
-            .use_list_of(self_id)
-            .borrow()
-            .iter()
-            .copied()
-            .collect();
+        let user_edges: Vec<ValueUse> = module.context().use_list_of(self_id).borrow().to_vec();
         // For each user, rewrite the storage slot whose edge points at `self_id`
         // so it points at `new_id`. Instruction operands use the exhaustive
         // operand-walker; debug records are outside the operand hierarchy and
@@ -1900,10 +1894,10 @@ pub(super) fn absorb_debug_records(module: &ModuleCore, from: ValueSlot, into: V
         // `#dbg_assign` whose value is its address); each visit rewrites the
         // next edge still carrying the old key.
         record.for_each_value(|value_id| {
-            let mut uses = context.use_list_of(value_id).borrow_mut();
-            if let Some(edge) = uses.iter_mut().find(|edge| **edge == old_edge) {
-                *edge = new_edge;
-            }
+            context
+                .use_list_of(value_id)
+                .borrow_mut()
+                .replace_first(old_edge, new_edge);
         });
     }
     records.extend(moved);

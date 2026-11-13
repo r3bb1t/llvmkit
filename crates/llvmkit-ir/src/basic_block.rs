@@ -30,6 +30,7 @@ use super::instruction::{
 };
 use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::{IrBuilder, Positioned};
+use super::keyed_list::KeyedList;
 use super::marker::{Dyn, ReturnMarker};
 use super::metadata::{
     MetadataAttachmentKind, MetadataField, MetadataFieldValue, MetadataId, MetadataKind,
@@ -60,8 +61,10 @@ pub(super) struct BasicBlockData {
     /// Owning function. `None` for an orphan block (no function yet
     /// attached). Mirrors LLVM's `BasicBlock::Parent`.
     pub(super) parent: RefCell<Option<ValueSlot>>,
-    /// Linear list of instruction value ids in program order.
-    pub(super) instructions: RefCell<Vec<ValueSlot>>,
+    /// The instruction value ids in program order. A [`KeyedList`], as
+    /// upstream's `InstList` is an intrusive list: inserting next to an
+    /// instruction and erasing one are constant time.
+    pub(super) instructions: RefCell<KeyedList<ValueSlot>>,
     /// How many **block parameters** this block was created with, in the
     /// Swift-SIL / MLIR sense: the count declared by
     /// [`IrBuilder::append_block_with_params`](crate::IrBuilder::append_block_with_params),
@@ -86,7 +89,7 @@ impl BasicBlockData {
     pub(super) fn new(parent: Option<ValueSlot>) -> Self {
         Self {
             parent: RefCell::new(parent),
-            instructions: RefCell::new(Vec::new()),
+            instructions: RefCell::new(KeyedList::new()),
             parameter_count: Cell::new(0),
         }
     }
@@ -894,7 +897,7 @@ impl<
     /// can decide which view (raw operand-traversal vs typed
     /// `Instruction<'ctx>` handle) it wants.
     pub(crate) fn instruction_ids(&self) -> Vec<ValueSlot> {
-        self.data().instructions.borrow().clone()
+        self.data().instructions.borrow().to_vec()
     }
 
     /// Iterate read-only instruction views in program order.
@@ -965,7 +968,7 @@ impl<
     /// Last instruction view (the terminator if the block is well-formed),
     /// or `None` for an empty block.
     pub fn terminator(&self) -> Option<InstructionView<'ctx, B, C>> {
-        let last = *self.data().instructions.borrow().last()?;
+        let last = self.data().instructions.borrow().last()?;
         Some(InstructionView::from_parts(last, self.module))
     }
 
@@ -995,7 +998,7 @@ impl<
     where
         C: CanMutate,
     {
-        self.data().instructions.borrow_mut().push(instr);
+        self.data().instructions.borrow_mut().push_back(instr);
     }
 
     /// Remove `instr` from this block's instruction list. Returns
@@ -1005,18 +1008,12 @@ impl<
     /// reaches for this.
     ///
     /// Mirrors LLVM's `BasicBlock::getInstList().remove(I)`
-    /// (`lib/IR/BasicBlock.cpp`).
+    /// (`lib/IR/BasicBlock.cpp`), in constant time as its unlinking is.
     pub(super) fn remove_instruction(&self, instr: ValueSlot) -> bool
     where
         C: CanMutate,
     {
-        let mut list = self.data().instructions.borrow_mut();
-        if let Some(pos) = list.iter().position(|id| *id == instr) {
-            list.remove(pos);
-            true
-        } else {
-            false
-        }
+        self.data().instructions.borrow_mut().remove(instr)
     }
 
     /// Insert `instr` immediately before `before` in this block's
@@ -1034,15 +1031,17 @@ impl<
     where
         C: CanMutate,
     {
-        let mut list = self.data().instructions.borrow_mut();
-        match list.iter().position(|id| *id == before) {
-            Some(pos) => {
-                list.insert(pos, instr);
-                Ok(())
-            }
-            None => Err(IrError::InvalidOperation {
+        if self
+            .data()
+            .instructions
+            .borrow_mut()
+            .insert_before(before, instr)
+        {
+            Ok(())
+        } else {
+            Err(IrError::InvalidOperation {
                 message: "instruction anchor is not in this block",
-            }),
+            })
         }
     }
 
@@ -1057,15 +1056,17 @@ impl<
     where
         C: CanMutate,
     {
-        let mut list = self.data().instructions.borrow_mut();
-        match list.iter().position(|id| *id == after) {
-            Some(pos) => {
-                list.insert(pos + 1, instr);
-                Ok(())
-            }
-            None => Err(IrError::InvalidOperation {
+        if self
+            .data()
+            .instructions
+            .borrow_mut()
+            .insert_after(after, instr)
+        {
+            Ok(())
+        } else {
+            Err(IrError::InvalidOperation {
                 message: "instruction anchor is not in this block",
-            }),
+            })
         }
     }
 
@@ -1081,18 +1082,21 @@ impl<
         C: CanMutate,
     {
         let mut list = self.data().instructions.borrow_mut();
-        let at = list
-            .iter()
-            .position(|iid| {
-                // First instruction that is NOT a phi.
-                !matches!(
-                    &self.module.module().context().value_data(*iid).kind,
-                    ValueKindData::Instruction(i)
-                        if matches!(i.kind, InstructionKindData::Phi(_))
-                )
-            })
-            .unwrap_or(list.len());
-        list.insert(at, id);
+        // The first instruction that is not a phi; the walk costs the
+        // leading phis, as `getFirstNonPHI` does.
+        let first_non_phi = list.iter().find(|iid| {
+            !matches!(
+                &self.module.module().context().value_data(*iid).kind,
+                ValueKindData::Instruction(i)
+                    if matches!(i.kind, InstructionKindData::Phi(_))
+            )
+        });
+        match first_non_phi {
+            Some(anchor) => {
+                list.insert_before(anchor, id);
+            }
+            None => list.push_back(id),
+        }
     }
 
     /// Record that this block was created with `count` **block parameters**.
@@ -1153,7 +1157,7 @@ pub(crate) fn block_parameter_phis<'ctx, B: ModuleBrand>(
     let context = module.module().context();
     let instructions = block_data(module, block).instructions.borrow();
     let mut params = Vec::new();
-    for id in instructions.iter().copied() {
+    for id in instructions.iter() {
         let ValueKindData::Instruction(inst) = &context.value_data(id).kind else {
             continue;
         };
@@ -1245,7 +1249,7 @@ impl<
         let rehome_names = source_fn_id != dest_fn_id;
         let drained: Vec<ValueSlot> = {
             let mut src = self.data().instructions.borrow_mut();
-            core::mem::take(&mut *src)
+            core::mem::take(&mut *src).to_vec()
         };
         if rehome_names && let Some(source_fn_id) = source_fn_id {
             let source_fn = FunctionValue::<Dyn, B>::from_parts_unchecked(source_fn_id, own);
@@ -1278,7 +1282,7 @@ impl<
     /// The terminator's slot, or `None` when the block is empty or its last
     /// instruction is not a terminator. Ports `BasicBlock::getTerminator`.
     fn terminator_slot(&self) -> Option<ValueSlot> {
-        let last = *self.data().instructions.borrow().last()?;
+        let last = self.data().instructions.borrow().last()?;
         match &self.module.value_data(last).kind {
             ValueKindData::Instruction(data) if data.kind.is_terminator() => Some(last),
             _ => None,
@@ -1289,21 +1293,20 @@ impl<
     /// an [`InstructionView`], which can name an instruction of any block;
     /// upstream takes an iterator into this block's own list, so it has no
     /// counterpart to this refusal.
-    fn split_point_position(&self, instruction: ValueSlot) -> IrResult<usize> {
-        self.data()
-            .instructions
-            .borrow()
-            .iter()
-            .position(|id| *id == instruction)
-            .ok_or(IrError::InvalidOperation {
+    fn split_point(&self, instruction: ValueSlot) -> IrResult<ValueSlot> {
+        if self.data().instructions.borrow().contains(instruction) {
+            Ok(instruction)
+        } else {
+            Err(IrError::InvalidOperation {
                 message: "split instruction is not in this block",
             })
+        }
     }
 
-    /// The parent function, and this block's position in its block list.
-    /// Upstream's `BasicBlock::Create` accepts a null parent and makes a
-    /// parentless block; llvmkit refuses to split an orphan instead.
-    fn parent_and_position(&self) -> IrResult<(FunctionValue<'ctx, R, B>, usize)>
+    /// The parent function, whose block list holds this block. Upstream's
+    /// `BasicBlock::Create` accepts a null parent and makes a parentless
+    /// block; llvmkit refuses to split an orphan instead.
+    fn parent_holding_this(&self) -> IrResult<FunctionValue<'ctx, R, B>>
     where
         C: CanMutate,
     {
@@ -1314,16 +1317,13 @@ impl<
             parent_fn_id,
             self.module.proven_mutable(),
         );
-        let position = parent_fn
-            .data()
-            .basic_blocks
-            .borrow()
-            .iter()
-            .position(|id| *id == self.id)
-            .ok_or(IrError::InvalidOperation {
+        if parent_fn.data().basic_blocks.borrow().contains(self.id) {
+            Ok(parent_fn)
+        } else {
+            Err(IrError::InvalidOperation {
                 message: "block does not belong to function",
-            })?;
-        Ok((parent_fn, position))
+            })
+        }
     }
 
     /// Ports `BasicBlock::replacePhiUsesWith`: every incoming entry of this
@@ -1432,8 +1432,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
         }
         // assert(I != InstList.end() && "Trying to get me to create degenerate
         // basic block!"): an `InstructionView` always names an instruction.
-        let split_position = self.split_point_position(split_id)?;
-        let (parent_fn, this_position) = self.parent_and_position()?;
+        let split_point = self.split_point(split_id)?;
+        let parent_fn = self.parent_holding_this()?;
         // DebugLoc Loc = I->getStableDebugLoc(); if (Loc) Loc = Loc->getWithoutAtom();
         // Taken ahead of `BasicBlock::Create` rather than after it: building
         // the atom-free location is this routine's one fallible step, and the
@@ -1443,7 +1443,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
 
         // BasicBlock *New = BasicBlock::Create(getContext(), BBName, getParent(),
         //                                      this->getNextNode());
-        let new_block = parent_fn.insert_basic_block_at_unchecked(this_position + 1, name);
+        let new_block = parent_fn
+            .insert_basic_block_unchecked(crate::function::BlockPlacement::After(self.id), name);
         // Internal: the block was minted in this module just above.
         let new_id = new_block.slot_trusting_same_module();
 
@@ -1452,7 +1453,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
             .data()
             .instructions
             .borrow_mut()
-            .split_off(split_position);
+            .split_off_from(split_point);
         new_block
             .data()
             .instructions
@@ -1533,7 +1534,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
         }
         // assert(I != InstList.end() && "Trying to get me to create degenerate
         // basic block!"): an `InstructionView` always names an instruction.
-        let split_position = self.split_point_position(split_id)?;
+        let split_point = self.split_point(split_id)?;
         // assert((!isa<PHINode>(*I) || getSinglePredecessor()) &&
         //        "cannot split on multi incoming phis");
         let split_point_is_phi = matches!(
@@ -1545,14 +1546,15 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
                 message: "cannot split on multi incoming phis",
             });
         }
-        let (parent_fn, this_position) = self.parent_and_position()?;
+        let parent_fn = self.parent_holding_this()?;
         // DebugLoc Loc = I->getDebugLoc(); if (Loc) Loc = Loc->getWithoutAtom();
         // Taken ahead of `BasicBlock::Create`, for the reason `split_at` gives.
         let location = split_point_location(module_token, before)?;
         let module = module_token.core_ref();
 
         // BasicBlock *New = BasicBlock::Create(getContext(), BBName, getParent(), this);
-        let new_block = parent_fn.insert_basic_block_at_unchecked(this_position, name);
+        let new_block = parent_fn
+            .insert_basic_block_unchecked(crate::function::BlockPlacement::Before(self.id), name);
         // Internal: the block was minted in this module just above.
         let new_id = new_block.slot_trusting_same_module();
 
@@ -1561,8 +1563,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
             .data()
             .instructions
             .borrow_mut()
-            .drain(..split_position)
-            .collect();
+            .take_before(split_point);
         new_block
             .data()
             .instructions

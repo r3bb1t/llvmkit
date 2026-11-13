@@ -1340,9 +1340,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         let edges: Vec<ValueUse> = context
             .use_list_of(value.slot_trusting_same_module())
             .borrow()
-            .iter()
-            .copied()
-            .collect();
+            .to_vec();
         for edge in edges {
             // `IgnoreCallbackUses` is false at this call site, so the
             // `AbstractCallSite` arm never runs.
@@ -5014,7 +5012,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             return None;
         };
         let instructions = data.instructions.borrow();
-        instructions.last().copied()
+        instructions.last()
     }
 
     /// Mirrors the tail of `Verifier::visitIntrinsicCall`
@@ -5656,7 +5654,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             return None;
         };
         let instructions = data.instructions.borrow();
-        instructions.first().copied()
+        instructions.first()
     }
 
     /// `Verifier::visitBranchInst`.
@@ -5807,7 +5805,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         let ValueKindData::BasicBlock(data) = &self.module.context().value_data(block).kind else {
             return None;
         };
-        let last = *data.instructions.borrow().last()?;
+        let last = data.instructions.borrow().last()?;
         let ValueKindData::Instruction(instruction) = &self.module.context().value_data(last).kind
         else {
             return None;
@@ -7466,7 +7464,7 @@ mod tests {
             ValueKindData::BasicBlock(b) => b,
             _ => panic!("fabricate_instruction: bb_id is not a basic block"),
         };
-        bb_data.instructions.borrow_mut().push(id);
+        bb_data.instructions.borrow_mut().push_back(id);
         id
     }
 

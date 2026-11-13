@@ -7272,7 +7272,7 @@ fn block_terminator<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     let ValueKindData::BasicBlock(data) = &module.value_data(block).kind else {
         return None;
     };
-    let terminator = *data.instructions.borrow().last()?;
+    let terminator = data.instructions.borrow().last()?;
     Some(value_from_slot(anchor, terminator))
 }
 
@@ -7539,7 +7539,7 @@ mod tests {
         let ValueKindData::BasicBlock(bb_data) = &core.context().value_data(bb_id).kind else {
             panic!("fabricate_instruction: bb_id is not a basic block");
         };
-        bb_data.instructions.borrow_mut().push(id);
+        bb_data.instructions.borrow_mut().push_back(id);
         id
     }
 

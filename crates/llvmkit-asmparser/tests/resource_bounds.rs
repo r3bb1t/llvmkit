@@ -95,8 +95,8 @@ fn the_widest_integer_literal_is_built_in_linear_time() {
 /// took 5.90 s to parse at `34fdec9` (wall time of
 /// `target/release/examples/parse_file` on a file of 80,000
 /// `bN:\n  ret void` blocks, rustc 1.96.0). The label is now
-/// narrowed by `FunctionValue::basic_block`, and the move searches from the
-/// back, where a block defined as it is appended already sits.
+/// narrowed by `FunctionValue::basic_block`, and the block list is a keyed
+/// linked list whose move to the end is constant time.
 #[test]
 fn a_function_of_two_hundred_thousand_blocks_parses_in_linear_time() {
     support::deadline::within_a_minute("each block walks the blocks before it", || {
@@ -115,6 +115,95 @@ fn a_function_of_two_hundred_thousand_blocks_parses_in_linear_time() {
             Some(format!("b{}", BLOCKS - 1).as_str()),
             "blocks stay in definition order"
         );
+    });
+}
+
+/// A `switch` naming 200,000 blocks before any of them is defined.
+///
+/// **No upstream counterpart.** Each label creates its block at the end of
+/// the function as a forward reference; `LLParser::PerFunctionState::defineBB`
+/// later moves the block to the end with `Function::splice`, constant time on
+/// the intrusive block list. llvmkit's block list was a `Vec`, and the move
+/// searched from the back and shifted the tail, so a block created long
+/// before it was defined cost its distance from the end: a `switch` naming
+/// 80,000 labels took 7.54 s to parse at `fdd4ba75` (wall time of
+/// `target/release/examples/parse_file`, rustc 1.96.0; the generating command
+/// is in the commit that closed `docs/future-work.md`'s entry). The block
+/// list is now a keyed linked list, and the move is constant time.
+#[test]
+fn a_switch_naming_every_block_first_parses_in_linear_time() {
+    support::deadline::within_a_minute("a defined block is moved from far from the end", || {
+        const BLOCKS: usize = 200_000;
+        let mut source = String::from("define void @f(i32 %x) {\n  switch i32 %x, label %b0 [");
+        for index in 0..BLOCKS {
+            source.push_str(&format!(" i32 {index}, label %b{index}"));
+        }
+        source.push_str(" ]\n");
+        for index in 0..BLOCKS {
+            source.push_str(&format!("b{index}:\n  ret void\n"));
+        }
+        source.push_str("}\n");
+        let module = parse(&source);
+        let function = module.function_dyn("f").expect("@f is defined");
+        let blocks: Vec<_> = module.view(function).basic_blocks().collect();
+        assert_eq!(blocks.len(), BLOCKS + 1);
+        assert_eq!(
+            blocks.last().and_then(|block| block.name()).as_deref(),
+            Some(format!("b{}", BLOCKS - 1).as_str()),
+            "blocks end in definition order"
+        );
+    });
+}
+
+/// 200,000 users of one value, all in one block, erased front to back.
+///
+/// **No upstream counterpart.** Upstream's `Instruction::eraseFromParent`
+/// unlinks the instruction from its block's intrusive list and each operand's
+/// `Use` from its value's use list (`Use::removeFromList`), both constant
+/// time. llvmkit scanned the block for the instruction and the value's use
+/// list for the edge, and shifted both, so erasing K users of one value cost
+/// K squared twice over: K = 80,000 took 22.6 s front to back at `46362565`
+/// (`docs/future-work.md` gave the probe and the command). The block list is
+/// now a keyed linked list, and the use list removes an edge in amortised
+/// constant time.
+#[test]
+fn erasing_every_user_of_one_value_is_linear() {
+    use llvmkit_ir::iter::BlockCursor;
+    use llvmkit_ir::{Dyn, IntValue, IrBuilder, Linkage, module_new};
+
+    support::deadline::within_a_minute("erasing a user scans the use list", || {
+        const USERS: usize = 200_000;
+        let m = module_new!("erase").expect("a fresh module");
+        let fn_ty = m
+            .function_type(m.void_type(), [m.i32_type().as_type()])
+            .expect("a valid function type");
+        let f = m
+            .add_function_dyn("f", fn_ty, Linkage::External)
+            .expect("a fresh name");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let x: IntValue<'_, i32, _> = m
+            .view(f)
+            .param(0)
+            .expect("one parameter")
+            .try_into()
+            .expect("an i32 parameter");
+        for _ in 0..USERS {
+            b.int_add(x, 0_i32, "").expect("an add");
+        }
+        assert_eq!(x.as_erased().num_uses(), USERS);
+        let mut cursor = BlockCursor::at_start(b.into_insert_block());
+        let mut users = Vec::with_capacity(USERS);
+        while let Some((user, next)) = cursor.step() {
+            users.push(user);
+            cursor = next;
+        }
+        for user in users {
+            user.erase_from_parent(&m);
+        }
+        assert_eq!(x.as_erased().num_uses(), 0);
+        let entry = m.view(f).entry_block().expect("the block remains");
+        assert!(entry.is_empty(), "every user is gone");
     });
 }
 

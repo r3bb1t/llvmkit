@@ -2233,7 +2233,7 @@ fn replace_value_uses_with(
     from_id: ValueSlot,
     replacement_id: ValueSlot,
 ) -> IrResult<()> {
-    let user_edges = module.context().use_list_of(from_id).borrow().clone();
+    let user_edges = module.context().use_list_of(from_id).borrow().to_vec();
     let mut direct_users = Vec::new();
     for edge in user_edges.iter().copied() {
         match edge {
@@ -2465,21 +2465,11 @@ fn take_edge_place(
 ) {
     let mut uses = module.context().use_list_of(holder).borrow_mut();
     let new_edge = ValueUse::Constant(new_id);
-    if let Some(fresh) = uses.iter().position(|edge| *edge == new_edge) {
-        uses.remove(fresh);
+    let old_edge = ValueUse::Constant(old_id);
+    uses.remove_first(new_edge);
+    if uses.replace_first(old_edge, new_edge) && later == OldEdges::DropLater {
+        uses.remove_all(old_edge);
     }
-    let mut placed = false;
-    uses.retain_mut(|edge| {
-        if *edge != ValueUse::Constant(old_id) {
-            return true;
-        }
-        if placed {
-            return later == OldEdges::KeepLater;
-        }
-        *edge = new_edge;
-        placed = true;
-        true
-    });
 }
 
 /// Hand `old_id`'s users to `new_id` in their order, rewriting each to name
@@ -2488,7 +2478,7 @@ fn take_edge_place(
 /// re-interned, under [`ReplacedOperand::InPlace`].
 fn move_users_in_place(module: &ModuleCore, old_id: ValueSlot, new_id: ValueSlot) -> IrResult<()> {
     let context = module.context();
-    let moved = core::mem::take(&mut *context.use_list_of(old_id).borrow_mut());
+    let moved = core::mem::take(&mut *context.use_list_of(old_id).borrow_mut()).to_vec();
     {
         let mut list = context.use_list_of(new_id).borrow_mut();
         // `moved` keeps its order, in front of what `new_id` already had.

@@ -199,7 +199,7 @@ pub(crate) fn first_non_phi_slot<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         return None;
     };
     let instructions = data.instructions.borrow();
-    instructions.iter().copied().find(|slot| {
+    instructions.iter().find(|slot| {
         !matches!(
             instruction_kind(anchor, *slot),
             Some(InstructionKindData::Phi(_)) | None
@@ -225,7 +225,7 @@ fn terminator_kind<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     else {
         return None;
     };
-    let last = *data.instructions.borrow().last()?;
+    let last = data.instructions.borrow().last()?;
     instruction_kind(anchor, last)
 }
 

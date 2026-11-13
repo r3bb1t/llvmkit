@@ -239,7 +239,7 @@ pub(super) fn block_predecessors<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         .borrow()
         .iter()
         .filter_map(|edge| match edge {
-            ValueUse::Instruction(user) => Some(*user),
+            ValueUse::Instruction(user) => Some(user),
             _ => None,
         })
         .filter_map(|user| {
@@ -540,17 +540,13 @@ pub(super) fn sync_block_uses<'ctx, B: ModuleBrand + 'ctx>(
     };
     let mut uses = module.value_data(block).use_list.borrow_mut();
     let edge = ValueUse::Instruction(terminator);
-    let have = uses.iter().filter(|entry| **entry == edge).count();
+    let have = uses.iter().filter(|entry| *entry == edge).count();
     if have > wanted {
-        let mut surplus = have - wanted;
-        uses.retain(|entry| {
-            if surplus > 0 && *entry == edge {
-                surplus -= 1;
-                false
-            } else {
-                true
-            }
-        });
+        // The surplus nearest the head goes, as a head-first `retain` that
+        // dropped the first `have - wanted` equal edges took it.
+        for _ in wanted..have {
+            uses.remove_first(edge);
+        }
     } else {
         for _ in have..wanted {
             uses.push_front(edge);

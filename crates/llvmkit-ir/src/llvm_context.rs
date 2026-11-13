@@ -824,21 +824,19 @@ impl Context {
     /// keys each use by its position in it, and
     /// `AsmWriter::predictValueUseListOrder` emits a shuffle against it.
     ///
-    /// Constant time, as upstream's is: the list is a [`UseList`] deque and
-    /// the edge is pushed on its front. Shifting a `Vec` instead made a value
-    /// with K uses cost K squared to build.
+    /// Amortised constant time, as upstream's is constant: the [`UseList`]
+    /// keeps its edges oldest first, so the new head is a push. Shifting a
+    /// `Vec` instead made a value with K uses cost K squared to build.
     pub(crate) fn add_use(&self, value: ValueSlot, edge: ValueUse) {
         self.use_list_of(value).borrow_mut().push_front(edge);
     }
 
     /// Drop the first `edge` from `value`'s use list, if it is there.
     /// Mirrors `Use::removeFromList` (`Use.h`); an operand that names a value
-    /// twice holds two equal edges, and each removal takes one.
+    /// twice holds two equal edges, and each removal takes one. Amortised
+    /// constant time, as upstream's unlinking is constant ([`UseList`]).
     pub(crate) fn remove_use(&self, value: ValueSlot, edge: ValueUse) {
-        let mut uses = self.use_list_of(value).borrow_mut();
-        if let Some(position) = uses.iter().position(|candidate| *candidate == edge) {
-            uses.remove(position);
-        }
+        self.use_list_of(value).borrow_mut().remove_first(edge);
     }
 
     /// Move `edges` — a head-first snapshot of another value's use list —

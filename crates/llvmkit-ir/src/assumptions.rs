@@ -822,7 +822,7 @@ fn block_instructions<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     anchor: Value<'ctx, B, C>,
     block: ValueSlot,
 ) -> Vec<ValueSlot> {
-    with_block_data(anchor, block, |data| data.instructions.borrow().clone()).unwrap_or_default()
+    with_block_data(anchor, block, |data| data.instructions.borrow().to_vec()).unwrap_or_default()
 }
 
 /// Whether `block` is its function's entry block. Ports `BasicBlock::isEntryBlock`.
@@ -837,7 +837,7 @@ fn is_entry_block<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     let ValueKindData::Function(data) = &function.data().kind else {
         return false;
     };
-    data.basic_blocks.borrow().first() == Some(&block)
+    data.basic_blocks.borrow().first() == Some(block)
 }
 
 /// Whether the function containing `block` carries `attribute`: upstream's

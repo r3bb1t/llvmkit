@@ -28,7 +28,6 @@ use crate::Branded;
 use core::cell::RefCell;
 use core::iter::FusedIterator;
 use core::num::NonZeroUsize;
-use std::collections::VecDeque;
 
 use super::argument::Argument;
 use super::basic_block::BasicBlockData;
@@ -176,14 +175,7 @@ impl ValueData {
     }
 }
 
-/// A value's use list, newest edge first.
-///
-/// A deque because the hot operation is upstream's `Use::addToList`
-/// (`Use.h`), a constant-time prepend: a `Vec` would shift every edge
-/// already there, making a value with K uses cost K squared to build.
-/// `push_front` keeps that constant (amortised) while every reader still
-/// sees the head at index 0, so a position means what it meant before.
-pub(super) type UseList = VecDeque<ValueUse>;
+pub(super) use crate::use_list::UseList;
 
 /// One reverse use-list edge for a value. Instruction operands, constants,
 /// metadata nodes, and debug records have different mutation paths, so the
@@ -759,7 +751,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
                 let parent_block = self.module.value_data(parent_block_id);
                 match &parent_block.kind {
                     ValueKindData::BasicBlock(block) => {
-                        if block.instructions.borrow().contains(&self.id) {
+                        if block.instructions.borrow().contains(self.id) {
                             *block.parent.borrow()
                         } else {
                             None
@@ -831,7 +823,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
             .borrow()
             .iter()
             .filter_map(|edge| match edge {
-                ValueUse::Instruction(id) => Some(*id),
+                ValueUse::Instruction(id) => Some(id),
                 ValueUse::Constant(_)
                 | ValueUse::Metadata(_)
                 | ValueUse::DebugRecord { .. }
@@ -915,7 +907,9 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
             let data = module.value_data(slot);
             Value::from_parts(slot, module, data.ty)
         };
-        let mut uses = self.use_list().borrow_mut();
+        // Head first, by position; the list itself is not borrowed while
+        // `compare` runs, so a comparator may read any use list.
+        let mut uses = self.use_list().borrow().to_vec();
         let positions: Vec<usize> = uses
             .iter()
             .enumerate()
@@ -938,6 +932,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
         for (position, edge) in positions.iter().zip(selected) {
             uses[*position] = edge;
         }
+        self.use_list().borrow_mut().replace_head_first(uses);
     }
 
     /// Permute this value's use list so that the use currently sitting at
@@ -958,7 +953,8 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
         if !self.has_use_list() {
             return Ok(());
         }
-        let mut uses = self.use_list().borrow_mut();
+        // Head first, by position.
+        let mut uses = self.use_list().borrow().to_vec();
         // Only the edges upstream models as `Use`s take part, and the ones
         // that do not keep their slots — see [`ValueUse::is_operand_use`].
         let positions: Vec<usize> = uses
@@ -997,6 +993,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
         for (position, (_, edge)) in positions.iter().zip(keyed_uses) {
             uses[*position] = edge;
         }
+        self.use_list().borrow_mut().replace_head_first(uses);
         Ok(())
     }
 

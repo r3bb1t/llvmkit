@@ -27,7 +27,7 @@ use core::fmt;
 use core::iter::FusedIterator;
 use core::num::NonZeroU32;
 use core::str::FromStr;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use crate::addr_space::AddressSpace;
@@ -36,6 +36,7 @@ use crate::capability::Capability;
 use crate::derived_types::{SizedType, StructType};
 use crate::error::{DataLayoutError, IrResult};
 use crate::module::{ModuleBrand, ModuleCore, ModuleId};
+use crate::slot_hash::SlotMap;
 use crate::struct_body_state::StructBodyState;
 use crate::r#type::{
     MAX_INT_BITS, Type, TypeData, TypeSlot, TypeSlotAccess, is_scalable, is_sized,
@@ -887,37 +888,6 @@ impl AlignmentKind {
 // --------------------------------------------------------------------------
 // Internal: the module's struct layouts
 // --------------------------------------------------------------------------
-
-/// A hasher for the small integer keys of the struct-layout maps (a
-/// [`ModuleId`], a [`TypeSlot`]): one multiply per word. The keys are slots
-/// the crate assigned in sequence, not values an input chooses, so the
-/// collision resistance of the default SipHash buys nothing here, and the
-/// lookups sit on every struct a size or alignment walk reaches.
-#[derive(Default)]
-struct SlotHasher(u64);
-
-impl core::hash::Hasher for SlotHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.write_u64(u64::from(*byte));
-        }
-    }
-
-    fn write_u32(&mut self, value: u32) {
-        self.write_u64(u64::from(value));
-    }
-
-    fn write_u64(&mut self, value: u64) {
-        // Fibonacci hashing: odd multiplier, the high bits well mixed.
-        self.0 = (self.0.rotate_left(5) ^ value).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    }
-}
-
-type SlotMap<K, V> = HashMap<K, V, core::hash::BuildHasherDefault<SlotHasher>>;
 
 /// One module's struct layouts under one [`DataLayout`], with the token that
 /// says whether the module still exists.
