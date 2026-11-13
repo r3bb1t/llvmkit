@@ -597,9 +597,9 @@ fn read_struct_data_from_global<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     let Ok(struct_ty) = StructType::try_from(constant.ty()) else {
         return Ok(false);
     };
-    // A struct with an unsized field (an opaque struct, or a struct mixing a
-    // scalable vector with other fields) has no layout (D43); its bytes are
-    // not read.
+    // No layout where upstream's `StructLayout` constructor asserts (an
+    // unsized field, or a scalable size added to a fixed one; D43 lists
+    // them): its bytes are not read.
     let Some(layout) = dl.struct_layout(struct_ty) else {
         return Ok(false);
     };
@@ -2550,8 +2550,8 @@ pub(crate) fn accumulate_constant_offset<'ctx, B: ModuleBrand + 'ctx, C: Capabil
             let field = step.struct_field(index_id)?;
             // A scalable offset here is upstream's fatal `TypeSize` conversion:
             // the field's own type is fixed, so the bailout above let it by.
-            // A struct with an unsized field has no layout (D43), and so no
-            // offset to add.
+            // No layout where upstream's `StructLayout` constructor asserts
+            // (D43), and so no offset to add.
             let field_offset = dl
                 .struct_layout_of(erase_type(struct_ty))?
                 .element_offset(field)
@@ -3017,9 +3017,8 @@ fn gep_index_for_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             ))
         }
         TypeData::Struct(data) => {
-            // No layout for a struct with an unsized field, where upstream's
-            // `StructLayout` constructor asks the field's size and asserts
-            // `isSized` (D43).
+            // No layout where upstream's `StructLayout` constructor asserts
+            // (D43): nothing to step into.
             let layout = dl.struct_layout_of(erase_type(*element_ty))?;
             let int_offset = offset.try_zext_u64()?;
             if int_offset >= layout.size_in_bytes().fixed_value()? {

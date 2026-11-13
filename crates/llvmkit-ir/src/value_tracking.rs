@@ -6290,10 +6290,9 @@ where
             // `uint64_t Offset = SL->getElementOffset(Idx)` is the implicit
             // `TypeSize` conversion, fatal on a scalable offset. Nothing is
             // known about such a field's address instead.
-            // A struct with an unsized field (an opaque struct, or a struct
-            // mixing a scalable vector with other fields) has no layout (D43),
-            // where upstream's `StructLayout` constructor asks the field's size
-            // and asserts `isSized`: nothing is known.
+            // No layout where upstream's `StructLayout` constructor asserts
+            // (an unsized field, or a scalable size added to a fixed one;
+            // D43 lists them): nothing is known.
             let Some(layout) = data_layout.struct_layout_of(erase_type(struct_ty)) else {
                 return Ok(KnownBits::unknown(width));
             };

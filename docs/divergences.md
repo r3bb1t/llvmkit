@@ -1400,17 +1400,22 @@ asserts exact 2^62-byte alloc and store sizes and a saturated bit size for a 2^6
 **Severity:** model-gap, on queries upstream does not allow. `DataLayout`'s size and alignment
 queries take a `SizedType`, a proof that the type is sized, so asking one of an unsized type
 does not compile; the proof itself is refused at run time (`IrError::UnsizedType`).
-`DataLayout::struct_layout` answers `None` for a struct with an unsized field: an opaque struct,
-a struct holding one at any depth, or a nested struct mixing a scalable vector with other fields.
-A struct that is unsized only because it mixes a scalable vector with sized fields of its own
-still has a layout, as upstream's does, so `struct_layout(s).is_some()` is no proof that `s` is
-sized. (Commit `f54f4825`'s message says `None` "exactly when the struct is unsized"; that is
-wrong, and this entry is the correction.)
+`DataLayout::struct_layout` answers `None` wherever `StructLayout::StructLayout` asserts: an
+opaque body; an unsized field (`Type::is_sized` false: for example an opaque struct or a struct
+holding one, a target extension type with no layout, or a struct mixing a scalable vector with
+other fields); and a field whose nonzero size cannot be added to the struct's nonzero size so far
+because one is scalable and the other fixed (`TypeSize::operator+=`'s "Incompatible types"), as
+in `{ <vscale x 4 x i32>, i8 }`. A struct that mixes a scalable vector only with fields of size
+zero is unsized but has a layout, as upstream's does, so `struct_layout(s).is_some()` is no proof
+that `s` is sized. (Commit `f54f4825`'s message says `None` "exactly when the struct is
+unsized", and commit `a5fecaaa` wrote here that every struct mixing a scalable vector with sized
+fields has a layout; both are wrong, and this paragraph is the correction. At `a5fecaaa`,
+`{ <vscale x 4 x i32>, i8 }` was laid out with a scalable offset and a fixed 32-byte size.)
 **Where:** `crates/llvmkit-ir/src/derived_types.rs` — `SizedType`, minted by
 `TryFrom<Type>` (which asks `Type::is_sized`) or from an integer, float or pointer type, sized by
 construction, and the crate-private `erase_sized`; `crates/llvmkit-ir/src/data_layout.rs` — the
 eight queries that take `impl Into<SizedType>` (`rg -n -U 'pub fn \w+<[^>]*>\(\s*&self,\s*ty: impl Into<SizedType' crates/llvmkit-ir/src/data_layout.rs`,
-eight at the commit after `f54f4825` that made `value_or_abi_type_align` take any type:
+eight at `a5fecaaa`:
 `type_size_in_bits`, `type_store_size`, `type_store_size_in_bits`,
 `type_size_equals_store_size`, `type_alloc_size`, `type_alloc_size_in_bits`, `abi_type_align`,
 `pref_type_align`), `value_or_abi_type_align` (which takes any type and
@@ -1452,6 +1457,8 @@ once the opaque struct got a body.
 `crates/llvmkit-ir/tests/data_layout_round_trip.rs::every_sized_type_answers_every_size_query`
 (every type with a proof answers every query, so `reached_unsized` stays dead; it panicked when
 `is_sized` was made to accept a target extension type with no layout),
+`crates/llvmkit-ir/tests/data_layout_round_trip.rs::a_struct_mixing_scalable_and_fixed_sizes_has_no_layout`
+(no layout where `TypeSize::operator+=` asserts, a scalable one where a zero-sized field passes it),
 `crates/llvmkit-ir/tests/constant_folding_analysis.rs::a_load_from_a_constant_of_unsized_type_is_not_folded`
 (the two folds that read the empty layout's numbers),
 `crates/llvmkit-ir/tests/builder_alloca.rs::alloca_load_and_store_refuse_to_guess_an_unsized_alignment`,

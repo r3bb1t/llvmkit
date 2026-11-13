@@ -1181,7 +1181,7 @@ pub(crate) fn is_floating_point_data(data: &TypeData) -> bool {
 /// Mirrors `Type::isSized(SmallPtrSetImpl<Type *> *Visited)`. `visited` is a
 /// set, as upstream's is: a list searched on every struct made a wide struct
 /// of distinct struct fields quadratic.
-fn is_sized(module: &ModuleCore, id: TypeSlot, visited: &mut HashSet<TypeSlot>) -> bool {
+pub(crate) fn is_sized(module: &ModuleCore, id: TypeSlot, visited: &mut HashSet<TypeSlot>) -> bool {
     let data = module.context().type_data(id);
     match data {
         TypeData::Void

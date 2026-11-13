@@ -309,20 +309,21 @@ fn a_struct_asked_about_again_is_not_laid_out_again() {
     });
 }
 
-/// One struct of 100,000 `i8` fields whose layout is asked 100,000 times.
+/// One struct of 100,000 `i8` fields whose layout is asked 1,000,000 times.
 ///
 /// **No upstream counterpart.** Upstream's `DataLayout::getStructLayout`
 /// answers a struct it has laid out from its `StructLayoutMap` before
 /// anything else, so a repeated query costs one lookup. llvmkit's
 /// `struct_layout` checks that every field is sized before laying a struct
 /// out; when that check ran before the map lookup, every query cost the
-/// struct's fields again, here 10^10 field checks. A kept layout already
-/// proves its fields sized, so the lookup now comes first.
+/// struct's fields again, here 10^11 field checks, which no machine does
+/// inside the deadline (10^10 already ran past it in a debug build). A kept
+/// layout already proves its fields sized, so the lookup now comes first.
 #[test]
 fn a_kept_struct_layout_is_answered_without_rechecking_its_fields() {
     support::deadline::within_a_minute("a kept layout rechecks every field", || {
         const FIELDS: usize = 100_000;
-        const QUERIES: usize = 100_000;
+        const QUERIES: usize = 1_000_000;
         let source = format!("%top = type {{ {} }}\n", vec!["i8"; FIELDS].join(", "));
         let module = parse(&source);
         let top = module.named_struct("top").expect("%top is defined");

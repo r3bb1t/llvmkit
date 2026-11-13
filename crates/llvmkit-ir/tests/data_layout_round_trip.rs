@@ -1040,6 +1040,42 @@ fn a_scalable_size_stays_scalable_through_an_array_and_a_struct() {
 // Defaults / isDefault
 // ---------------------------------------------------------------------------
 
+/// `StructLayout::StructLayout` adds each field's alloc size with
+/// `TypeSize::operator+=`, which asserts "Incompatible types" when a nonzero
+/// scalable size meets a nonzero fixed one, so `{ <vscale x 4 x i32>, i8 }`
+/// and `{ i8, <vscale x 4 x i32> }` have no layout upstream. **No upstream
+/// test** reaches the assert; llvmkit answers `None` there
+/// (`docs/divergences.md` D43). llvmkit-specific regression: the sum took
+/// the flag of its right side, so the first struct was laid out with a
+/// scalable offset and a fixed 32-byte size. A zero-sized fixed field passes
+/// the assert, as it passes upstream's: `{ <vscale x 4 x i32>, [0 x i8] }`
+/// is laid out, at a scalable 16 bytes, though the struct is unsized.
+#[test]
+fn a_struct_mixing_scalable_and_fixed_sizes_has_no_layout() {
+    let m = module_new!("m").expect("fresh module");
+    let dl = DataLayout::default();
+    let scalable = VectorType::scalable_of(m.i32_type(), lanes::<4>()).as_type();
+    let i8_ty = m.i8_type().as_type();
+    for fields in [[scalable, i8_ty], [i8_ty, scalable]] {
+        let mixed = m.struct_type(fields).expect("valid struct elements");
+        assert!(dl.struct_layout(mixed).is_none(), "{mixed}");
+    }
+    let empty = m
+        .array_type(m.i8_type(), 0)
+        .expect("a valid element")
+        .as_type();
+    let zero_tail = m
+        .struct_type([scalable, empty])
+        .expect("valid struct elements");
+    assert!(!zero_tail.as_type().is_sized());
+    assert_eq!(
+        dl.struct_layout(zero_tail)
+            .expect("a zero-sized field adds nothing")
+            .size_in_bytes(),
+        TypeSize::scalable(16)
+    );
+}
+
 /// `llvmkit-specific`: mirrors `DataLayout::isDefault`.
 #[test]
 fn default_layout_is_default() {
@@ -1050,19 +1086,19 @@ fn default_layout_is_default() {
     assert!(!parsed.is_default());
 }
 
-/// `llvmkit-specific`: confirms `MaybeAlign` integration with
-/// `value_or_abi_type_align`. Mirrors
-/// `DataLayout::getValueOrABITypeAlignment`, `Alignment ? *Alignment :
-/// getABITypeAlign(Ty)`: the type is read only when the alignment is unset,
-/// so a set alignment is answered for an unsized type too, and only an unset
-/// one meets `getABITypeAlign`'s `isSized` assert, refused here as
-/// `IrError::UnsizedType`.
+/// Mirrors `DataLayout::getValueOrABITypeAlignment`, `Alignment ?
+/// *Alignment : getABITypeAlign(Ty)`: a set alignment is answered as is, an
+/// unset one is the type's ABI alignment. The type is read only when the
+/// alignment is unset, so a set alignment is answered for an unsized type
+/// too. The last case has **no upstream counterpart**: an unset alignment on
+/// an unsized type meets `getABITypeAlign`'s `isSized` assert, refused here
+/// as `IrError::UnsizedType` (`docs/divergences.md` D43).
 #[test]
 fn value_or_abi_type_align() {
     let m = module_new!("m").expect("fresh module");
     let dl = DataLayout::default();
     let custom = MaybeAlign::from(Align::new(16).expect("a"));
-    let i32_ty = m.i32_type().as_type();
+    let i32_ty = m.i32_type();
     assert_eq!(
         dl.value_or_abi_type_align(custom, i32_ty),
         Ok(Align::new(16).expect("a"))
@@ -1327,9 +1363,18 @@ fn every_sized_type_answers_every_size_query() {
         let (mut sized_count, mut unsized_count) = (0_usize, 0_usize);
         for &ty in all {
             if let Ok(struct_ty) = StructType::try_from(ty) {
-                // A struct's layout, if it has one, is laid out without
-                // reaching an unsized type either.
-                let _ = dl.struct_layout(struct_ty);
+                // Laying a struct out reaches no unsized type either; a sized
+                // struct has a layout, and one with an unsized field (or an
+                // opaque body) has none, where `StructLayout` asserts.
+                let layout = dl.struct_layout(struct_ty);
+                if ty.is_sized() {
+                    assert!(layout.is_some(), "{ty}: a sized struct has a layout");
+                }
+                let has_unsized_field =
+                    struct_ty.is_opaque() || struct_ty.fields().any(|field| !field.is_sized());
+                if has_unsized_field {
+                    assert!(layout.is_none(), "{ty}: an unsized field has no layout");
+                }
             }
             let Ok(sized) = SizedType::try_from(ty) else {
                 unsized_count += 1;

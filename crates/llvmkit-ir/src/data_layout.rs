@@ -830,11 +830,11 @@ impl DataLayout {
     pub fn value_or_abi_type_align<'t, B: ModuleBrand, C: Capability>(
         &self,
         alignment: MaybeAlign,
-        ty: Type<'t, B, C>,
+        ty: impl Into<Type<'t, B, C>>,
     ) -> IrResult<Align> {
         match alignment.align() {
             Some(align) => Ok(align),
-            None => Ok(self.abi_type_align(SizedType::try_from(ty)?)),
+            None => Ok(self.abi_type_align(SizedType::try_from(ty.into())?)),
         }
     }
 
@@ -1020,17 +1020,18 @@ impl fmt::Debug for StructLayoutMap {
 /// The arm of a walk under a [`SizedType`] for a type with no size. A sized
 /// type reaches only sized types through its elements, fields and layout
 /// type (`Type::isSizedDerivedType`, `StructType::isSized`), and every walk
-/// below starts from a `SizedType` or from a field of a struct whose fields
-/// [`DataLayout::struct_layout_of`] found sized, so the arm is dead by
-/// construction.
+/// below starts from a `SizedType` or from a field `struct_layout_inner`
+/// found sized before walking it, so the arm is dead by construction. A
+/// sized struct also has a layout, which [`DataLayout`]'s `layout_of` relies
+/// on: `every_sized_type_answers_every_size_query` in
+/// `tests/data_layout_round_trip.rs` pins both.
 fn reached_unsized() -> ! {
     unreachable!("a DataLayout walk under a SizedType reaches only sized types")
 }
 
 // The walks below are entered only from a `SizedType` (the public queries)
-// or from a field of a struct whose fields are all sized
-// (`struct_layout_of`), so every type they reach is sized; see
-// `reached_unsized`.
+// or from a field `struct_layout_inner` found sized, so every type they
+// reach is sized; see `reached_unsized`.
 impl DataLayout {
     fn type_size_in_bits_inner(&self, module: &ModuleCore, id: TypeSlot) -> TypeSize {
         // Upstream's `getTypeSizeInBits(VTy->getElementType()).getFixedValue()`:
@@ -1238,17 +1239,20 @@ impl DataLayout {
         kind.of_primitive(spec)
     }
 
-    /// The layout of an aggregate struct, or `None` when a field is unsized.
+    /// The layout of an aggregate struct, or `None` where upstream asserts.
     /// Mirrors `DataLayout::getStructLayout`, which returns a pointer into the
     /// `DataLayout`'s cache: each struct is laid out once per `DataLayout`,
     /// and every later call shares that layout. The layout itself is
-    /// `StructLayout::StructLayout` in `DataLayout.cpp`, which asks each
-    /// field's `getTypeAllocSize` and `getABITypeAlign` (both asserting
-    /// `isSized`), and asserts `!ST->isOpaque()` itself: those preconditions
-    /// are the `None` here.
+    /// `StructLayout::StructLayout` in `DataLayout.cpp`, which asserts
+    /// `!ST->isOpaque()`, asks each field's `getABITypeAlign` and
+    /// `getTypeAllocSize` (both asserting `isSized`), and adds the sizes with
+    /// `TypeSize::operator+=`, which asserts that a nonzero scalable size
+    /// never meets a nonzero fixed one: an opaque body, an unsized field and
+    /// such a sum are the `None` here.
     ///
     /// The struct itself need not be sized: one mixing a scalable vector with
-    /// other fields is unsized but has a layout, as it has upstream.
+    /// fields of size zero is unsized but has a layout, as it has upstream;
+    /// so `Some` is no proof that the struct is sized.
     ///
     /// Takes a [`StructType`], as upstream's takes a `StructType *`: the
     /// layout of any other type is not a question.
@@ -1266,58 +1270,49 @@ impl DataLayout {
         &self,
         ty: Type<'_, B, C>,
     ) -> Option<Arc<StructLayoutInfo>> {
-        let module = ty.module().core_ref();
-        let id = ty.slot_trusting_same_module();
-        // A kept layout is the proof its fields were sized, and a body is set
-        // once, so a hit needs no field scan: the scan costs the struct's
-        // fields, and a struct asked about once per instruction would pay
-        // them on every instruction.
-        if let Some(layout) = self.struct_layouts.get(module, id) {
-            return Some(layout);
-        }
-        let TypeData::Struct(data) = module.context().type_data(id) else {
-            unreachable!("struct_layout_of is asked only of a struct type")
-        };
-        let fields_sized = data
-            .body
-            .borrow()
-            .as_ref()?
-            .elements
-            .iter()
-            .all(|field| Type::new(*field, ty.module()).is_sized());
-        fields_sized.then(|| self.lay_out_and_keep(module, id))
+        self.layout_or_refusal(ty.module().core_ref(), ty.slot_trusting_same_module())
     }
 
     /// Struct `id`'s layout, from this `DataLayout`'s map or laid out and kept
-    /// there. Mirrors `DataLayout::getStructLayout`'s `StructLayoutMap`
-    /// lookup, and the `new StructLayout` on a miss. Every caller holds a
-    /// struct whose fields are sized (see `reached_unsized`). Laid out with no
-    /// lock held: the fields' own layouts are looked up and kept along the
-    /// way.
-    fn layout_of(&self, module: &ModuleCore, id: TypeSlot) -> Arc<StructLayoutInfo> {
+    /// there; `None` where `StructLayout::StructLayout` would assert. Mirrors
+    /// `DataLayout::getStructLayout`'s `StructLayoutMap` lookup, and the `new
+    /// StructLayout` on a miss. A kept layout was laid out once and a body is
+    /// set once, so a hit is answered without looking at the fields again.
+    /// Laid out with no lock held: the fields' own layouts are looked up and
+    /// kept along the way.
+    fn layout_or_refusal(
+        &self,
+        module: &ModuleCore,
+        id: TypeSlot,
+    ) -> Option<Arc<StructLayoutInfo>> {
         if let Some(layout) = self.struct_layouts.get(module, id) {
-            return layout;
+            return Some(layout);
         }
-        self.lay_out_and_keep(module, id)
-    }
-
-    /// The `new StructLayout` of [`Self::layout_of`]'s miss, kept in the map.
-    fn lay_out_and_keep(&self, module: &ModuleCore, id: TypeSlot) -> Arc<StructLayoutInfo> {
-        let layout = Arc::new(self.struct_layout_inner(module, id));
+        let layout = Arc::new(self.struct_layout_inner(module, id)?);
         self.struct_layouts.insert(module, id, Arc::clone(&layout));
-        layout
+        Some(layout)
     }
 
-    fn struct_layout_inner(&self, module: &ModuleCore, id: TypeSlot) -> StructLayoutInfo {
+    /// [`Self::layout_or_refusal`] for a struct reached by a walk under a
+    /// [`SizedType`]. A sized struct has a layout: it is either a homogeneous
+    /// struct of scalable vectors, whose sizes add as scalable sizes, or one
+    /// with no scalable type in it at all, whose fields are sized.
+    fn layout_of(&self, module: &ModuleCore, id: TypeSlot) -> Arc<StructLayoutInfo> {
+        self.layout_or_refusal(module, id)
+            .unwrap_or_else(|| reached_unsized())
+    }
+
+    /// Mirrors `StructLayout::StructLayout`, refusing where it asserts: an
+    /// opaque body (`!ST->isOpaque()`), an unsized field (the `isSized` of
+    /// the field's `getABITypeAlign`), and a field whose size cannot be added
+    /// to the struct's so far (`TypeSize::operator+=`'s "Incompatible
+    /// types", a nonzero scalable size meeting a nonzero fixed one).
+    fn struct_layout_inner(&self, module: &ModuleCore, id: TypeSlot) -> Option<StructLayoutInfo> {
         let TypeData::Struct(s) = module.context().type_data(id) else {
             unreachable!("struct_layout_inner is asked only of a struct type")
         };
         let body = s.body.borrow();
-        // `StructLayout::StructLayout` asserts `!ST->isOpaque()`; a struct
-        // whose fields are sized has a body.
-        let Some(body) = body.as_ref() else {
-            reached_unsized()
-        };
+        let body = body.as_ref()?;
         let elements: &[TypeSlot] = &body.elements;
         let packed = body.packed;
 
@@ -1327,6 +1322,9 @@ impl DataLayout {
         let mut member_offsets = Vec::with_capacity(elements.len());
 
         for (index, &elem) in elements.iter().enumerate() {
+            if !crate::r#type::is_sized(module, elem, &mut std::collections::HashSet::new()) {
+                return None;
+            }
             if index == 0 && is_scalable(module, elem, &mut std::collections::HashSet::new()) {
                 size = TypeSize::scalable(0);
             }
@@ -1346,14 +1344,26 @@ impl DataLayout {
                 alignment = ty_align;
             }
             member_offsets.push(size);
-            size = size.saturating_add(self.type_alloc_size_inner(module, elem));
+            let field_size = self.type_alloc_size_inner(module, elem);
+            if size.known_min_value() != 0
+                && field_size.known_min_value() != 0
+                && size.is_scalable() != field_size.is_scalable()
+            {
+                return None;
+            }
+            size = size.saturating_add(field_size);
         }
         if !size.is_scalable() && !size.known_min_value().is_multiple_of(alignment.value()) {
             is_padded = true;
             size = TypeSize::fixed(align_to(size.known_min_value(), alignment));
         }
 
-        StructLayoutInfo::new(size, alignment, is_padded, member_offsets)
+        Some(StructLayoutInfo::new(
+            size,
+            alignment,
+            is_padded,
+            member_offsets,
+        ))
     }
 
     fn set_pointer_spec(&mut self, spec: PointerSpec) {
