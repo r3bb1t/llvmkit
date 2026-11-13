@@ -16307,7 +16307,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         &self,
         value: llvmkit_ir::Value<'ctx, B>,
     ) -> Option<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Terminated, B>> {
-        self.func.basic_blocks().find(|bb| bb.to_erased() == value)
+        self.func.basic_block(value)
     }
 
     /// [`Self::block_view_for_value`] as a label id.

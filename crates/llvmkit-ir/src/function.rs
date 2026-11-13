@@ -1178,7 +1178,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
             });
         }
         let mut blocks = self.data().basic_blocks.borrow_mut();
-        let Some(pos) = blocks.iter().position(|id| *id == block_id) else {
+        // Searched from the back: the parser defines a block it has just
+        // appended, which is already last, so the common move costs nothing.
+        // Upstream's splice is constant time wherever the block sits; this
+        // is proportional to the block's distance from the end.
+        let Some(pos) = blocks.iter().rposition(|id| *id == block_id) else {
             return Err(IrError::InvalidOperation {
                 message: "block does not belong to function",
             });
@@ -1186,6 +1190,31 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
         let id = blocks.remove(pos);
         blocks.push(id);
         Ok(())
+    }
+
+    /// `value` as one of this function's basic blocks, or `None` when it is
+    /// not a basic block, is another function's, or is another module's.
+    ///
+    /// Mirrors `dyn_cast<BasicBlock>(V)` followed by a `BB->getParent() == F`
+    /// test, the pair the parser asks of every label it resolves. Constant
+    /// time: it reads the value's kind and the block's parent, where
+    /// searching [`Self::basic_blocks`] would cost one step per block.
+    pub fn basic_block<C2: Capability>(
+        self,
+        value: Value<'ctx, B, C2>,
+    ) -> Option<BasicBlock<'ctx, R, Terminated, B, BlockParamsDyn, C>> {
+        let block_id = value.slot_in(self.module.id()).ok()?;
+        let ValueKindData::BasicBlock(data) = &value.data().kind else {
+            return None;
+        };
+        if *data.parent.borrow() != Some(self.id) {
+            return None;
+        }
+        Some(BasicBlock::from_parts(
+            block_id,
+            self.module,
+            value.ty().slot_trusting_same_module(),
+        ))
     }
 
     /// Iterate the basic blocks in insertion order as non-insertion

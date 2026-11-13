@@ -79,3 +79,36 @@ fn the_widest_integer_literal_is_built_in_linear_time() {
         );
     });
 }
+
+/// A function of 200,000 blocks, each defined where it is first named.
+///
+/// **No upstream counterpart.** Upstream resolves a label with
+/// `dyn_cast<BasicBlock>` on the value it looked up, and moves a block it
+/// defines to the end with `Function::splice` on an intrusive list, both
+/// constant time. llvmkit's parser found the block of a label value by
+/// searching every block of the function (`block_view_for_value`), and
+/// `FunctionValue::move_basic_block_to_end` searched for the block from the
+/// front, so each block cost a walk of the blocks before it: 80,000 blocks
+/// took 5.9 s to parse at `34fdec9` (release build). The label is now
+/// narrowed by `FunctionValue::basic_block`, and the move searches from the
+/// back, where a block defined as it is appended already sits.
+#[test]
+fn a_function_of_two_hundred_thousand_blocks_parses_in_linear_time() {
+    support::deadline::within_a_minute("each block walks the blocks before it", || {
+        const BLOCKS: usize = 200_000;
+        let mut source = String::from("define void @f() {\n  ret void\n");
+        for index in 0..BLOCKS {
+            source.push_str(&format!("b{index}:\n  ret void\n"));
+        }
+        source.push_str("}\n");
+        let module = parse(&source);
+        let function = module.function_dyn("f").expect("@f is defined");
+        let blocks: Vec<_> = module.view(function).basic_blocks().collect();
+        assert_eq!(blocks.len(), BLOCKS + 1);
+        assert_eq!(
+            blocks.last().and_then(|block| block.name()).as_deref(),
+            Some(format!("b{}", BLOCKS - 1).as_str()),
+            "blocks stay in definition order"
+        );
+    });
+}
