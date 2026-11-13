@@ -48,7 +48,12 @@ and the answer recorded:
    (Counting only `not llvm-as` and ignoring `not opt` gives 257 — the figure
    the stage brief used; `grep -lE 'RUN:.*not llvm-as' *.ll | wc -l`.)
 3. **Every unit was parsed**, then verified, then printed, re-parsed and
-   re-printed. Errors were recorded with their rendered message *and* the
+   re-printed. Parse a unit the way its `RUN` line does: `llvm-as` parses
+   with a module summary index (`parseAssemblyFileWithIndex`) and `opt`
+   without one, and a `^N` entry parses differently in the two modes. Four
+   summary fixtures were first measured without an index and classified
+   blocked on gaps that do not exist (**G16**, **G21**, and one **G18** row,
+   corrected at the commit that closed them). Errors were recorded with their rendered message *and* the
    1-based line/column of the reported span.
 4. **Negatives were matched against upstream's own `FileCheck` lines**, with
    the fixture's real prefixes (`--check-prefix=OUTER-LEFT` and friends, not
@@ -160,12 +165,12 @@ not a stable namespace.
 | **G13** | *Closed.* A forward-referenced function whose later definition/ifunc had the same name was rejected instead of resolved, because the callee position minted a typed `Function` at the call site's signature. `resolve_direct_callee` mints `getGlobalVal`'s untyped placeholder now and `claim_function_forward_ref` RAUWs it at the header. Kept as a row so a reader meeting the letter in an older commit message finds it. |
 | **G14** | `-allow-incomplete-ir`'s `dropUnknownMetadataReferences` half is not implemented (recorded in docs/divergences.md). |
 | **G15** | An **unnamed** global (`@""`) does not consume `NumberedVals.getNext()`, so a reference to the number it should have taken is undefined. Probed 2026-08-28 with `target/release/examples/parse_file.exe`: on `@5 = global i8 0` + `@"" = global i8 1`, `store ptr @5` resolves and `store ptr @6` answers `use of undefined value '@6'`. The row used to say "a forward reference to an explicitly numbered global is not resolved", which was wrong twice over — `@6` there is not a forward reference, and numbered forward references resolve. |
-| **G16** | The `typeidCompatibleVTable:` module-summary entry kind is not parsed. |
+| **G16** | *Closed, and never a gap.* The fixtures were measured by parsing without a summary index, where `LLParser::skipModuleSummaryEntry`'s keyword guard rejects `typeidCompatibleVTable` (upstream's too, and llvmkit's port of it). Their `RUN` lines use `llvm-as`, which parses with an index (`parseAssemblyFileWithIndex`), and with one llvmkit parses the entry; `parser_summary.rs` runs both fixtures that way. Kept as a row so a reader meeting the letter in an older commit message finds it. |
 | **G17** | Diagnostic text differs from upstream's: llvmkit routes a complete upstream message through an `expected ...` wrapper, or words the check differently. |
 | **G18** | The check runs at a different stage than upstream's, or not at all: upstream's `llvm-as` rejects at parse/verify time and llvmkit accepts. |
 | **G19** | Print / re-parse is not idempotent: printing the module and re-parsing the print yields different text. |
 | **G20** | A **function** used as a `ptr` constant keeps its function type instead of its pointer type. `Function::getType()` upstream *is* a `PointerType` and only `getValueType()` is the `FunctionType`, so this both **rejects valid input** — `declare void @f()` with `call void @use(ptr @f)` answers `call argument #0 type mismatch: expected ptr, got void ()` — and breaks the print: `call void @f() [ "foo"(ptr @f) ]` prints `[ "foo"(void () @f) ]`, which re-parses to `functions are not values, refer to them as pointers`. **Globals are not affected** — `@gv = global i32 0` used as `call void @use(ptr @gv)` parses, prints and re-parses; the row said "function or global" and the global half was never true. All three probed at 2026-08-22 with `target/release/examples/parse_file.exe`. |
-| **G21** | `!DIFile(source: ...)` and neighbouring fields in a summary-bearing module are not accepted. |
+| **G21** | *Closed, and never a gap.* Measured without a summary index, where `LLParser::parseSummaryEntry` returns through `skipModuleSummaryEntry` before switching the lexer back out of colon-splitting mode, so a later `!DIFile(filename: ...)` fails, upstream and llvmkit alike (`parse_summary_entry`'s doc records it). With an index, as `llvm-as` parses, the fixture parses whole; `parser_summary.rs::thinlto_summary_prints_every_field` runs it. Kept as a row so a reader meeting the letter in an older commit message finds it. |
 | **G22** | llvmkit's Verifier does not exempt **unreachable** blocks: `Verifier::verifyDominatesUse` returns early when `!DT.isReachableFromEntry(...)`, so upstream accepts a self-referencing or out-of-order instruction in a block with no path from entry, and llvmkit rejects it. |
 | **G23** | *Closed.* A `@name` / `@N` call-family callee was looked up only among functions; `resolve_direct_callee` now runs `getGlobalVal`'s own lookup — the symbol table for a name, `NumberedVals` for a number — and keeps a non-function `GlobalValue` as the bare pointer upstream returns. Kept as a row so a reader meeting the letter in an older commit message finds it. |
 
@@ -185,12 +190,12 @@ Which fixture sits on which gap:
 - **G13**: closed
 - **G14**: `incomplete-ir-metadata.ll`
 - **G15**: `skip-value-numbers-globals.ll`
-- **G16**: `index-value-order.ll`, `thinlto-vtable-summary.ll`
+- **G16**: closed
 - **G17**: `invalid-disubrange-count-negative.ll`, `invalid-fp80hex.ll`, `invalid-metadata-function-local-attachments.ll`, `invalid-metadata-function-local-complex-1.ll`, `invalid-metadata-function-local-complex-2.ll`, `invalid-metadata-function-local-complex-3.ll`, `nofpclass-invalid.ll`
-- **G18**: `attribute-builtin.ll`, `call-invalid-1.ll`, `captures-errors.ll`, `invalid-byval-type3.ll`, `invalid-diexpression-verify.ll`, `invalid-disubrange-count-large.ll`, `invalid-disubrange-count-node.ll`, `invalid-disubrange-lowerBound-max.ll`, `invalid-disubrange-lowerBound-min.ll`, `ptrtoaddr-invalid-constexpr.ll`, `summary-parsing-error.ll`, `target-type-properties.ll`
+- **G18**: `attribute-builtin.ll`, `call-invalid-1.ll`, `captures-errors.ll`, `invalid-byval-type3.ll`, `invalid-diexpression-verify.ll`, `invalid-disubrange-count-large.ll`, `invalid-disubrange-count-node.ll`, `invalid-disubrange-lowerBound-max.ll`, `invalid-disubrange-lowerBound-min.ll`, `ptrtoaddr-invalid-constexpr.ll`, `target-type-properties.ll`
 - **G19**: `2010-02-05-FunctionLocalMetadataBecomesNull.ll`, `DICommonBlock.ll`, `DIEnumerator.ll`, `dbg_declare_value.ll`, `debug-label-bitcode.ll`, `disubprogram-targetfuncname.ll`, `drop-debug-info-nonzero-alloca.ll`, `drop-debug-info.ll`, `export-symbol-anonymous-class.ll`, `metadata-use-uselistorder.ll`, `thinlto-vtable-summary2.ll`
 - **G20**: `MultipleReturnValueType.ll`, `anon-functions.ll`
-- **G21**: `thinlto-summary.ll`
+- **G21**: closed
 - **G22**: `2004-02-27-SelfUseAssertError.ll`, `2004-06-07-VerifierBug.ll`
 - **G23**: closed
 
@@ -564,7 +569,7 @@ collision.
 | `incomplete-ir-metadata-unsupported.ll` | ported | 1 reject (1 with upstream's diagnostic pinned) |
 | `incomplete-ir-metadata.ll` | blocked-model | **G14** — rejected at 16:33: `use of undefined metadata '!1'` |
 | `incorrect-tdep-attrs-parsing.ll` | ported | 1 pass |
-| `index-value-order.ll` | blocked-model | **G16** — rejected at 25:6: `Expected 'gv', 'module', 'typeid', 'flags' or 'blockcount' at the start of summary entry` |
+| `index-value-order.ll` | ported | 1 pass, parsed with a summary index as `llvm-as` parses (`parseAssemblyFileWithIndex`), which the corpus driver does not; its `CHECK-DAG` lines are asserted in `parser_summary.rs::index_value_order_renumbers_summary_ids` |
 | `initializes-attribute-invalid.ll` | ported | 10 reject (10 with upstream's diagnostic pinned) |
 | `inline-asm-constraint-error.ll` | ported | 9 reject (9 with upstream's diagnostic pinned) |
 | `inrange-errors.ll` | ported | 5 reject (5 with upstream's diagnostic pinned) |
@@ -773,7 +778,7 @@ collision.
 | `struct-ret-without-upgrade.ll` | blocked-model | **G1** — rejected at 23:19: `expected unknown intrinsic` |
 | `summary-flags.ll` | ported | 1 pass |
 | `summary-flags2.ll` | ported | 1 pass |
-| `summary-parsing-error.ll` | blocked-model | **G18** — llvmkit accepts it; upstream reports `Reference to undefined global "does_not_exist"` |
+| `summary-parsing-error.ll` | ported | 1 reject (upstream's diagnostic pinned), parsed with a summary index as `llvm-as` parses: `parser_summary.rs::summary_name_must_exist_in_the_module` |
 | `symbolic-addrspace-datalayout.ll` | blocked-model | **G6** — 2/4 parts blocked (`num-to-sym.ll`, `sym-to-sym.ll`, both `--print-addrspace-name=true`) |
 | `symbolic-addrspace.ll` | ported | 7 split-file parts |
 | `target-type-mangled.ll` | ported | 1 pass |
@@ -789,8 +794,8 @@ collision.
 | `thinlto-memprof-summary.ll` | ported | 1 pass |
 | `thinlto-multiple-summaries-for-guid.ll` | ported | 1 pass |
 | `thinlto-summary-visibility.ll` | ported | 1 pass |
-| `thinlto-summary.ll` | blocked-model | **G21** — rejected at 119:14: `expected field label here` |
-| `thinlto-vtable-summary.ll` | blocked-model | **G16** — rejected at 36:6: `Expected 'gv', 'module', 'typeid', 'flags' or 'blockcount' at the start of summary entry` |
+| `thinlto-summary.ll` | ported | 1 pass, parsed with a summary index as `llvm-as` parses; its `CHECK` block is asserted in `parser_summary.rs::thinlto_summary_prints_every_field`, with the one `relbf` adjustment that test's doc derives |
+| `thinlto-vtable-summary.ll` | ported | 1 pass, parsed with a summary index as `llvm-as` parses; its `RUN` line's `diff` of the `^` lines runs in `parser_summary.rs::thinlto_vtable_summary_round_trips` |
 | `thinlto-vtable-summary2.ll` | blocked-model | **G19** — printed module does not re-print identically |
 | `tls-models.ll` | ported | 1 pass |
 | `token.ll` | blocked-model | **G3** — rejected at 6:14: `expected unknown intrinsic` |
