@@ -910,11 +910,15 @@ does not refuse because the source is not itself a struct.
 `DataLayout::getPreferredAlign` compares `getTypeSizeInBits` with 128, and
 `getConstantDataArrayInfo` reads a null initializer's size with `getFixedValue`,
 both on a scalable global, which the verifier refuses but the parser reads.
-`ReadDataFromGlobal` reads `getTypeAllocSize` on a field of a fixed-size struct,
-which `{ i32, [0 x <vscale x 4 x i32>] }` has, past a load that crosses into it.
+`ReadDataFromGlobal` reads `getTypeAllocSize` on a scalable field of a struct
+whose layout size is fixed, which `{ i32, [0 x <vscale x 4 x i32>] }` has, past a
+load that crosses into it; that struct is unsized (`StructType::isSized` refuses a
+field that holds a scalable vector), so `ConstantFoldLoadFromConst`'s own
+`getTypeAllocSize` of it asserts `isSized` before `ReadDataFromGlobal` is reached.
 
 **llvmkit:** each takes the decline its routine already has: no index, unknown
-bits, no alignment, no slice, no bytes.
+bits, no alignment, no slice, no bytes. The unsized struct's case is D43's: its
+size queries answer `None`, and no load from it is folded.
 
 **Why:** a query must not abort (Doctrine D10).
 

@@ -2313,15 +2313,18 @@ fn a_load_at_an_offset_into_an_array_of_scalable_vectors_is_not_folded() -> Resu
     Ok(())
 }
 
-/// **No upstream counterpart**: upstream reports a fatal error on both inputs,
-/// through the implicit `uint64_t` conversion of a scalable `TypeSize`.
-/// `getGEPIndexForOffset` compares the offset with a scalable struct's
-/// `getSizeInBytes`. `ReadDataFromGlobal` reads `getTypeAllocSize` of the empty
-/// array of scalable vectors, which ends a struct whose own size is fixed, when
-/// a load crosses into it. llvmkit declines instead (Doctrine D10). The array
-/// is aligned to offset 16, so an `i128` at offset 1 crosses and an `i32` does
-/// not: that load stops short of the array, upstream's
-/// `BytesLeft <= NextEltOffset - CurEltOffset - ByteOffset`, and folds.
+/// **No upstream counterpart**: upstream cannot fold either input. The first
+/// is a homogeneous struct of scalable vectors, which is sized:
+/// `getGEPIndexForOffset` compares the offset with its scalable
+/// `getSizeInBytes`, through the implicit `uint64_t` conversion of a scalable
+/// `TypeSize`, a fatal error. The second, `{ i32, [0 x <vscale x 4 x i32>] }`,
+/// is unsized (`StructType::isSized` refuses a field that is or holds a
+/// scalable vector), and `ConstantFoldLoadFromConst` reads its
+/// `getTypeAllocSize`, which asserts `isSized`, before anything else; a release
+/// build went on to read a size the type does not have. llvmkit declines both
+/// (Doctrine D10; `docs/divergences.md` D43 for the second): no load from the
+/// unsized struct is folded, the `i128` that would cross into the scalable
+/// array or the `i32` that would stop short of it.
 #[test]
 fn a_load_at_an_offset_into_a_scalable_struct_is_not_folded() -> Result<(), IrError> {
     let m = module_new!("analysis-load-scalable-struct")?;
@@ -2361,7 +2364,7 @@ fn a_load_at_an_offset_into_a_scalable_struct_is_not_folded() -> Result<(), IrEr
             ApInt::from_words(64, &[1]),
             &dl,
         )?,
-        Some(i32_ty.const_zero().as_constant())
+        None
     );
     Ok(())
 }
