@@ -263,3 +263,50 @@ fn rauw_inside_a_constant_rejects_a_non_constant_replacement() -> Result<(), IrE
     );
     Ok(())
 }
+
+/// A placeholder resolved to the other lane of a `ConstantVector` makes the
+/// list a splat, and the vector is updated where it stands: its users keep
+/// their order. Upstream's `ConstantVector::handleOperandChangeImpl` asks
+/// `getImpl`, which answers `nullptr` for `ptr` lanes, so
+/// `replaceOperandsInPlace` updates the vector in place (no equal vector
+/// exists) and no user moves. llvmkit stores the result as a one-operand
+/// splat, so the in-place test must see past the operand count.
+///
+/// **No upstream counterpart** at this layer (see the module comment).
+#[test]
+fn a_vector_made_a_splat_by_rauw_keeps_its_users_in_order() -> Result<(), IrError> {
+    let m = module_new!("fwd-splat")?;
+    let ptr_ty = m.ptr_type_in::<0>();
+    let target = m.add_global("target", m.i32_type().const_int(1))?;
+    let target_ptr = m.view(target).as_global_constant_ptr();
+    let placeholder = m.forward_ref_value_placeholder(ptr_ty.as_type())?;
+    let vector_ty = m.vector_type(ptr_ty.as_type(), llvmkit_ir::lanes::<2>())?;
+    let list = vector_ty
+        .const_vector([target_ptr, placeholder.as_constant()])?
+        .as_constant();
+    let no_params: [llvmkit_ir::Type<'_, _>; 0] = [];
+    let fn_ty = m.function_type(vector_ty.as_type(), no_params)?;
+    for name in ["first", "second", "third"] {
+        let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        IrBuilder::with_folder(&m, NoFolder)
+            .position_at_end(entry)
+            .ret(list)?;
+    }
+    let before: Vec<_> = list.as_erased().users().map(|user| user.parent()).collect();
+
+    placeholder.replace_all_uses_with(target_ptr.as_erased())?;
+
+    let splat = vector_ty.const_splat(target_ptr)?.as_constant();
+    let after: Vec<_> = splat
+        .as_erased()
+        .users()
+        .map(|user| user.parent())
+        .collect();
+    assert_eq!(after, before);
+    assert!(
+        format!("{m}").contains("ret <2 x ptr> <ptr @target, ptr @target>"),
+        "{m}"
+    );
+    Ok(())
+}

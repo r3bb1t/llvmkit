@@ -1230,28 +1230,31 @@ fn is_known_non_nan<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         // (!C->getElementType()->isFloatingPointTy()) return false; for (...)
         // if (C->getElementAsAPFloat(I).isNaN()) return false; return true; }`
         // A `ConstantDataVector` is the class `Constant::kind` gives an
-        // element list `getSequenceIfElementsMatch` keeps; any other vector
-        // list is a `ConstantVector`, which upstream answers `false` for.
-        ValueKindData::Constant(ConstantData::Aggregate(elements))
-            if Constant::try_from(value).is_ok_and(|constant| {
-                matches!(
-                    constant.kind(),
-                    ConstantKind::Data(ConstantDataKind::Sequential(
-                        ConstantSequentialKind::Vector
-                    ))
-                )
-            }) =>
+        // element list `getSequenceIfElementsMatch` keeps, or a splat of such
+        // an element; any other vector is a `ConstantVector`, which upstream
+        // answers `false` for.
+        ValueKindData::Constant(
+            data @ (ConstantData::Aggregate(_) | ConstantData::Splat { .. }),
+        ) if Constant::try_from(value).is_ok_and(|constant| {
+            matches!(
+                constant.kind(),
+                ConstantKind::Data(ConstantDataKind::Sequential(ConstantSequentialKind::Vector))
+            )
+        }) =>
         {
             // A `ConstantDataVector` has at least one element, and so does
-            // its llvmkit list: a lane count is a `NonZeroU32`, and
+            // its llvmkit list or splat: a lane count is a `NonZeroU32`, and
             // `VectorType::const_vector` takes one element per lane. So `all`
-            // below never runs over an empty list.
+            // below never runs over an empty list. Each splat lane is its one
+            // element, so `all` over that element is `all` over the lanes.
             if !value.ty().scalar_type().is_floating_point() {
                 return false;
             }
-            elements.iter().all(|element| {
-                float_constant(value_from_slot(value, *element))
-                    .is_some_and(|constant| !constant.is_nan())
+            data.lane_slots().is_some_and(|elements| {
+                elements.iter().all(|element| {
+                    float_constant(value_from_slot(value, *element))
+                        .is_some_and(|constant| !constant.is_nan())
+                })
             })
         }
         // `if (isa<ConstantAggregateZero>(V)) return true;`
@@ -1282,28 +1285,31 @@ fn is_known_non_zero_float<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         // (!C->getElementType()->isFloatingPointTy()) return false; for (...)
         // if (C->getElementAsAPFloat(I).isZero()) return false; return true; }`
         // As in `is_known_non_nan`: a `ConstantDataVector` is the class
-        // `Constant::kind` gives a kept `getSequenceIfElementsMatch` list, and
-        // any other vector list is a `ConstantVector`, answered `false`.
-        ValueKindData::Constant(ConstantData::Aggregate(elements))
-            if Constant::try_from(value).is_ok_and(|constant| {
-                matches!(
-                    constant.kind(),
-                    ConstantKind::Data(ConstantDataKind::Sequential(
-                        ConstantSequentialKind::Vector
-                    ))
-                )
-            }) =>
+        // `Constant::kind` gives a kept `getSequenceIfElementsMatch` list or a
+        // splat of such an element, and any other vector is a
+        // `ConstantVector`, answered `false`.
+        ValueKindData::Constant(
+            data @ (ConstantData::Aggregate(_) | ConstantData::Splat { .. }),
+        ) if Constant::try_from(value).is_ok_and(|constant| {
+            matches!(
+                constant.kind(),
+                ConstantKind::Data(ConstantDataKind::Sequential(ConstantSequentialKind::Vector))
+            )
+        }) =>
         {
             // A `ConstantDataVector` has at least one element, and so does
-            // its llvmkit list: a lane count is a `NonZeroU32`, and
+            // its llvmkit list or splat: a lane count is a `NonZeroU32`, and
             // `VectorType::const_vector` takes one element per lane. So `all`
-            // below never runs over an empty list.
+            // below never runs over an empty list. Each splat lane is its one
+            // element.
             if !value.ty().scalar_type().is_floating_point() {
                 return false;
             }
-            elements.iter().all(|element| {
-                float_constant(value_from_slot(value, *element))
-                    .is_some_and(|constant| !constant.is_zero())
+            data.lane_slots().is_some_and(|elements| {
+                elements.iter().all(|element| {
+                    float_constant(value_from_slot(value, *element))
+                        .is_some_and(|constant| !constant.is_zero())
+                })
             })
         }
         _ => false,

@@ -28,7 +28,7 @@ use super::constant_fold::{
     constant_fold_insert_value_instruction_trusting_same_module,
     constant_fold_select_instruction_trusting_same_module,
     constant_fold_shuffle_vector_instruction_trusting_same_module, constant_fold_unary_instruction,
-    constant_from_id, shufflevector_mask_from_constant, vector_type_with_scalability,
+    constant_from_id, may_walk_lanes, vector_type_with_scalability,
 };
 use super::constants::{
     ConstantExprOptions, ConstantFloatValue, ConstantIntValue, GepTypeCursor, global_value_type,
@@ -196,14 +196,34 @@ pub fn flush_fp_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         return Ok(Some(operand));
     }
 
+    // `if (VecTy) { if (auto *Splat =
+    // dyn_cast_or_null<ConstantFP>(Operand->getSplatValue())) { ConstantFP
+    // *Folded = flushDenormalConstantFP(Splat, Inst, IsOutput); if (!Folded)
+    // return nullptr; return ConstantVector::getSplat(VecTy->getElementCount(),
+    // Folded); } }` — fixed or scalable, and ahead of the `ConstantExpr`
+    // check, so a scalable splat, a `shufflevector` expression upstream, is
+    // flushed here too.
+    if let Ok(vector_ty) = VectorType::<ElemDyn, LenDyn, B, C>::try_from(operand.ty())
+        && let Some(splat) = operand.splat_value(false)
+        && ConstantFloatValue::<FloatDyn, B, C>::try_from(splat).is_ok()
+    {
+        let Some(folded) = flush_fp_constant(splat, mode, side)? else {
+            return Ok(None);
+        };
+        return Ok(Some(vector_ty.const_splat(folded)?.as_constant()));
+    }
+
+    // `if (isa<ConstantExpr>(Operand)) return Operand;`
+    if matches!(operand.kind(), ConstantKind::Expr(_)) {
+        return Ok(Some(operand));
+    }
+
     // Mirrors the `ConstantVector`/`ConstantDataVector` arms of upstream
     // `FlushFPConstant` (`ConstantFolding.cpp`): flush every lane of a fixed
     // FP vector and rebuild the vector constant. A whole-vector zero or
-    // `undef` is already handled above. Upstream's splat fast path is a
-    // performance shortcut this loop reaches the same answer without.
-    // Scalable vectors have no compile-time lane list to walk and fall through
-    // to the decline below, matching upstream's decline for a non-splat
-    // scalable operand.
+    // `undef` is already handled above, and a splat by the fast path, so the
+    // list here has two lanes that differ. A scalable vector is a splat, a
+    // zero or an `undef`, each handled above.
     if matches!(operand.ty().data(), TypeData::FixedVector { .. })
         && let ValueKindData::Constant(ConstantData::Aggregate(elements)) =
             &operand.as_erased().data().kind
@@ -214,6 +234,23 @@ pub fn flush_fp_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             let Some(element) = constant_from_id(module, id) else {
                 return Ok(None);
             };
+            // `if (isa<UndefValue>(Element)) { NewElts.push_back(Element);
+            // continue; }` — `poison` included.
+            if matches!(
+                element.kind(),
+                ConstantKind::Data(ConstantDataKind::Undef(_))
+            ) {
+                flushed.push(element);
+                continue;
+            }
+            // `ConstantFP *CFP = dyn_cast<ConstantFP>(Element); if (!CFP)
+            // return nullptr;` — a constant-expression lane among them, which
+            // the whole-operand `isa<ConstantExpr>` return above never sees.
+            if ConstantFloatValue::<FloatDyn, B, C>::try_from(element).is_err() {
+                return Ok(None);
+            }
+            // `flushDenormalConstantFP(CFP, Inst, IsOutput)`: the scalar arm
+            // at the head of this routine.
             let Some(flushed_element) = flush_fp_constant(element, mode, side)? else {
                 return Ok(None);
             };
@@ -363,7 +400,11 @@ pub(crate) fn constant_fold_load_from_const_ptr_trusting_same_module<
 
     // If this load comes from anywhere in a uniform constant global, the value
     // is always the same, regardless of the loaded offset.
-    constant_fold_load_from_uniform_value_trusting_same_module(initializer, ty, dl)
+    Ok(constant_fold_load_from_uniform_value_trusting_same_module(
+        initializer,
+        ty,
+        dl,
+    ))
 }
 
 /// Fold a load directly from a constant aggregate/scalar at byte `offset`.
@@ -411,7 +452,7 @@ pub(crate) fn constant_fold_load_from_const_trusting_same_module<
 
     // Try an offset-independent fold of a uniform value.
     if let Some(folded) =
-        constant_fold_load_from_uniform_value_trusting_same_module(constant, ty, dl)?
+        constant_fold_load_from_uniform_value_trusting_same_module(constant, ty, dl)
     {
         return Ok(Some(folded));
     }
@@ -861,7 +902,9 @@ pub fn constant_fold_load_from_uniform_value<'ctx, B: ModuleBrand + 'ctx, C: Cap
 ) -> IrResult<Option<Constant<'ctx, B, C>>> {
     // Boundary: the caller's load type, admitted against `constant`'s module.
     ty.slot_in(constant.module.id())?;
-    constant_fold_load_from_uniform_value_trusting_same_module(constant, ty, dl)
+    Ok(constant_fold_load_from_uniform_value_trusting_same_module(
+        constant, ty, dl,
+    ))
 }
 
 /// [`constant_fold_load_from_uniform_value`] for a constant and type of one
@@ -874,27 +917,27 @@ pub(crate) fn constant_fold_load_from_uniform_value_trusting_same_module<
     constant: Constant<'ctx, B, C>,
     ty: Type<'ctx, B, C>,
     dl: &DataLayout,
-) -> IrResult<Option<Constant<'ctx, B, C>>> {
+) -> Option<Constant<'ctx, B, C>> {
     // Mirrors `ConstantFoldLoadFromUniformValue`.
     if is_poison(constant) {
-        return Ok(Some(ty.poison().as_constant()));
+        return Some(ty.poison().as_constant());
     }
     if is_undef(constant) {
-        return Ok(Some(ty.undef().as_constant()));
+        return Some(ty.undef().as_constant());
     }
     // If padding is needed when storing C to memory, then it isn't considered
     // as uniform.
     if !dl.type_size_equals_store_size(erase_type(constant.ty())) {
-        return Ok(None);
+        return None;
     }
     if constant.is_null_value() && !matches!(ty.data(), TypeData::X86Amx) {
-        return Ok(ty.null_value());
+        return ty.null_value();
     }
     if constant.is_all_ones_value() && (ty.is_int_or_int_vector() || ty.is_float_or_float_vector())
     {
         return all_ones_constant_for_type(ty);
     }
-    Ok(None)
+    None
 }
 
 /// Fold a cast using `DataLayout` where target-independent `ConstantFold.cpp`
@@ -1219,10 +1262,13 @@ fn is_constant_vector_or_expr<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 /// pointer.
 ///
 /// Two of llvmkit's spellings answer `isa<ConstantExpr>` without being a
-/// stored expression. A scalable list is the `shufflevector` splat
+/// stored expression. A scalable splat is the `shufflevector` splat
 /// `ConstantVector::getSplat` builds; its element stands in for the operand,
-/// and the list is rebuilt through `intern_element_list`, as
-/// `getWithOperands` rebuilds the splat and `getSplat` canonicalises it. The
+/// and the splat is rebuilt through `getSplat`'s canonicalisation, as
+/// `getWithOperands` rebuilds the splat and `getSplat` canonicalises it. A
+/// fixed splat that is a `ConstantVector` has one operand per lane, each its
+/// element, so its element is folded once and the splat rebuilt the same way,
+/// which is `ConstantVector::get` of the folded lanes. The
 /// compact `GepOffset`, `SymbolDelta` and `SymbolDeltaPlus` forms keep their
 /// operands, which are globals, so they are returned as they are: folding the
 /// expression each prints as gives that expression back (derived from
@@ -1244,6 +1290,9 @@ fn constant_fold_constant_impl<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     let operand_ids: &[ValueSlot] = match data {
         ValueKindData::Constant(ConstantData::Expr(expr)) => &expr.operands,
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => elements,
+        ValueKindData::Constant(ConstantData::Splat { element, .. }) => {
+            core::slice::from_ref(element)
+        }
         _ => return Ok(constant),
     };
 
@@ -1281,6 +1330,16 @@ fn constant_fold_constant_impl<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 
     // `assert(isa<ConstantVector>(C)); return ConstantVector::get(Ops);`
     let ty = constant.ty().slot_trusting_same_module();
+    // A splat's one folded element is every lane's.
+    if let (ValueKindData::Constant(ConstantData::Splat { .. }), [folded]) = (data, ops.as_slice())
+    {
+        let id = crate::constants::intern_canonical_aggregate(
+            module.module(),
+            ty,
+            crate::constant::splat_canonical(module, folded.slot_trusting_same_module()),
+        );
+        return Ok(Constant::from_parts(Value::from_parts(id, module, ty)));
+    }
     // Internal: every operand was folded from this vector's own element, in
     // its module.
     let ids = ops
@@ -2134,7 +2193,7 @@ pub(crate) fn constant_fold_load_through_bitcast_trusting_same_module<
             return Ok(None);
         }
         if let Some(folded) =
-            constant_fold_load_from_uniform_value_trusting_same_module(value, dest_ty, dl)?
+            constant_fold_load_from_uniform_value_trusting_same_module(value, dest_ty, dl)
         {
             return Ok(Some(folded));
         }
@@ -2974,10 +3033,7 @@ fn constant_fold_constant_expr_operands<'ctx, B: ModuleBrand + 'ctx, C: Capabili
             let [lhs, rhs, mask] = operands else {
                 return Ok(None);
             };
-            let Some(mask) = shufflevector_mask_from_constant(*mask) else {
-                return Ok(None);
-            };
-            constant_fold_shuffle_vector_instruction_trusting_same_module(*lhs, *rhs, &mask)
+            crate::constant_fold::constant_fold_shuffle_vector_with_mask_constant(*lhs, *rhs, *mask)
         }
         ConstantExprOpcode::InsertElement => {
             let [vector, value, index] = operands else {
@@ -3281,6 +3337,13 @@ fn fold_vector_to_scalar_bitcast<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     else {
         return Ok(None);
     };
+    // Not upstream's: a source that stores fewer lanes than it has (a splat)
+    // answers the `bitcast` expression past `MAX_EXPANDED_LANES` lanes,
+    // `foldConstVectorToAPInt`'s own answer for a lane it cannot read, rather
+    // than shift every lane into the result (`docs/divergences.md` D40).
+    if !may_walk_lanes(constant, u64::from(num_src_elts.get())) {
+        return constant_expr_bit_cast(constant, dest_ty).map(Some);
+    }
     let Some(result) =
         fold_const_vector_to_ap_int(result_bits, constant, src_elt_ty, num_src_elts.get(), dl)
     else {
@@ -3469,7 +3532,7 @@ fn fold_bitcast_with_layout<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 
     // Catch the obvious splat cases.
     if let Some(folded) =
-        constant_fold_load_from_uniform_value_trusting_same_module(constant, dest_ty, dl)?
+        constant_fold_load_from_uniform_value_trusting_same_module(constant, dest_ty, dl)
     {
         return Ok(Some(folded));
     }
@@ -3559,6 +3622,19 @@ fn fold_bitcast_with_layout<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     } else {
         constant
     };
+
+    // Not upstream's: past `MAX_EXPANDED_LANES` lanes, unless the source
+    // stores as many as the walk reads and builds, the fold answers the
+    // `bitcast` expression, upstream's own answer for a lane it cannot fold.
+    // That covers a long splat, and a short list (or a scalar's one-lane
+    // wrapper) split into more lanes than it stores (`docs/divergences.md`
+    // D40).
+    if !may_walk_lanes(
+        constant,
+        u64::from(num_dst_elt.get().max(num_src_elt.get())),
+    ) {
+        return constant_expr_bit_cast(constant, dest_ty).map(Some);
+    }
 
     // Now we know that the input and output vectors are both integer vectors
     // of the same size, and that their #elements is not the same. Do the

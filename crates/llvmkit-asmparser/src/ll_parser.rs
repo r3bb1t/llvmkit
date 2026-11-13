@@ -8620,7 +8620,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .map_err(|e| self.builder_err_at(loc, "struct constant", e))
     }
 
-    fn expand_splat_constant(
+    fn splat_constant(
         &self,
         loc: Span,
         ty: Type<'ctx, B>,
@@ -8642,13 +8642,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 loc,
             });
         }
-        let len = usize::try_from(vec_ty.min_len().get()).map_err(|_| ParseError::Expected {
-            expected: "vector type for splat constant".into(),
-            loc,
-        })?;
-        let elements = vec![scalar; len];
+        // `ConstantVector::getSplat(cast<VectorType>(Ty)->getElementCount(),
+        // ID.ConstantVal)`, which stores no lane list, so a long vector costs
+        // one constant.
         vec_ty
-            .const_vector(elements)
+            .const_splat(scalar)
             .map(|c| c.as_constant())
             .map_err(|e| self.builder_err_at(loc, "splat constant", e))
     }
@@ -8840,9 +8838,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             ValIdKind::Constant(c) => self
                 .checked_constant_type(loc, ty, c)
                 .map(|c| c.as_erased()),
-            ValIdKind::ConstantSplat(c) => self
-                .expand_splat_constant(loc, ty, c)
-                .map(|c| c.as_erased()),
+            ValIdKind::ConstantSplat(c) => self.splat_constant(loc, ty, c).map(|c| c.as_erased()),
             ValIdKind::EmptyArray => self.empty_array_constant(loc, ty).map(|c| c.as_erased()),
             ValIdKind::ConstantStruct(values) => self
                 .struct_initializer_constant(loc, ty, &values, false)
@@ -8913,7 +8909,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Ok(ty.poison().as_constant())
             }
             ValIdKind::Constant(c) => self.checked_constant_type(loc, ty, c),
-            ValIdKind::ConstantSplat(c) => self.expand_splat_constant(loc, ty, c),
+            ValIdKind::ConstantSplat(c) => self.splat_constant(loc, ty, c),
             ValIdKind::EmptyArray => self.empty_array_constant(loc, ty),
             ValIdKind::ConstantStruct(values) => {
                 self.struct_initializer_constant(loc, ty, &values, false)

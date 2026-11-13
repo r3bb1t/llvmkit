@@ -598,8 +598,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     });
                 }
             }
-            ConstantData::Aggregate(ids) => {
-                for id in ids.iter() {
+            // A splat's lanes are all its element, so its one subtree is the
+            // lanes' (`ConstantData::lane_slots`).
+            data @ (ConstantData::Aggregate(_) | ConstantData::Splat { .. }) => {
+                for id in data.lane_slots().into_iter().flatten() {
                     let operand_data = self.module.context().value_data(*id);
                     if matches!(operand_data.kind, ValueKindData::Constant(_)) {
                         self.verify_constant_tree(Constant::try_from(Value::from_parts(

@@ -214,7 +214,7 @@ upstream/assembler-corpus/constant-splat-diagnostics/not_a_sclar.ll | test/Assem
 upstream/assembler-corpus/constant-splat-diagnostics/not_a_vector.ll | test/Assembler/constant-splat-diagnostics.ll split-file part not_a_vector.ll | status=reject | error=vector constant must have vector type
 upstream/assembler-corpus/constant-splat-diagnostics/wrong_explicit_type.ll | test/Assembler/constant-splat-diagnostics.ll split-file part wrong_explicit_type.ll | status=reject | error=constant expression type mismatch: got type 'i8' but expected 'i32'
 upstream/assembler-corpus/constant-splat-diagnostics/wrong_implicit_type.ll | test/Assembler/constant-splat-diagnostics.ll split-file part wrong_implicit_type.ll | status=reject | error=constant expression type mismatch: got type 'i8' but expected 'i32'
-upstream/assembler-corpus/constant-splat.ll | test/Assembler/constant-splat.ll | status=pass
+upstream/assembler-corpus/constant-splat.ll | test/Assembler/constant-splat.ll | expect=upstream/assembler-corpus/constant-splat.expected.ll | status=pass
 upstream/assembler-corpus/convergence-control.ll | test/Assembler/convergence-control.ll | status=pass
 upstream/assembler-corpus/datalayout-alloca-addrspace.ll | test/Assembler/datalayout-alloca-addrspace.ll | status=pass
 upstream/assembler-corpus/datalayout-anypointersize.ll | test/Assembler/datalayout-anypointersize.ll | status=pass

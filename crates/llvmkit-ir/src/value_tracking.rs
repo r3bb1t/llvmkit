@@ -547,6 +547,22 @@ fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     // return before ever being checked, and below the cache lookup a value
     // memoized before this guard existed could still be handed back.
     let width = require_int_or_pointer_width(value, query.data_layout())?;
+    // `if (!DemandedElts) { Known.resetAll(); return; }` — "No demanded elts,
+    // better to assume we don't know anything." Upstream tests it first, ahead
+    // of every constant arm, so a zero vector with no lane demanded is
+    // unknown, not zero.
+    // Read off the query without building the all-lanes default, which for
+    // a long splat would be a lane-count-sized allocation.
+    if let Some(ElementCount {
+        min: lanes,
+        scalable: false,
+    }) = value.ty().data().element_count()
+        && query
+            .demanded_elements()
+            .is_some_and(|demanded| demanded.bit_width() == lanes.get() && demanded.is_zero())
+    {
+        return Ok(KnownBits::unknown(width));
+    }
     // Upstream's constant fast path runs *before* the recursion cutoff.
     // `computeKnownBits` answers `m_APInt` with `KnownBits::makeConstant`,
     // `ConstantPointerNull` / `ConstantAggregateZero` with `setAllZero` and
@@ -555,12 +571,14 @@ fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     // walk, under the comment "All recursive calls that increase depth must
     // come after this." A constant therefore reports its exact value at any
     // depth, and -- like upstream's early `return` -- never reaches
-    // `computeKnownBitsFromContext`. The recursive constant arms
-    // (`ConstantExpr`, aggregates) are *not* part of that fast path upstream
-    // either: a `ConstantExpr` is an `Operator`, so it goes through
-    // `computeKnownBitsFromOperator` below the cutoff.
+    // `computeKnownBitsFromContext`. The vector arms (`m_APInt` on a splat,
+    // `ConstantDataVector`, `ConstantVector`) sit above the cutoff too, and
+    // read their lanes without recursing (`vector_constant_known_bits`). A
+    // `ConstantExpr` is not part of the fast path: it is an `Operator`, so it
+    // goes through `computeKnownBitsFromOperator` below the cutoff.
     if let ValueKindData::Constant(constant) = &value.data().kind
         && let Some(known) = leaf_constant_known_bits(constant, width)
+            .or_else(|| vector_constant_known_bits(value, constant, width, query))
     {
         return Ok(known);
     }
@@ -620,10 +638,11 @@ fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     Ok(known)
 }
 
-/// The non-recursive half of the constant arm: the cases upstream's
+/// The non-recursive half of the constant arm: the scalar cases upstream's
 /// `computeKnownBits` answers *above* its `Depth == MaxAnalysisRecursionDepth`
-/// cutoff. `None` for the arms that are `Operator`s or aggregates upstream and
-/// so sit below it.
+/// cutoff. The vector cases are [`vector_constant_known_bits`]; `None` here
+/// for those and for the arms that are `Operator`s upstream and so sit below
+/// it.
 fn leaf_constant_known_bits(constant: &ConstantData, width: u32) -> Option<KnownBits> {
     Some(match constant {
         // `match(V, m_APInt(C))` -> `KnownBits::makeConstant(*C)`.
@@ -641,6 +660,88 @@ fn leaf_constant_known_bits(constant: &ConstantData, width: u32) -> Option<Known
     })
 }
 
+/// The vector arms of the constant fast path, which upstream's
+/// `computeKnownBits` also answers above its `Depth ==
+/// MaxAnalysisRecursionDepth` cutoff, in its order (its first test, `if
+/// (!DemandedElts)`, is at the head of `compute_known_bits_inner`):
+///
+/// - `match(V, m_APInt(C))`, which matches a splat whose
+///   `getSplatValue(/*AllowPoison=*/false)` is a `ConstantInt`, fixed or
+///   scalable, stored or written out as a `shufflevector` expression, and
+///   answers `KnownBits::makeConstant`;
+/// - the `ConstantDataVector` and `ConstantVector` arms: the intersection of
+///   the demanded lanes' values, a `poison` lane skipped (a
+///   `ConstantDataVector` has none), and `resetAll` for a lane that is no
+///   `ConstantInt`, or for a conflict.
+///
+/// A fixed splat of anything else is a `ConstantVector` whose lane is no
+/// `ConstantInt`, so it answers `resetAll`. A scalable one is
+/// `ConstantVector::getSplat`'s `shufflevector` expression, an `Operator`, so
+/// it answers `None` here and is read below the cutoff, where that arm's
+/// `getSplatValue` recurses into the element (`compute_constant_known_bits`).
+/// `None` for anything else that is no vector constant of these shapes.
+fn vector_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    value: Value<'ctx, B, C>,
+    constant: &ConstantData,
+    width: u32,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> Option<KnownBits> {
+    // `dyn_cast<ConstantInt>` of a lane, read at the lane's own width, which
+    // is `width`.
+    let lane_value = |slot: ValueSlot| argument_constant(Some(value_from_slot(value, slot)));
+    let elements = match constant {
+        // `m_APInt`, or else the `ConstantVector` arm's `resetAll` for a fixed
+        // splat, with no lane read but the one stored. A scalable splat of
+        // anything else is upstream's `shufflevector` `Operator`, answered
+        // below the cutoff (`compute_constant_known_bits`).
+        ConstantData::Splat { element, .. } => {
+            return match lane_value(*element) {
+                Some(splat) => Some(KnownBits::from_ap_int(splat)),
+                None if value.ty().kind() == TypeKind::ScalableVector => None,
+                None => Some(KnownBits::unknown(width)),
+            };
+        }
+        // `m_APInt` on a `shufflevector` splat expression, through the same
+        // `getSplatValue`; any other expression is an `Operator`, below the
+        // cutoff.
+        ConstantData::Expr(_) => {
+            let splat = Constant::try_from(value).ok()?.splat_value(false)?;
+            return lane_value(splat.as_erased().slot_trusting_same_module())
+                .map(KnownBits::from_ap_int);
+        }
+        ConstantData::Aggregate(elements) => elements,
+        _ => return None,
+    };
+    // A list stores its lanes, so the demanded mask, one bit per lane, costs
+    // no more than the list. A list is never all one value (that is a
+    // splat), so `m_APInt` cannot match it.
+    let demanded = demanded_elements_for(value, query);
+    let mut known = KnownBits::unknown(width);
+    known.set_all_conflict();
+    for (lane, element) in elements.iter().enumerate() {
+        if let Some(demanded) = &demanded
+            && !u32::try_from(lane).is_ok_and(|lane| demanded.bit(lane))
+        {
+            continue;
+        }
+        if matches!(
+            &value_from_slot(value, *element).data().kind,
+            ValueKindData::Constant(ConstantData::Poison)
+        ) {
+            continue;
+        }
+        let Some(lane_bits) = lane_value(*element) else {
+            return Some(KnownBits::unknown(width));
+        };
+        known = known.intersect_with(&KnownBits::from_ap_int(lane_bits));
+    }
+    Some(if known.has_conflict() {
+        KnownBits::unknown(width)
+    } else {
+        known
+    })
+}
+
 fn compute_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
     constant: &ConstantData,
@@ -649,25 +750,28 @@ fn compute_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
-    // The leaf arms (`m_APInt`, `ConstantPointerNull`, `UndefValue`) are
-    // answered by `leaf_constant_known_bits` above the recursion cutoff in
-    // `compute_known_bits_inner`, exactly as upstream answers them above its
-    // `Depth == MaxAnalysisRecursionDepth` return; this dispatch reads them
-    // from the same helper rather than restating them.
-    if let Some(known) = leaf_constant_known_bits(constant, width) {
-        return Ok(known);
-    }
+    // The fast-path arms (`m_APInt`, `ConstantPointerNull`, `UndefValue`, the
+    // `ConstantDataVector` / `ConstantVector` arms) were answered by
+    // `leaf_constant_known_bits` and `vector_constant_known_bits` above the
+    // recursion cutoff in `compute_known_bits_inner`, this function's only
+    // caller, exactly as upstream answers them above its `Depth ==
+    // MaxAnalysisRecursionDepth` return; what reaches here is an `Operator`.
     Ok(match constant {
         ConstantData::Expr(expr) => {
             compute_constant_expr_known_bits(value, expr, query, depth, stack)?
         }
-        ConstantData::Aggregate(elements) => {
-            aggregate_constant_known_bits(value, elements, query, depth, stack)?
+        // A scalable splat of anything but a `ConstantInt`: upstream's
+        // `shufflevector` expression, whose `computeKnownBitsFromOperator`
+        // arm opens `if (auto *Splat = getSplatValue(I)) {
+        // computeKnownBits(Splat, Known, Q, Depth + 1); break; }`.
+        ConstantData::Splat { element, .. } => {
+            compute_known_bits_inner(value_from_slot(value, *element), query, depth + 1, stack)?
         }
-        // Answered above, by `leaf_constant_known_bits`; listed so a new
-        // `ConstantData` variant is a non-exhaustive-match error here rather
-        // than a silent `unknown`.
-        ConstantData::Int(_)
+        // Answered above, by `leaf_constant_known_bits` and
+        // `vector_constant_known_bits`; listed so a new `ConstantData` variant
+        // is a non-exhaustive-match error here rather than a silent `unknown`.
+        ConstantData::Aggregate(_)
+        | ConstantData::Int(_)
         | ConstantData::PointerNull
         | ConstantData::AggregateZero
         | ConstantData::Undef
@@ -765,9 +869,24 @@ fn compute_constant_expr_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capabili
                 stack,
             )?
         }
-        ConstantExprOpcode::ShuffleVector
-        | ConstantExprOpcode::InsertElement
-        | ConstantExprOpcode::ExtractElement => KnownBits::unknown(width),
+        // `if (auto *Splat = getSplatValue(I)) { computeKnownBits(Splat, Known,
+        // Q, Depth + 1); break; }`, then `auto *Shuf =
+        // dyn_cast<ShuffleVectorInst>(I); if (!Shuf) { Known.resetAll();
+        // return; }`, which every expression takes.
+        ConstantExprOpcode::ShuffleVector => {
+            match Constant::try_from(anchor)
+                .ok()
+                .and_then(|constant| constant.splat_value(false))
+            {
+                Some(splat) => {
+                    compute_known_bits_inner(splat.as_erased(), query, depth + 1, stack)?
+                }
+                None => KnownBits::unknown(width),
+            }
+        }
+        ConstantExprOpcode::InsertElement | ConstantExprOpcode::ExtractElement => {
+            KnownBits::unknown(width)
+        }
     })
 }
 
@@ -2713,9 +2832,10 @@ fn constant_int_predicate_matches<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     if scalable {
         return false;
     }
-    // Non-splat vector constant: check each element for a match.
+    // Non-splat vector constant: check each element for a match. A vector
+    // stored in one slot asks its one lane, which every lane is (D40).
     let mut has_non_poison_elements = false;
-    for lane in 0..lanes.get() {
+    for lane in 0..constant.lanes_to_ask(lanes.get()) {
         let Some(element) = constant.aggregate_element(lane) else {
             return false;
         };
@@ -3375,9 +3495,8 @@ pub(crate) fn not_operand<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 /// provably neither also gives up.
 ///
 /// Upstream's `m_ImmConstant` is "a constant that is not, and does not
-/// contain, a `ConstantExpr`". llvmkit keeps constant expressions in their own
-/// `ConstantData::Expr` arm, so the check is structural here rather than a
-/// predicate over one flat `Constant` class.
+/// contain, a `ConstantExpr`", or a vector whose splat value is one
+/// (`is_immediate_constant`).
 pub fn collect_possible_values<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
     max_count: usize,
@@ -3474,30 +3593,27 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> PossibleValues<'ctx, B, C> {
     }
 }
 
-/// Whether `value` is an immediate constant — upstream's `m_ImmConstant`.
-///
-/// Upstream asks for a `Constant` that is not a `ConstantExpr` and does not
-/// contain one. llvmkit stores constant expressions in their own arm, so this
-/// rejects that arm and recurses through aggregates for the "contains" half.
-///
-/// Upstream carries one further escape hatch: a vector whose splat value is
-/// expression-free counts even when the vector itself is not. That exists for
-/// scalable splats held as a `ConstantExpr` and is marked with a `TODO` to
-/// delete; llvmkit stores aggregate elements as slots, so a splat with no
-/// expression in it already passes the recursive check.
+/// Whether `value` is an immediate constant — upstream's `m_ImmConstant`,
+/// `immconstant_ty::isImmConstant` (`PatternMatch.h`), arm by arm: a
+/// `Constant` that is no `ConstantExpr` and does not contain one
+/// (`Constant::containsConstantExpression`, which looks only at a fixed
+/// vector's lanes), or a vector whose `getSplatValue(/*AllowPoison=*/true)`
+/// is such a constant. A global value is a `Constant` and qualifies; a
+/// scalable splat is upstream's `shufflevector` expression and qualifies
+/// through its splat value.
 fn is_immediate_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
 ) -> bool {
-    let ValueKindData::Constant(constant) = &value.data().kind else {
+    let Ok(constant) = Constant::try_from(value) else {
         return false;
     };
-    match constant {
-        ConstantData::Expr(_) => false,
-        ConstantData::Aggregate(elements) => elements
-            .iter()
-            .all(|element| is_immediate_constant(value_from_slot(value, *element))),
-        _ => true,
+    let expression_free = |constant: Constant<'ctx, B, C>| {
+        !matches!(constant.kind(), ConstantKind::Expr(_)) && !contains_constant_expression(constant)
+    };
+    if expression_free(constant) {
+        return true;
     }
+    constant.ty().is_vector() && constant.splat_value(true).is_some_and(expression_free)
 }
 
 /// The inner value `X` of an expression `f(X)` that is zero exactly when `X`
@@ -4989,10 +5105,10 @@ enum OperatorRef<'ctx> {
     /// [`ConstantData::SymbolDeltaPlus`] with a nonzero addend: `add (i64
     /// <the symbol difference>, i64 addend)`.
     SymbolDeltaPlus { hi: ValueSlot, lo: ValueSlot },
-    /// A scalable element list: the splat `ConstantVector::getSplat` builds as
-    /// `shufflevector (insertelement (poison, V, i64 0), poison,
-    /// zeroinitializer)`.
-    ScalableSplat { element: ValueSlot },
+    /// A scalable splat: the `shufflevector (insert, poison,
+    /// zeroinitializer)` `ConstantVector::getSplat` builds, whose `insert`,
+    /// `insertelement (poison, V, i64 0)`, the splat stores.
+    ScalableSplat { insert: ValueSlot },
 }
 
 /// Ports `dyn_cast<Operator>(V)`, read off llvmkit's storage.
@@ -5027,14 +5143,14 @@ fn operator_ref<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             hi: *hi_id,
             lo: *lo_id,
         }),
-        // A scalable list is never empty: `intern_element_list` stores the
-        // splat of nothing as a zero.
-        ConstantData::Aggregate(elements) if value.ty().kind() == TypeKind::ScalableVector => {
-            elements
-                .first()
-                .map(|&element| OperatorRef::ScalableSplat { element })
-        }
-        ConstantData::Aggregate(_)
+        // A scalable splat is upstream's `shufflevector` expression. A fixed
+        // one is a `ConstantDataVector` or a `ConstantVector`, no `Operator`.
+        ConstantData::Splat {
+            insert: Some(insert),
+            ..
+        } => Some(OperatorRef::ScalableSplat { insert: *insert }),
+        ConstantData::Splat { .. }
+        | ConstantData::Aggregate(_)
         | ConstantData::Int(_)
         | ConstantData::Float(_)
         | ConstantData::GlobalValueRef { .. }
@@ -5295,9 +5411,7 @@ fn expression_can_create_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capabil
         // `ShuffleVectorInst::getShuffleMask` reads one; a mask it cannot read
         // is taken to hold a poison lane, the answer that claims nothing.
         ConstantExprOpcode::ShuffleVector => {
-            kind.includes_poison()
-                && expression_shuffle_mask(anchor, expression)
-                    .is_none_or(|mask| mask.contains(&ShuffleMaskElem::Poison))
+            kind.includes_poison() && expression_shuffle_mask_has_poison_lane(anchor, expression)
         }
         // `case Instruction::GetElementPtr: return false;`
         ConstantExprOpcode::GetElementPtr => false,
@@ -5314,16 +5428,38 @@ fn expression_can_create_undef_or_poison<'ctx, B: ModuleBrand + 'ctx, C: Capabil
     }
 }
 
-/// The mask of a `shufflevector` expression: its third operand, read as
-/// `ShuffleVectorInst::getShuffleMask` reads a mask constant, with an `undef`
-/// or `poison` lane as [`ShuffleMaskElem::Poison`].
-fn expression_shuffle_mask<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+/// Whether the mask of a `shufflevector` expression, its third operand read as
+/// `ShuffleVectorInst::getShuffleMask` reads a mask constant, has a
+/// `PoisonMaskElem` lane (an `undef` or `poison` lane). A mask it cannot read
+/// is taken to have one, the answer that claims nothing. A mask stored in one
+/// slot answers from that slot (`Constant::has_uniform_lanes`), so a long `splat`
+/// mask is not decoded lane by lane (`docs/divergences.md` D40).
+fn expression_shuffle_mask_has_poison_lane<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     anchor: Value<'ctx, B, C>,
     expression: &ConstantExprData,
-) -> Option<Vec<ShuffleMaskElem>> {
-    let &mask = expression.operands.get(2)?;
-    let mask = Constant::try_from(value_from_slot(anchor, mask)).ok()?;
+) -> bool {
+    let Some(mask) = expression
+        .operands
+        .get(2)
+        .and_then(|&mask| Constant::try_from(value_from_slot(anchor, mask)).ok())
+    else {
+        return true;
+    };
+    // A zero mask, fixed or scalable, is every lane `0`; an `undef` or
+    // `poison` mask every lane `PoisonMaskElem`.
+    if mask.is_null_value() {
+        return false;
+    }
+    if matches!(mask.kind(), ConstantKind::Data(ConstantDataKind::Undef(_))) {
+        return true;
+    }
+    if mask.has_uniform_lanes()
+        && let Some(lane) = mask.aggregate_element(0)
+    {
+        return matches!(lane.kind(), ConstantKind::Data(ConstantDataKind::Undef(_)));
+    }
     shufflevector_mask_from_constant(mask)
+        .is_none_or(|mask| mask.contains(&ShuffleMaskElem::Poison))
 }
 
 /// Ports `Operator::hasPoisonGeneratingAnnotations` (`Operator.cpp`):
@@ -5562,9 +5698,10 @@ fn shift_amount_known_in_range<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         })
     };
     match constant.ty().data() {
-        TypeData::FixedVector { n, .. } => {
-            (0..n.get()).all(|index| in_range(constant.aggregate_element(index)))
-        }
+        // A vector stored in one slot asks its one lane, which every lane is
+        // (D40).
+        TypeData::FixedVector { n, .. } => (0..constant.lanes_to_ask(n.get()))
+            .all(|index| in_range(constant.aggregate_element(index))),
         TypeData::ScalableVector { .. } => false,
         _ => in_range(Some(constant)),
     }
@@ -6482,46 +6619,6 @@ fn shuffle_vector_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }
 }
 
-fn aggregate_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    value: Value<'ctx, B, C>,
-    elements: &[ValueSlot],
-    query: &ValueTrackingQuery<'a, 'ctx, B>,
-    depth: u32,
-    stack: &mut HashSet<ValueSlot>,
-) -> IrResult<KnownBits> {
-    let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
-    let Some(ElementCount {
-        min: lanes,
-        scalable: false,
-    }) = value.ty().data().element_count()
-    else {
-        return Ok(KnownBits::unknown(width));
-    };
-    let lanes = lanes.get();
-    let demanded = demanded_elements_for(value, query).unwrap_or_else(|| ApInt::all_ones(lanes));
-    let mut known = KnownBits::unknown(width);
-    known.set_all_conflict();
-    for (lane, element) in elements.iter().enumerate() {
-        let Ok(lane) = u32::try_from(lane) else {
-            return Ok(KnownBits::unknown(width));
-        };
-        if !demanded.bit(lane) {
-            continue;
-        }
-        let element_known =
-            compute_known_bits_inner(value_from_slot(value, *element), query, depth + 1, stack)?;
-        known = known.intersect_with(&element_known);
-        if known.is_unknown() {
-            break;
-        }
-    }
-    if known.has_conflict() {
-        Ok(KnownBits::unknown(width))
-    } else {
-        Ok(known)
-    }
-}
-
 fn compute_known_bits_for_demanded<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
     demanded: &ApInt,
@@ -6771,8 +6868,6 @@ enum UnstoredExpression {
     PtrToInt { global: ValueSlot },
     /// The symbol difference a `SymbolDeltaPlus` adds to.
     SymbolDelta { hi: ValueSlot, lo: ValueSlot },
-    /// A splat's `insertelement (poison, V, i64 0)`.
-    InsertIntoPoison { element: ValueSlot },
 }
 
 /// `Opr->operands()`.
@@ -6813,10 +6908,9 @@ fn operator_operands(operator: OperatorRef<'_>) -> Vec<OperatorOperand> {
             OperatorOperand::Unstored(UnstoredExpression::SymbolDelta { hi, lo }),
             OperatorOperand::Int,
         ],
-        OperatorRef::ScalableSplat { element } => vec![
-            OperatorOperand::Unstored(UnstoredExpression::InsertIntoPoison { element }),
-            OperatorOperand::Poison,
-        ],
+        OperatorRef::ScalableSplat { insert } => {
+            vec![OperatorOperand::Stored(insert), OperatorOperand::Poison]
+        }
     }
 }
 
@@ -6901,11 +6995,6 @@ fn unstored_expression_is_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capab
             OperatorOperand::Unstored(UnstoredExpression::PtrToInt { global: hi }),
             OperatorOperand::Unstored(UnstoredExpression::PtrToInt { global: lo }),
         ],
-        UnstoredExpression::InsertIntoPoison { element } => vec![
-            OperatorOperand::Poison,
-            OperatorOperand::Stored(element),
-            OperatorOperand::Int,
-        ],
     };
     if operands_are_well_defined(anchor, operands, query, depth + 1, kind)? {
         return Ok(true);
@@ -6913,7 +7002,6 @@ fn unstored_expression_is_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capab
     let target = match expression {
         UnstoredExpression::PtrToInt { global } => ConditionTarget::PtrToInt { global },
         UnstoredExpression::SymbolDelta { hi, lo } => ConditionTarget::SymbolDelta { hi, lo },
-        UnstoredExpression::InsertIntoPoison { .. } => return Ok(false),
     };
     Ok(dominating_condition_proves_well_defined(
         anchor, target, query, kind,
@@ -7306,7 +7394,10 @@ fn contains_undefined_element<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     if scalable {
         return false;
     }
-    (0..lanes.get()).any(|lane| constant.aggregate_element(lane).is_some_and(&has))
+    // A vector stored in one slot asks its one lane, which every lane is
+    // (D40).
+    (0..constant.lanes_to_ask(lanes.get()))
+        .any(|lane| constant.aggregate_element(lane).is_some_and(&has))
 }
 
 /// Ports `Constant::containsConstantExpression`: a fixed-width vector with a
@@ -7323,7 +7414,9 @@ fn contains_constant_expression<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     let TypeData::FixedVector { n, .. } = constant.ty().data() else {
         return false;
     };
-    (0..n.get()).any(|lane| {
+    // A vector stored in one slot asks its one lane, which every lane is
+    // (D40).
+    (0..constant.lanes_to_ask(n.get())).any(|lane| {
         constant
             .aggregate_element(lane)
             .is_some_and(|element| matches!(element.kind(), ConstantKind::Expr(_)))

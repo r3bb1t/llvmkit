@@ -641,9 +641,12 @@ fn constant_mask_lanes_satisfy<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                 }
         })
     };
+    // A vector stored in one slot asks its one lane, which every lane is
+    // (`docs/divergences.md` D40).
+    let lanes_to_ask = constant.lanes_to_ask(lanes.get());
     match quantifier {
-        MaskQuantifier::Every => (0..lanes.get()).all(lane_qualifies),
-        MaskQuantifier::Any => (0..lanes.get()).any(lane_qualifies),
+        MaskQuantifier::Every => (0..lanes_to_ask).all(lane_qualifies),
+        MaskQuantifier::Any => (0..lanes_to_ask).any(lane_qualifies),
     }
 }
 
@@ -673,6 +676,13 @@ pub fn possibly_demanded_elements_in_mask<'ctx, B: ModuleBrand + 'ctx, C: Capabi
             constant.kind(),
             ConstantKind::Aggregate(ConstantAggregateKind::Vector)
         ) {
+            // A `ConstantVector` stored in one slot is a splat, whose element
+            // is no null (a splat of null is a `ConstantAggregateZero`), so
+            // no lane is cleared and the walk is skipped
+            // (`docs/divergences.md` D40).
+            if constant.has_uniform_lanes() {
+                return Some(demanded);
+            }
             for lane in 0..lanes.get() {
                 // Upstream dereferences `getAggregateElement` without a null
                 // check, which cannot fail for the `ConstantVector` its

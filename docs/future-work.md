@@ -799,6 +799,15 @@ So the folder was not at fault and must not be "fixed": an attempt to guard
 the representation is deliberate. The fix belonged in the printer, and that is
 where it landed.
 
+**Superseded 2026-11-12 (splat storage).** A scalable splat is no longer
+`min_len` equal elements: every splat is stored as its one element
+(`ConstantData::Splat`), so no scalable element list exists. It prints as
+upstream prints the `shufflevector` expression `ConstantVector::getSplat`
+builds for it: `splat (…)` for a `ConstantInt` or `ConstantFP`, and the
+expression written out otherwise, as `test/Assembler/constant-splat.ll`'s
+`@ret_scalable_vector_ptr` checks. The printer rule above, `splat (…)` for any
+scalable element, was itself a divergence for a `ptr` splat.
+
 ## ~~Parser — no vector floating-point binary operators~~ (found 2026-08-05, fixed 2026-08-05)
 
 **Fixed.** `fadd <vscale x 2 x double> %b, splat (double 1.5)` answered
@@ -935,6 +944,42 @@ rather than a scope decision:
 | Family | Status |
 |---|---|
 | `fromHexadecimalString`, `fromStringSpecials` | Unported. `crates/llvmkit-ir/tests/ap_float_from_string.rs` covers the same rules with llvmkit-chosen boundary spellings and says so — it is marked `llvmkit-specific subset` in `UPSTREAM.md`, not a port. Its header used to claim this backlog entry existed; it did not until now. `TEST(APFloatTest, makeNaN)`, the third fixture that header named, **is** ported (`ap_float_upstream_predicates.rs::make_nan`). |
+
+## `computeKnownBits` does not read a pointer's alignment (found 2026-11-12, splat storage review)
+
+`computeKnownBits` (`ValueTracking.cpp`) ends its value arms with "Aligned
+pointers have trailing zeros": `if (isa<PointerType>(V->getType())) { Align
+Alignment = V->getPointerAlignment(Q.DL); Known.Zero.setLowBits(Log2(Alignment)); }`.
+llvmkit's `value_tracking.rs::compute_known_bits_inner` has no such step, and
+`Value::getPointerAlignment` (`Value.cpp`: the `GlobalObject`, `Argument`,
+`AllocaInst`, `CallBase` and `LoadInst` arms) has no port:
+`rg -n "getPointerAlignment|Aligned pointers" crates/llvmkit-ir/src` on `efbfa8a` with the
+uncommitted splat storage applied printed nothing. So `ptr @g` with
+`align 16` reports no known bits where upstream reports four low zeros, and the
+answer is only ever wider than upstream's. `constant_fold.rs::global_pointer_alignment`
+is not that port: it is `ConstantFold.cpp`'s comparison helper, which answers a
+function with no `function_ptr_align` as `4` where `getPointerAlignment` answers
+`valueOrOne()`, so reusing it would be a divergence of its own.
+
+## A `shufflevector` mask stores one entry per lane (found 2026-11-12, splat storage)
+
+`shufflevector_mask_from_constant` (`constant_fold.rs`) decodes a mask constant
+into a `Vec<ShuffleMaskElem>` of one entry per lane, which the instruction
+keeps (`ShuffleVectorInstData::mask` in `instr_types.rs`), as upstream's
+`ShuffleVectorInst::ShuffleMask` is a `SmallVector<int>`. So a mask written as
+`<4294967295 x i32> zeroinitializer`, `poison` or a `splat`, a few bytes of
+`.ll`, still costs 2^32 entries when parsed as an instruction's mask. A
+constant expression keeps its mask as an operand, and its readers (the folds,
+`value_tracking.rs::expression_shuffle_mask_has_poison_lane`) answer a uniform
+mask from its one slot. The constant folds found walking a
+long splat no longer do (`docs/divergences.md` D40, which names the searches
+that found them); this path still does, and it is the instruction's
+representation, not a fold. Its public surface is a slice
+(`ShuffleVectorInst::mask`, and `IrBuilder::shuffle_vector`'s mask
+argument), so the change is a breaking one.
+Closing it means
+a mask type that can say "every lane is `k`" without listing the lanes, threaded
+through every reader of the mask.
 
 ## `computeConstantRange` is a partial port (found 2026-11-06, crash-proofing Task 1b review)
 

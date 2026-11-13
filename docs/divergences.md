@@ -1160,9 +1160,11 @@ Fix round 3 of Task 1 of the crash-proofing plan ported `ConstantFoldExtractValu
 one-element read. It answered an `extractvalue` of the same arrays through the same decline, and
 upstream answers it, so this is what remains of that decline.
 
-**Fix:** none owed for the second and third cases, which are hardening. The first could be
-answered as upstream does once Task 3's cap on materialised elements decides how a long zero is
-walked.
+**Fix:** none owed for the second and third cases, which are hardening. The first stays
+declined: the cap on materialised elements (`MAX_EXPANDED_LANES`, D40) is far below 2^32, so a
+zero that long declines past it whatever its count. The cap also declines a zero, `undef` or
+`poison` array of 65537 to 2^32 − 1 elements, which upstream folds; that is D40's, not this
+entry's.
 
 **Guarded by:** nothing. The `extractvalue` side is pinned by
 `crates/llvmkit-ir/tests/constant_aggregate_zero.rs::extractvalue_reads_one_element_of_a_long_array`.
@@ -1197,6 +1199,128 @@ re-bless what moves. Each moved answer is then a fixture that should carry the i
 attributes, as `llvm-dis` output does.
 
 **Guarded by:** nothing pins the fallback's answer on its own.
+
+### D39 — A fixed splat of a value with a use list is one use of it, not one per lane
+
+**Severity:** wrong-output (narrow): a use count and a `uselistorder` shuffle.
+**Where:** `crates/llvmkit-ir/src/constant.rs` — `ConstantData::Splat` and its arm of
+`ConstantData::for_each_operand`; `crates/llvmkit-ir/src/llvm_context.rs` —
+`Context::intern_constant_splat`.
+
+**LLVM:** a fixed vector whose lanes are all one value that is no `ConstantInt` or `ConstantFP`
+of a `ConstantDataSequential` element type — `<2 x ptr> <ptr @g, ptr @g>`, or `splat (ptr @g)`
+— is a `ConstantVector` (`ConstantVector::getImpl`, `getSplat`'s `get(Elts)`), and each lane is
+an operand, so `@g` has one use per lane. A `ConstantDataVector` has no operands, and a
+scalable splat's `insertelement` uses the value once.
+
+**llvmkit:** every splat is stored as its one element (`ConstantData::Splat`, so that
+`<4294967295 x ptr> splat (ptr @g)` costs one constant), and it registers one use of that
+element. A scalable splat's operand is `getSplat`'s `insertelement`, which uses the element, as
+upstream's does, so only a fixed splat is in question here. For the `ConstantVector` case only,
+`@g`'s use list therefore holds one edge from the splat where upstream's holds one per lane, which changes `num_uses` and the `uselistorder`
+directive the printer predicts for `@g`.
+
+An operand change that makes a `ConstantVector` list's lanes all one value (a placeholder
+resolved to the other lane) updates it in place, as `replaceOperandsInPlace` does, so its users
+keep their order; the splat keeps one edge on the element's list, at the place of the list's
+first (`constants.rs::replace_constant_operand`, through `take_edge_place`).
+
+**Why:** an edge per lane would make the use list as long as the lane count, which is the
+allocation the storage exists to avoid. Before this entry, `rg -n -i "splat" docs/divergences.md`
+(run on `efbfa8a` with the uncommitted splat storage applied, the tree the commit that adds this entry starts from) printed no entry on use counts.
+
+**Fix:** none planned that keeps the storage bounded. A use edge carrying a lane multiplicity
+would let the count and the order be upstream's.
+
+**Guarded by:** `crates/llvmkit-ir/tests/constant_splat.rs::a_constant_vector_splat_is_one_use_of_its_element`
+pins the one edge, so a change to the storage's use registration fails there.
+
+### D40 — A fold declines to build more than 65536 lanes out of a splat, a zero, `undef` or `poison`
+
+**Severity:** wrong-output (narrow): a fold upstream performs is left as the instruction or
+constant expression, so the printed IR differs. Hardening.
+**Where:** `crates/llvmkit-ir/src/constant_fold.rs` — `MAX_EXPANDED_LANES`, `may_walk_lanes`,
+`lane_walk` (the `LaneWalk` witness), and their uses in `aggregate_elements`,
+`fixed_vector_elements_for_rebuild`, `aggregate_elements_for_rebuild`,
+`constant_fold_select_instruction` and `constant_matches_negative_zero_fp_pattern`;
+`crates/llvmkit-ir/src/constant_folding.rs` — the lane-changing arm of
+`fold_bitcast_with_layout`, and `fold_vector_to_scalar_bitcast`;
+`crates/llvmkit-ir/src/constant.rs` — `Constant::has_uniform_lanes` and `Constant::lanes_to_ask`,
+read by `value_tracking.rs` (`constant_int_predicate_matches`, `shift_amount_known_in_range`,
+`contains_undefined_element`, `contains_constant_expression`,
+`expression_shuffle_mask_has_poison_lane`) and `vector_utils.rs`
+(`constant_mask_lanes_satisfy`, `possibly_demanded_elements_in_mask`).
+
+**LLVM:** a fixed vector stores every lane (`ConstantDataVector`, `ConstantVector`), so a fold
+that walks the lanes (`ConstantFoldInsertElementInstruction`, the per-lane loops of
+`ConstantFoldBinaryInstruction`, `ConstantFoldCompareInstruction`,
+`ConstantFoldCastInstruction` and `ConstantFoldUnaryInstruction`, `ConstantFoldSelectInstruction`'s
+`ConstantVector` loop, and `FoldBitCast`'s lane-changing loops in `Analysis/ConstantFolding.cpp`)
+costs what the operand already cost to build.
+
+**llvmkit:** a splat is stored as its one element (`ConstantData::Splat`), and a zero, `undef`
+and `poison` store no lanes either, so `<4294967295 x i32> splat (i32 7)` is a few bytes of
+text and one constant. A fold that would build its answer lane by lane out of such an operand
+declines past `MAX_EXPANDED_LANES` (65536) lanes: `insertelement (<4294967295 x i32> splat (i32
+7), i32 1, i64 0)` stays that expression, where upstream builds 4294967295 lanes; a lane-changing
+`bitcast` of a long splat answers the `bitcast` expression, upstream's own answer for a lane it
+cannot merge. A fold one of whose operands stores its lanes (an element list) walks them, and
+builds an answer as long, at any length, since that costs what was stored: `add` of a stored
+70000-lane list and a long splat is folded, as upstream folds it. An elementwise fold (unary,
+binary, compare, same-lane cast) whose every operand stores one value for all its lanes (a splat,
+a zero, `undef`, `poison`) folds lane 0 once and splats the answer, at any length: every lane of
+upstream's loop folds the same inputs alike, and `ConstantVector::get` makes the repeated list
+that splat, so `add (<4294967295 x i32> undef, splat (i32 1))` is `undef`, as upstream answers. The same cap holds for an
+array that stores no elements: `ConstantFoldInsertValueInstruction` rebuilds every element of
+the aggregate it inserts into, so `insertvalue` into `[70000 x i32] zeroinitializer` (or an
+`undef` or `poison` array past 65536 elements) keeps the instruction, where upstream folds it. A
+struct's type stores its fields, so a zero struct of any width is walked and folded. An answer longer than its
+operand stores is held to the cap: a `bitcast` that splits a short list's lanes (`<2 x i65536>`
+to `<131072 x i1>`), or a scalar (`i131072` to `<131072 x i1>`, through the one-lane vector
+`FoldBitCast` wraps it in), into more than 65536 lanes answers the `bitcast` expression too.
+
+Folds that need only some lanes read only those, and answer as upstream does at any length:
+`extractelement` reads one lane through `getAggregateElement`, `shufflevector` one source lane
+per mask lane (and, for a uniform mask — `splat`, `zeroinitializer`, `undef`, `poison` — one
+source lane in all, answering the splat upstream's loop builds lane by lane,
+`constant_fold_shuffle_vector_with_mask_constant`), and `select` reads its condition's lanes one at a time, as upstream's loop does,
+so a lane that is no `ConstantInt` (and whose two arms differ) ends the walk there. A splat
+condition past the cap is not walked at all: the fold goes on to the checks after the loop, so
+where upstream's loop would have kept every lane (each lane's arms agreeing) the answer is the
+`V1 == V2` check's or none. Analyses that ask every lane, or any
+lane, one question (`cst_pred_ty`'s walk, `containsConstantExpression`, the mask tests of
+`VectorUtils`, the shift-amount range check of `canCreateUndefOrPoison`) ask a vector stored in
+one slot once (`Constant::lanes_to_ask`), which answers as the walk would.
+
+The walks were found by `rg -n "aggregate_elements\(|\.aggregate_element\(|for (lane|i|index|element|idx) in 0\.\.|const_vector\(\(0\.\." crates/llvmkit-ir/src`
+on `efbfa8a` with the uncommitted splat storage applied (the tree the commit that adds this entry
+starts from), then by inline reviews (code-review skill, high), the second of which found the
+vector-to-scalar `bitcast` (`fold_vector_to_scalar_bitcast` now holds to the cap too). A search
+is not a proof, so the reads are pinned instead: `crates/llvmkit-ir/tests/lane_read_drift.rs`
+lists every function in `crates/llvmkit-ir/src` that reads a constant's lanes through
+`aggregate_element` or `extract_lane`, or repeat-fills per lane in the files that build
+constants, how many times, and why each is bounded, and fails on one it does not list. A walk
+spelled any other way escapes it; the scan narrows the search, it does not end it. Costs that are
+proportional to a vector's lane count in upstream too (a demanded-lanes `APInt` one bit per lane,
+an instruction's mask) are outside D40.
+
+Two costs found to stay proportional to the lane count, as upstream's are: the printed form of a
+splat that is a `ConstantVector` (`writeConstantInternal` writes every lane), and a
+`shufflevector` instruction's mask, which stores one entry per lane
+(`shufflevector_mask_from_constant`, upstream `ShuffleVectorInst::ShuffleMask`), so
+`<4294967295 x i32> zeroinitializer` or `splat (i32 0)` as a mask still costs its lanes. The
+second is a model-gap of the instruction, not of the folds, and is recorded in
+`docs/future-work.md`.
+
+**Why:** without the cap a few bytes of `.ll` make a fold allocate tens of gigabytes. Before this
+entry, `rg -n -i "MAX_EXPANDED|expanded lanes|walk.*lanes" docs/divergences.md docs/future-work.md`
+(run on `efbfa8a` with the uncommitted splat storage applied, the tree the commit that adds this entry starts from) printed nothing.
+
+**Fix:** none owed; the cap is the hardening. A fold whose answer is periodic (a lane-merging
+`bitcast` of a splat is a splat) could answer upstream's constant without the walk.
+
+**Guarded by:** `crates/llvmkit-asmparser/tests/long_splat_folds.rs`, whose tests each fail
+(by exhausting memory, or by a one-minute deadline) if their fold walks a long splat's lanes.
 
 ---
 

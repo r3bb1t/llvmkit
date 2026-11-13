@@ -115,6 +115,12 @@ pub(crate) struct Context {
     aggregate_constants: RefCell<AggregateConstantMap>,
     /// `LLVMContextImpl::CAZConstants`: one `ConstantAggregateZero` per type.
     aggregate_zero_constants: RefCell<HashMap<TypeSlot, ValueSlot>>,
+    /// One [`ConstantData::Splat`] per vector type and element. Upstream keeps
+    /// a splat in whichever map its class lives in (`CDSConstants` for a
+    /// `ConstantDataVector`, `VectorConstants` for a `ConstantVector`, the
+    /// `ExprConstants` for a scalable `shufflevector`); llvmkit stores every
+    /// splat as its one element, so it has one map of its own.
+    splat_constants: RefCell<HashMap<(TypeSlot, ValueSlot), ValueSlot>>,
     expr_constants: RefCell<HashMap<ConstantExprData, ValueSlot>>,
     block_address_constants: RefCell<HashMap<(TypeSlot, ValueSlot, ValueSlot), ValueSlot>>,
     dso_local_equivalent_constants: RefCell<HashMap<(TypeSlot, ValueSlot), ValueSlot>>,
@@ -231,6 +237,7 @@ impl Context {
             poison_constants: RefCell::new(HashMap::new()),
             aggregate_constants: RefCell::new(HashMap::new()),
             aggregate_zero_constants: RefCell::new(HashMap::new()),
+            splat_constants: RefCell::new(HashMap::new()),
             expr_constants: RefCell::new(HashMap::new()),
             block_address_constants: RefCell::new(HashMap::new()),
             dso_local_equivalent_constants: RefCell::new(HashMap::new()),
@@ -1185,6 +1192,126 @@ impl Context {
             use_list: core::cell::RefCell::new(Vec::new()),
         });
         self.aggregate_zero_constants.borrow_mut().insert(ty, id);
+        id
+    }
+
+    /// The `insertelement` of `ConstantVector::getSplat`'s scalable branch:
+    /// `Type *IdxTy = Type::getInt64Ty(…); Constant *PoisonV =
+    /// PoisonValue::get(VTy); V = ConstantExpr::getInsertElement(PoisonV, V,
+    /// ConstantInt::get(IdxTy, 0));`, which does not fold for a scalable
+    /// vector (`ConstantFoldInsertElementInstruction`'s "Do not iterate on
+    /// scalable vector"). With [`Self::get_splat_shuffle`], the one spelling
+    /// of that expression: the splat interns it, an operand change rebuilds
+    /// it, and `constants.rs::scalable_get_splat_element` recognises it.
+    pub(crate) fn get_splat_insert(&self, ty: TypeSlot, element: ValueSlot) -> ConstantExprData {
+        ConstantExprData {
+            opcode: crate::constant::ConstantExprOpcode::InsertElement,
+            result_ty: ty,
+            source_ty: None,
+            operands: Box::new([
+                self.intern_constant_poison(ty),
+                element,
+                self.intern_constant_int(self.int_type(64), Box::new([])),
+            ]),
+            indices: Box::new([]),
+            mask: Box::new([]),
+            flags: crate::constant::ConstantExprFlags::none(),
+        }
+    }
+
+    /// Whether `insert` and `shuffle` are exactly what
+    /// [`Self::get_splat_insert`] and [`Self::get_splat_shuffle`] would build
+    /// at `ty` (`insert` being `shuffle`'s first operand), read off the stored
+    /// slots without interning anything: the recogniser of the same spelling.
+    pub(crate) fn is_get_splat(
+        &self,
+        ty: TypeSlot,
+        insert: &ConstantExprData,
+        shuffle: &ConstantExprData,
+    ) -> bool {
+        let is_poison_of_ty = |slot: ValueSlot| {
+            let value = self.value_data(slot);
+            value.ty == ty && matches!(value.kind, ValueKindData::Constant(ConstantData::Poison))
+        };
+        let is_i64_zero = |slot: ValueSlot| {
+            let value = self.value_data(slot);
+            matches!(self.type_data(value.ty), TypeData::Integer { bits: 64 })
+                && matches!(&value.kind, ValueKindData::Constant(ConstantData::Int(words)) if words.is_empty())
+        };
+        let is_zero_mask = |slot: ValueSlot| {
+            let value = self.value_data(slot);
+            matches!(
+                value.kind,
+                ValueKindData::Constant(ConstantData::AggregateZero)
+            ) && matches!(self.type_data(value.ty), TypeData::ScalableVector { elem, min }
+                    if matches!(self.type_data(*elem), TypeData::Integer { bits: 32 })
+                        && self.type_data(ty).element_count().is_some_and(|count| count.min == *min))
+        };
+        let plain = |data: &ConstantExprData| {
+            data.result_ty == ty
+                && data.source_ty.is_none()
+                && data.indices.is_empty()
+                && data.mask.is_empty()
+                && data.flags == crate::constant::ConstantExprFlags::none()
+        };
+        matches!(self.type_data(ty), TypeData::ScalableVector { .. })
+            && plain(insert)
+            && plain(shuffle)
+            && insert.opcode == crate::constant::ConstantExprOpcode::InsertElement
+            && shuffle.opcode == crate::constant::ConstantExprOpcode::ShuffleVector
+            && matches!(*insert.operands, [into, _, index] if is_poison_of_ty(into) && is_i64_zero(index))
+            && matches!(*shuffle.operands, [_, other, mask] if is_poison_of_ty(other) && is_zero_mask(mask))
+    }
+
+    /// `ConstantExpr::getShuffleVector(V, PoisonV, Zeros)`: the
+    /// `shufflevector` of `getSplat`'s scalable branch over `insert`, its mask
+    /// the `i32` zero of `ty`'s element count. `None` for a type with no
+    /// element count.
+    pub(crate) fn get_splat_shuffle(
+        &self,
+        ty: TypeSlot,
+        insert: ValueSlot,
+    ) -> Option<ConstantExprData> {
+        let count = self.type_data(ty).element_count()?;
+        let mask_ty = self.scalable_vector_type(self.int_type(32), count.min);
+        Some(ConstantExprData {
+            opcode: crate::constant::ConstantExprOpcode::ShuffleVector,
+            result_ty: ty,
+            source_ty: None,
+            operands: Box::new([
+                insert,
+                self.intern_constant_poison(ty),
+                self.intern_constant_aggregate_zero(mask_ty),
+            ]),
+            indices: Box::new([]),
+            mask: Box::new([]),
+            flags: crate::constant::ConstantExprFlags::none(),
+        })
+    }
+
+    /// The splat of `element` at the vector type `ty`, uniqued per pair. The
+    /// caller has applied `ConstantVector::getSplat`'s canonicalisation, so
+    /// `element` is no null, `undef` or `poison` (those are the zero and the
+    /// two markers). A fixed splat registers one use of `element`; see
+    /// `docs/divergences.md` D39 for what that means for a `ConstantVector`
+    /// splat. A scalable splat interns `getSplat`'s `insertelement` and
+    /// registers one use of that, as upstream's `shufflevector` does.
+    pub(crate) fn intern_constant_splat(&self, ty: TypeSlot, element: ValueSlot) -> ValueSlot {
+        let key = (ty, element);
+        if let Some(&id) = self.splat_constants.borrow().get(&key) {
+            return id;
+        }
+        let insert = matches!(self.type_data(ty), TypeData::ScalableVector { .. })
+            .then(|| self.intern_constant_expr(self.get_splat_insert(ty, element)));
+        let id = self.push_value(ValueData {
+            ty,
+            name: core::cell::RefCell::new(None),
+            debug_loc: None,
+            kind: ValueKindData::Constant(ConstantData::Splat { element, insert }),
+            use_list: core::cell::RefCell::new(Vec::new()),
+        });
+        self.register_constant_operand_uses(id);
+        self.splat_constants.borrow_mut().insert(key, id);
         id
     }
 

@@ -322,6 +322,48 @@ fn dynamic_denormal_mode_declines_flush() -> Result<(), IrError> {
     Ok(())
 }
 
+/// `FlushFPConstant`'s splat fast path flushes a scalable splat, and its
+/// `isa<ConstantExpr>(Operand)` check returns a scalable splat of a
+/// non-`ConstantFP` as it is.
+///
+/// **No upstream counterpart as a unit test.** The oracle is
+/// `llvm/lib/Analysis/ConstantFolding.cpp::FlushFPConstant`: for any vector,
+/// `if (auto *Splat = dyn_cast_or_null<ConstantFP>(Operand->getSplatValue()))`
+/// flushes the splat value and returns `ConstantVector::getSplat` of it, and
+/// only then `if (isa<ConstantExpr>(Operand)) return Operand;`, which a scalable
+/// splat is upstream (a `shufflevector`). The smallest positive denormal
+/// flushed with `preserve-sign` input is `+0.0`, so the flushed splat is the
+/// zero vector. Before the fast path was ported, a scalable vector declined.
+#[test]
+fn a_scalable_splat_is_flushed_and_an_expression_is_kept() -> Result<(), IrError> {
+    let m = module_new!("analysis-flush-splat")?;
+    let f32_ty = m.f32_type();
+    let denormal = ApFloat::from_bits(ApFloatSemantics::IeeeSingle, &ApInt::from_words(32, &[1]))?;
+    let element = f32_ty.const_ap_float(&denormal)?.as_constant();
+    let splat = m
+        .scalable_vector_type(f32_ty, lanes::<2>())?
+        .const_splat(element)?
+        .as_constant();
+    let mode = DenormalMode::new(
+        DenormalModeKind::PreserveSign,
+        DenormalModeKind::PreserveSign,
+    );
+    let flushed = flush_fp_constant(splat, mode, DenormalModeSide::Input)?
+        .expect("a ConstantFP splat flushes");
+    assert!(flushed.is_null_value(), "{flushed}");
+    assert_eq!(flushed.ty(), splat.ty());
+
+    let integers = m
+        .scalable_vector_type(m.i32_type(), lanes::<2>())?
+        .const_splat(m.i32_type().const_int(1_i32))?
+        .as_constant();
+    assert_eq!(
+        flush_fp_constant(integers, mode, DenormalModeSide::Input)?,
+        Some(integers)
+    );
+    Ok(())
+}
+
 /// llvmkit-specific subset of `ConstantFolding.cpp::FlushFPConstant`: FP
 /// *vector* operands must flush and fold element-wise through the
 /// DataLayout-aware analysis path (`constant_fold_fp_inst_operands`), not

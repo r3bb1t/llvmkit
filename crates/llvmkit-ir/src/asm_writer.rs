@@ -822,6 +822,7 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         ConstantData::Undef => f.write_str("undef"),
         ConstantData::Poison => f.write_str("poison"),
         ConstantData::Aggregate(elems) => fmt_aggregate_constant(f, host, elems),
+        ConstantData::Splat { element, insert } => fmt_splat_constant(f, host, *element, *insert),
         // `if (isa<ConstantAggregateZero>(CV) || isa<ConstantTargetNone>(CV))
         // { Out << "zeroinitializer"; return; }`
         ConstantData::AggregateZero => f.write_str("zeroinitializer"),
@@ -1001,6 +1002,21 @@ fn fmt_constant_expr<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     expr: &ConstantExprData,
 ) -> fmt::Result {
     let module = host.module();
+    // `if (CE->getOpcode() == Instruction::ShuffleVector) { if (auto *SplatVal
+    // = CE->getSplatValue()) { if (isa<ConstantInt>(SplatVal) ||
+    // isa<ConstantFP>(SplatVal)) { Out << "splat ("; … } } }` — a
+    // `shufflevector` written out as a splat of an integer or a float prints
+    // the shorthand, as a stored splat does.
+    if expr.opcode == ConstantExprOpcode::ShuffleVector
+        && let Ok(constant) = crate::Constant::try_from(host)
+        && let Some(splat) = constant.splat_value(false)
+        && is_int_or_fp_splat_value(
+            module.core_ref(),
+            splat.as_erased().slot_trusting_same_module(),
+        )
+    {
+        return fmt_splat_shorthand(f, splat.as_erased());
+    }
     f.write_str(expr.opcode.keyword())?;
     match &expr.flags {
         ConstantExprFlags::None => {}
@@ -1506,11 +1522,6 @@ fn collect_byte_string<B: ModuleBrand, C: Capability>(
     }
 }
 
-fn aggregate_splat_id(elem_ids: &[ValueSlot]) -> Option<ValueSlot> {
-    let first = elem_ids.first().copied()?;
-    elem_ids.iter().all(|id| *id == first).then_some(first)
-}
-
 fn is_int_or_fp_splat_value(module: &ModuleCore, id: ValueSlot) -> bool {
     matches!(
         module.context().value_data(id).kind,
@@ -1518,36 +1529,18 @@ fn is_int_or_fp_splat_value(module: &ModuleCore, id: ValueSlot) -> bool {
     )
 }
 
-/// Whether a uniform vector constant is spelled `splat (…)` rather than as an
-/// element list.
-///
-/// **The two vector kinds answer differently, and only one of them is a
-/// choice.** For a *fixed* vector both spellings are legal, and
-/// `AsmWriter.cpp`'s `writeConstantInternal` picks the shorthand only for
-/// `ConstantInt` and `ConstantFP`; that restriction is mirrored here so printed
-/// output stays byte-identical.
-///
-/// A *scalable* vector has no element-list spelling at all — its lane count is
-/// a minimum, not a count, so a list cannot describe the lanes one for one and
-/// LLVM would reject the text. `splat (…)` is the only form it has, whatever
-/// the element category, so the int/fp restriction must not apply. Upstream
-/// never faces the question: `ConstantVector::get` takes a fixed count, so a
-/// scalable vector constant with an element list cannot exist there. llvmkit
-/// builds one deliberately — it is how a scalable splat is represented, see
-/// `constant_fold::vector_splat_constant` — which is why the printer has to
-/// know the difference. `VectorType::const_vector` requires a scalable
-/// constant's lanes to agree, so every scalable aggregate that reaches here
-/// takes this arm and the element-list fallback below is fixed-width only.
-fn prints_as_splat<B: ModuleBrand, C: Capability>(
-    module: &ModuleCore,
-    ty: Type<'_, B, C>,
-    splat: ValueSlot,
-) -> bool {
-    match ty.data() {
-        TypeData::FixedVector { .. } => is_int_or_fp_splat_value(module, splat),
-        TypeData::ScalableVector { .. } => true,
-        _ => false,
-    }
+/// `Out << "splat ("; writeAsOperandInternal(Out, SplatVal, WriterCtx,
+/// /*PrintType=*/true); Out << ')';` — the shorthand `writeConstantInternal`
+/// writes for a vector whose splat value is a `ConstantInt` or a `ConstantFP`
+/// ([`is_int_or_fp_splat_value`]): a fixed `ConstantDataVector` /
+/// `ConstantVector`, or the `shufflevector` expression of a scalable splat.
+fn fmt_splat_shorthand<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    f: &mut fmt::Formatter<'_>,
+    value: Value<'ctx, B, C>,
+) -> fmt::Result {
+    f.write_str("splat (")?;
+    fmt_operand(f, value, None)?;
+    f.write_str(")")
 }
 
 fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
@@ -1567,21 +1560,12 @@ fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         print_escaped_string(f, &bytes)?;
         return f.write_str("\"");
     }
-    if let Some(splat) = aggregate_splat_id(elem_ids)
-        && prints_as_splat(module.core_ref(), ty, splat)
-    {
-        let data = module.context().value_data(splat);
-        let value = Value::from_parts(splat, module, data.ty);
-        f.write_str("splat (")?;
-        fmt_operand(f, value, None)?;
-        return f.write_str(")");
-    }
-    // The element-list fallback, which no *scalable* vector reaches: a shape
-    // with no LLVM spelling would be printed here, and the answer was to stop
-    // the constant being constructible rather than to invent a spelling for
-    // it. `VectorType::const_vector` requires a scalable constant's lanes to
-    // agree — it is llvmkit's `ConstantVector::getSplat` — so a scalable
-    // aggregate is always a splat and always took the arm above.
+    // An element list is no splat and never scalable: `intern_element_list`
+    // stores a vector list whose lanes are all one constant, and every
+    // scalable vector constant, as a `ConstantData::Splat`
+    // (`fmt_splat_constant`). So the list prints its elements, as
+    // `writeConstantInternal` prints a `ConstantVector` whose splat value is
+    // no `ConstantInt` or `ConstantFP`.
     let (open, close) = match ty.data() {
         TypeData::Array { .. } => ("[", "]"),
         TypeData::Struct(s) => {
@@ -1591,8 +1575,10 @@ fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                 _ => ("{ ", " }"),
             }
         }
-        TypeData::FixedVector { .. } | TypeData::ScalableVector { .. } => ("<", ">"),
-        _ => unreachable!("aggregate constant ty invariant"),
+        TypeData::FixedVector { .. } => ("<", ">"),
+        _ => unreachable!(
+            "aggregate constant ty invariant: an element list is an array, a struct or a fixed vector"
+        ),
     };
     f.write_str(open)?;
     let mut first = true;
@@ -1606,6 +1592,62 @@ fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         fmt_operand(f, v, None)?;
     }
     f.write_str(close)
+}
+
+/// A [`ConstantData::Splat`], printed as upstream prints the constant it
+/// stands for: `splat (…)` for a `ConstantInt` or `ConstantFP` element
+/// ([`fmt_splat_shorthand`]); otherwise a
+/// fixed splat's lanes in a `< … >` list, as `writeConstantInternal` writes a
+/// `ConstantVector` whose splat value is no `ConstantInt` or `ConstantFP`, and
+/// a scalable splat as the expression `ConstantVector::getSplat` builds,
+/// `shufflevector (insertelement (poison, V, i64 0), poison,
+/// zeroinitializer)`. The lanes are written one by one rather than
+/// collected, so a long splat costs its output and nothing more.
+fn fmt_splat_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    f: &mut fmt::Formatter<'_>,
+    host: Value<'ctx, B, C>,
+    element: ValueSlot,
+    insert: Option<ValueSlot>,
+) -> fmt::Result {
+    let module = host.module();
+    let ty = host.ty();
+    let value = Value::from_parts(element, module, module.context().value_data(element).ty);
+    if is_int_or_fp_splat_value(module.core_ref(), element) {
+        return fmt_splat_shorthand(f, value);
+    }
+    let Some((_, lanes, scalable)) = ty.data().as_vector() else {
+        unreachable!("splat constant ty invariant: a splat is a vector")
+    };
+    if scalable && let Some(insert) = insert {
+        // `ConstantVector::getSplat`'s `ConstantExpr::getShuffleVector(V,
+        // PoisonV, Zeros)`, whose `V` is the `insertelement` the splat stores
+        // and whose mask prints as the `i32` zero of the same element count.
+        f.write_str("shufflevector (")?;
+        let insert = Value::from_parts(insert, module, module.context().value_data(insert).ty);
+        fmt_operand(f, insert, None)?;
+        return write!(
+            f,
+            ", {ty} poison, <vscale x {} x i32> zeroinitializer)",
+            lanes.get()
+        );
+    }
+    // Every lane prints the same text, so it is rendered once and written per
+    // lane.
+    struct Lane<'v, 'ctx, B: ModuleBrand, C: Capability>(&'v Value<'ctx, B, C>);
+    impl<B: ModuleBrand, C: Capability> fmt::Display for Lane<'_, '_, B, C> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            fmt_operand(f, *self.0, None)
+        }
+    }
+    let lane_text = Lane(&value).to_string();
+    f.write_str("<")?;
+    for lane in 0..lanes.get() {
+        if lane != 0 {
+            f.write_str(", ")?;
+        }
+        f.write_str(&lane_text)?;
+    }
+    f.write_str(">")
 }
 
 // --------------------------------------------------------------------------

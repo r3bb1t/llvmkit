@@ -389,21 +389,21 @@ pub fn constant_fold_unary_instruction<'ctx, B: ModuleBrand + 'ctx, C: Capabilit
                 if scalable {
                     return Ok(None);
                 }
-                let Some(elements) = fixed_vector_elements_for_rebuild(operand, lanes, element_ty)?
+                let Some(walk) = lane_walk(&[operand], lanes, true) else {
+                    return Ok(None);
+                };
+                let Some(elements) = fixed_vector_elements_for_rebuild(operand, walk, element_ty)?
                 else {
                     return Ok(None);
                 };
-                let Ok(lane_count) = usize::try_from(lanes.get()) else {
-                    return Ok(None);
-                };
-                let mut folded = Vec::with_capacity(lane_count);
+                let mut folded = Vec::with_capacity(elements.len());
                 for element in elements {
                     let Some(result) = constant_fold_unary_instruction(opcode, element)? else {
                         return Ok(None);
                     };
                     folded.push(result);
                 }
-                return constant_aggregate_from_elements(operand.ty(), folded);
+                return walk.finish(operand.ty(), folded);
             }
             let Ok(value) = ConstantFloatValue::<FloatDyn, B, C>::try_from(operand) else {
                 return Ok(None);
@@ -442,7 +442,7 @@ pub(crate) fn constant_fold_binary_instruction_trusting_same_module<
         return Ok(None);
     }
 
-    if let Some(folded) = binop_identity(opcode, lhs, rhs)? {
+    if let Some(folded) = binop_identity(opcode, lhs, rhs) {
         return Ok(Some(folded));
     }
 
@@ -457,14 +457,14 @@ pub(crate) fn constant_fold_binary_instruction_trusting_same_module<
         return Ok(Some(poison_for(lhs.ty())));
     }
 
-    if let Some(folded) = fold_undef_int_binary(opcode, lhs, rhs)? {
+    if let Some(folded) = fold_undef_int_binary(opcode, lhs, rhs) {
         return Ok(Some(folded));
     }
     if let Some(folded) = fold_undef_float_binary(opcode, lhs, rhs)? {
         return Ok(Some(folded));
     }
 
-    if let Some(folded) = binop_rhs_absorber(opcode, rhs)? {
+    if let Some(folded) = binop_rhs_absorber(opcode, rhs) {
         return Ok(Some(folded));
     }
 
@@ -512,7 +512,7 @@ pub(crate) fn constant_fold_binary_instruction_trusting_same_module<
     if let Some(folded) = fold_i1_binary(opcode, lhs, rhs)? {
         return Ok(Some(folded));
     }
-    if let Some(folded) = binop_lhs_absorber(opcode, lhs)? {
+    if let Some(folded) = binop_lhs_absorber(opcode, lhs) {
         return Ok(Some(folded));
     }
     Ok(None)
@@ -536,26 +536,26 @@ fn fold_vector_binary<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     if scalable {
         return Ok(None);
     }
-    let Some(lhs_elements) = fixed_vector_elements_for_rebuild(lhs, lanes, element_ty)? else {
+    let Some(walk) = lane_walk(&[lhs, rhs], lanes, true) else {
         return Ok(None);
     };
-    let Some(rhs_elements) = fixed_vector_elements_for_rebuild(rhs, lanes, element_ty)? else {
+    let Some(lhs_elements) = fixed_vector_elements_for_rebuild(lhs, walk, element_ty)? else {
         return Ok(None);
     };
-    let Ok(lane_count) = usize::try_from(lanes.get()) else {
+    let Some(rhs_elements) = fixed_vector_elements_for_rebuild(rhs, walk, element_ty)? else {
         return Ok(None);
     };
-    if lhs_elements.len() != lane_count || rhs_elements.len() != lane_count {
+    if lhs_elements.len() != rhs_elements.len() {
         return Ok(None);
     }
-    let mut folded = Vec::with_capacity(lane_count);
+    let mut folded = Vec::with_capacity(lhs_elements.len());
     for (lhs_element, rhs_element) in lhs_elements.into_iter().zip(rhs_elements) {
         let Some(element) = build_binary_constant_or_expr(opcode, lhs_element, rhs_element)? else {
             return Ok(None);
         };
         folded.push(element);
     }
-    constant_aggregate_from_elements(lhs.ty(), folded)
+    walk.finish(lhs.ty(), folded)
 }
 
 fn fold_constant_expr_associative_binary<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
@@ -1002,19 +1002,19 @@ pub(crate) fn constant_fold_compare_instruction_trusting_same_module<
             return Ok(None);
         }
         let element_ty = Type::new(element_ty, lhs.module);
-        let Some(lhs_elements) = fixed_vector_elements_for_rebuild(lhs, lanes, element_ty)? else {
+        let Some(walk) = lane_walk(&[lhs, rhs], lanes, true) else {
             return Ok(None);
         };
-        let Some(rhs_elements) = fixed_vector_elements_for_rebuild(rhs, lanes, element_ty)? else {
+        let Some(lhs_elements) = fixed_vector_elements_for_rebuild(lhs, walk, element_ty)? else {
             return Ok(None);
         };
-        let Ok(lane_count) = usize::try_from(lanes.get()) else {
+        let Some(rhs_elements) = fixed_vector_elements_for_rebuild(rhs, walk, element_ty)? else {
             return Ok(None);
         };
-        if lhs_elements.len() != lane_count || rhs_elements.len() != lane_count {
+        if lhs_elements.len() != rhs_elements.len() {
             return Ok(None);
         }
-        let mut result = Vec::with_capacity(lane_count);
+        let mut result = Vec::with_capacity(lhs_elements.len());
         for (lhs_element, rhs_element) in lhs_elements.into_iter().zip(rhs_elements) {
             let Some(folded) = constant_fold_compare_instruction_trusting_same_module(
                 predicate,
@@ -1026,7 +1026,7 @@ pub(crate) fn constant_fold_compare_instruction_trusting_same_module<
             };
             result.push(folded);
         }
-        return constant_aggregate_from_elements(result_ty, result);
+        return walk.finish(result_ty, result);
     }
 
     match predicate {
@@ -1499,7 +1499,7 @@ pub(crate) fn constant_fold_select_instruction_trusting_same_module<
     if Constant::is_null_value(condition) {
         return Ok(Some(false_value));
     }
-    if constant_is_all_ones_value(condition)? {
+    if condition.is_all_ones_value() {
         return Ok(Some(true_value));
     }
 
@@ -1507,9 +1507,18 @@ pub(crate) fn constant_fold_select_instruction_trusting_same_module<
         return Ok(Some(if condition { true_value } else { false_value }));
     }
 
-    if let Some((_, lanes, scalable)) = condition.ty().data().as_vector()
-        && !scalable
-        && let Some(condition_elements) = aggregate_elements(condition)
+    // `if (ConstantVector *CondV = dyn_cast<ConstantVector>(Cond))`: an `i1`
+    // lane is no `ConstantDataSequential` element, so a fixed element list or
+    // splat of them is a `ConstantVector` (a zero is answered above). The
+    // lanes are read one at a time, as upstream's loop reads them, so a lane
+    // that `break`s ends the walk there. A splat that stores one lane walks
+    // at most `MAX_EXPANDED_LANES` (D40).
+    if let Some((_, lanes, false)) = condition.ty().data().as_vector()
+        && matches!(
+            &condition.as_erased().data().kind,
+            ValueKindData::Constant(ConstantData::Aggregate(_) | ConstantData::Splat { .. })
+        )
+        && may_walk_lanes(condition, u64::from(lanes.get()))
     {
         let Some((value_element_ty, value_lanes, value_scalable)) =
             true_value.ty().data().as_vector()
@@ -1522,26 +1531,16 @@ pub(crate) fn constant_fold_select_instruction_trusting_same_module<
         let Ok(lane_count) = usize::try_from(lanes.get()) else {
             return Ok(None);
         };
-        if condition_elements.len() != lane_count {
-            return Ok(None);
-        }
         let value_element_ty = Type::new(value_element_ty, true_value.module);
-        let Some(true_elements) =
-            fixed_vector_elements_for_rebuild(true_value, lanes, value_element_ty)?
-        else {
-            return Ok(None);
-        };
-        let Some(false_elements) =
-            fixed_vector_elements_for_rebuild(false_value, lanes, value_element_ty)?
-        else {
-            return Ok(None);
-        };
-        let mut result = Vec::with_capacity(lane_count);
-        for ((condition, true_element), false_element) in condition_elements
-            .into_iter()
-            .zip(true_elements)
-            .zip(false_elements)
-        {
+        let mut result = Vec::new();
+        for lane in 0..lanes.get() {
+            // `ConstantExpr::getExtractElement(V1, ConstantInt::get(Ty, i))`,
+            // the same of `V2`, and `cast<Constant>(CondV->getOperand(i))`.
+            let true_element = extract_lane(true_value, lane, value_element_ty)?;
+            let false_element = extract_lane(false_value, lane, value_element_ty)?;
+            let Some(condition) = condition.aggregate_element(lane) else {
+                return Ok(None);
+            };
             // Upstream (ConstantFold.cpp) `break`s out of the per-element loop
             // on a non-`ConstantInt` lane rather than bailing out of the whole
             // fold: the partially-built `Result` is then discarded (its length
@@ -1638,21 +1637,14 @@ pub(crate) fn constant_fold_extract_element_instruction_trusting_same_module<
         return Ok(None);
     };
     let index_ap = index_constant.ap_int();
-    let index_usize = if scalable {
-        index_ap
-            .try_zext_u64()
-            .and_then(|raw_index| usize::try_from(raw_index).ok())
-    } else {
+    // `if (auto *ValFVTy = dyn_cast<FixedVectorType>(Val->getType()))
+    //   if (CIdx->uge(ValFVTy->getNumElements())) return PoisonValue::get(…);`
+    if !scalable {
         let limit = u64::from(lanes.get());
-        let raw_index = index_ap.limited_value(limit);
-        if raw_index == limit {
+        if index_ap.limited_value(limit) == limit {
             return Ok(Some(poison_for(element_ty)));
         }
-        Some(match usize::try_from(raw_index) {
-            Ok(index) => index,
-            Err(_) => return Ok(None),
-        })
-    };
+    }
 
     if let ValueKindData::Constant(ConstantData::Expr(expr)) = &vector.as_erased().data().kind {
         match expr.opcode {
@@ -1731,16 +1723,29 @@ pub(crate) fn constant_fold_extract_element_instruction_trusting_same_module<
         }
     }
 
-    let Some(index_usize) = index_usize else {
-        return Ok(None);
-    };
-    let Some(elements) = aggregate_elements(vector) else {
-        return Ok(None);
-    };
-    let Some(element) = elements.get(index_usize).copied() else {
-        return Ok(None);
-    };
-    Ok(Some(element))
+    // `if (Constant *C = Val->getAggregateElement(CIdx)) return C;`, through
+    // `getAggregateElement(Constant *)`: an index wider than 64 bits answers
+    // `nullptr`, and the rest reaches `getAggregateElement(unsigned)` through
+    // the implicit `uint64_t` to `unsigned` conversion, its low 32 bits. One
+    // lane is read, so the cost does not depend on the lane count.
+    if let Some(raw_index) = index_ap.try_zext_u64() {
+        let Ok(index) = u32::try_from(raw_index & u64::from(u32::MAX)) else {
+            unreachable!("invariant: a value masked to its low 32 bits fits u32")
+        };
+        if let Some(element) = vector.aggregate_element(index) {
+            return Ok(Some(element));
+        }
+    }
+    // `if (CIdx->getValue().ult(ValVTy->getElementCount().getKnownMinValue()))
+    //   if (Constant *SplatVal = Val->getSplatValue()) return SplatVal;`
+    // `getLimitedValue(N) < N` is `ult(N)`, at any width.
+    let min_lanes = u64::from(lanes.get());
+    if index_ap.limited_value(min_lanes) < min_lanes
+        && let Some(splat) = vector.splat_value(false)
+    {
+        return Ok(Some(splat));
+    }
+    Ok(None)
 }
 
 /// Fold an `insertelement` with constant operands.
@@ -1796,7 +1801,11 @@ pub(crate) fn constant_fold_insert_element_instruction_trusting_same_module<
         return Ok(None);
     };
     let element_ty = Type::new(element_ty, vector.module);
-    let Some(mut elements) = fixed_vector_elements_for_rebuild(vector, lanes, element_ty)? else {
+    // An insertion changes one lane, so its answer is never uniform.
+    let Some(walk) = lane_walk(&[vector], lanes, false) else {
+        return Ok(None);
+    };
+    let Some(mut elements) = fixed_vector_elements_for_rebuild(vector, walk, element_ty)? else {
         return Ok(None);
     };
     let Some(slot) = elements.get_mut(index) else {
@@ -1830,6 +1839,88 @@ pub(crate) fn constant_fold_shuffle_vector_instruction_trusting_same_module<
     rhs: Constant<'ctx, B, C>,
     mask: &[ShuffleMaskElem],
 ) -> IrResult<Option<Constant<'ctx, B, C>>> {
+    // Upstream builds the result as `VectorType::get(EltTy, MaskEltCount)`,
+    // which asserts a non-zero count. No `shufflevector` has an empty mask
+    // (its mask is a vector constant), and llvmkit has no zero-lane result
+    // type to build, so an empty mask folds to nothing, as a mask too long
+    // for `u32` already does.
+    let Some(mask_lanes) = u32::try_from(mask.len()).ok().and_then(NonZeroU32::new) else {
+        return Ok(None);
+    };
+    fold_shuffle_vector(lhs, rhs, ShuffleMask::Lanes(mask), mask_lanes)
+}
+
+/// `ConstantFoldShuffleVectorInstruction` for a `shufflevector` whose mask is
+/// the constant `mask`, as a constant expression keeps it: a mask whose every
+/// lane is one element (`undef` or `poison`, a zero, or a fixed splat of one
+/// index) is folded from that element, and any other is decoded lane by lane
+/// ([`shufflevector_mask_from_constant`]), as an element list stores its
+/// lanes anyway. So a uniform mask of 4294967295 lanes, a few bytes as
+/// `splat (i32 1)`, costs nothing per lane (`docs/divergences.md` D40).
+pub(crate) fn constant_fold_shuffle_vector_with_mask_constant<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+>(
+    lhs: Constant<'ctx, B, C>,
+    rhs: Constant<'ctx, B, C>,
+    mask: Constant<'ctx, B, C>,
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
+    let Some((_, mask_lanes, _)) = mask.ty().data().as_vector() else {
+        return Ok(None);
+    };
+    let uniform = if is_undef_or_poison(mask) {
+        Some(Some(ShuffleMaskElem::Poison))
+    } else if Constant::is_null_value(mask) {
+        Some(Some(ShuffleMaskElem::Lane(0)))
+    } else if let ValueKindData::Constant(ConstantData::Splat { .. }) =
+        &mask.as_erased().data().kind
+    {
+        Some(mask.splat_value(false).and_then(decode_mask_lane))
+    } else {
+        None
+    };
+    match uniform {
+        Some(Some(lane)) => fold_shuffle_vector(lhs, rhs, ShuffleMask::Uniform(lane), mask_lanes),
+        // A lane `getShuffleMask` cannot read, as the list decode refuses it.
+        Some(None) => Ok(None),
+        None => {
+            let Some(mask) = shufflevector_mask_from_constant(mask) else {
+                return Ok(None);
+            };
+            constant_fold_shuffle_vector_instruction_trusting_same_module(lhs, rhs, &mask)
+        }
+    }
+}
+
+/// A `shufflevector` mask for [`fold_shuffle_vector`]: its lanes, or the one
+/// element every lane is.
+#[derive(Clone, Copy)]
+enum ShuffleMask<'m> {
+    Lanes(&'m [ShuffleMaskElem]),
+    Uniform(ShuffleMaskElem),
+}
+
+impl ShuffleMask<'_> {
+    /// `all_of(Mask, [](int Elt) { return Elt == Wanted; })`.
+    fn all(self, wanted: ShuffleMaskElem) -> bool {
+        match self {
+            Self::Lanes(lanes) => lanes.iter().all(|lane| *lane == wanted),
+            Self::Uniform(lane) => lane == wanted,
+        }
+    }
+}
+
+/// Ports `ConstantFoldShuffleVectorInstruction` (`ConstantFold.cpp`) over a
+/// mask of `mask_lanes` lanes. A uniform mask runs the same arms; its per-lane
+/// loop would read one source lane for every mask lane, so that lane is read
+/// once and the repeated list `ConstantVector::get` would build is its splat.
+fn fold_shuffle_vector<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    lhs: Constant<'ctx, B, C>,
+    rhs: Constant<'ctx, B, C>,
+    mask: ShuffleMask<'_>,
+    mask_lanes: NonZeroU32,
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     let Some((element_ty, lanes, scalable)) = lhs.ty().data().as_vector() else {
         return Ok(None);
     };
@@ -1838,27 +1929,17 @@ pub(crate) fn constant_fold_shuffle_vector_instruction_trusting_same_module<
     }
     let module = lhs.as_erased().module;
     let element_ty = Type::new(element_ty, module);
-    // Upstream builds the result as `VectorType::get(EltTy, MaskEltCount)`,
-    // which asserts a non-zero count. No `shufflevector` has an empty mask
-    // (its mask is a vector constant), and llvmkit has no zero-lane result
-    // type to build, so an empty mask folds to nothing, as a mask too long
-    // for `u32` already does.
-    let Some(result_lanes) = u32::try_from(mask.len()).ok().and_then(NonZeroU32::new) else {
-        return Ok(None);
-    };
     let result_ty =
-        vector_type_with_scalability(module, element_ty, result_lanes, scalable).as_type();
-    if mask
-        .iter()
-        .all(|element| *element == ShuffleMaskElem::Poison)
-    {
+        vector_type_with_scalability(module, element_ty, mask_lanes, scalable).as_type();
+    // `if (all_of(Mask, [](int Elt) { return Elt == PoisonMaskElem; }))
+    //   return PoisonValue::get(VectorType::get(EltTy, MaskEltCount));`
+    if mask.all(ShuffleMaskElem::Poison) {
         return Ok(Some(poison_for(result_ty)));
     }
-    if mask
-        .iter()
-        .all(|element| *element == ShuffleMaskElem::Lane(0))
-    {
-        let index = lhs.as_erased().module.i32_type().const_zero().as_constant();
+    // `if (all_of(Mask, [](int Elt) { return Elt == 0; }))`: the splat of
+    // lane 0, unless a scalable splat would fold back into a `shufflevector`.
+    if mask.all(ShuffleMaskElem::Lane(0)) {
+        let index = module.i32_type().const_zero().as_constant();
         if let Some(element) =
             constant_fold_extract_element_instruction_trusting_same_module(lhs, index)?
             && (!scalable || Constant::is_null_value(element) || is_undef_or_poison(element))
@@ -1866,42 +1947,53 @@ pub(crate) fn constant_fold_shuffle_vector_instruction_trusting_same_module<
             return vector_splat_constant(result_ty, element);
         }
     }
+    // `if (isa<ScalableVectorType>(V1VTy)) return nullptr;`
     if scalable {
         return Ok(None);
     }
-    let Some(lhs_elements) = fixed_vector_elements_for_rebuild(lhs, lanes, element_ty)? else {
-        return Ok(None);
-    };
-    let Some(rhs_elements) = fixed_vector_elements_for_rebuild(rhs, lanes, element_ty)? else {
-        return Ok(None);
-    };
-    let mut result = Vec::with_capacity(mask.len());
-    for &element in mask {
-        let ShuffleMaskElem::Lane(element) = element else {
-            result.push(element_ty.undef().as_constant());
-            continue;
+    // `for (unsigned i = 0; i != MaskNumElts; ++i)`: each mask lane reads one
+    // source lane, through `ConstantExpr::getExtractElement` — `undef` for a
+    // `-1` lane or one past both sources — so the walk costs the mask's
+    // stored length, and never a source operand's lane count.
+    let source_lane = |lane: ShuffleMaskElem| {
+        let ShuffleMaskElem::Lane(index) = lane else {
+            return Ok(element_ty.undef().as_constant());
         };
-        let source = if element < lanes.get() {
-            usize::try_from(element)
-                .ok()
-                .and_then(|index| lhs_elements.get(index).copied())
+        if index < lanes.get() {
+            extract_lane(lhs, index, element_ty)
+        } else if index - lanes.get() < lanes.get() {
+            extract_lane(rhs, index - lanes.get(), element_ty)
         } else {
-            let rhs_index = element - lanes.get();
-            if rhs_index >= lanes.get() {
-                Some(element_ty.undef().as_constant())
-            } else {
-                usize::try_from(rhs_index)
-                    .ok()
-                    .and_then(|index| rhs_elements.get(index).copied())
+            Ok(element_ty.undef().as_constant())
+        }
+    };
+    match mask {
+        ShuffleMask::Lanes(mask) => {
+            let mut result = Vec::with_capacity(mask.len());
+            for &lane in mask {
+                result.push(source_lane(lane)?);
             }
-        };
-        let Some(source) = source else {
-            return Ok(None);
-        };
-        result.push(source);
+            constant_aggregate_from_elements(result_ty, result)
+        }
+        ShuffleMask::Uniform(lane) => vector_splat_constant(result_ty, source_lane(lane)?),
     }
-    constant_aggregate_from_elements(result_ty, result)
 }
+
+/// One mask lane as `ShuffleVectorInst::getShuffleMask` reads it: `undef` or
+/// `poison` is `PoisonMaskElem`, and a `ConstantInt` its zero-extended value,
+/// which llvmkit keeps as a `u32` lane and refuses (`None`) past that.
+fn decode_mask_lane<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    lane: Constant<'ctx, B, C>,
+) -> Option<ShuffleMaskElem> {
+    if is_undef_or_poison(lane) {
+        return Some(ShuffleMaskElem::Poison);
+    }
+    let int = ConstantIntValue::<IntDyn, B, C>::try_from(lane).ok()?;
+    u32::try_from(int.ap_int().try_zext_u64()?)
+        .ok()
+        .map(ShuffleMaskElem::Lane)
+}
+
 /// Decode the vector constant operand spelling used by constant-expression
 /// `shufflevector` into the instruction-style mask list.
 ///
@@ -1922,21 +2014,20 @@ pub fn shufflevector_mask_from_constant<'ctx, B: ModuleBrand + 'ctx, C: Capabili
     if scalable {
         return None;
     }
+    // A splat mask is one lane, decoded once and repeated, as the zero mask
+    // above is; it is read off the storage, since an element list is never a
+    // splat. The instruction stores one entry per lane either way
+    // (`ShuffleVectorInst::ShuffleMask` upstream).
+    if let ValueKindData::Constant(ConstantData::Splat { .. }) = &mask.as_erased().data().kind
+        && let Some(element) = mask.aggregate_element(0)
+    {
+        return Some(vec![decode_mask_lane(element)?; lane_count]);
+    }
     let elements = aggregate_elements(mask)?;
     if elements.len() != lane_count {
         return None;
     }
-    elements
-        .into_iter()
-        .map(|element| {
-            if is_undef_or_poison(element) {
-                return Some(ShuffleMaskElem::Poison);
-            }
-            let int = ConstantIntValue::<IntDyn, B, C>::try_from(element).ok()?;
-            let value = int.ap_int().try_zext_u64()?;
-            u32::try_from(value).ok().map(ShuffleMaskElem::Lane)
-        })
-        .collect()
+    elements.into_iter().map(decode_mask_lane).collect()
 }
 
 /// Fold an `extractvalue` with a constant aggregate operand: the element at
@@ -2134,18 +2225,9 @@ fn pointer_address_space<B: ModuleBrand, C: Capability>(
     }
 }
 
-/// The vector constant every lane of which is `scalar`.
-///
-/// A *scalable* vector is stored the same way — `min_len` equal elements —
-/// which is llvmkit's representation choice rather than upstream's, since
-/// `ConstantVector::get` needs a fixed count and so cannot hold one at all.
-/// It round-trips because [`fmt_aggregate_constant`](crate::asm_writer) prints
-/// a uniform vector as `splat (…)`. `AsmWriter.cpp` restricts that shorthand to
-/// `ConstantInt` and `ConstantFP`, and `prints_as_splat` mirrors the
-/// restriction for *fixed* vectors only: a scalable vector takes the shorthand
-/// whatever its element category, because it has no other spelling. Nothing
-/// else can be built — `VectorType::const_vector` requires a scalable
-/// constant's lanes to agree.
+/// The vector constant every lane of which is `scalar`:
+/// `ConstantVector::getSplat(ElementCount, V)` at `ty`'s count, which stores
+/// the one element whatever the lane count ([`VectorType::const_splat`]).
 fn vector_splat_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     ty: Type<'ctx, B, C>,
     scalar: Constant<'ctx, B, C>,
@@ -2156,11 +2238,8 @@ fn vector_splat_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     if vector_ty.element() != scalar.ty() {
         return Ok(None);
     }
-    let Ok(lane_count) = usize::try_from(vector_ty.min_len().get()) else {
-        return Ok(None);
-    };
     vector_ty
-        .const_vector((0..lane_count).map(|_| scalar))
+        .const_splat(scalar)
         .map(|aggregate| Some(aggregate.as_constant()))
 }
 
@@ -2168,21 +2247,17 @@ fn fold_undef_int_binary<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     opcode: BinaryOpcode,
     lhs: Constant<'ctx, B, C>,
     rhs: Constant<'ctx, B, C>,
-) -> IrResult<Option<Constant<'ctx, B, C>>> {
+) -> Option<Constant<'ctx, B, C>> {
     let lhs_undef = is_undef(lhs);
     let rhs_undef = is_undef(rhs);
     if !lhs_undef && !rhs_undef {
-        return Ok(None);
+        return None;
     }
     if !is_scalar_int_or_scalable_int_vector_type(lhs.ty()) {
-        return Ok(None);
+        return None;
     }
-    let Some(zero_constant) = lhs.ty().null_value() else {
-        return Ok(None);
-    };
-    let Some(all_ones_constant) = all_ones_constant_for_type(lhs.ty())? else {
-        return Ok(None);
-    };
+    let zero_constant = lhs.ty().null_value()?;
+    let all_ones_constant = all_ones_constant_for_type(lhs.ty())?;
     let undef = || lhs.ty().undef().as_constant();
     let zero = || zero_constant;
     let all_ones = || all_ones_constant;
@@ -2216,9 +2291,9 @@ fn fold_undef_int_binary<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         | BinaryOpcode::Fsub
         | BinaryOpcode::Fmul
         | BinaryOpcode::Fdiv
-        | BinaryOpcode::Frem => return Ok(None),
+        | BinaryOpcode::Frem => return None,
     };
-    Ok(Some(folded))
+    Some(folded)
 }
 
 fn is_scalar_int_or_scalable_int_vector_type<B: ModuleBrand, C: Capability>(
@@ -2249,7 +2324,7 @@ fn is_i1_or_i1_vector_type<B: ModuleBrand, C: Capability>(ty: Type<'_, B, C>) ->
 fn constant_not<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Constant<'ctx, B, C>,
 ) -> IrResult<Option<Constant<'ctx, B, C>>> {
-    let Some(all_ones) = all_ones_constant_for_type(value.ty())? else {
+    let Some(all_ones) = all_ones_constant_for_type(value.ty()) else {
         return Ok(None);
     };
     build_binary_constant_or_expr(BinaryOpcode::Xor, value, all_ones)
@@ -2258,15 +2333,16 @@ fn constant_not<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 fn constant_has_low_bit_set<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     constant: Constant<'ctx, B, C>,
 ) -> bool {
-    if let Ok(value) = ConstantIntValue::<IntDyn, B, C>::try_from(constant) {
-        return value.ap_int().bit(0);
-    }
-    aggregate_elements(constant).is_some_and(|elements| {
-        !elements.is_empty()
-            && elements
-                .iter()
-                .all(|element| constant_has_low_bit_set(*element))
-    })
+    // `match(C, m_APInt(CV)) && (*CV)[0]`: a `ConstantInt`, or a vector whose
+    // `getSplatValue(/*AllowPoison=*/false)` is one.
+    let splat = if constant.ty().is_vector() {
+        constant.splat_value(false)
+    } else {
+        Some(constant)
+    };
+    splat
+        .and_then(|splat| ConstantIntValue::<IntDyn, B, C>::try_from(splat).ok())
+        .is_some_and(|value| value.ap_int().bit(0))
 }
 
 fn fold_i1_binary<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
@@ -2531,20 +2607,20 @@ fn fold_same_lane_vector_cast<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     if src_scalable {
         return Ok(None);
     }
-    let Some(elements) = fixed_vector_elements_for_rebuild(operand, lanes, src_element_ty)? else {
+    let Some(walk) = lane_walk(&[operand], lanes, true) else {
         return Ok(None);
     };
-    let Ok(lane_count) = usize::try_from(lanes.get()) else {
+    let Some(elements) = fixed_vector_elements_for_rebuild(operand, walk, src_element_ty)? else {
         return Ok(None);
     };
-    let mut folded = Vec::with_capacity(lane_count);
+    let mut folded = Vec::with_capacity(elements.len());
     for element in elements {
         let Some(result) = fold_maybe_undesirable_cast(opcode, element, dest_element_ty)? else {
             return Ok(None);
         };
         folded.push(result);
     }
-    constant_aggregate_from_elements(dest_ty, folded)
+    walk.finish(dest_ty, folded)
 }
 
 fn fold_bitcast<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
@@ -2554,8 +2630,8 @@ fn fold_bitcast<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     if operand.ty() == dest_ty {
         return Ok(Some(operand));
     }
-    if constant_is_all_ones_value(operand)?
-        && let Some(all_ones) = all_ones_constant_for_type(dest_ty)?
+    if operand.is_all_ones_value()
+        && let Some(all_ones) = all_ones_constant_for_type(dest_ty)
     {
         return Ok(Some(all_ones));
     }
@@ -2585,9 +2661,6 @@ fn fold_bitcast<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             Err(err) => Err(err),
         };
     }
-    if let Some(folded) = fold_vector_bitcast_splat(operand, dest_ty)? {
-        return Ok(Some(folded));
-    }
     if let Ok(src) = ConstantIntValue::<IntDyn, B, C>::try_from(operand)
         && let Ok(dst_ty) = IntType::<IntDyn, B, C>::try_from(dest_ty)
         && src.bit_width() == dst_ty.bit_width()
@@ -2614,66 +2687,6 @@ fn fold_bitcast<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         ));
     }
     Ok(None)
-}
-
-fn fold_vector_bitcast_splat<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    operand: Constant<'ctx, B, C>,
-    dest_ty: Type<'ctx, B, C>,
-) -> IrResult<Option<Constant<'ctx, B, C>>> {
-    let Ok(dst_vec_ty) = VectorType::<ElemDyn, LenDyn, _, C>::try_from(dest_ty) else {
-        return Ok(None);
-    };
-    let dst_elem_ty = dst_vec_ty.element();
-    let Some(elements) = aggregate_elements(operand) else {
-        return Ok(None);
-    };
-    let mut pattern = None;
-    let mut source_bits = 0_u64;
-    for element in elements {
-        let Ok(int_value) = ConstantIntValue::<IntDyn, B, C>::try_from(element) else {
-            return Ok(None);
-        };
-        source_bits = source_bits.saturating_add(u64::from(int_value.bit_width()));
-        let element_pattern = if int_value.ap_int().is_zero() {
-            VectorBitcastSplat::Zero
-        } else if int_value.ap_int().is_all_ones() {
-            VectorBitcastSplat::AllOnes
-        } else {
-            return Ok(None);
-        };
-        match pattern {
-            Some(current) if current != element_pattern => return Ok(None),
-            Some(_) => {}
-            None => pattern = Some(element_pattern),
-        }
-    }
-    let Some(pattern) = pattern else {
-        return Ok(None);
-    };
-    let Some(dst_elem_bits) = type_bit_width_for_bitcast(dst_elem_ty) else {
-        return Ok(None);
-    };
-    if source_bits != u64::from(dst_elem_bits) * u64::from(dst_vec_ty.min_len().get()) {
-        return Ok(None);
-    }
-    let Some(scalar) = (match pattern {
-        VectorBitcastSplat::Zero => dst_elem_ty.null_value(),
-        VectorBitcastSplat::AllOnes => all_ones_constant_for_type(dst_elem_ty)?,
-    }) else {
-        return Ok(None);
-    };
-    let Ok(lane_count) = usize::try_from(dst_vec_ty.min_len().get()) else {
-        return Ok(None);
-    };
-    dst_vec_ty
-        .const_vector((0..lane_count).map(|_| scalar))
-        .map(|aggregate| Some(aggregate.as_constant()))
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum VectorBitcastSplat {
-    Zero,
-    AllOnes,
 }
 
 fn fold_int_predicate(predicate: IntPredicate, lhs: &ApInt, rhs: &ApInt) -> bool {
@@ -2847,7 +2860,7 @@ fn bool_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     if let Ok(bool_ty) = IntType::<bool, B, C>::try_from(ty) {
         return Ok(Some(bool_ty.const_int(value).as_constant()));
     }
-    let Some((element_ty, lanes, _scalable)) = ty.data().as_vector() else {
+    let Some((element_ty, _, _)) = ty.data().as_vector() else {
         return Ok(None);
     };
     let module = ty.module;
@@ -2855,13 +2868,10 @@ fn bool_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     if element_ty != bool_ty.as_type().slot_trusting_same_module() {
         return Ok(None);
     }
-    let Ok(lane_count) = usize::try_from(lanes.get()) else {
-        return Ok(None);
-    };
     let scalar = bool_ty.const_int(value).as_constant();
     let vector_ty = VectorType::<ElemDyn, LenDyn, _, C>::try_from(ty)?;
     vector_ty
-        .const_vector((0..lane_count).map(|_| scalar))
+        .const_splat(scalar)
         .map(|constant| Some(constant.as_constant()))
 }
 
@@ -2915,24 +2925,172 @@ fn bool_constant_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     (constant.bit_width() == 1).then(|| !constant.ap_int().is_zero())
 }
 
+/// The most lanes a fold builds one by one out of an operand that stores
+/// fewer lanes than its type has: a splat ([`ConstantData::Splat`]), a zero,
+/// `undef`, `poison` or a constant expression. Not upstream's: upstream walks
+/// every lane whatever the operand stores, so `<4294967295 x i32> splat (i32
+/// 1)`, a few bytes of text, would cost billions of lanes. llvmkit declines
+/// such a fold instead (the instruction or the constant expression is kept,
+/// as for any fold that answers nothing); `docs/divergences.md` D40.
+///
+/// An operand that stores its lanes (an element list) is walked at any
+/// length, and an answer as long as it is built at any length: that work
+/// costs what was already stored. A longer answer than the operand stores
+/// (a `bitcast` that splits each lane into several) is held to the cap.
+pub(crate) const MAX_EXPANDED_LANES: u32 = 1 << 16;
+
+/// Whether a fold may walk, or build, `lanes` lanes out of `constant`: there
+/// are at most [`MAX_EXPANDED_LANES`], or `constant` is an element list that
+/// stores at least that many, so the work costs no more than what was stored.
+pub(crate) fn may_walk_lanes<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+    lanes: u64,
+) -> bool {
+    if lanes <= u64::from(MAX_EXPANDED_LANES) {
+        return true;
+    }
+    match &constant.as_erased().data().kind {
+        ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
+            u64::try_from(elements.len()).is_ok_and(|stored| lanes <= stored)
+        }
+        _ => false,
+    }
+}
+
+/// `ConstantExpr::getExtractElement(V, ConstantInt::get(Int32Ty, Index))`:
+/// the folded lane, or the `extractelement` expression where it does not
+/// fold. `ConstantInt::get` takes the `unsigned` lane number into `i32`, so
+/// every lane of a fixed vector has an index.
+fn extract_lane<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    vector: Constant<'ctx, B, C>,
+    lane: u32,
+    element_ty: Type<'ctx, B, C>,
+) -> IrResult<Constant<'ctx, B, C>> {
+    // The fold's own answer for every operand that is no constant expression:
+    // `poison` and `undef` answer their marker and everything else
+    // `getAggregateElement`, which reads the stored lane. Read it here without
+    // interning the index constant the fold would be asked with.
+    if !matches!(
+        &vector.as_erased().data().kind,
+        ValueKindData::Constant(ConstantData::Expr(_))
+    ) && let Some(element) = vector.aggregate_element(lane)
+    {
+        return Ok(element);
+    }
+    let index = vector
+        .as_erased()
+        .module
+        .i32_type()
+        .const_int_raw(u64::from(lane), crate::Signedness::Unsigned)?
+        .as_constant();
+    if let Some(folded) =
+        constant_fold_extract_element_instruction_trusting_same_module(vector, index)?
+    {
+        return Ok(folded);
+    }
+    vector.module.constant_expr(
+        element_ty,
+        ConstantExprOpcode::ExtractElement,
+        [vector.as_erased(), index.as_erased()],
+        [],
+        [],
+        ConstantExprFlags::none(),
+    )
+}
+
+/// How a fold that rebuilds a fixed vector lane by lane walks it: the
+/// witness that the walk is bounded, asked once per fold ([`lane_walk`]) and
+/// taken by [`fixed_vector_elements_for_rebuild`], so no rebuild runs without
+/// it. Its fields are private to this module, so no other code mints one.
+#[derive(Clone, Copy)]
+struct LaneWalk {
+    lanes: NonZeroU32,
+    uniform: bool,
+}
+
+impl LaneWalk {
+    /// The lanes the fold reads: lane 0 alone for a uniform walk.
+    fn read_lanes(self) -> NonZeroU32 {
+        if self.uniform {
+            NonZeroU32::MIN
+        } else {
+            self.lanes
+        }
+    }
+
+    /// The vector of type `ty` the folded `elements` stand for: their list,
+    /// or, for a uniform walk, the splat of the one element. Every lane of a
+    /// uniform walk folds the same inputs to the same answer, so upstream's
+    /// per-lane list is that answer repeated, which `ConstantVector::get`
+    /// canonicalises as `ConstantVector::getSplat` does.
+    fn finish<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+        self,
+        ty: Type<'ctx, B, C>,
+        elements: Vec<Constant<'ctx, B, C>>,
+    ) -> IrResult<Option<Constant<'ctx, B, C>>> {
+        if !self.uniform {
+            return constant_aggregate_from_elements(ty, elements);
+        }
+        match elements.as_slice() {
+            [element] => vector_splat_constant(ty, *element),
+            _ => Ok(None),
+        }
+    }
+}
+
+/// Whether, and how, a fold that rebuilds `lanes` lanes out of `operands` may
+/// walk them (`docs/divergences.md` D40):
+///
+/// - every lane, when there are at most [`MAX_EXPANDED_LANES`] or one of the
+///   operands stores that many ([`may_walk_lanes`]), so the walk costs no
+///   more than the input: a long splat beside a stored list of as many lanes
+///   is walked, as upstream walks it;
+/// - lane 0 alone, when `uniform_answer` (the fold's lanes are independent)
+///   and every operand stores one value for all its lanes
+///   ([`Constant::has_uniform_lanes`]): every lane then folds alike;
+/// - not at all otherwise (`None`), and the fold declines.
+fn lane_walk<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    operands: &[Constant<'ctx, B, C>],
+    lanes: NonZeroU32,
+    uniform_answer: bool,
+) -> Option<LaneWalk> {
+    if operands
+        .iter()
+        .any(|operand| may_walk_lanes(*operand, u64::from(lanes.get())))
+    {
+        return Some(LaneWalk {
+            lanes,
+            uniform: false,
+        });
+    }
+    (uniform_answer && operands.iter().all(|operand| operand.has_uniform_lanes())).then_some(
+        LaneWalk {
+            lanes,
+            uniform: true,
+        },
+    )
+}
+
+/// The lanes of the fixed vector `vector` that `walk` reads, each as
+/// `ConstantExpr::getExtractElement` answers it, for a fold that rebuilds the
+/// vector lane by lane.
 fn fixed_vector_elements_for_rebuild<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     vector: Constant<'ctx, B, C>,
-    lanes: NonZeroU32,
+    walk: LaneWalk,
     element_ty: Type<'ctx, B, C>,
 ) -> IrResult<Option<Vec<Constant<'ctx, B, C>>>> {
-    if let Some(elements) = aggregate_elements(vector) {
-        let Ok(lane_count) = usize::try_from(lanes.get()) else {
-            return Ok(None);
-        };
+    let lanes = walk.read_lanes();
+    let Ok(lane_count) = usize::try_from(lanes.get()) else {
+        return Ok(None);
+    };
+    if !walk.uniform
+        && let Some(elements) = aggregate_elements(vector)
+    {
         if elements.len() == lane_count {
             return Ok(Some(elements));
         }
         return Ok(None);
     }
-
-    let Ok(lane_count) = usize::try_from(lanes.get()) else {
-        return Ok(None);
-    };
     let fill = if is_undef(vector) {
         Some(element_ty.undef().as_constant())
     } else if is_poison(vector) {
@@ -2944,28 +3102,9 @@ fn fixed_vector_elements_for_rebuild<'ctx, B: ModuleBrand + 'ctx, C: Capability>
         return Ok(Some((0..lane_count).map(|_| fill).collect()));
     }
 
-    let i32_ty = vector.as_erased().module.i32_type();
     let mut elements = Vec::with_capacity(lane_count);
-    for index in 0..lanes.get() {
-        let Ok(index) = i32::try_from(index) else {
-            return Ok(None);
-        };
-        let index = i32_ty.const_int(index).as_constant();
-        if let Some(folded) =
-            constant_fold_extract_element_instruction_trusting_same_module(vector, index)?
-        {
-            elements.push(folded);
-        } else {
-            let expr = vector.module.constant_expr(
-                element_ty,
-                ConstantExprOpcode::ExtractElement,
-                [vector.as_erased(), index.as_erased()],
-                [],
-                [],
-                ConstantExprFlags::none(),
-            )?;
-            elements.push(expr);
-        }
+    for lane in 0..lanes.get() {
+        elements.push(extract_lane(vector, lane, element_ty)?);
     }
     Ok(Some(elements))
 }
@@ -2987,6 +3126,9 @@ fn aggregate_elements_for_rebuild<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     };
     if let Ok(array_ty) = ArrayType::<ElemDyn, ArrLenDyn, _, C>::try_from(aggregate.ty()) {
         let fill = fill_for(array_ty.element())?;
+        if !may_walk_lanes(aggregate, array_ty.len()) {
+            return None;
+        }
         let count = usize::try_from(array_ty.len()).ok()?;
         return Some((0..count).map(|_| fill).collect());
     }
@@ -3000,44 +3142,38 @@ fn aggregate_elements_for_rebuild<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }
     None
 }
-fn type_bit_width_for_bitcast<B: ModuleBrand, C: Capability>(ty: Type<'_, B, C>) -> Option<u32> {
-    if let Ok(int_ty) = IntType::<IntDyn, B, C>::try_from(ty) {
-        return Some(int_ty.bit_width());
-    }
-    if let Ok(float_ty) = FloatType::<FloatDyn, B, C>::try_from(ty) {
-        return Some(float_ty.semantics().bit_width());
-    }
-    None
-}
 
 /// Mirrors `Constant::getAllOnesValue`, whose callers ask only of an integer or
 /// a float, or a vector of either.
 pub(crate) fn all_ones_constant_for_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     ty: Type<'ctx, B, C>,
-) -> IrResult<Option<Constant<'ctx, B, C>>> {
+) -> Option<Constant<'ctx, B, C>> {
+    // `ConstantInt::get(Ty->getContext(), APInt::getAllOnes(…))`.
     if let Ok(int_ty) = IntType::<IntDyn, B, C>::try_from(ty) {
-        return Ok(Some(int_ty.const_all_ones().as_constant()));
+        return Some(int_ty.const_all_ones().as_constant());
     }
+    // `ConstantFP::get(…, APFloat::getAllOnesValue(…))`: the all-ones bit
+    // pattern at the format's own width.
     if let Ok(float_ty) = FloatType::<FloatDyn, B, C>::try_from(ty) {
-        let bits = ApInt::all_ones(float_ty.semantics().bit_width());
-        let value = crate::ApFloat::from_bits(float_ty.semantics(), &bits)?;
-        return Ok(Some(float_ty.const_ap_float(&value)?.as_constant()));
+        // `const_from_bits` keeps the format's own width of the pattern.
+        return Some(float_ty.const_from_bits(u128::MAX).as_constant());
     }
-    if let Some((element_ty, lanes, scalable)) = ty.data().as_vector() {
+    // `ConstantVector::getSplat(VTy->getElementCount(),
+    // getAllOnesValue(VTy->getElementType()))`.
+    if let Some((element_ty, _, _)) = ty.data().as_vector() {
         let module = ty.module;
-        let element_ty = Type::new(element_ty, module);
-        let Some(element) = all_ones_constant_for_type(element_ty)? else {
-            return Ok(None);
-        };
-        let Ok(lane_count) = usize::try_from(lanes.get()) else {
-            return Ok(None);
-        };
-        let vector_ty = vector_type_with_scalability(module, element_ty, lanes, scalable);
-        return vector_ty
-            .const_vector((0..lane_count).map(|_| element))
-            .map(|constant| Some(constant.as_constant()));
+        let element = all_ones_constant_for_type(Type::new(element_ty, module))?;
+        let id = crate::constants::intern_canonical_aggregate(
+            module.module(),
+            ty.slot_trusting_same_module(),
+            crate::constant::splat_canonical(
+                module,
+                element.as_erased().slot_trusting_same_module(),
+            ),
+        );
+        return constant_from_id(module, id);
     }
-    Ok(None)
+    None
 }
 
 fn is_not_poison_for_select<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
@@ -3052,15 +3188,25 @@ fn is_not_poison_for_select<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         )
         | ValueKindData::Function(_)
         | ValueKindData::GlobalVariable(_) => true,
-        ValueKindData::Constant(ConstantData::Aggregate(elements))
-            if constant.ty().data().as_vector().is_some() =>
+        // `if (isa<ConstantExpr>(C)) return false;` — a scalable splat is
+        // upstream's `shufflevector` expression.
+        ValueKindData::Constant(ConstantData::Splat { .. })
+            if constant.ty().kind() == crate::TypeKind::ScalableVector =>
         {
-            let module = constant.as_erased().module();
-            elements.iter().all(|element| {
-                !matches!(
-                    &module.context().value_data(*element).kind,
-                    ValueKindData::Constant(ConstantData::Poison | ConstantData::Expr(_))
-                )
+            false
+        }
+        // `!C->containsPoisonElement() && !C->containsConstantExpression()`. A
+        // fixed splat's lanes are all its element, so its one element answers
+        // for them. A lane is an expression by its class (`Constant::kind`),
+        // so llvmkit's compact `GepOffset` / `SymbolDelta` forms count.
+        ValueKindData::Constant(
+            data @ (ConstantData::Aggregate(_) | ConstantData::Splat { .. }),
+        ) if constant.ty().data().as_vector().is_some() => {
+            let module = constant.as_erased().module;
+            data.lane_slots().into_iter().flatten().all(|element| {
+                constant_from_id(module, *element).is_some_and(|lane| {
+                    !is_poison(lane) && !matches!(lane.kind(), crate::ConstantKind::Expr(_))
+                })
             })
         }
         // `!C->containsPoisonElement() && !C->containsConstantExpression()`
@@ -3113,6 +3259,11 @@ pub(crate) fn constant_aggregate_from_elements<'ctx, B: ModuleBrand + 'ctx, C: C
 /// `V.size() == T->getNumElements()` assert. Declining refuses all three
 /// (`docs/divergences.md` D37). A fold that reads one element, as
 /// `constant_fold_extract_value_instruction` does, does not come here.
+///
+/// A zero stores no elements, so past [`MAX_EXPANDED_LANES`] it declines too
+/// (D40), and its rebuilding caller reads it lane by lane through
+/// `extract_lane` only where the fold's operands together may be walked. A
+/// splat is answered there the same way, so it has no arm here.
 fn aggregate_elements<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     constant: Constant<'ctx, B, C>,
 ) -> Option<Vec<Constant<'ctx, B, C>>> {
@@ -3133,6 +3284,11 @@ fn aggregate_elements<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             if let Some((_, length)) = data.as_array()
                 && u64::from(count) != length
             {
+                return None;
+            }
+            // A zero array or vector stores no elements; a struct's type
+            // stores every field, so walking its fields costs what was stored.
+            if !matches!(data, TypeData::Struct(_)) && !may_walk_lanes(constant, u64::from(count)) {
                 return None;
             }
             (0..count)
@@ -3157,8 +3313,8 @@ fn binop_identity<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     opcode: BinaryOpcode,
     lhs: Constant<'ctx, B, C>,
     rhs: Constant<'ctx, B, C>,
-) -> IrResult<Option<Constant<'ctx, B, C>>> {
-    let folded = match opcode {
+) -> Option<Constant<'ctx, B, C>> {
+    match opcode {
         BinaryOpcode::Add | BinaryOpcode::Or | BinaryOpcode::Xor => {
             if Constant::is_null_value(lhs) {
                 Some(rhs)
@@ -3169,18 +3325,18 @@ fn binop_identity<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             }
         }
         BinaryOpcode::Mul => {
-            if constant_is_one_value(lhs)? {
+            if constant_is_one_value(lhs) {
                 Some(rhs)
-            } else if constant_is_one_value(rhs)? {
+            } else if constant_is_one_value(rhs) {
                 Some(lhs)
             } else {
                 None
             }
         }
         BinaryOpcode::And => {
-            if constant_is_all_ones_value(lhs)? {
+            if constant_is_all_ones_identity(lhs) {
                 Some(rhs)
-            } else if constant_is_all_ones_value(rhs)? {
+            } else if constant_is_all_ones_identity(rhs) {
                 Some(lhs)
             } else {
                 None
@@ -3196,9 +3352,9 @@ fn binop_identity<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             }
         }
         BinaryOpcode::Fmul => {
-            if constant_is_one_value(lhs)? {
+            if constant_is_one_value(lhs) {
                 Some(rhs)
-            } else if constant_is_one_value(rhs)? {
+            } else if constant_is_one_value(rhs) {
                 Some(lhs)
             } else {
                 None
@@ -3214,7 +3370,7 @@ fn binop_identity<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             Some(lhs)
         }
         BinaryOpcode::Udiv | BinaryOpcode::Sdiv | BinaryOpcode::Fdiv
-            if constant_is_one_value(rhs)? =>
+            if constant_is_one_value(rhs) =>
         {
             Some(lhs)
         }
@@ -3227,34 +3383,32 @@ fn binop_identity<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         | BinaryOpcode::Udiv
         | BinaryOpcode::Sdiv
         | BinaryOpcode::Fdiv => None,
-    };
-    Ok(folded)
+    }
 }
 
 fn binop_rhs_absorber<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     opcode: BinaryOpcode,
     rhs: Constant<'ctx, B, C>,
-) -> IrResult<Option<Constant<'ctx, B, C>>> {
+) -> Option<Constant<'ctx, B, C>> {
     if ConstantIntValue::<IntDyn, B, C>::try_from(rhs).is_err() {
-        return Ok(None);
+        return None;
     }
-    let folded = match opcode {
-        BinaryOpcode::Or if constant_is_all_ones_value(rhs)? => Some(rhs),
+    match opcode {
+        BinaryOpcode::Or if rhs.is_all_ones_value() => Some(rhs),
         BinaryOpcode::And | BinaryOpcode::Mul if Constant::is_null_value(rhs) => Some(rhs),
         _ => None,
-    };
-    Ok(folded)
+    }
 }
 
 fn binop_lhs_absorber<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     opcode: BinaryOpcode,
     lhs: Constant<'ctx, B, C>,
-) -> IrResult<Option<Constant<'ctx, B, C>>> {
+) -> Option<Constant<'ctx, B, C>> {
     if ConstantIntValue::<IntDyn, B, C>::try_from(lhs).is_err() {
-        return Ok(None);
+        return None;
     }
-    let folded = match opcode {
-        BinaryOpcode::Or if constant_is_all_ones_value(lhs)? => Some(lhs),
+    match opcode {
+        BinaryOpcode::Or if lhs.is_all_ones_value() => Some(lhs),
         BinaryOpcode::And
         | BinaryOpcode::Mul
         | BinaryOpcode::Shl
@@ -3269,89 +3423,122 @@ fn binop_lhs_absorber<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             Some(lhs)
         }
         _ => None,
-    };
-    Ok(folded)
+    }
 }
 
 fn constant_is_one_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     constant: Constant<'ctx, B, C>,
-) -> IrResult<bool> {
+) -> bool {
+    // `C == ConstantExpr::getBinOpIdentity(...)` for `mul`, `fmul`, `udiv`,
+    // `sdiv` and `fdiv`: `1` or `1.0`, or its splat ([`is_binop_identity`]).
+    if constant.ty().is_vector() {
+        return is_binop_identity(constant, constant_is_one_value);
+    }
     if let Ok(value) = ConstantIntValue::<IntDyn, B, C>::try_from(constant) {
-        return Ok(value.ap_int().is_one());
+        return value.ap_int().is_one();
     }
     if let Ok(value) = ConstantFloatValue::<FloatDyn, B, C>::try_from(constant) {
         let one = crate::ApFloat::one(value.ap_float().semantics(), ApFloatSign::Positive);
-        return Ok(matches!(
-            value.ap_float().compare(&one),
-            ApFloatCmpResult::Equal
-        ));
+        return value.ap_float().bitwise_is_equal(&one);
     }
-    let Some(elements) = aggregate_elements(constant) else {
-        return Ok(false);
-    };
-    for element in elements {
-        if !constant_is_one_value(element)? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
+    false
 }
 
-fn constant_is_all_ones_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+/// Whether the vector `constant` is the binary-operator identity whose scalar
+/// `is_scalar_identity` names: the splat `ConstantVector::getSplat` builds of
+/// it, which llvmkit stores as [`ConstantData::Splat`]. Upstream's test is
+/// pointer equality with `getBinOpIdentity`'s uniqued splat, so a
+/// `shufflevector` expression that merely splats the identity (an `undef`
+/// base, an `i32` index) is another constant and no identity, though its
+/// `getSplatValue` is the identity.
+fn is_binop_identity<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     constant: Constant<'ctx, B, C>,
-) -> IrResult<bool> {
-    if let Ok(value) = ConstantIntValue::<IntDyn, B, C>::try_from(constant) {
-        return Ok(value.ap_int().is_all_ones());
-    }
-    if let Ok(value) = ConstantFloatValue::<FloatDyn, B, C>::try_from(constant) {
-        return Ok(value.ap_float().to_bits().is_all_ones());
-    }
-    let Some(elements) = aggregate_elements(constant) else {
-        return Ok(false);
-    };
-    for element in elements {
-        if !constant_is_all_ones_value(element)? {
-            return Ok(false);
+    is_scalar_identity: fn(Constant<'ctx, B, C>) -> bool,
+) -> bool {
+    match &constant.as_erased().data().kind {
+        ValueKindData::Constant(ConstantData::Splat { element, .. }) => {
+            constant_from_id(constant.as_erased().module, *element).is_some_and(is_scalar_identity)
         }
+        _ => false,
     }
-    Ok(true)
+}
+
+/// `C == ConstantExpr::getBinOpIdentity(Instruction::And, …)`: all ones, or
+/// its stored splat ([`is_binop_identity`]), unlike
+/// `Constant::isAllOnesValue`, which reads any splat value.
+fn constant_is_all_ones_identity<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    constant: Constant<'ctx, B, C>,
+) -> bool {
+    if constant.ty().is_vector() {
+        return is_binop_identity(constant, Constant::is_all_ones_value);
+    }
+    constant.is_all_ones_value()
 }
 
 fn constant_is_float_negative_zero<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     constant: Constant<'ctx, B, C>,
 ) -> bool {
-    if let Ok(value) = ConstantFloatValue::<FloatDyn, B, C>::try_from(constant) {
-        return value.ap_float().is_neg_zero();
+    // `C == ConstantExpr::getBinOpIdentity(Instruction::FAdd, …)`: `-0.0`,
+    // or its splat ([`is_binop_identity`]).
+    if constant.ty().is_vector() {
+        return is_binop_identity(constant, constant_is_float_negative_zero);
     }
-    aggregate_elements(constant).is_some_and(|elements| {
-        !elements.is_empty()
-            && elements
-                .iter()
-                .copied()
-                .all(constant_is_float_negative_zero)
-    })
+    ConstantFloatValue::<FloatDyn, B, C>::try_from(constant)
+        .is_ok_and(|value| value.ap_float().is_neg_zero())
 }
 
 fn constant_matches_negative_zero_fp_pattern<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     constant: Constant<'ctx, B, C>,
 ) -> bool {
-    if let Ok(value) = ConstantFloatValue::<FloatDyn, B, C>::try_from(constant) {
-        return value.ap_float().is_neg_zero();
+    // `match(C, m_NegZeroFP())`: `cstval_pred_ty<is_neg_zero_fp, ConstantFP,
+    // /*AllowPoison=*/true>::match_impl`, arm by arm.
+    let is_neg_zero = |constant: Constant<'ctx, B, C>| {
+        ConstantFloatValue::<FloatDyn, B, C>::try_from(constant)
+            .ok()
+            .map(|value| value.ap_float().is_neg_zero())
+    };
+    // `if (const auto *CV = dyn_cast<ConstantVal>(V)) return isValue(…);`
+    if let Some(answer) = is_neg_zero(constant) {
+        return answer;
     }
-    let Some(elements) = aggregate_elements(constant) else {
+    // `if (const auto *VTy = dyn_cast<VectorType>(V->getType()))`
+    let Some((_, lanes, scalable)) = constant.ty().data().as_vector() else {
         return false;
     };
-    let mut has_negative_zero = false;
-    for element in elements {
+    // `dyn_cast_or_null<ConstantVal>(C->getSplatValue())`, at its
+    // `AllowPoison = false` default.
+    if let Some(answer) = constant.splat_value(false).and_then(is_neg_zero) {
+        return answer;
+    }
+    // `auto *FVTy = dyn_cast<FixedVectorType>(VTy); if (!FVTy) return false;`
+    if scalable {
+        return false;
+    }
+    // The non-splat walk. Every operand that does not store its lanes
+    // answers `false` from it: `poison` after a walk of nothing but skipped
+    // lanes, `undef` and a splat of a non-`ConstantFP` at their first lane,
+    // a constant expression at its first `getAggregateElement`. Answering
+    // that without the walk keeps its cost to what is stored (D40).
+    if !may_walk_lanes(constant, u64::from(lanes.get())) {
+        return false;
+    }
+    let mut has_non_poison_elements = false;
+    for lane in 0..lanes.get() {
+        // `Constant *Elt = C->getAggregateElement(i); if (!Elt) return false;`
+        let Some(element) = constant.aggregate_element(lane) else {
+            return false;
+        };
+        // `if (AllowPoison && isa<PoisonValue>(Elt)) continue;`
         if is_poison(element) {
             continue;
         }
-        if !constant_matches_negative_zero_fp_pattern(element) {
+        // `auto *CV = dyn_cast<ConstantVal>(Elt); if (!CV || !isValue(…))`
+        if is_neg_zero(element) != Some(true) {
             return false;
         }
-        has_negative_zero = true;
+        has_non_poison_elements = true;
     }
-    has_negative_zero
+    has_non_poison_elements
 }
 
 fn is_zero_int_constant<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
