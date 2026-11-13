@@ -115,8 +115,8 @@ use super::type_components::{lanes, require_component};
 use super::typed_pointer_type::TypedPointerType;
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
-    AdmittedRename, GlobalFieldKind, Value, ValueData, ValueKindData, ValueSlot, ValueSlotAccess,
-    ValueUse,
+    AdmittedRename, GlobalFieldKind, UseList, Value, ValueData, ValueKindData, ValueSlot,
+    ValueSlotAccess, ValueUse,
 };
 use super::value_id::{
     FunctionId, GlobalAliasId, GlobalId, GlobalIfuncId, TypedFunctionId, TypedVarArgsFunctionId,
@@ -2725,7 +2725,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Function(Box::new(fn_data)),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
 
         let param_types: Vec<TypeSlot> = signature
@@ -2744,7 +2744,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
                     parent_fn: fn_id,
                     slot: slot_u32,
                 },
-                use_list: core::cell::RefCell::new(Vec::new()),
+                use_list: core::cell::RefCell::new(UseList::new()),
             });
             arg_ids.push(id);
         }
@@ -3060,7 +3060,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::GlobalVariable(data),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         // A builder-supplied initializer is a use like any other; the setter
         // path registers its edge, so the construction path must too.
@@ -3100,7 +3100,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::GlobalAlias(data),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.core.ctx.retarget_global_field_use(
             value_id,
@@ -3138,7 +3138,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::GlobalIfunc(data),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.core.ctx.retarget_global_field_use(
             value_id,
@@ -5846,7 +5846,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::InlineAsm(data),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         InlineAsm::from_parts(id, self.capability_ref(), ptr_ty)
     }
@@ -5947,7 +5947,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::MetadataAsValue(slot),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.core()
             .metadata_as_value_cache

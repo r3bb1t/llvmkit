@@ -64,7 +64,7 @@ use super::pass_context::FunctionView;
 use super::r#type::{Type, TypeData, TypeSlot, TypeSlotAccess};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
-    GlobalFieldKind, HasDebugLoc, HasName, IsValue, SetName, Typed, Value, ValueData,
+    GlobalFieldKind, HasDebugLoc, HasName, IsValue, SetName, Typed, UseList, Value, ValueData,
     ValueKindData, ValueSlot, ValueSlotAccess, sealed,
 };
 use super::value_id::ViewIn;
@@ -1139,7 +1139,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
             name: RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::BasicBlock(BasicBlockData::new(Some(self.id))),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         // `index` is at most the length: both callers read it off this list.
         self.data().basic_blocks.borrow_mut().insert(index, bb_id);

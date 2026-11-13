@@ -18,7 +18,10 @@
 //!
 //! Beside the `FileCheck` subset it holds the rejection helpers
 //! ([`rejection_at`], [`reported_line_and_column`]) that assert where a
-//! diagnostic is anchored as well as what it says.
+//! diagnostic is anchored as well as what it says, and [`deadline`], the
+//! minute a resource-bound test is given before it exits the binary.
+
+pub mod deadline;
 
 use std::collections::HashMap;
 

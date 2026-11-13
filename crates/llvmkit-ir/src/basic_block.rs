@@ -38,7 +38,7 @@ use super::metadata::{
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::{TypeSlot, TypeSlotAccess};
 use super::value::{
-    HasDebugLoc, HasName, SetName, Typed, Value, ValueData, ValueKindData, ValueSlot,
+    HasDebugLoc, HasName, SetName, Typed, UseList, Value, ValueData, ValueKindData, ValueSlot,
     ValueSlotAccess, sealed,
 };
 use super::value_id::BlockId;
@@ -655,7 +655,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlock<'ctx, Dyn, Unterminated, B> {
             name: RefCell::new((!name.is_empty()).then_some(name)),
             debug_loc: None,
             kind: ValueKindData::BasicBlock(BasicBlockData::new(None)),
-            use_list: RefCell::new(Vec::new()),
+            use_list: RefCell::new(UseList::new()),
         });
         Self::from_parts(id, module_token.capability_ref(), label_ty)
     }

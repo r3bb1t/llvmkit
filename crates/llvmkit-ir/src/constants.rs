@@ -2491,9 +2491,10 @@ fn move_users_in_place(module: &ModuleCore, old_id: ValueSlot, new_id: ValueSlot
     let moved = core::mem::take(&mut *context.use_list_of(old_id).borrow_mut());
     {
         let mut list = context.use_list_of(new_id).borrow_mut();
-        let mut merged = moved.clone();
-        merged.append(&mut list);
-        *list = merged;
+        // `moved` keeps its order, in front of what `new_id` already had.
+        for edge in moved.iter().rev() {
+            list.push_front(*edge);
+        }
     }
     for edge in moved {
         match edge {

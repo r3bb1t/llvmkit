@@ -7441,7 +7441,7 @@ mod tests {
     use crate::instruction::{InstructionKindData, build_instruction_value};
     use crate::marker::Dyn;
     use crate::module::Module;
-    use crate::value::{ValueData, ValueKindData, ValueSlot};
+    use crate::value::{UseList, ValueData, ValueKindData, ValueSlot};
 
     /// Append a fabricated instruction to a block, bypassing the
     /// IrBuilder's typestate. Returns the new instruction's value id.
@@ -7491,7 +7491,7 @@ mod tests {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::Int(Box::new([value]))),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         })
     }
 
@@ -7503,7 +7503,7 @@ mod tests {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::PointerNull),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         })
     }
     fn skeleton<'ctx, B: crate::ModuleBrand + 'ctx>(
