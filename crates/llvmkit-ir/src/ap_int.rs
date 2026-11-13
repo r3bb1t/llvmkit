@@ -57,7 +57,12 @@ impl ApIntDivRem {
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ApInt {
     bit_width: u32,
-    words: Box<[u64]>,
+    /// The value's words, least significant first, with high zero words
+    /// dropped: the derived `Eq` and `Hash` rest on that trimming, so two
+    /// equal values always store the same words. A `Vec` rather than a boxed
+    /// slice so [`Self::set_bit`] and [`Self::clear_bit`] can write in place,
+    /// growing the vector (amortised) when a bit lands above the stored words.
+    words: Vec<u64>,
 }
 
 impl core::fmt::Debug for ApInt {
@@ -116,17 +121,34 @@ impl ApInt {
         }
     }
 
+    /// The value of `words`, least significant first, truncated to
+    /// `bit_width`.
+    ///
+    /// Allocates exactly the words the value keeps: the high zero words are
+    /// found before anything is copied, so a wide value with few significant
+    /// words (a wide zero, `one_bit_set`, a long logical shift right) holds
+    /// only those, however long it lives, and no copy is made to be trimmed.
     pub fn from_words(bit_width: u32, words: &[u64]) -> Self {
-        let mut v = Vec::with_capacity(words_for_bits_usize(bit_width));
         let limit = words_for_bits_usize(bit_width);
-        for word in words.iter().take(limit) {
-            v.push(*word);
-        }
-        canonicalize_words(bit_width, &mut v);
-        Self {
-            bit_width,
-            words: v.into_boxed_slice(),
-        }
+        let top = top_mask(bit_width);
+        // The word at `limit - 1` holds the width's top bits; the rest of it
+        // is dropped, as `clearUnusedBits` drops it.
+        let masked = |index: usize, word: u64| {
+            if index + 1 == limit { word & top } else { word }
+        };
+        let kept = words
+            .iter()
+            .take(limit)
+            .enumerate()
+            .rposition(|(index, word)| masked(index, *word) != 0)
+            .map_or(0, |position| position + 1);
+        let words = words
+            .iter()
+            .take(kept)
+            .enumerate()
+            .map(|(index, word)| masked(index, *word))
+            .collect();
+        Self { bit_width, words }
     }
 
     pub fn from_string(bit_width: u32, text: &str, radix: u8) -> IrResult<Self> {
@@ -210,27 +232,42 @@ impl ApInt {
         if bit >= bit_width {
             return Self::zero(bit_width);
         }
-        let mut words = vec![0; words_for_bits_usize(bit_width)];
-        let idx = u32_to_usize(bit / WORD_BITS);
-        let shift = bit % WORD_BITS;
-        if let Some(word) = words.get_mut(idx) {
-            *word |= 1u64 << shift;
-        }
-        Self::from_words(bit_width, &words)
+        // Only the words up to the bit's: the higher ones are zero, and a
+        // value keeps no high zero words, so these are already canonical.
+        let mut words = vec![0; u32_to_usize(bit / WORD_BITS)];
+        words.push(1u64 << (bit % WORD_BITS));
+        Self { bit_width, words }
     }
 
+    /// The bits in `[lo, hi)` set, `hi` clamped to the width. Mirrors
+    /// `APInt::getBitsSet`, which fills through `APInt::setBitsSlowCase`
+    /// (`APInt.cpp`): the two partial words at the ends get a mask and every
+    /// word between is set whole, so the cost is the number of words, not of
+    /// bits.
     pub fn bits_set(bit_width: u32, lo: u32, hi: u32) -> Self {
-        let mut out = Self::zero(bit_width);
         if lo >= hi || lo >= bit_width {
-            return out;
+            return Self::zero(bit_width);
         }
         let end = hi.min(bit_width);
-        let mut bit = lo;
-        while bit < end {
-            out.set_bit(bit);
-            bit += 1;
+        let first = u32_to_usize(lo / WORD_BITS);
+        // `end > lo`, so `end - 1` is the last bit set.
+        let last = u32_to_usize((end - 1) / WORD_BITS);
+        let mut words = vec![0u64; last + 1];
+        for word in words.iter_mut().skip(first) {
+            *word = u64::MAX;
         }
-        out
+        if let Some(word) = words.get_mut(first) {
+            *word &= u64::MAX << (lo % WORD_BITS);
+        }
+        let tail = end % WORD_BITS;
+        if tail != 0
+            && let Some(word) = words.get_mut(last)
+        {
+            *word &= u64::MAX >> (WORD_BITS - tail);
+        }
+        // Already canonical: every word is within the width, and the top one
+        // holds bit `end - 1`, so none is a high zero word to trim.
+        Self { bit_width, words }
     }
 
     pub fn bits_set_with_wrap(bit_width: u32, lo: u32, hi: u32) -> Self {
@@ -1870,36 +1907,39 @@ impl ApInt {
         (word_at(&self.words, idx, self.bit_width) & (1u64 << shift)) != 0
     }
 
+    /// Set one bit. Mirrors `APInt::setBit` (`APInt.h`), which writes one
+    /// word: this writes it in place, first growing the stored words when the
+    /// bit lies above them (amortised constant time). Out of range is a
+    /// no-op. Setting a bit below the width leaves the top word within the
+    /// width and nonzero, so the trimmed-words invariant holds without a
+    /// re-trim.
     pub fn set_bit(&mut self, bit: u32) {
         if bit >= self.bit_width {
             return;
         }
-        let mut words = self.words.to_vec();
-        let len = self.num_words();
-        if words.len() < len {
-            words.resize(len, 0);
-        }
         let idx = u32_to_usize(bit / WORD_BITS);
-        let shift = bit % WORD_BITS;
-        if let Some(word) = words.get_mut(idx) {
-            *word |= 1u64 << shift;
+        if self.words.len() <= idx {
+            self.words.resize(idx + 1, 0);
         }
-        canonicalize_words(self.bit_width, &mut words);
-        self.words = words.into_boxed_slice();
+        if let Some(word) = self.words.get_mut(idx) {
+            *word |= 1u64 << (bit % WORD_BITS);
+        }
     }
 
+    /// Clear one bit. Mirrors `APInt::clearBit` (`APInt.h`): one word written
+    /// in place. A bit above the stored words is already clear. Clearing the
+    /// top stored word's last bit re-trims; each word dropped there was
+    /// pushed by an earlier [`Self::set_bit`], so the trim is amortised
+    /// constant time too.
     pub fn clear_bit(&mut self, bit: u32) {
         if bit >= self.bit_width {
             return;
         }
-        let mut words = self.words.to_vec();
         let idx = u32_to_usize(bit / WORD_BITS);
-        let shift = bit % WORD_BITS;
-        if let Some(word) = words.get_mut(idx) {
-            *word &= !(1u64 << shift);
+        if let Some(word) = self.words.get_mut(idx) {
+            *word &= !(1u64 << (bit % WORD_BITS));
+            trim_trailing_zeros(&mut self.words);
         }
-        canonicalize_words(self.bit_width, &mut words);
-        self.words = words.into_boxed_slice();
     }
 
     fn shl_truncating(&self, amount: u32) -> ApInt {
@@ -2288,21 +2328,6 @@ fn bits_used_in_words(words: &[u64]) -> u32 {
         }
     }
     0
-}
-
-fn canonicalize_words(bit_width: u32, words: &mut Vec<u64>) {
-    let limit = words_for_bits_usize(bit_width);
-    if words.len() > limit {
-        words.truncate(limit);
-    }
-    if bit_width == 0 {
-        words.clear();
-        return;
-    }
-    if let Some(top) = words.get_mut(limit.saturating_sub(1)) {
-        *top &= top_mask(bit_width);
-    }
-    trim_trailing_zeros(words);
 }
 
 fn trim_trailing_zeros(words: &mut Vec<u64>) {

@@ -553,7 +553,7 @@ pub(super) fn sync_block_uses<'ctx, B: ModuleBrand + 'ctx>(
         });
     } else {
         for _ in have..wanted {
-            uses.insert(0, edge);
+            uses.push_front(edge);
         }
     }
 }

@@ -49,7 +49,7 @@ impl<B: ModuleBrand> FunctionPass<B> for InstSimplifyPass {
         // dirty flag witnesses it) and the CFG-preserved floor otherwise.
         let patch = cx.mutate();
         let dominators = patch.analysis::<DominatorTreeAnalysis, _>();
-        let data_layout = patch.function().module().data_layout().clone();
+        let data_layout = patch.function().module().data_layout_shared();
         let scope = patch.worklist();
         while let Some(inst) = scope.step() {
             let view = inst.as_view();

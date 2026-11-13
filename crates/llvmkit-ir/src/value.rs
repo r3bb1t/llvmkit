@@ -28,6 +28,7 @@ use crate::Branded;
 use core::cell::RefCell;
 use core::iter::FusedIterator;
 use core::num::NonZeroUsize;
+use std::collections::VecDeque;
 
 use super::argument::Argument;
 use super::basic_block::BasicBlockData;
@@ -155,7 +156,7 @@ pub(super) struct ValueData {
     /// doors (`add_use`, `remove_use`, `prepend_moved_uses`, `use_list_of`),
     /// which read a `GlobalValueRef` wrapper through to its global — so a
     /// wrapper's own list stays empty (`docs/divergences.md` D3).
-    pub(super) use_list: RefCell<Vec<ValueUse>>,
+    pub(super) use_list: RefCell<UseList>,
 }
 
 impl ValueData {
@@ -174,6 +175,15 @@ impl ValueData {
             .collect()
     }
 }
+
+/// A value's use list, newest edge first.
+///
+/// A deque because the hot operation is upstream's `Use::addToList`
+/// (`Use.h`), a constant-time prepend: a `Vec` would shift every edge
+/// already there, making a value with K uses cost K squared to build.
+/// `push_front` keeps that constant (amortised) while every reader still
+/// sees the head at index 0, so a position means what it meant before.
+pub(super) type UseList = VecDeque<ValueUse>;
 
 /// One reverse use-list edge for a value. Instruction operands, constants,
 /// metadata nodes, and debug records have different mutation paths, so the
@@ -416,7 +426,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Value<'ctx, B, C> {
     /// the global it names, since upstream's `GlobalValue` *is* that constant
     /// and has one list (`docs/divergences.md` D3).
     #[inline]
-    fn use_list(self) -> &'ctx RefCell<Vec<ValueUse>> {
+    fn use_list(self) -> &'ctx RefCell<UseList> {
         self.module.context().use_list_of(self.id)
     }
 

@@ -2491,9 +2491,10 @@ fn move_users_in_place(module: &ModuleCore, old_id: ValueSlot, new_id: ValueSlot
     let moved = core::mem::take(&mut *context.use_list_of(old_id).borrow_mut());
     {
         let mut list = context.use_list_of(new_id).borrow_mut();
-        let mut merged = moved.clone();
-        merged.append(&mut list);
-        *list = merged;
+        // `moved` keeps its order, in front of what `new_id` already had.
+        for edge in moved.iter().rev() {
+            list.push_front(*edge);
+        }
     }
     for edge in moved {
         match edge {
@@ -2840,12 +2841,26 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GepTypeCursor<'ctx, B, C> {
         )
     }
 
-    /// `getSequentialElementStride`, whose `assert` that a vector's element is
-    /// byte-addressable is not a release build's behaviour and is not ported.
-    pub(crate) fn sequential_element_stride(self, data_layout: &DataLayout) -> TypeSize {
+    /// `getSequentialElementStride` of a sized element: `None` when the step
+    /// is no sequential step (upstream's `assert(isSequential())`) or its
+    /// element is unsized, otherwise the element's stride, which a sized type
+    /// always has. Its `assert` that a vector's element is byte-addressable
+    /// is not a release build's behaviour and is not ported.
+    ///
+    /// Upstream's own stride asks `getTypeAllocSize`, which answers some
+    /// unsized types too (a struct with a layout that holds a scalable
+    /// vector); its two callers here never ask that of one.
+    /// `computeKnownBits` asks `if (!IndexedTy->isSized()) { ...; break; }`
+    /// first, and this `None` is that guard; `accumulateConstantOffset`
+    /// refuses a scalable indexed type first, and every unsized type with an
+    /// alloc size holds a scalable vector.
+    pub(crate) fn sequential_element_stride(self, data_layout: &DataLayout) -> Option<TypeSize> {
         match self.kind {
-            GepStepKind::Vector => data_layout.type_store_size(self.ty),
-            GepStepKind::Sequential | GepStepKind::Struct => data_layout.type_alloc_size(self.ty),
+            GepStepKind::Struct => None,
+            GepStepKind::Vector => crate::derived_types::erase_sized(self.ty)
+                .map(|element| data_layout.type_store_size(element)),
+            GepStepKind::Sequential => crate::derived_types::erase_sized(self.ty)
+                .map(|element| data_layout.type_alloc_size(element)),
         }
     }
 }

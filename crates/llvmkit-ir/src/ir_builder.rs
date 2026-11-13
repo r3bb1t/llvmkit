@@ -5089,20 +5089,27 @@ where
 
     // ---- Memory: alloca / load / store ----
 
-    /// The DataLayout ABI alignment of a type, materialised so load/store
-    /// carry an explicit `align` like upstream (`computeLoadStoreDefaultAlign`
-    /// = `getABITypeAlign`).
-    fn default_abi_align(&self, ty_id: TypeSlot) -> MaybeAlign {
-        let dl = self.module.data_layout();
-        MaybeAlign::new(dl.abi_align_of_id(self.module, ty_id))
+    /// `ty` as a [`SizedType`], or [`IrError::UnsizedType`] where upstream's
+    /// `getABITypeAlign` / `getPrefTypeAlign` assert `Ty->isSized()`.
+    /// `IRBuilder` fills every omitted alignment through them, and an
+    /// unsized type has no alignment to fill.
+    fn sized(&self, ty: TypeSlot) -> IrResult<SizedType<'ctx, B>> {
+        SizedType::try_from(Type::new(ty, self.mutable_ref()))
     }
 
-    /// The DataLayout preferred alignment of a type, materialised so alloca
-    /// carries an explicit `align` like upstream (`computeAllocaDefaultAlign`
-    /// = `getPrefTypeAlign`).
-    fn default_pref_align(&self, ty_id: TypeSlot) -> MaybeAlign {
-        let dl = self.module.data_layout();
-        MaybeAlign::new(dl.pref_align_of_id(self.module, ty_id))
+    /// The DataLayout ABI alignment of a sized type, materialised so
+    /// load/store carry an explicit `align` like upstream
+    /// (`computeLoadStoreDefaultAlign` = `getABITypeAlign`). Taking a
+    /// [`SizedType`] is what makes every default-filling path check.
+    fn default_abi_align(&self, ty: SizedType<'ctx, B>) -> MaybeAlign {
+        MaybeAlign::new(self.module.data_layout().abi_type_align(ty))
+    }
+
+    /// The DataLayout preferred alignment of a sized type, materialised so
+    /// alloca carries an explicit `align` like upstream
+    /// (`computeAllocaDefaultAlign` = `getPrefTypeAlign`).
+    fn default_pref_align(&self, ty: SizedType<'ctx, B>) -> MaybeAlign {
+        MaybeAlign::new(self.module.data_layout().pref_type_align(ty))
     }
 
     /// The DataLayout alloca address space (`IRBuilder::CreateAlloca` uses
@@ -5126,7 +5133,7 @@ where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
     {
-        Ok(self.alloca_inner(
+        self.alloca_inner(
             // Boundary: the caller's allocated type.
             ty.slot_in(self.module.id())?,
             None,
@@ -5134,7 +5141,7 @@ where
             self.mutable_ref().ptr_type_in::<N>(),
             AllocaFlags::none(),
             name,
-        ))
+        )
     }
 
     /// Produce `alloca <ty>`. Mirrors `IRBuilder::CreateAlloca`.
@@ -5148,7 +5155,7 @@ where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
     {
-        Ok(self.alloca_inner(
+        self.alloca_inner(
             // Boundary: the caller's allocated type.
             ty.slot_in(self.module.id())?,
             None,
@@ -5156,7 +5163,7 @@ where
             self.mutable_ref().ptr_type(self.alloca_addr_space()),
             AllocaFlags::none(),
             name,
-        ))
+        )
     }
 
     /// Produce `alloca <ty>, <size-ty> <num_elements>`. Mirrors
@@ -5173,7 +5180,7 @@ where
         N: IntoIntValue<'ctx, IntDyn, B>,
     {
         let n = num_elements.into_int_value(self.mutable_ref())?;
-        Ok(self.alloca_inner(
+        self.alloca_inner(
             // Boundary: the caller's allocated type.
             ty.slot_in(self.module.id())?,
             Some(n.slot_trusting_same_module()),
@@ -5181,7 +5188,7 @@ where
             self.mutable_ref().ptr_type(self.alloca_addr_space()),
             AllocaFlags::none(),
             name,
-        ))
+        )
     }
 
     /// Produce `alloca <ty>, <size-ty> <num_elements>, align <N>`. The
@@ -5199,7 +5206,7 @@ where
         N: IntoIntValue<'ctx, IntDyn, B>,
     {
         let n = num_elements.into_int_value(self.mutable_ref())?;
-        Ok(self.alloca_inner(
+        self.alloca_inner(
             // Boundary: the caller's allocated type.
             ty.slot_in(self.module.id())?,
             Some(n.slot_trusting_same_module()),
@@ -5207,7 +5214,7 @@ where
             self.mutable_ref().ptr_type(self.alloca_addr_space()),
             AllocaFlags::none(),
             name,
-        ))
+        )
     }
 
     /// Produce `alloca <ty>, align <N>`. Mirrors
@@ -5222,7 +5229,7 @@ where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
     {
-        Ok(self.alloca_inner(
+        self.alloca_inner(
             // Boundary: the caller's allocated type.
             ty.slot_in(self.module.id())?,
             None,
@@ -5230,7 +5237,7 @@ where
             self.mutable_ref().ptr_type(self.alloca_addr_space()),
             AllocaFlags::none(),
             name,
-        ))
+        )
     }
 
     /// The alloca's result pointer type `ptr_ty` names its address space; the
@@ -5244,7 +5251,7 @@ where
         ptr_ty: PointerType<'ctx, A, B>,
         flags: AllocaFlags,
         name: N,
-    ) -> PointerValueId<A, B>
+    ) -> IrResult<PointerValueId<A, B>>
     where
         N: AsRef<str>,
     {
@@ -5253,14 +5260,15 @@ where
         // upstream — every alloca funnels through here
         // (`computeAllocaDefaultAlign`).
         let align = if align.align().is_none() {
-            self.default_pref_align(allocated_ty)
+            self.default_pref_align(self.sized(allocated_ty)?)
         } else {
             align
         };
         let payload =
             AllocaInstData::new_with_flags(allocated_ty, num_elements, align, addr_space, flags);
-        self.append_ptr(ptr_ty, InstructionKindData::Alloca(payload), name)
-            .id()
+        Ok(self
+            .append_ptr(ptr_ty, InstructionKindData::Alloca(payload), name)
+            .id())
     }
 
     /// Builder-pattern `alloca` construction: array size, alignment,
@@ -5354,7 +5362,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.load_inner(payload, name);
+        let inst = self.load_inner(payload, name)?;
         Ok(inst.to_erased().id())
     }
 
@@ -5383,7 +5391,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.load_inner(payload, name);
+        let inst = self.load_inner(payload, name)?;
         Ok(inst.to_erased().id())
     }
 
@@ -5596,17 +5604,51 @@ where
         )))
     }
 
-    fn load_inner<N>(&self, mut payload: LoadInstData, name: N) -> Instruction<'ctx, Attached, B>
+    /// Append a load of a type the caller has not proven sized. An omitted
+    /// alignment needs the proof ([`Self::sized`], refusing an unsized type)
+    /// and is filled by [`Self::load_sized`]; an explicit one is kept, and
+    /// the verifier judges the load.
+    fn load_inner<N>(
+        &self,
+        payload: LoadInstData,
+        name: N,
+    ) -> IrResult<Instruction<'ctx, Attached, B>>
+    where
+        N: AsRef<str>,
+    {
+        if payload.align.align().is_none() {
+            let pointee = self.sized(payload.pointee_ty)?;
+            return Ok(self.load_sized(payload, pointee, name));
+        }
+        Ok(self.append_load(payload, name))
+    }
+
+    /// Append a load of a type proven sized, materialising the DataLayout
+    /// default alignment like upstream (`computeLoadStoreDefaultAlign`) when
+    /// it is omitted. The one place a load's default is filled: the typed
+    /// integer, float and pointer loads come here directly, with the proof
+    /// their types give, and [`Self::load_inner`] after checking.
+    fn load_sized<N>(
+        &self,
+        mut payload: LoadInstData,
+        pointee: SizedType<'ctx, B>,
+        name: N,
+    ) -> Instruction<'ctx, Attached, B>
+    where
+        N: AsRef<str>,
+    {
+        payload.pointee_ty = pointee.as_type().slot_trusting_same_module();
+        if payload.align.align().is_none() {
+            payload.align = self.default_abi_align(pointee);
+        }
+        self.append_load(payload, name)
+    }
+
+    fn append_load<N>(&self, payload: LoadInstData, name: N) -> Instruction<'ctx, Attached, B>
     where
         N: AsRef<str>,
     {
         let pointee_ty = payload.pointee_ty;
-        // Materialise the DataLayout default like upstream — every load
-        // (plain / volatile / atomic) funnels through here, so an omitted
-        // alignment is filled once (`computeLoadStoreDefaultAlign`).
-        if payload.align.align().is_none() {
-            payload.align = self.default_abi_align(pointee_ty);
-        }
         self.append_instruction(pointee_ty, InstructionKindData::Load(payload), name)
     }
 
@@ -5836,14 +5878,14 @@ where
     {
         let v = value.into_erased_value(self.mutable_ref())?;
         let p = ptr.into_pointer_value(self.mutable_ref())?;
-        Ok(self.store_payload_lifted(
+        self.store_payload_lifted(
             v,
             p.slot_trusting_same_module(),
             align,
             volatile,
             ordering,
             sync_scope,
-        ))
+        )
     }
 
     /// Payload assembly for operands that are already lifted and
@@ -5857,25 +5899,25 @@ where
         volatile: bool,
         ordering: AtomicOrdering,
         sync_scope: SyncScope,
-    ) -> StoreInstData {
+    ) -> IrResult<StoreInstData> {
         // Materialise the DataLayout default off the stored value's type,
         // like upstream (`computeLoadStoreDefaultAlign` /
         // `getABITypeAlign(Val->getType())`). Every store funnels through
         // here, so an omitted alignment is filled once.
         let align = if align.align().is_none() {
-            self.default_abi_align(value.ty().slot_trusting_same_module())
+            self.default_abi_align(self.sized(value.ty().slot_trusting_same_module())?)
         } else {
             align
         };
         // Internal: every caller lifted `value` against this module.
-        StoreInstData::new(
+        Ok(StoreInstData::new(
             value.slot_trusting_same_module(),
             ptr,
             align,
             volatile,
             ordering,
             sync_scope,
-        )
+        ))
     }
 
     /// Ports the `CallInst::init` / `CallBrInst::init` assertions
@@ -6198,14 +6240,16 @@ where
         let constant = crate::ArrayType::of(i8_ty, len)
             .const_array(bytes)?
             .as_constant();
-        let align = self.module.data_layout().pref_type_align(i8_ty.as_type());
+        // `i8` is sized by construction: its preferred alignment, through the
+        // witness every default alignment takes.
+        let align = self.default_pref_align(SizedType::from(i8_ty));
         crate::GlobalBuilder::new(module, name, constant.ty())
             .constant()
             .initializer(constant)
             .linkage(crate::Linkage::Private)
             .unnamed_addr(crate::UnnamedAddr::Global)
             .address_space(address_space)
-            .align(crate::MaybeAlign::new(align))
+            .align(align)
             .build()
     }
 
@@ -10382,34 +10426,34 @@ where
     /// Takes the whole [`LoadInstData`] (so the caller sets align/volatile/ordering/
     /// scope exactly as before) and overwrites `payload.pointee_ty` with `ty` — the
     /// appended type IS `ty` by construction, so the `W` marker is provably correct.
-    /// Routes through [`Self::load_inner`] so the DataLayout default-align fill
-    /// is preserved (a raw `append_int_at` would skip it and emit `align 0`). This
+    /// Routes through [`Self::load_sized`], with the proof an integer type gives
+    /// that it is sized, so the DataLayout default-align fill is preserved (a
+    /// raw `append_int_at` would skip it and emit `align 0`). This
     /// removes the `from_value_unchecked` assertion at the load site
     /// (docs/design/unforgeable-markers-design.md, census pattern 2 -- load variant).
     fn append_int_load<W: IntWidth, N: AsRef<str>>(
         &self,
         ty: IntType<'ctx, W, B>,
-        mut payload: LoadInstData,
+        payload: LoadInstData,
         name: N,
     ) -> IntValue<'ctx, W, B> {
         // Internal: every caller mints `ty` or admits it at its own entry.
-        payload.pointee_ty = ty.slot_trusting_same_module();
-        let inst = self.load_inner(payload, name);
+        let inst = self.load_sized(payload, SizedType::from(ty), name);
         IntValue::<W, B>::from_value_unchecked(inst.to_erased())
     }
 
     /// Float analogue of `append_int_load`. Re-stamps `payload.pointee_ty` with `ty`
     /// so the appended type IS `ty` and the `K` marker is provably correct; routed
-    /// through [`Self::load_inner`] so the default-align fill is preserved.
+    /// through [`Self::load_sized`], with the proof a float type gives, so the
+    /// default-align fill is preserved.
     fn append_fp_load<K: FloatKind, N: AsRef<str>>(
         &self,
         ty: FloatType<'ctx, K, B>,
-        mut payload: LoadInstData,
+        payload: LoadInstData,
         name: N,
     ) -> FloatValue<'ctx, K, B> {
         // Internal: every caller mints `ty` or admits it at its own entry.
-        payload.pointee_ty = ty.slot_trusting_same_module();
-        let inst = self.load_inner(payload, name);
+        let inst = self.load_sized(payload, SizedType::from(ty), name);
         FloatValue::<K, B>::from_value_unchecked(inst.to_erased())
     }
 
@@ -10433,16 +10477,16 @@ where
     }
 
     /// Pointer load: build+append a `load` whose pointee is `ptr_ty`, routed through
-    /// [`Self::load_inner`] so the default-align fill is preserved (a raw append would
-    /// emit `align 0`). Re-stamps `payload.pointee_ty = ptr_ty` — structural.
+    /// [`Self::load_sized`], with the proof a pointer type gives, so the default-align
+    /// fill is preserved (a raw append would emit `align 0`). Re-stamps
+    /// `payload.pointee_ty = ptr_ty` — structural.
     fn append_ptr_load<A: crate::AddrSpace, N: AsRef<str>>(
         &self,
         ptr_ty: PointerType<'ctx, A, B>,
-        mut payload: LoadInstData,
+        payload: LoadInstData,
         name: N,
     ) -> PointerValue<'ctx, A, B> {
-        payload.pointee_ty = ptr_ty.slot_trusting_same_module();
-        let inst = self.load_inner(payload, name);
+        let inst = self.load_sized(payload, SizedType::from(ptr_ty), name);
         PointerValue::from_value_unchecked(inst.to_erased())
     }
 
@@ -11561,7 +11605,7 @@ where
         }
         let ty = parent.schema_ir_type::<T>()?;
         let payload = self.payload(ty.slot_trusting_same_module())?;
-        let inst = parent.load_inner(payload, name);
+        let inst = parent.load_inner(payload, name)?;
         // A load's result has the type it loads: the layout's.
         Ok(T::wrap(<T::Layout as FieldLayout>::value_of(
             inst.to_erased(),
@@ -11581,13 +11625,15 @@ where
         // ordering to follow.
         let pointee_ty = ty.slot_in(parent.module.id())?;
         let payload = self.payload(pointee_ty)?;
-        let inst = parent.load_inner(payload, name);
+        let inst = parent.load_inner(payload, name)?;
         Ok(inst.to_erased().id())
     }
 
     /// Replay the parked pointer-lift error, then assemble the payload at
-    /// `pointee_ty`. The default-alignment fill happens downstream in
-    /// `load_inner`, so every terminal inherits it.
+    /// `pointee_ty`. The default-alignment fill happens downstream, in
+    /// `load_sized`, reached through `load_inner` (which proves the type
+    /// sized) or directly by the typed terminals, so every terminal inherits
+    /// it.
     fn payload(self, pointee_ty: TypeSlot) -> IrResult<LoadInstData> {
         Ok(LoadInstData::new(
             pointee_ty,
@@ -11698,7 +11744,7 @@ where
             self.volatile,
             self.ordering,
             self.sync_scope,
-        );
+        )?;
         Ok(parent.store_inner(payload))
     }
 }
@@ -11822,16 +11868,18 @@ where
     pub fn build(self) -> IrResult<PointerValueId<crate::SpaceDyn, B>> {
         let allocated_ty = self.allocated_ty?;
         let num_elements = self.num_elements?;
-        Ok(self.parent.alloca_inner(
+        self.parent.alloca_inner(
             allocated_ty,
             num_elements,
             self.align,
             self.parent.mutable_ref().ptr_type(self.addr_space),
             self.flags,
             &self.name,
-        ))
+        )
     }
 }
+
+use crate::derived_types::SizedType;
 
 // `require_same_int_width` is no longer needed: the IrBuilder's binary-
 

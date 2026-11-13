@@ -817,8 +817,11 @@ pub fn constant_data_array_info<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 
     if is_null_constant(initializer) {
         // `getFixedValue`, which asserts on a scalable global: an invalid one,
-        // but it parses, and it has no length to read.
-        let size_in_bytes = data_layout.type_store_size(value_type).fixed_value()?;
+        // but it parses, and it has no length to read. An unsized global
+        // has none either, where `getTypeStoreSize` asserts `isSized`.
+        let size_in_bytes = data_layout
+            .type_store_size(crate::derived_types::erase_sized(value_type)?)
+            .fixed_value()?;
         let length = size_in_bytes / element_size_in_bytes;
         // An empty slice for an undersized constant, so callers can still fold
         // an otherwise-undefined library call into a well-defined expression.
@@ -1046,8 +1049,10 @@ pub fn is_bytewise_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         return Some(BytewiseValue::Value(value));
     }
 
-    // Poison for a zero-sized type.
-    if data_layout.type_store_size(value.ty()).known_min_value() == 0 {
+    // Poison for a zero-sized type. An unsized type has no bytes to answer
+    // with, where upstream's `getTypeStoreSize` asserts `isSized`.
+    let value_ty = crate::derived_types::erase_sized(value.ty())?;
+    if data_layout.type_store_size(value_ty).known_min_value() == 0 {
         return Some(BytewiseValue::AnyByte);
     }
 

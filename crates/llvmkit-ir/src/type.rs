@@ -28,6 +28,7 @@ use core::cell::{Cell, RefCell};
 use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::num::NonZeroU32;
+use std::collections::HashSet;
 
 use crate::TypeKindLabel;
 use crate::addr_space::AddressSpace;
@@ -320,6 +321,51 @@ pub(crate) struct StructTypeData {
     /// it. llvmkit-only: upstream has no schemas, and `StructType::setName`
     /// renames anything.
     pub(crate) schema_held: Cell<bool>,
+    /// Mirrors the `SCDB_IsSized` subclass-data bit: set the first time
+    /// [`struct_is_sized`] answers true, and read before anything else, as
+    /// `StructType::isSized` reads it. Only true is remembered, as upstream
+    /// remembers only true: an unsized answer may come from an opaque field
+    /// that a later body makes sized. A sized answer cannot go stale, because
+    /// a body is set once (`Context::set_named_struct_body` refuses a second).
+    pub(crate) sized: Cell<SizedMemo>,
+    /// Mirrors the `SCDB_ContainsScalableVector` and
+    /// `SCDB_NotContainsScalableVector` bits: settled once [`is_scalable`]
+    /// has answered for this struct, which it reads before anything else,
+    /// as `StructType::isScalableTy` does. An opaque struct's answer is
+    /// never remembered, as upstream does not set either bit for one.
+    ///
+    /// A struct with a body remembers `false` even when a field is a still
+    /// opaque struct, as upstream sets `SCDB_NotContainsScalableVector` on
+    /// any non-opaque struct whose fields answered false: if that field later
+    /// gets a body holding a scalable vector, the outer struct still answers
+    /// `false`. This is upstream's own behaviour, kept rather than corrected,
+    /// so the verifier's `Globals cannot contain scalable types` check
+    /// accepts what upstream's accepts after the same sequence of edits.
+    pub(crate) scalable: Cell<ScalableMemo>,
+}
+
+/// What `StructType::isSized` remembers of a struct: upstream's one
+/// `SCDB_IsSized` bit. There is no "unsized" state, since an unsized answer
+/// is never remembered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SizedMemo {
+    /// The bit is clear: ask the body.
+    NotKnown,
+    /// The bit is set: the struct is sized, for good.
+    Sized,
+}
+
+/// What `StructType::isScalableTy` remembers of a struct: upstream's
+/// `SCDB_ContainsScalableVector` and `SCDB_NotContainsScalableVector` bits,
+/// of which at most one is ever set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScalableMemo {
+    /// Neither bit is set: ask the body.
+    Unknown,
+    /// `SCDB_ContainsScalableVector`.
+    Scalable,
+    /// `SCDB_NotContainsScalableVector`.
+    NotScalable,
 }
 
 /// Which of LLVM's two struct-identity regimes a struct type belongs to.
@@ -727,7 +773,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Type<'ctx, B, C> {
     /// another file staying complete, and house law forbids the stack
     /// overflow that would follow if it ever did not.
     pub fn is_sized(self) -> bool {
-        is_sized(self.module.module(), self.id, &mut Vec::new())
+        is_sized(self.module.module(), self.id, &mut HashSet::new())
     }
 
     /// Mirrors `Type::isScalableTy`: whether this type *is* or *contains* a
@@ -738,7 +784,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> Type<'ctx, B, C> {
     /// vector is scalable. This walks array elements and struct bodies, so
     /// `[4 x { <vscale x 2 x i32> }]` answers `true`.
     pub fn is_scalable(self) -> bool {
-        is_scalable(self.module.module(), self.id, &mut Vec::new())
+        is_scalable(self.module.module(), self.id, &mut HashSet::new())
     }
 
     /// Mirrors `Type::isFirstClassType`: every `TypeID` *except*
@@ -1132,7 +1178,10 @@ pub(crate) fn is_floating_point_data(data: &TypeData) -> bool {
     is_ieee_like_fp_data(data) || matches!(data, TypeData::X86Fp80 | TypeData::PpcFp128)
 }
 
-fn is_sized(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot>) -> bool {
+/// Mirrors `Type::isSized(SmallPtrSetImpl<Type *> *Visited)`. `visited` is a
+/// set, as upstream's is: a list searched on every struct made a wide struct
+/// of distinct struct fields quadratic.
+pub(crate) fn is_sized(module: &ModuleCore, id: TypeSlot, visited: &mut HashSet<TypeSlot>) -> bool {
     let data = module.context().type_data(id);
     match data {
         TypeData::Void
@@ -1167,25 +1216,37 @@ fn is_sized(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot>) -> b
 /// `false`, and an element that is or contains a scalable vector makes the
 /// struct unsized — unless the body is homogeneously that scalable vector,
 /// which upstream special-cases before the loop.
-fn struct_is_sized(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot>) -> bool {
+fn struct_is_sized(module: &ModuleCore, id: TypeSlot, visited: &mut HashSet<TypeSlot>) -> bool {
     let TypeData::Struct(data) = module.context().type_data(id) else {
         return false;
     };
+    // `if ((getSubclassData() & SCDB_IsSized) != 0) return true;` — first,
+    // before `Visited`, which is what lets a struct reached twice (a field
+    // type repeated, or shared two levels down) answer true the second time:
+    // `Visited` keeps every struct it has seen, finished or not.
+    if data.sized.get() == SizedMemo::Sized {
+        return true;
+    }
     let borrowed = data.body.borrow();
     let Some(body) = borrowed.as_ref() else {
         return false;
     };
-    if visited.contains(&id) {
+    // `if (Visited && !Visited->insert(...).second) return false;`
+    if !visited.insert(id) {
         return false;
     }
-    visited.push(id);
     if contains_homogeneous_scalable_vector_types(module, &body.elements) {
+        data.sized.set(SizedMemo::Sized);
         return true;
     }
-    body.elements.iter().all(|elem| {
+    let sized = body.elements.iter().all(|elem| {
         // Upstream asks `isScalableTy()` with a *fresh* visited set here.
-        !is_scalable(module, *elem, &mut Vec::new()) && is_sized(module, *elem, visited)
-    })
+        !is_scalable(module, *elem, &mut HashSet::new()) && is_sized(module, *elem, visited)
+    });
+    if sized {
+        data.sized.set(SizedMemo::Sized);
+    }
+    sized
 }
 
 /// Mirrors `StructType::containsHomogeneousTypes`:
@@ -1218,20 +1279,40 @@ fn contains_homogeneous_scalable_vector_types(module: &ModuleCore, elements: &[T
 /// `Type::isScalableTargetExtTy`. Note that upstream does *not* recurse
 /// through a fixed vector's element type here — a fixed vector of scalable
 /// vectors is unrepresentable — so neither does this.
-pub(crate) fn is_scalable(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot>) -> bool {
+pub(crate) fn is_scalable(
+    module: &ModuleCore,
+    id: TypeSlot,
+    visited: &mut HashSet<TypeSlot>,
+) -> bool {
     match module.context().type_data(id) {
         TypeData::Array { elem, .. } => is_scalable(module, *elem, visited),
+        // `StructType::isScalableTy`, in its order: the two remembered
+        // answers, then `Visited`, then the fields. An opaque struct has no
+        // fields to find one in, and remembers nothing, since a later body
+        // may hold one.
         TypeData::Struct(data) => {
-            if visited.contains(&id) {
+            match data.scalable.get() {
+                ScalableMemo::Scalable => return true,
+                ScalableMemo::NotScalable => return false,
+                ScalableMemo::Unknown => {}
+            }
+            if !visited.insert(id) {
                 return false;
             }
-            visited.push(id);
             let borrowed = data.body.borrow();
-            borrowed.as_ref().is_some_and(|body| {
-                body.elements
-                    .iter()
-                    .any(|elem| is_scalable(module, *elem, visited))
-            })
+            let Some(body) = borrowed.as_ref() else {
+                return false;
+            };
+            let scalable = body
+                .elements
+                .iter()
+                .any(|elem| is_scalable(module, *elem, visited));
+            data.scalable.set(if scalable {
+                ScalableMemo::Scalable
+            } else {
+                ScalableMemo::NotScalable
+            });
+            scalable
         }
         TypeData::ScalableVector { .. } => true,
         TypeData::TargetExt(_) => crate::data_layout::target_ext_layout_type(module, id)

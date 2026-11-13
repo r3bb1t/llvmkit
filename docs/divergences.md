@@ -910,11 +910,15 @@ does not refuse because the source is not itself a struct.
 `DataLayout::getPreferredAlign` compares `getTypeSizeInBits` with 128, and
 `getConstantDataArrayInfo` reads a null initializer's size with `getFixedValue`,
 both on a scalable global, which the verifier refuses but the parser reads.
-`ReadDataFromGlobal` reads `getTypeAllocSize` on a field of a fixed-size struct,
-which `{ i32, [0 x <vscale x 4 x i32>] }` has, past a load that crosses into it.
+`ReadDataFromGlobal` reads `getTypeAllocSize` on a scalable field of a struct
+whose layout size is fixed, which `{ i32, [0 x <vscale x 4 x i32>] }` has, past a
+load that crosses into it; that struct is unsized (`StructType::isSized` refuses a
+field that holds a scalable vector), so `ConstantFoldLoadFromConst`'s own
+`getTypeAllocSize` of it asserts `isSized` before `ReadDataFromGlobal` is reached.
 
 **llvmkit:** each takes the decline its routine already has: no index, unknown
-bits, no alignment, no slice, no bytes.
+bits, no alignment, no slice, no bytes. The unsized struct's case is D43's: its
+size queries answer `None`, and no load from it is folded.
 
 **Why:** a query must not abort (Doctrine D10).
 
@@ -1321,6 +1325,200 @@ entry, `rg -n -i "MAX_EXPANDED|expanded lanes|walk.*lanes" docs/divergences.md d
 
 **Guarded by:** `crates/llvmkit-asmparser/tests/long_splat_folds.rs`, whose tests each fail
 (by exhausting memory, or by a one-minute deadline) if their fold walks a long splat's lanes.
+
+### D41 — A summary id costs one entry, where upstream sizes a vector by it
+
+**Severity:** hardening. No answer differs against an upstream that can allocate what it asks
+for; where it cannot, upstream fails to allocate and llvmkit parses.
+**Where:** `crates/llvmkit-asmparser/src/ll_parser.rs` — the `numbered_value_infos` field,
+written by `add_global_value_to_index` and read by `parse_gv_reference`.
+
+**LLVM:** `LLParser::addGlobalValueToIndex` stores the `ValueInfo` of `^N = gv: ...` at index
+`N` of `NumberedValueInfos`, a `std::vector`, resizing it to `N + 1` when `N` is past its end
+("to make test simplification easier"); `LLParser::parseGVReference` reads index `N` back. So a
+summary naming `^4000000000` asks for 4000000001 slots, 64 GB at 16 bytes a `ValueInfo`.
+
+**llvmkit:** the ids are keys of a `HashMap<u32, Guid>`, so an id costs one entry whatever its
+value. The three answers upstream gives are kept: a defined id resolves to its GUID, an id never
+defined is a forward reference, and a second definition of an id replaces the first (upstream's
+`NumberedValueInfos[ID] = VI`). The `expected summary id to fit in a machine word` error the
+vector's index conversion needed is gone with it: a `u32` key needs no conversion.
+
+**Why:** a 78-byte summary naming `^4000000000` asked for 4,000,000,001 slots of
+`Option<Guid>`, 16 bytes each (a `u64` with no niche), 64 GB, before parsing anything after it.
+Before this entry, `rg -n -i 'NumberedValueInfos|numbered_value_infos|summary id'
+docs/divergences.md docs/future-work.md` (run on `46362565`) printed nothing.
+
+**Fix:** none owed; the map is the hardening.
+
+**Guarded by:**
+`crates/llvmkit-asmparser/tests/resource_bounds.rs::a_summary_id_near_the_top_of_the_range_costs_one_entry`,
+which parses ids near `u32::MAX`, referenced before and after their definitions, inside a
+one-minute deadline.
+
+### D42 — A type size too large for 64 bits saturates, where upstream wraps
+
+**Severity:** model-gap, on types no target can hold: `DataLayout` answers `u64::MAX` for a
+size that does not fit in a `u64` in the unit asked for, where upstream answers that size
+modulo 2^64. A type of 2^61 bytes or more has no bit size in a `u64`, so from there its bit
+sizes saturate while its byte sizes stay exact until they too pass 2^64.
+**Where:** `crates/llvmkit-ir/src/data_layout.rs` — `align_to`, `align_to_power_of_two`,
+`type_store_size_inner` (which reads an aggregate's store size in bytes), and the size walks'
+`TypeSize::saturating_scaled` / `TypeSize::saturating_add`
+(`crates/llvmkit-ir/src/type_size.rs`).
+
+**LLVM:** `TypeSize`'s `operator*` and `operator+`, `StructLayout::StructLayout`'s
+`StructSize += ...` and `llvm::alignTo` are `uint64_t` arithmetic, which wraps. A struct of
+`4 * 2^64` bytes (`%t64` of `%tK = type { %t(K-1), %t(K-1) }` over `{ i8, i16 }`) has an alloc
+size of 0.
+
+**llvmkit:** every size computation saturates: a product, a sum, and the round-up to an
+alignment. Upstream's `getTypeStoreSize` divides the bit size by 8; llvmkit reads a struct's or
+an array's store size in bytes instead (the same value whenever the bit size fits), because
+dividing a saturated bit count would answer 2^61 - 1 bytes for any larger type. `u64::MAX` bytes is no size a type can have in memory, so the answer reads as "too
+large to represent", never as a plausible small size; a wrapped size would let such a type pass
+for a small one (an `alloca` of 0 bytes, an offset that fits). Products and sums already
+saturated (`saturating_scaled` documents it); the round-up added `align - 1` unchecked, which
+panicked in a debug build once a struct holding one struct type twice became sized (it was
+taken for a cycle until `struct_is_sized` ported `SCDB_IsSized`), and now saturates too.
+
+**Why:** Doctrine D10 (no undefined behaviour, no silent wrong answer), and no panic on a legal
+query. A fallible size query (`Option<TypeSize>`) was weighed and not taken: every size query
+upstream is infallible, every caller would grow an arm for a case no real type reaches, and the
+saturated value already cannot be mistaken for a real size.
+
+**Fix:** none owed; saturation is the hardening.
+
+**Guarded by:**
+`crates/llvmkit-asmparser/tests/resource_bounds.rs::a_struct_shared_sixty_four_levels_deep_parses_verifies_and_prints`,
+which asserts the `u64::MAX` alloc and store sizes of a `4 * 2^64`-byte struct, and
+`resource_bounds.rs::a_size_past_sixty_four_bits_saturates_without_shrinking_its_bytes`, which
+asserts exact 2^62-byte alloc and store sizes and a saturated bit size for a 2^62-byte struct.
+
+### D43 — A size query cannot be asked of an unsized type, where upstream asserts
+
+**Severity:** model-gap, on queries upstream does not allow. `DataLayout`'s size and alignment
+queries take a `SizedType`, a proof that the type is sized, so asking one of an unsized type
+does not compile; the proof itself is refused at run time (`IrError::UnsizedType`).
+`DataLayout::struct_layout` answers `None` at the asserts that `StructLayout::StructLayout` and the
+queries it calls reach, as read in the vendored `DataLayout.cpp` and `DataLayout.h`:
+- an opaque body (`!ST->isOpaque()`);
+- in a non-packed struct, an unsized field (`getABITypeAlign`'s `isSized`; for example an opaque
+  struct or a struct holding one, a target extension type with no layout, or a struct that
+  mixes a scalable vector with other types);
+- in any struct, a field whose `getTypeAllocSize` asserts (`alloc_size_or_refusal`). That
+  query asks no `isSized` of a struct, only that it has a layout, or of an array, only of its
+  element. So a packed struct, which asks no field's alignment, lays out an unsized field that
+  has a layout;
+- a field whose nonzero size cannot be added to the struct's nonzero size so far, because one is
+  scalable and the other fixed (`TypeSize::operator+=`'s "Incompatible types"), as in
+  `{ <vscale x 4 x i32>, i8 }`.
+
+A refusal that rests on an opaque struct at any depth (`LayoutRefusal::AwaitingBody`) is not kept,
+since the body may come later. Every other refusal is permanent, since a body is set once, and
+the struct-layout map keeps it beside the layouts, so a refused struct is measured once. Those are
+the incompatible sum, and a field that is unsized without reaching an opaque struct or has no
+alloc size (`LayoutRefusal::Permanent`). The same `getTypeAllocSize` is public as
+`DataLayout::try_type_alloc_size`, which takes any type and answers `None` where upstream asserts.
+`type_alloc_size` takes a `SizedType` and answers a plain `TypeSize`. The crate's folds that
+mirror `getTypeAllocSize` (`ConstantFoldLoadFromConst`, `ReadDataFromGlobal`,
+`getGEPIndicesForOffset`) go through `try_type_alloc_size`. `getSequentialElementStride` takes a
+`SizedType` and answers `None` for an unsized element: its two callers ask it only of a sized one
+(`computeKnownBits` asks `isSized` first, and `accumulateConstantOffset` refuses a scalable
+indexed type first).
+
+An unsized struct can have a layout, as upstream's can: `{ <vscale x 4 x i32>, <vscale x 8 x i16> }`
+(scalable, but not homogeneous) and `{ <vscale x 4 x i32>, [0 x i8] }` both do, so
+`struct_layout(s).is_some()` is no proof that `s` is sized. Each earlier state below was wrong,
+and this list corrects it:
+- commit `f54f4825`'s message said `None` "exactly when the struct is unsized";
+- commit `a5fecaaa` wrote here that every struct mixing a scalable vector with sized fields has
+  a layout;
+- commit `3f1e8822` refused every unsized field, packed or not, which rejected packed structs
+  upstream lays out;
+- commit `e4baafdc` kept only the incompatible-sum refusal, and its folds took an alloc size only
+  from a `SizedType`, so they declined a load through an unsized struct with a layout that
+  upstream folds;
+- commit `d67e070c` dropped `computeKnownBits`' `isSized` guard before a GEP stride, as redundant
+  with the stride's own refusal, which `try_type_alloc_size` had just narrowed: a GEP over an
+  unsized struct with a layout reported known bits where upstream reports none. The guard is
+  `GepTypeCursor::sequential_element_stride`, which takes the proof through `erase_sized` and
+  answers `None` for an unsized element or a struct step;
+- commit `5a603537` added that guard as a second stride method beside one that answered unsized
+  elements through `try_type_alloc_size`, left the second's doc fused into the first's, and was
+  titled "one proof, not two walks", though the guard still walks the type twice (once for the
+  proof, once for the size). There is one stride method now, and its comment says it walks
+  twice.
+
+At `a5fecaaa`, `{ <vscale x 4 x i32>, i8 }` was laid out with a scalable offset and a fixed
+32-byte size.
+**Where:** `crates/llvmkit-ir/src/derived_types.rs` — `SizedType`, minted by
+`TryFrom<Type>` (which asks `Type::is_sized`) or from an integer, float or pointer type, sized by
+construction, and the crate-private `erase_sized`; `crates/llvmkit-ir/src/data_layout.rs` — the
+eight queries that take `impl Into<SizedType>` (`rg -n -U 'pub fn \w+<[^>]*>\(\s*&self,\s*ty: impl Into<SizedType' crates/llvmkit-ir/src/data_layout.rs`,
+eight at `a5fecaaa`:
+`type_size_in_bits`, `type_store_size`, `type_store_size_in_bits`,
+`type_size_equals_store_size`, `type_alloc_size`, `type_alloc_size_in_bits`, `abi_type_align`,
+`pref_type_align`), `value_or_abi_type_align` (which takes any type and
+asks for the proof only when its alignment is unset, as upstream reads the type only then),
+`reached_unsized`, and `struct_layout` / `struct_layout_of`;
+`crates/llvmkit-ir/src/ir_builder.rs` — `IrBuilder::sized`.
+
+**LLVM:** `DataLayout::getTypeSizeInBits` (`DataLayout.h`) and `DataLayout::getAlignment`
+(`DataLayout.cpp`) assert `Ty->isSized()`. The store sizes and the alignment queries reach one
+of them. `DataLayout::getTypeAllocSize` does not for a struct or an array: it reads the struct's
+layout, or the element's alloc size. `StructLayout::StructLayout` asserts `!ST->isOpaque()`, and
+its size sum asserts in `TypeSize::operator+=`. A release build skips the asserts and answers
+numbers for a type that has no size: an opaque struct laid out with no elements.
+
+**llvmkit:** the precondition is in the signature. A query's answer is a plain `TypeSize`,
+`Align` or `bool`, since a sized type always has one. Inside a sized type every type its walk
+reaches is sized (a sized struct's fields, a sized array's element, a sized target extension
+type's layout type), so the walks' arms for unsized types are `reached_unsized`, an
+`unreachable!` that names that closure. The crate's own callers that start from an arbitrary type
+take the proof through `erase_sized` and decline on `None` where upstream would assert (their
+sites: `rg -n 'erase_sized\(' crates/llvmkit-ir/src`). `struct_layout` lays out a struct only
+once every field has a size, so no layout in the `DataLayout`'s struct-layout map reaches an
+opaque struct, and none goes stale when one gets a body. The `IrBuilder` fills an omitted
+`alloca`, `load` or `store` alignment only through a `SizedType`, and refuses an unsized type with
+`IrError::UnsizedType`. Earlier, the queries answered `None` for an unsized type, and before
+that they answered an empty layout's numbers, and `struct_layout_inner` reached an
+`unreachable!` on an opaque struct, a panic on a public query.
+
+**Why:** no runtime panic in a production path (CLAUDE.md), no number that is not a size, and
+no `Option` on a query whose answer always exists once its precondition holds: readers of the
+empty layout's numbers folded loads to the wrong constant and filled alignments that went wrong
+once the opaque struct got a body.
+
+**Fix:** none owed; this is hardening of an assert, as D17 and D18 are.
+
+**Guarded by:**
+`crates/llvmkit-ir/tests/data_layout_round_trip.rs::struct_layout_of_an_opaque_field_is_refused_and_not_cached`
+(no proof, no layout, and the real ones once the body is set),
+`crates/llvmkit-ir/tests/type_components.rs::a_target_type_upstream_asserts_on_has_no_layout`
+(a target extension type with no layout has no proof),
+`crates/llvmkit-ir/tests/data_layout_round_trip.rs::every_sized_type_answers_every_size_query`
+(every type with a proof answers every query, so `reached_unsized` stays dead; it panicked when
+`is_sized` was made to accept a target extension type with no layout),
+`crates/llvmkit-ir/tests/data_layout_round_trip.rs::a_struct_mixing_scalable_and_fixed_sizes_has_no_layout`
+(no layout where `TypeSize::operator+=` asserts, a scalable one where a zero-sized field passes it),
+`crates/llvmkit-ir/tests/data_layout_round_trip.rs::a_packed_struct_lays_out_an_unsized_field_that_has_an_alloc_size`
+(a packed struct's unsized field with a layout is laid out; a non-packed one's is refused),
+`crates/llvmkit-asmparser/tests/resource_bounds.rs::a_refused_struct_layout_is_kept_as_refused`
+(each kind of permanent refusal is kept, not measured again on every query),
+`crates/llvmkit-ir/tests/data_layout_round_trip.rs::a_refusal_waiting_on_an_opaque_body_is_not_kept`
+(a refusal that rests on an opaque struct below a field gives way to the layout once the body is
+set),
+`crates/llvmkit-ir/tests/value_tracking.rs::gep_known_bits_reset_on_an_unsized_indexed_type`
+(the `isSized` guard before a GEP stride, over a fixed and a scalable stride),
+`crates/llvmkit-ir/tests/value_tracking.rs::a_gep_over_an_unsized_struct_with_a_layout_accumulates_no_offset`
+(no constant offset accumulated through a scalable indexed type with an alloc size),
+`crates/llvmkit-ir/tests/constant_folding_analysis.rs::a_load_through_an_unsized_struct_with_a_layout_is_folded`
+(a fold that asks `getTypeAllocSize` of an unsized struct with a layout goes through),
+`crates/llvmkit-ir/tests/constant_folding_analysis.rs::a_load_from_a_constant_of_unsized_type_is_not_folded`
+(the two folds that read the empty layout's numbers),
+`crates/llvmkit-ir/tests/builder_alloca.rs::alloca_load_and_store_refuse_to_guess_an_unsized_alignment`,
+and `crates/llvmkit-asmparser/tests/resource_bounds.rs::a_shared_struct_over_an_opaque_field_is_refused_at_once`.
 
 ---
 

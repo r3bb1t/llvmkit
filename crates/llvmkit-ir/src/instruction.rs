@@ -64,8 +64,8 @@ use super::r#type::{TypeSlot, TypeSlotAccess};
 use super::r#use::Use;
 use super::user::User;
 use super::value::{
-    HasDebugLoc, HasName, IsValue, SetName, Typed, Value, ValueData, ValueKindData, ValueSlot,
-    ValueSlotAccess, ValueUse, sealed,
+    HasDebugLoc, HasName, IsValue, SetName, Typed, UseList, Value, ValueData, ValueKindData,
+    ValueSlot, ValueSlotAccess, ValueUse, sealed,
 };
 use super::value_id::BlockId;
 use super::{DebugLoc, IrError, IrResult, Type, TypeKind};
@@ -1322,7 +1322,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         let self_id = self.id;
         // Snapshot the user list under a borrow so we can release it
         // before mutating each user's operand slots.
-        let user_edges: Vec<ValueUse> = module.context().use_list_of(self_id).borrow().clone();
+        let user_edges: Vec<ValueUse> = module
+            .context()
+            .use_list_of(self_id)
+            .borrow()
+            .iter()
+            .copied()
+            .collect();
         // For each user, rewrite the storage slot whose edge points at `self_id`
         // so it points at `new_id`. Instruction operands use the exhaustive
         // operand-walker; debug records are outside the operand hierarchy and
@@ -2630,7 +2636,7 @@ pub(super) fn build_instruction_value(
         name: RefCell::new(name),
         debug_loc: None,
         kind: ValueKindData::Instruction(InstructionData::new(parent_bb, kind)),
-        use_list: RefCell::new(Vec::new()),
+        use_list: RefCell::new(UseList::new()),
     }
 }
 

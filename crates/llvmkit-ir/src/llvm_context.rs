@@ -23,11 +23,13 @@ use core::cell::{Cell, RefCell};
 use core::num::NonZeroU32;
 use std::collections::HashMap;
 
-use super::value::{GlobalFieldKind, ValueUse};
+use super::value::{GlobalFieldKind, UseList, ValueUse};
 use crate::addr_space::AddressSpace;
 use crate::constant::{ConstantData, ConstantExprData};
 use crate::instr_types::{CallAttributeData, CallAttributesSlot};
-use crate::r#type::{StructBody, TypeData, TypeSlot, TypedPointeeSlot, TypedPointerSlot};
+use crate::r#type::{
+    ScalableMemo, SizedMemo, StructBody, TypeData, TypeSlot, TypedPointeeSlot, TypedPointerSlot,
+};
 use crate::value::{ValueData, ValueKindData, ValueSlot};
 
 /// What [`Context::get_or_create_named_struct`] answered with: the identified
@@ -430,6 +432,8 @@ impl Context {
             identity: crate::r#type::StructIdentity::Literal,
             body: RefCell::new(Some(StructBody { elements, packed })),
             schema_held: Cell::new(false),
+            sized: Cell::new(SizedMemo::NotKnown),
+            scalable: Cell::new(ScalableMemo::Unknown),
         }));
         self.literal_struct_types.borrow_mut().insert(key, id);
         id
@@ -502,6 +506,8 @@ impl Context {
             },
             body: RefCell::new(None),
             schema_held: Cell::new(false),
+            sized: Cell::new(SizedMemo::NotKnown),
+            scalable: Cell::new(ScalableMemo::Unknown),
         }));
         self.named_struct_types
             .borrow_mut()
@@ -522,6 +528,8 @@ impl Context {
             },
             body: RefCell::new(None),
             schema_held: Cell::new(false),
+            sized: Cell::new(SizedMemo::NotKnown),
+            scalable: Cell::new(ScalableMemo::Unknown),
         }));
         self.named_struct_order.borrow_mut().push(id);
         id
@@ -649,66 +657,70 @@ impl Context {
         Ok(())
     }
 
+    /// Mirrors `StructType::checkBody`: one worklist, a `SmallSetVector`
+    /// upstream, of every type `body` reaches, each entered once, so the
+    /// check costs the distinct types reached. A walk from each element
+    /// with a fresh visited list, searched linearly, cost each element its
+    /// whole reach again: a wide body over a shared struct was quadratic.
     fn body_would_be_recursive(&self, target: TypeSlot, body: &StructBody) -> bool {
-        body.elements
-            .iter()
-            .any(|&elem| self.type_reaches_type(elem, target, &mut Vec::new()))
-    }
-
-    fn type_reaches_type(
-        &self,
-        ty: TypeSlot,
-        target: TypeSlot,
-        visited: &mut Vec<TypeSlot>,
-    ) -> bool {
-        if ty == target {
-            return true;
-        }
-        if visited.contains(&ty) {
-            return false;
-        }
-        visited.push(ty);
-
-        match self.type_data(ty) {
-            TypeData::Function { ret, params, .. } => {
-                self.type_reaches_type(*ret, target, visited)
-                    || params
-                        .iter()
-                        .any(|&param| self.type_reaches_type(param, target, visited))
+        let mut seen = std::collections::HashSet::new();
+        let mut worklist = Vec::new();
+        let mut enqueue = |ty: TypeSlot, worklist: &mut Vec<TypeSlot>| {
+            if seen.insert(ty) {
+                worklist.push(ty);
             }
-            TypeData::Array { elem, .. }
-            | TypeData::FixedVector { elem, .. }
-            | TypeData::ScalableVector { elem, .. } => {
-                self.type_reaches_type(*elem, target, visited)
-            }
-            TypeData::Struct(s) => {
-                let body = s.body.borrow();
-                body.as_ref().is_some_and(|body| {
-                    body.elements
-                        .iter()
-                        .any(|&elem| self.type_reaches_type(elem, target, visited))
-                })
-            }
-            TypeData::TargetExt(data) => data
-                .type_params
-                .iter()
-                .any(|&param| self.type_reaches_type(param, target, visited)),
-            TypeData::Void
-            | TypeData::Half
-            | TypeData::Bfloat
-            | TypeData::Float
-            | TypeData::Double
-            | TypeData::X86Fp80
-            | TypeData::Fp128
-            | TypeData::PpcFp128
-            | TypeData::X86Amx
-            | TypeData::WasmExnRef
-            | TypeData::Label
-            | TypeData::Metadata
-            | TypeData::Token
-            | TypeData::Integer { .. }
-            | TypeData::Pointer { .. } => false,
+        };
+        for &elem in &body.elements {
+            enqueue(elem, &mut worklist);
         }
+        let mut next = 0;
+        while let Some(&ty) = worklist.get(next) {
+            next += 1;
+            if ty == target {
+                return true;
+            }
+            // `Worklist.insert_range(Ty->subtypes())`.
+            match self.type_data(ty) {
+                TypeData::Function { ret, params, .. } => {
+                    enqueue(*ret, &mut worklist);
+                    for &param in params.iter() {
+                        enqueue(param, &mut worklist);
+                    }
+                }
+                TypeData::Array { elem, .. }
+                | TypeData::FixedVector { elem, .. }
+                | TypeData::ScalableVector { elem, .. } => enqueue(*elem, &mut worklist),
+                // `target` is never borrowed here: reaching it returned above.
+                TypeData::Struct(s) => {
+                    if let Some(body) = s.body.borrow().as_ref() {
+                        for &elem in &body.elements {
+                            enqueue(elem, &mut worklist);
+                        }
+                    }
+                }
+                TypeData::TargetExt(data) => {
+                    for &param in data.type_params.iter() {
+                        enqueue(param, &mut worklist);
+                    }
+                }
+                TypeData::Void
+                | TypeData::Half
+                | TypeData::Bfloat
+                | TypeData::Float
+                | TypeData::Double
+                | TypeData::X86Fp80
+                | TypeData::Fp128
+                | TypeData::PpcFp128
+                | TypeData::X86Amx
+                | TypeData::WasmExnRef
+                | TypeData::Label
+                | TypeData::Metadata
+                | TypeData::Token
+                | TypeData::Integer { .. }
+                | TypeData::Pointer { .. } => {}
+            }
+        }
+        false
     }
 
     // ---- Value arena ----
@@ -798,7 +810,7 @@ impl Context {
 
     /// The use list of `value`, read through the wrapper. Mirrors
     /// `Value::UseList` (`Value.h`).
-    pub(crate) fn use_list_of(&self, value: ValueSlot) -> &RefCell<Vec<ValueUse>> {
+    pub(crate) fn use_list_of(&self, value: ValueSlot) -> &RefCell<UseList> {
         &self.value_data(self.use_edge_target(value)).use_list
     }
 
@@ -811,8 +823,12 @@ impl Context {
     /// because the sequence is contractual — `LLParser::sortUseListOrder`
     /// keys each use by its position in it, and
     /// `AsmWriter::predictValueUseListOrder` emits a shuffle against it.
+    ///
+    /// Constant time, as upstream's is: the list is a [`UseList`] deque and
+    /// the edge is pushed on its front. Shifting a `Vec` instead made a value
+    /// with K uses cost K squared to build.
     pub(crate) fn add_use(&self, value: ValueSlot, edge: ValueUse) {
-        self.use_list_of(value).borrow_mut().insert(0, edge);
+        self.use_list_of(value).borrow_mut().push_front(edge);
     }
 
     /// Drop the first `edge` from `value`'s use list, if it is there.
@@ -840,10 +856,11 @@ impl Context {
             return;
         }
         let mut list = self.use_list_of(value).borrow_mut();
-        let mut merged = Vec::with_capacity(edges.len() + list.len());
-        merged.extend(edges.iter().rev().copied());
-        merged.append(&mut list);
-        *list = merged;
+        // Prepending each edge in snapshot order leaves the last one at the
+        // head: the moved run lands reversed, in front of the list.
+        for edge in edges {
+            list.push_front(*edge);
+        }
     }
 
     /// Move a global object's single-slot field edge from `old` to `new`.
@@ -976,7 +993,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::Int(words)),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.int_constants.borrow_mut().insert(key, id);
         id
@@ -992,7 +1009,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::Float(bits)),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.float_constants.borrow_mut().insert(key, id);
         id
@@ -1007,7 +1024,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::PointerNull),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.null_constants.borrow_mut().insert(ty, id);
         id
@@ -1022,7 +1039,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::Undef),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.undef_constants.borrow_mut().insert(ty, id);
         id
@@ -1037,7 +1054,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::Poison),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.poison_constants.borrow_mut().insert(ty, id);
         id
@@ -1057,7 +1074,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::GlobalValueRef { value }),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.global_value_ref_constants.borrow_mut().insert(key, id);
         id
@@ -1078,7 +1095,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::ForwardRefPlaceholder),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         })
     }
 
@@ -1099,7 +1116,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::GepOffset { base_id, off }),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.register_constant_operand_uses(id);
         self.gep_offset_constants.borrow_mut().insert(key, id);
@@ -1121,7 +1138,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::SymbolDelta { hi_id, lo_id }),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.register_constant_operand_uses(id);
         self.symbol_delta_constants.borrow_mut().insert(key, id);
@@ -1148,7 +1165,7 @@ impl Context {
                 lo_id,
                 addend,
             }),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.register_constant_operand_uses(id);
         self.symbol_delta_plus_constants
@@ -1171,7 +1188,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::Aggregate(elements)),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.register_constant_operand_uses(id);
         self.aggregate_constants.borrow_mut().insert(key, id);
@@ -1189,7 +1206,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::AggregateZero),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.aggregate_zero_constants.borrow_mut().insert(ty, id);
         id
@@ -1308,7 +1325,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::Splat { element, insert }),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.register_constant_operand_uses(id);
         self.splat_constants.borrow_mut().insert(key, id);
@@ -1326,7 +1343,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::Expr(data)),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.register_constant_operand_uses(id);
         self.expr_constants.borrow_mut().insert(key, id);
@@ -1348,7 +1365,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::BlockAddress { function, block }),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         // A `blockaddress` is a `User` of its function and its block.
         self.register_constant_operand_uses(id);
@@ -1370,7 +1387,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::DsoLocalEquivalent { function }),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.register_constant_operand_uses(id);
         self.dso_local_equivalent_constants
@@ -1389,7 +1406,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::NoCfi { function }),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.register_constant_operand_uses(id);
         self.no_cfi_constants.borrow_mut().insert(key, id);
@@ -1405,7 +1422,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::TokenNone),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.token_none_constant.set(Some(id));
         id
@@ -1420,7 +1437,7 @@ impl Context {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::TargetExtNone),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.target_ext_none_constants.borrow_mut().insert(ty, id);
         id
@@ -1457,7 +1474,7 @@ impl Context {
                 addr_discriminator,
                 deactivation_symbol,
             }),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.register_constant_operand_uses(id);
         self.ptrauth_constants.borrow_mut().insert(map_key, id);

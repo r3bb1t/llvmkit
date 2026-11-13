@@ -371,8 +371,12 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
     /// `^N` of a module entry to its path. Mirrors `LLParser::ModuleIdMap`.
     summary_module_paths: BTreeMap<u32, String>,
     /// `^N` of a global-value entry to the GUID it resolved to. Mirrors
-    /// `LLParser::NumberedValueInfos`, whose holes are empty `ValueInfo`s.
-    numbered_value_infos: Vec<Option<Guid>>,
+    /// `LLParser::NumberedValueInfos`, a vector upstream resizes to `^N + 1`
+    /// so that ids need not be contiguous. Keyed instead of indexed, so a
+    /// sparse id costs one entry rather than one slot per smaller id: a
+    /// 78-byte summary naming `^4000000000` would otherwise ask for 64 GB.
+    /// An id upstream leaves as an empty hole is an absent key here.
+    numbered_value_infos: HashMap<u32, Guid>,
     /// Sites that referenced a `^N` before it was defined, keyed by that `^N`.
     /// Mirrors `LLParser::ForwardRefValueInfos`; ordered because
     /// `validateEndOfIndex` reports `begin()`.
@@ -1204,7 +1208,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             summary_index: None,
             parses_module_entities: true,
             summary_module_paths: BTreeMap::new(),
-            numbered_value_infos: Vec::new(),
+            numbered_value_infos: HashMap::new(),
             forward_ref_summary_values: BTreeMap::new(),
             forward_ref_summary_aliasees: BTreeMap::new(),
             forward_ref_summary_type_ids: BTreeMap::new(),
@@ -3677,16 +3681,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
         }
 
-        // Save the ValueInfo for later references by id. Upstream resizes to
-        // accept non-continuous numbering, which is what makes test
-        // simplification easier.
-        let Ok(slot) = usize::try_from(id) else {
-            return Err(self.message_at(loc, "expected summary id to fit in a machine word"));
-        };
-        if slot >= self.numbered_value_infos.len() {
-            self.numbered_value_infos.resize(slot + 1, None);
-        }
-        self.numbered_value_infos[slot] = Some(guid);
+        // Save the ValueInfo for later references by id. Upstream resizes its
+        // vector to accept non-continuous numbering ("to make test
+        // simplification easier"); a map accepts it without the resize. A
+        // second definition of one id replaces the first, as upstream's
+        // `NumberedValueInfos[ID] = VI` does.
+        self.numbered_value_infos.insert(id, guid);
         Ok(())
     }
 
@@ -3840,9 +3840,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         self.bump()?;
 
-        let resolved = usize::try_from(summary_id)
-            .ok()
-            .and_then(|slot| self.numbered_value_infos.get(slot).copied().flatten());
+        let resolved = self.numbered_value_infos.get(&summary_id).copied();
         let access = if read_only {
             AccessSpecifier::ReadOnly
         } else if write_only {
@@ -15078,13 +15076,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 format!("atomicrmw {op} operand must be an integer"),
             ));
         }
-        // Upstream's `unsigned Size` is the implicit `uint64_t` conversion. A
-        // scalable operand was refused above, so the size is fixed.
-        let is_byte_sized = self
-            .module
-            .data_layout()
-            .type_store_size_in_bits(val_ty)
-            .fixed_value()
+        // Upstream's `unsigned Size` is the implicit `uint64_t` conversion. An
+        // integer, a float, a float vector and a pointer are each sized, and a
+        // scalable operand was refused above, so the size is fixed; a type
+        // that is neither is no power-of-two byte size either.
+        let is_byte_sized = llvmkit_ir::SizedType::try_from(val_ty)
+            .ok()
+            .and_then(|ty| {
+                self.module
+                    .data_layout()
+                    .type_store_size_in_bits(ty)
+                    .fixed_value()
+            })
             .is_some_and(|size| size >= 8 && size.is_power_of_two());
         if !is_byte_sized {
             return Err(self.message_at(
@@ -16307,7 +16310,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         &self,
         value: llvmkit_ir::Value<'ctx, B>,
     ) -> Option<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Terminated, B>> {
-        self.func.basic_blocks().find(|bb| bb.to_erased() == value)
+        self.func.basic_block(value)
     }
 
     /// [`Self::block_view_for_value`] as a label id.

@@ -4,9 +4,9 @@
 use llvmkit_ir::{
     AddressSpace, ArrLenDyn, ArrayType, CastOpcode, ConstantFolder, DataLayout, Dyn, ElemDyn,
     IntrinsicId, IrBuilder, IrBuilderFolder, IrError, LenDyn, Linkage, MAX_INT_BITS, Module,
-    ShuffleMaskElem, TargetExtParameterRule, TargetExtProperty, Type, TypeKindLabel, TypePosition,
-    TypeSize, TypedPointee, TypedPointerType, VectorType, address_space, cast_is_valid,
-    constant_fold_shuffle_vector_instruction, lanes,
+    ShuffleMaskElem, SizedType, TargetExtParameterRule, TargetExtProperty, Type, TypeKindLabel,
+    TypePosition, TypeSize, TypedPointee, TypedPointerType, VectorType, address_space,
+    cast_is_valid, constant_fold_shuffle_vector_instruction, lanes,
 };
 
 /// Mirrors the `BitCast` arm of `CastInst::castIsValid`, which compares two
@@ -151,7 +151,6 @@ fn a_zero_count_riscv_tuple_has_no_layout() {
 #[test]
 fn a_target_type_upstream_asserts_on_has_no_layout() {
     let m = Module::dynamic("components");
-    let dl = DataLayout::default();
     let no_types = Vec::<Type<'_, _>>::new();
     let part = VectorType::scalable_of(m.i8_type(), lanes::<8>()).as_type();
     for (name, types, ints) in [
@@ -166,9 +165,13 @@ fn a_target_type_upstream_asserts_on_has_no_layout() {
             .target_ext_type(name, types, ints.clone())
             .expect("`checkParams` admits it");
         assert!(!ty.as_type().is_sized(), "{name} {ints:?}");
-        assert_eq!(
-            dl.type_size_in_bits(ty.as_type()),
-            TypeSize::fixed(0),
+        // No layout means no `SizedType` proof, without which no `DataLayout`
+        // size query can be asked.
+        assert!(
+            matches!(
+                SizedType::try_from(ty.as_type()),
+                Err(IrError::UnsizedType { .. })
+            ),
             "{name} {ints:?}"
         );
         for property in [
@@ -207,7 +210,8 @@ fn a_spirv_type_layout_multiplies_as_upstream_does() {
         let ty = m
             .target_ext_type("spirv.Type", Vec::<Type<'_, _>>::new(), [0, size, 8])
             .expect("three integer parameters");
-        dl.type_size_in_bits(ty.as_type())
+        let sized = SizedType::try_from(ty.as_type()).expect("a well-formed `spirv.Type` is sized");
+        dl.type_size_in_bits(sized)
     };
     assert_eq!(size_of(1 << 29), TypeSize::fixed(0));
     assert_eq!(size_of(4), TypeSize::fixed(32));

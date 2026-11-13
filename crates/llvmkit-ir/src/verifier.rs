@@ -358,7 +358,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // `GlobalValue::getName`, the empty string for an unnamed global.
         let name = g.name().unwrap_or_default();
 
-        if type_contains_scalable(self.module, value_ty.slot_trusting_same_module()) {
+        // `GVType->isScalableTy()`: the one `Type::isScalableTy` port, which
+        // remembers each struct's answer (`SCDB_ContainsScalableVector`), so
+        // a struct type shared down many levels costs its distinct structs.
+        if crate::r#type::is_scalable(
+            self.module,
+            value_ty.slot_trusting_same_module(),
+            &mut std::collections::HashSet::new(),
+        ) {
             return Err(self.fail_global(
                 g,
                 VerifierRule::GlobalScalableType,
@@ -7236,22 +7243,6 @@ fn build_predecessors<B: ModuleBrand>(
 // Type predicates (lifetime-free, operate on TypeSlot via the context)
 // --------------------------------------------------------------------------
 
-/// Recursively detects whether a type contains any scalable vector.
-/// Mirrors `Type::isScalableTy` in `llvm/lib/IR/Type.cpp`.
-fn type_contains_scalable(m: &ModuleCore, ty: TypeSlot) -> bool {
-    match m.context().type_data(ty) {
-        TypeData::ScalableVector { .. } => true,
-        TypeData::FixedVector { elem, .. } | TypeData::Array { elem, .. } => {
-            type_contains_scalable(m, *elem)
-        }
-        TypeData::Struct(s) => match s.body.borrow().as_ref() {
-            None => false,
-            Some(body) => body.elements.iter().any(|e| type_contains_scalable(m, *e)),
-        },
-        _ => false,
-    }
-}
-
 enum AggWalkErr {
     NotAggregate(TypeSlot),
     /// `count` is a `u64` because upstream's array arm compares against
@@ -7441,7 +7432,7 @@ mod tests {
     use crate::instruction::{InstructionKindData, build_instruction_value};
     use crate::marker::Dyn;
     use crate::module::Module;
-    use crate::value::{ValueData, ValueKindData, ValueSlot};
+    use crate::value::{UseList, ValueData, ValueKindData, ValueSlot};
 
     /// Append a fabricated instruction to a block, bypassing the
     /// IrBuilder's typestate. Returns the new instruction's value id.
@@ -7491,7 +7482,7 @@ mod tests {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::Int(Box::new([value]))),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         })
     }
 
@@ -7503,7 +7494,7 @@ mod tests {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::PointerNull),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         })
     }
     fn skeleton<'ctx, B: crate::ModuleBrand + 'ctx>(

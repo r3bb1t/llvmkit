@@ -14,10 +14,18 @@
 use core::num::NonZeroU32;
 
 use llvmkit_ir::{
-    DataLayout, DynBrand, ElemDyn, LenDyn, Module, TypeKind, TypeSize, VectorType, lanes,
+    DataLayout, DynBrand, ElemDyn, LenDyn, Module, SizedType, Type, TypeKind, TypeSize, VectorType,
+    lanes,
 };
 
 type Vector<'m> = VectorType<'m, ElemDyn, LenDyn, DynBrand>;
+
+/// Upstream's `DataLayout` size queries take any `Type *` and assert
+/// `isSized`; llvmkit's take the proof. Every vector here is of integers,
+/// so the proof holds.
+fn sized(ty: Type<'_, DynBrand>) -> SizedType<'_, DynBrand> {
+    SizedType::try_from(ty).expect("a vector of integers is sized")
+}
 
 /// Upstream's `getElementCount()`.
 fn element_count(vector: Vector<'_>) -> (u32, bool) {
@@ -357,6 +365,7 @@ fn upstream_fixed_len_comparisons() {
     );
 
     // Check the DataLayout interfaces.
+    let (v2_i32, v4_i32, v2_i64) = (sized(v2_i32), sized(v4_i32), sized(v2_i64));
     assert_eq!(dl.type_size_in_bits(v2_i64), dl.type_size_in_bits(v4_i32));
     assert_eq!(dl.type_size_in_bits(v2_i32).fixed_value(), Some(64));
     assert_eq!(dl.type_size_in_bits(v2_i64).fixed_value(), Some(128));
@@ -410,6 +419,7 @@ fn upstream_scalable_comparisons() {
     assert_ne!(v2_i32_min, v2_i64_min);
 
     // Check the DataLayout interfaces.
+    let (v2_i32, v4_i32, v2_i64) = (sized(v2_i32), sized(v4_i32), sized(v2_i64));
     assert_eq!(dl.type_size_in_bits(v2_i64), dl.type_size_in_bits(v4_i32));
     assert_eq!(dl.type_size_in_bits(v2_i32).known_min_value(), 64);
     assert_eq!(dl.type_store_size(v2_i64), dl.type_store_size(v4_i32));

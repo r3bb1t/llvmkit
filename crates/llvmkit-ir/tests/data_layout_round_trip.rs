@@ -9,8 +9,9 @@
 //! intentionally differs from upstream `FailedWithMessage` text.
 
 use llvmkit_ir::{
-    Align, ArrayType, DataLayout, DataLayoutError, ManglingMode, MaybeAlign, Module, TypeSize,
-    VectorType, address_space, lanes, module_new,
+    Align, ArrayType, DataLayout, DataLayoutError, IrError, ManglingMode, MaybeAlign, Module,
+    SizedType, StructType, Type, TypeKindLabel, TypeSize, VectorType, address_space, lanes,
+    module_new,
 };
 
 fn parse(s: &str) -> DataLayout {
@@ -855,15 +856,15 @@ fn type_size_in_bits_basic_types() {
     let m = module_new!("m").expect("fresh module");
     let dl = DataLayout::default();
     for (ty, bits) in [
-        (m.bool_type().as_type(), 1),
-        (m.i8_type().as_type(), 8),
-        (m.i32_type().as_type(), 32),
-        (m.i64_type().as_type(), 64),
-        (m.half_type().as_type(), 16),
-        (m.f32_type().as_type(), 32),
-        (m.f64_type().as_type(), 64),
-        (m.fp128_type().as_type(), 128),
-        (m.x86_fp80_type().as_type(), 80),
+        (SizedType::from(m.bool_type()), 1),
+        (SizedType::from(m.i8_type()), 8),
+        (SizedType::from(m.i32_type()), 32),
+        (SizedType::from(m.i64_type()), 64),
+        (SizedType::from(m.half_type()), 16),
+        (SizedType::from(m.f32_type()), 32),
+        (SizedType::from(m.f64_type()), 64),
+        (SizedType::from(m.fp128_type()), 128),
+        (SizedType::from(m.x86_fp80_type()), 80),
     ] {
         assert_eq!(dl.type_size_in_bits(ty), TypeSize::fixed(bits), "{ty}");
     }
@@ -876,11 +877,8 @@ fn type_store_size_non_power_of_two() {
     let m = module_new!("m").expect("fresh module");
     let dl = DataLayout::default();
     let i36 = m.custom_width_int_type(36).expect("i36");
-    assert_eq!(dl.type_store_size(i36.as_type()), TypeSize::fixed(5));
-    assert_eq!(
-        dl.type_store_size(m.x86_fp80_type().as_type()),
-        TypeSize::fixed(10)
-    );
+    assert_eq!(dl.type_store_size(i36), TypeSize::fixed(5));
+    assert_eq!(dl.type_store_size(m.x86_fp80_type()), TypeSize::fixed(10));
 }
 
 /// `llvmkit-specific`: mirrors `DataLayout::getTypeAllocSize` for the
@@ -892,10 +890,7 @@ fn type_alloc_size_i64_default() {
     let dl = DataLayout::default();
     // Default i64 spec is `i64:32:64` (ABI=4, pref=8). So an i64
     // alloc-size rounds 8 up to 4-byte alignment -- still 8.
-    assert_eq!(
-        dl.type_alloc_size(m.i64_type().as_type()),
-        TypeSize::fixed(8)
-    );
+    assert_eq!(dl.type_alloc_size(m.i64_type()), TypeSize::fixed(8));
 }
 
 /// `llvmkit-specific`: mirrors `DataLayout::getABITypeAlign` for
@@ -904,14 +899,8 @@ fn type_alloc_size_i64_default() {
 fn abi_type_align_i32_default() {
     let m = module_new!("m").expect("fresh module");
     let dl = DataLayout::default();
-    assert_eq!(
-        dl.abi_type_align(m.i32_type().as_type()),
-        Align::new(4).expect("a")
-    );
-    assert_eq!(
-        dl.abi_type_align(m.f64_type().as_type()),
-        Align::new(8).expect("a")
-    );
+    assert_eq!(dl.abi_type_align(m.i32_type()), Align::new(4).expect("a"));
+    assert_eq!(dl.abi_type_align(m.f64_type()), Align::new(8).expect("a"));
 }
 
 // ---------------------------------------------------------------------------
@@ -933,7 +922,7 @@ fn struct_layout_simple() {
     let st = m
         .struct_type([i32_ty.as_type(), i64_ty.as_type()])
         .expect("valid struct elements");
-    let layout = dl.struct_layout(st.as_type());
+    let layout = dl.struct_layout(st).expect("a struct with no opaque field");
     assert_eq!(layout.element_offset(0), TypeSize::fixed(0));
     // i64 default ABI alignment is 4, so i64 placed at offset 4.
     assert_eq!(layout.element_offset(1), TypeSize::fixed(4));
@@ -951,7 +940,7 @@ fn struct_layout_packed() {
     let st = m
         .packed_struct_type([i8_ty.as_type(), i32_ty.as_type()])
         .expect("valid struct elements");
-    let layout = dl.struct_layout(st.as_type());
+    let layout = dl.struct_layout(st).expect("a struct with no opaque field");
     assert_eq!(layout.element_offset(0), TypeSize::fixed(0));
     assert_eq!(layout.element_offset(1), TypeSize::fixed(1));
     assert_eq!(layout.size_in_bytes(), TypeSize::fixed(5));
@@ -976,7 +965,9 @@ fn a_struct_field_offset_says_whether_it_scales() {
             i32_ty.as_type(),
         ])
         .expect("valid struct elements");
-    let fixed_layout = dl.struct_layout(fixed.as_type());
+    let fixed_layout = dl
+        .struct_layout(fixed)
+        .expect("a struct with no opaque field");
     assert_eq!(fixed_layout.element_containing_offset(4), Some(2));
     assert_eq!(fixed_layout.element_containing_offset(0), Some(0));
     assert_eq!(fixed_layout.element_containing_offset(8), None);
@@ -985,7 +976,9 @@ fn a_struct_field_offset_says_whether_it_scales() {
     let scalable = m
         .struct_type([scalable_field, scalable_field])
         .expect("valid struct elements");
-    let scalable_layout = dl.struct_layout(scalable.as_type());
+    let scalable_layout = dl
+        .struct_layout(scalable)
+        .expect("a struct with no opaque field");
     assert_eq!(scalable_layout.element_offset(1), TypeSize::scalable(16));
     assert_eq!(
         scalable_layout.element_offset_in_bits(1),
@@ -1003,21 +996,24 @@ fn a_struct_field_offset_says_whether_it_scales() {
 fn a_scalable_size_stays_scalable_through_an_array_and_a_struct() {
     let m = module_new!("m").expect("fresh module");
     let dl = DataLayout::default();
+    let sized = |ty| SizedType::try_from(ty).expect("built of a vector of integers");
     let vector = VectorType::scalable_of(m.i32_type(), lanes::<4>()).as_type();
-    assert_eq!(dl.type_size_in_bits(vector), TypeSize::scalable(128));
+    assert_eq!(dl.type_size_in_bits(sized(vector)), TypeSize::scalable(128));
 
-    let array = m.array_type(vector, 2).expect("a valid element").as_type();
+    let array = sized(m.array_type(vector, 2).expect("a valid element").as_type());
     assert_eq!(dl.type_size_in_bits(array), TypeSize::scalable(256));
     assert_eq!(dl.type_alloc_size(array), TypeSize::scalable(32));
     assert_eq!(dl.type_store_size(array), TypeSize::scalable(32));
 
-    let tuple = m
+    let tuple_struct = m
         .struct_type([vector, vector])
-        .expect("valid struct elements")
-        .as_type();
+        .expect("valid struct elements");
+    let tuple = sized(tuple_struct.as_type());
     assert_eq!(dl.type_size_in_bits(tuple), TypeSize::scalable(256));
     assert_eq!(dl.type_alloc_size(tuple), TypeSize::scalable(32));
-    let layout = dl.struct_layout(tuple);
+    let layout = dl
+        .struct_layout(tuple_struct)
+        .expect("a struct with no opaque field");
     assert_eq!(layout.size_in_bytes(), TypeSize::scalable(32));
     assert_eq!(layout.size_in_bits(), TypeSize::scalable(256));
     assert!(!layout.is_padded());
@@ -1025,20 +1021,159 @@ fn a_scalable_size_stays_scalable_through_an_array_and_a_struct() {
     // `operator+=` alone takes a non-zero field's scalability. A first field of
     // size zero is what `getScalable(0)` is for.
     let empty_array = m.array_type(vector, 0).expect("a valid element").as_type();
-    let empty_tuple = m
-        .struct_type([empty_array])
-        .expect("valid struct elements")
-        .as_type();
+    let empty_tuple = m.struct_type([empty_array]).expect("valid struct elements");
     assert_eq!(
-        dl.struct_layout(empty_tuple).size_in_bytes(),
+        dl.struct_layout(empty_tuple)
+            .expect("a struct with no opaque field")
+            .size_in_bytes(),
         TypeSize::scalable(0)
     );
 
     let i64_array = m.array_type(m.i64_type(), 2).expect("a valid element");
     assert_eq!(
-        dl.type_size_in_bits(i64_array.as_type()),
+        dl.type_size_in_bits(sized(i64_array.as_type())),
         TypeSize::fixed(128)
     );
+}
+
+/// `StructLayout::StructLayout` adds each field's alloc size with
+/// `TypeSize::operator+=`, which asserts "Incompatible types" when a nonzero
+/// scalable size meets a nonzero fixed one, so `{ <vscale x 4 x i32>, i8 }`
+/// and `{ i8, <vscale x 4 x i32> }` have no layout upstream. **No upstream
+/// test** reaches the assert; llvmkit answers `None` there
+/// (`docs/divergences.md` D43). llvmkit-specific regression: the sum took
+/// the flag of its right side, so the first struct was laid out with a
+/// scalable offset and a fixed 32-byte size. A zero-sized fixed field passes
+/// the assert, as it passes upstream's: `{ <vscale x 4 x i32>, [0 x i8] }`
+/// is laid out, at a scalable 16 bytes, though the struct is unsized.
+#[test]
+fn a_struct_mixing_scalable_and_fixed_sizes_has_no_layout() {
+    let m = module_new!("m").expect("fresh module");
+    let dl = DataLayout::default();
+    let scalable = VectorType::scalable_of(m.i32_type(), lanes::<4>()).as_type();
+    let i8_ty = m.i8_type().as_type();
+    for fields in [[scalable, i8_ty], [i8_ty, scalable]] {
+        let mixed = m.struct_type(fields).expect("valid struct elements");
+        assert!(dl.struct_layout(mixed).is_none(), "{mixed}");
+    }
+    let empty = m
+        .array_type(m.i8_type(), 0)
+        .expect("a valid element")
+        .as_type();
+    let zero_tail = m
+        .struct_type([scalable, empty])
+        .expect("valid struct elements");
+    assert!(!zero_tail.as_type().is_sized());
+    assert_eq!(
+        dl.struct_layout(zero_tail)
+            .expect("a zero-sized field adds nothing")
+            .size_in_bytes(),
+        TypeSize::scalable(16)
+    );
+}
+
+/// `StructLayout::StructLayout` asks a field's `getABITypeAlign`, which
+/// asserts `isSized`, only for a non-packed struct; a packed one asks only
+/// `getTypeAllocSize`, which in `DataLayout.cpp` asks no `isSized` of a
+/// struct or an array, only that the struct has a layout. So an unsized
+/// struct with a layout, `{ <vscale x 4 x i32>, <vscale x 8 x i16> }` (two
+/// scalable vectors of different types, so not homogeneous), is a valid
+/// field of a packed struct and of an array in one, and not of a non-packed
+/// struct. A packed struct's opaque field, or one of a target extension type
+/// with no layout, still asserts (`getStructLayout`'s `!isOpaque()`, and
+/// `getTypeStoreSize`'s `isSized`). **No upstream test**; llvmkit-specific
+/// regression: `struct_layout` refused every unsized field, packed or not,
+/// rejecting structs upstream lays out.
+#[test]
+fn a_packed_struct_lays_out_an_unsized_field_that_has_an_alloc_size() {
+    let m = module_new!("m").expect("fresh module");
+    let dl = DataLayout::default();
+    let i32x4 = VectorType::scalable_of(m.i32_type(), lanes::<4>()).as_type();
+    let i16x8 = VectorType::scalable_of(m.i16_type(), lanes::<8>()).as_type();
+    let mixed = m
+        .struct_type([i32x4, i16x8])
+        .expect("valid struct elements");
+    assert!(
+        !mixed.as_type().is_sized(),
+        "two scalable types, not homogeneous"
+    );
+    assert_eq!(
+        dl.struct_layout(mixed)
+            .expect("an unsized struct with a layout")
+            .size_in_bytes(),
+        TypeSize::scalable(32)
+    );
+    let array = m.array_type(mixed, 1).expect("a valid element").as_type();
+    for field in [mixed.as_type(), array] {
+        let packed = m
+            .packed_struct_type([field])
+            .expect("valid struct elements");
+        assert_eq!(
+            dl.struct_layout(packed)
+                .expect("a packed struct asks no field's alignment")
+                .size_in_bytes(),
+            TypeSize::scalable(32),
+            "{packed}"
+        );
+        let unpacked = m.struct_type([field]).expect("valid struct elements");
+        assert!(dl.struct_layout(unpacked).is_none(), "{unpacked}");
+    }
+    let opaque = m.opaque_struct("O").expect("fresh name").as_type();
+    let no_layout = m
+        .target_ext_type("spirv.Padding", Vec::<Type<'_, _>>::new(), Vec::new())
+        .expect("`checkParams` admits it")
+        .as_type();
+    for field in [opaque, no_layout] {
+        let packed = m
+            .packed_struct_type([field])
+            .expect("valid struct elements");
+        assert!(dl.struct_layout(packed).is_none(), "{packed}");
+        assert_eq!(dl.try_type_alloc_size(field), None, "{field}");
+    }
+    // `getTypeAllocSize` answers the unsized struct with a layout, and its
+    // array, as it answers any sized type.
+    assert_eq!(dl.try_type_alloc_size(mixed), Some(TypeSize::scalable(32)));
+    assert_eq!(dl.try_type_alloc_size(array), Some(TypeSize::scalable(32)));
+    assert_eq!(
+        dl.try_type_alloc_size(m.i32_type()),
+        Some(TypeSize::fixed(4))
+    );
+}
+
+/// llvmkit-specific, no upstream counterpart (`docs/divergences.md` D43): a
+/// refusal that rests on an opaque struct anywhere below a field is not kept,
+/// so the layout appears once the opaque struct gets a body. Upstream asserts
+/// on each of these before the body is set and lays each out after. The
+/// structs reach `%O` through an array in a non-packed struct, a struct in a
+/// packed one, and an array of structs in a packed one. A refusal kept for
+/// good here would answer `None` after the body is set.
+#[test]
+fn a_refusal_waiting_on_an_opaque_body_is_not_kept() {
+    let m = module_new!("m").expect("fresh module");
+    let dl = DataLayout::default();
+    let opaque = m.opaque_struct("O").expect("fresh name");
+    let holder = m
+        .struct_type([opaque.as_type()])
+        .expect("valid struct elements")
+        .as_type();
+    let array_of_opaque = m.array_type(opaque, 2).expect("a valid element").as_type();
+    let array_of_holder = m.array_type(holder, 2).expect("a valid element").as_type();
+    let structs = [
+        m.struct_type([array_of_opaque])
+            .expect("valid struct elements"),
+        m.packed_struct_type([holder])
+            .expect("valid struct elements"),
+        m.packed_struct_type([array_of_holder])
+            .expect("valid struct elements"),
+    ];
+    for ty in structs {
+        assert!(dl.struct_layout(ty).is_none(), "{ty}: `%O` is opaque");
+    }
+    m.set_struct_body(opaque, [m.i32_type().as_type()], false)
+        .expect("the body is set once");
+    for ty in structs {
+        assert!(dl.struct_layout(ty).is_some(), "{ty}: `%O` has a body");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,21 +1190,37 @@ fn default_layout_is_default() {
     assert!(!parsed.is_default());
 }
 
-/// `llvmkit-specific`: confirms `MaybeAlign` integration with
-/// `value_or_abi_type_align`. Mirrors
-/// `DataLayout::getValueOrABITypeAlignment`.
+/// Mirrors `DataLayout::getValueOrABITypeAlignment`, `Alignment ?
+/// *Alignment : getABITypeAlign(Ty)`: a set alignment is answered as is, an
+/// unset one is the type's ABI alignment. The type is read only when the
+/// alignment is unset, so a set alignment is answered for an unsized type
+/// too. The last case has **no upstream counterpart**: an unset alignment on
+/// an unsized type meets `getABITypeAlign`'s `isSized` assert, refused here
+/// as `IrError::UnsizedType` (`docs/divergences.md` D43).
 #[test]
 fn value_or_abi_type_align() {
     let m = module_new!("m").expect("fresh module");
     let dl = DataLayout::default();
     let custom = MaybeAlign::from(Align::new(16).expect("a"));
+    let i32_ty = m.i32_type();
     assert_eq!(
-        dl.value_or_abi_type_align(custom, m.i32_type().as_type()),
-        Align::new(16).expect("a")
+        dl.value_or_abi_type_align(custom, i32_ty),
+        Ok(Align::new(16).expect("a"))
     );
     assert_eq!(
-        dl.value_or_abi_type_align(MaybeAlign::default(), m.i32_type().as_type()),
-        Align::new(4).expect("a")
+        dl.value_or_abi_type_align(MaybeAlign::default(), i32_ty),
+        Ok(Align::new(4).expect("a"))
+    );
+    let opaque = m.opaque_struct("O").expect("fresh name").as_type();
+    assert_eq!(
+        dl.value_or_abi_type_align(custom, opaque),
+        Ok(Align::new(16).expect("a"))
+    );
+    assert_eq!(
+        dl.value_or_abi_type_align(MaybeAlign::default(), opaque),
+        Err(IrError::UnsizedType {
+            kind: TypeKindLabel::Struct
+        })
     );
 }
 
@@ -1123,4 +1274,285 @@ fn equal_layouts_hash_equal() {
     cache.insert(a.clone(), 1);
     assert_eq!(cache.get(&b), Some(&1));
     assert_eq!(cache.get(&other), None);
+}
+
+/// `llvmkit-specific` (`docs/divergences.md` D43): a struct holding an
+/// opaque struct has no `SizedType` proof, so no size query can be asked of
+/// it, and no `struct_layout`, where upstream asserts (`isSized` in
+/// `getTypeSizeInBits` / `getAlignment`, and `!ST->isOpaque()` in
+/// `StructLayout::StructLayout`). Nothing is cached for it either, so once
+/// the opaque struct gets a body the size and layout are the real ones. A
+/// cached layout would go stale here, and a panic (the `unreachable!` an
+/// earlier version had) would abort a public query.
+#[test]
+fn struct_layout_of_an_opaque_field_is_refused_and_not_cached() {
+    let m = module_new!("m").expect("fresh module");
+    let dl = DataLayout::default();
+    let opaque = m.opaque_struct("O").expect("fresh name");
+    let outer = m
+        .struct_type([m.i8_type().as_type(), opaque.as_type()])
+        .expect("valid struct elements");
+    assert!(matches!(
+        SizedType::try_from(outer.as_type()),
+        Err(IrError::UnsizedType { .. })
+    ));
+    assert!(
+        dl.struct_layout(outer).is_none(),
+        "a struct holding an opaque struct has no layout"
+    );
+    m.set_struct_body(opaque, [m.i32_type().as_type()], false)
+        .expect("the body is set once");
+    let outer_sized = SizedType::try_from(outer.as_type()).expect("sized once the body is set");
+    assert_eq!(dl.type_alloc_size(outer_sized), TypeSize::fixed(8));
+    assert_eq!(
+        dl.struct_layout(outer)
+            .expect("a struct with no opaque field")
+            .element_offset(1),
+        TypeSize::fixed(4)
+    );
+}
+
+/// Mirrors `TEST(DataLayoutTest, Equality)`: `p00(global):32:8` and
+/// `p0(global):32:8` keep their own strings and compare equal, since
+/// `DataLayout::operator==` does not read the string. Beyond the port, the
+/// two hash equal, which llvmkit's `Hash` owes its `Eq`.
+#[test]
+fn equality() {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let layout0 = "p00(global):32:8";
+    let layout1 = "p0(global):32:8";
+    let dl0 = parse(layout0);
+    let dl1 = parse(layout1);
+    assert_eq!(dl0.string_representation(), layout0);
+    assert_eq!(dl1.string_representation(), layout1);
+    assert_eq!(dl0, dl1);
+    let hash_of = |dl: &DataLayout| {
+        let mut hasher = DefaultHasher::new();
+        dl.hash(&mut hasher);
+        hasher.finish()
+    };
+    assert_eq!(hash_of(&dl0), hash_of(&dl1));
+}
+
+/// Mirrors `TEST(DataLayoutTest, CopyAssignmentInvalidatesStructLayout)`:
+/// each `DataLayout` lays a struct out under its own pointer size, and a copy
+/// of the second, assigned over the first, answers the second's layout, not
+/// the first's cached one. Upstream's `operator=` deletes the target's
+/// `StructLayoutMap`; llvmkit's clone starts with an empty one.
+#[test]
+fn copy_assignment_invalidates_struct_layout() {
+    let mut dl1 = parse("p:32:32");
+    let dl2 = parse("p:64:64");
+    let m = module_new!("m").expect("fresh module");
+    let ty = m
+        .struct_type([m.ptr_type_in::<0>().as_type()])
+        .expect("valid struct elements");
+    let layout = |dl: &DataLayout| dl.struct_layout(ty).expect("a pointer struct has a layout");
+
+    // Initialize struct layout caches.
+    assert_eq!(layout(&dl1).size_in_bits(), TypeSize::fixed(32));
+    assert_eq!(
+        layout(&dl1).alignment(),
+        Align::new(4).expect("a power of two")
+    );
+    assert_eq!(layout(&dl2).size_in_bits(), TypeSize::fixed(64));
+    assert_eq!(
+        layout(&dl2).alignment(),
+        Align::new(8).expect("a power of two")
+    );
+
+    // The copy should invalidate DL1's cache.
+    dl1 = dl2.clone();
+    assert_eq!(layout(&dl1).size_in_bits(), TypeSize::fixed(64));
+    assert_eq!(
+        layout(&dl1).alignment(),
+        Align::new(8).expect("a power of two")
+    );
+    assert_eq!(layout(&dl2).size_in_bits(), TypeSize::fixed(64));
+    assert_eq!(
+        layout(&dl2).alignment(),
+        Align::new(8).expect("a power of two")
+    );
+}
+
+/// llvmkit-specific, no upstream counterpart: every type that gets a
+/// [`SizedType`] proof answers every `DataLayout` size and alignment query
+/// without reaching an unsized type. The walks under the queries treat an
+/// unsized type as unreachable (`reached_unsized`), which holds only while
+/// `Type::is_sized` (`StructType::isSized`, `Type::isSizedDerivedType`), the
+/// target extension layout table and `struct_layout_inner`'s refusals agree;
+/// a disagreement aborts a public query. So the test also pins that a sized
+/// struct has a layout (`layout_of` relies on it), that a non-packed struct
+/// with an unsized field has none, that a packed struct with an opaque field
+/// has none and one of fixed sized fields has one, and, with one
+/// `DataLayout` across both passes, that no refusal kept in the first pass
+/// outlives the opaque struct's body. The
+/// types here are every leaf kind, the target extension types
+/// `getTargetTypeInfo` lays out and the ones it cannot, two levels of array,
+/// vector, scalable vector, struct and packed struct nesting over them, and
+/// the same again after the opaque struct among them gets a body. Each type
+/// without a proof is refused with
+/// `IrError::UnsizedType` by `value_or_abi_type_align`'s unset branch. The
+/// counts are a floor on coverage, not an upstream figure: both sides must
+/// be exercised.
+#[test]
+fn every_sized_type_answers_every_size_query() {
+    let m = module_new!("m").expect("fresh module");
+    let i8_ty = m.i8_type().as_type();
+    let i32_ty = m.i32_type();
+    let opaque = m.opaque_struct("O").expect("fresh name");
+    let scalable_i8 = VectorType::scalable_of(m.i8_type(), lanes::<8>()).as_type();
+    let mut leaves: Vec<Type<'_, _>> = vec![
+        m.bool_type().as_type(),
+        i8_ty,
+        i32_ty.as_type(),
+        m.i64_type().as_type(),
+        m.custom_width_int_type(36).expect("i36").as_type(),
+        m.half_type().as_type(),
+        m.bfloat_type().as_type(),
+        m.f32_type().as_type(),
+        m.f64_type().as_type(),
+        m.x86_fp80_type().as_type(),
+        m.fp128_type().as_type(),
+        m.ppc_fp128_type().as_type(),
+        m.x86_amx_type(),
+        m.wasm_exnref_type(),
+        m.ptr_type_in::<0>().as_type(),
+        m.ptr_type_in::<3>().as_type(),
+        m.void_type().as_type(),
+        m.label_type().as_type(),
+        m.metadata_type().as_type(),
+        m.token_type().as_type(),
+        m.function_type(m.void_type(), [i32_ty.as_type()])
+            .expect("a valid function type")
+            .as_type(),
+        VectorType::scalable_of(i32_ty, lanes::<4>()).as_type(),
+        opaque.as_type(),
+    ];
+    let no_types = Vec::<Type<'_, _>>::new();
+    for (name, types, ints) in [
+        ("spirv.Type", no_types.clone(), vec![0, 4]),
+        ("spirv.Type", no_types.clone(), vec![0, 4, 32]),
+        ("spirv.Padding", no_types.clone(), vec![]),
+        ("spirv.Padding", no_types.clone(), vec![4]),
+        ("dx.Padding", no_types.clone(), vec![4]),
+        ("riscv.vector.tuple", vec![i32_ty.as_type()], vec![2]),
+        ("riscv.vector.tuple", vec![scalable_i8], vec![2]),
+        ("aarch64.svcount", no_types.clone(), vec![]),
+        ("llvm.test.vectorelement", no_types.clone(), vec![]),
+        ("amdgcn.named.barrier", no_types.clone(), vec![0]),
+    ] {
+        leaves.push(
+            m.target_ext_type(name, types, ints)
+                .expect("`checkParams` admits it")
+                .as_type(),
+        );
+    }
+    let mut all = leaves;
+    for _ in 0..2 {
+        let mut next = Vec::new();
+        for &ty in &all {
+            next.extend(m.array_type(ty, 3).ok().map(|t| t.as_type()));
+            next.extend(m.vector_type(ty, lanes::<2>()).ok().map(|t| t.as_type()));
+            next.extend(
+                m.scalable_vector_type(ty, lanes::<2>())
+                    .ok()
+                    .map(|t| t.as_type()),
+            );
+            next.extend(m.struct_type([ty]).ok().map(|t| t.as_type()));
+            next.extend(m.struct_type([ty, ty]).ok().map(|t| t.as_type()));
+            next.extend(m.struct_type([ty, i8_ty]).ok().map(|t| t.as_type()));
+            next.extend(m.packed_struct_type([ty]).ok().map(|t| t.as_type()));
+            next.extend(m.packed_struct_type([ty, i8_ty]).ok().map(|t| t.as_type()));
+        }
+        all.extend(next);
+    }
+
+    // One layout for both passes, so what the first pass kept is what the
+    // second reads: a refusal kept for good although it waited on `%O`'s
+    // body would leave a struct sized after the body with no layout.
+    let dl = DataLayout::default();
+    let check = |all: &[Type<'_, _>]| {
+        let (mut sized_count, mut unsized_count) = (0_usize, 0_usize);
+        for &ty in all {
+            if let Ok(struct_ty) = StructType::try_from(ty) {
+                // Laying a struct out, packed or not, reaches no type the
+                // walks hold unreachable either; a sized struct has a layout,
+                // and a non-packed one with an unsized field (or an opaque
+                // body) has none, where `StructLayout`'s `getABITypeAlign`
+                // asserts. A packed struct asks no field's alignment, so an
+                // unsized field with an alloc size is laid out.
+                let layout = dl.struct_layout(struct_ty);
+                if ty.is_sized() {
+                    assert!(layout.is_some(), "{ty}: a sized struct has a layout");
+                }
+                let has_unsized_field = struct_ty.is_opaque()
+                    || (!struct_ty.is_packed()
+                        && struct_ty.fields().any(|field| !field.is_sized()));
+                if has_unsized_field {
+                    assert!(layout.is_none(), "{ty}: an unsized field has no layout");
+                }
+                if struct_ty.is_packed() {
+                    // An opaque field has no alloc size (`getStructLayout`'s
+                    // `!isOpaque()`); sized fields with no scalable size in
+                    // them add up, and are laid out.
+                    let opaque_field = struct_ty.fields().any(|field| {
+                        StructType::try_from(field).is_ok_and(|field| field.is_opaque())
+                    });
+                    if opaque_field {
+                        assert!(layout.is_none(), "{ty}: an opaque field has no alloc size");
+                    }
+                    let fixed_sized_fields = struct_ty
+                        .fields()
+                        .all(|field| field.is_sized() && !field.is_scalable());
+                    if fixed_sized_fields {
+                        assert!(layout.is_some(), "{ty}: fixed sized fields are laid out");
+                    }
+                }
+            }
+            let Ok(sized) = SizedType::try_from(ty) else {
+                unsized_count += 1;
+                assert!(!ty.is_sized(), "{ty}");
+                assert!(
+                    matches!(
+                        dl.value_or_abi_type_align(MaybeAlign::default(), ty),
+                        Err(IrError::UnsizedType { .. })
+                    ),
+                    "{ty}"
+                );
+                continue;
+            };
+            sized_count += 1;
+            let bits = dl.type_size_in_bits(sized);
+            let store = dl.type_store_size(sized);
+            let alloc = dl.type_alloc_size(sized);
+            assert_eq!(bits.is_scalable(), alloc.is_scalable(), "{ty}");
+            assert!(
+                alloc.known_min_value() >= store.known_min_value(),
+                "{ty}: alloc {alloc:?} < store {store:?}"
+            );
+            let _ = dl.type_store_size_in_bits(sized);
+            let _ = dl.type_alloc_size_in_bits(sized);
+            let _ = dl.type_size_equals_store_size(sized);
+            let abi = dl.abi_type_align(sized);
+            assert!(dl.pref_type_align(sized) >= abi, "{ty}");
+            assert_eq!(
+                dl.value_or_abi_type_align(MaybeAlign::default(), ty),
+                Ok(abi),
+                "{ty}"
+            );
+        }
+        assert!(sized_count > 0 && unsized_count > 0);
+        (sized_count, unsized_count)
+    };
+    let (sized_before, unsized_before) = check(&all);
+    m.set_struct_body(opaque, [i32_ty.as_type()], false)
+        .expect("the body is set once");
+    let (sized_after, unsized_after) = check(&all);
+    assert!(
+        sized_after > sized_before && unsized_after < unsized_before,
+        "the body makes the structs over `%O` sized"
+    );
 }

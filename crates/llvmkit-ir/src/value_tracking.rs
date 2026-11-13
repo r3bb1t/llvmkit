@@ -128,7 +128,8 @@ impl<'a> QueryCache<'a> {
 /// Cached result for [`KnownBitsAnalysis`].
 #[derive(Debug)]
 pub struct KnownBitsAnalysisResult {
-    data_layout: DataLayout,
+    /// Shared with the module, so its struct-layout cache is the module's.
+    data_layout: std::sync::Arc<DataLayout>,
     max_depth: u32,
     dominator_tree: Option<DominatorTree>,
     cache: KnownBitsCacheStore,
@@ -196,7 +197,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for KnownBitsAnalysi
             .cached_result_by_type::<DominatorTreeAnalysis, DominatorTree, _>(function)
             .cloned();
         Ok(KnownBitsAnalysisResult {
-            data_layout: function.module().data_layout().clone(),
+            data_layout: function.module().data_layout_shared(),
             max_depth: MAX_ANALYSIS_RECURSION_DEPTH,
             dominator_tree,
             cache: RefCell::new(HashMap::new()),
@@ -6170,11 +6171,15 @@ fn alloca_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 ) -> KnownBits {
     let width = query.data_layout().pointer_size_in_bits(data.addr_space);
     let module = module_ref(value);
-    let allocated_ty = erase_type(Type::new(data.allocated_ty, module));
-    let align = data
-        .align
-        .align()
-        .unwrap_or_else(|| query.data_layout().abi_type_align(allocated_ty));
+    // Upstream's `AllocaInst` always carries an alignment. One llvmkit leaves
+    // unset defaults to the allocated type's ABI alignment, and an unsized
+    // type has none to read, so nothing is known.
+    let Ok(align) = query
+        .data_layout()
+        .value_or_abi_type_align(data.align, Type::new(data.allocated_ty, module))
+    else {
+        return KnownBits::unknown(width);
+    };
     known_low_zero_bits(width, align)
 }
 
@@ -6285,7 +6290,13 @@ where
             // `uint64_t Offset = SL->getElementOffset(Idx)` is the implicit
             // `TypeSize` conversion, fatal on a scalable offset. Nothing is
             // known about such a field's address instead.
-            let layout = data_layout.struct_layout(erase_type(struct_ty));
+            // No layout where upstream's `StructLayout` constructor asserts
+            // (D43 lists where): nothing is known. Only the field's offset
+            // is read, which a layout always has, whatever the field's
+            // sizedness.
+            let Some(layout) = data_layout.struct_layout_of(erase_type(struct_ty)) else {
+                return Ok(KnownBits::unknown(width));
+            };
             let Some(field_offset) = layout.element_offset(field).fixed_value() else {
                 return Ok(KnownBits::unknown(width));
             };
@@ -6294,13 +6305,15 @@ where
             continue;
         }
 
-        // Handle array index arithmetic.
-        if !indexed_ty.is_sized() {
+        // Handle array index arithmetic. `if (!IndexedTy->isSized()) {
+        // Known.resetAll(); break; }`, then the stride: the stride's `None`
+        // is that guard, and covers an unsized struct with a layout, whose
+        // `getTypeAllocSize` alone would answer. It still walks the type
+        // twice, once for the proof and once for the size.
+        let Some(stride) = step.sequential_element_stride(data_layout) else {
             known = KnownBits::unknown(width);
             break;
-        }
-
-        let stride = step.sequential_element_stride(data_layout);
+        };
         let stride_in_bytes = stride.known_min_value();
         if !stride.is_scalable() {
             // Fast path for constant offset.

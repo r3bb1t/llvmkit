@@ -115,8 +115,8 @@ use super::type_components::{lanes, require_component};
 use super::typed_pointer_type::TypedPointerType;
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
-    AdmittedRename, GlobalFieldKind, Value, ValueData, ValueKindData, ValueSlot, ValueSlotAccess,
-    ValueUse,
+    AdmittedRename, GlobalFieldKind, UseList, Value, ValueData, ValueKindData, ValueSlot,
+    ValueSlotAccess, ValueUse,
 };
 use super::value_id::{
     FunctionId, GlobalAliasId, GlobalId, GlobalIfuncId, TypedFunctionId, TypedVarArgsFunctionId,
@@ -1646,6 +1646,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         self.core.data_layout()
     }
 
+    /// The module's data layout, shared with the module (and with its
+    /// struct-layout cache) beyond a borrow.
+    #[inline]
+    pub fn data_layout_shared(self) -> std::sync::Arc<DataLayout> {
+        self.core.data_layout_shared()
+    }
+
     /// Target triple directive.
     #[inline]
     pub fn target_triple(self) -> Option<String> {
@@ -2372,7 +2379,10 @@ pub(super) struct ModuleCore {
     /// Parsed `target datalayout = "..."` directive. Default
     /// (empty string) when the module has no directive. Mirrors
     /// `Module::DL` in `IR/Module.h`.
-    data_layout: core::cell::RefCell<DataLayout>,
+    /// In an `Arc`, so the analyses that hold the module's layout share it,
+    /// and its struct-layout cache, rather than clone it (a clone starts with
+    /// an empty cache, as upstream's copy does).
+    data_layout: core::cell::RefCell<std::sync::Arc<DataLayout>>,
     /// `target triple = "..."` directive. Optional.
     target_triple: core::cell::RefCell<Option<String>>,
     /// Module-level inline assembly. Mirrors `Module::ModuleAsm`.
@@ -2397,6 +2407,10 @@ pub(super) struct ModuleCore {
     /// of [`ModuleId::fresh`], but per-module (an `SsaBuilderId` only needs
     /// to disambiguate builders within one module, not process-globally).
     next_ssa_builder_id: core::cell::Cell<u32>,
+    /// Alive exactly as long as this module: a `DataLayout`'s struct-layout
+    /// map holds a `Weak` of it per module, and drops a module's layouts once
+    /// it is dead (`data_layout.rs::StructLayoutMap`).
+    liveness: std::sync::Arc<()>,
 }
 
 /// Linear module token carrying a brand `B` and verification state `S`.
@@ -2499,6 +2513,11 @@ impl<B: ModuleBrand, S: 'static> core::fmt::Debug for Module<B, S> {
 }
 
 impl<'ctx> ModuleCore {
+    /// A token that is dead once this module is dropped.
+    pub(crate) fn liveness(&self) -> std::sync::Weak<()> {
+        std::sync::Arc::downgrade(&self.liveness)
+    }
+
     /// Construct a fresh, empty module with a freshly-allocated
     /// [`ModuleId`].
     pub(super) fn new<N>(name: N) -> Self
@@ -2517,7 +2536,7 @@ impl<'ctx> ModuleCore {
             symbol_table: ValueSymbolTable::new(),
             comdats: boxcar::Vec::new(),
             comdat_by_name: core::cell::RefCell::new(std::collections::HashMap::new()),
-            data_layout: core::cell::RefCell::new(DataLayout::default()),
+            data_layout: core::cell::RefCell::new(std::sync::Arc::new(DataLayout::default())),
             target_triple: core::cell::RefCell::new(None),
             module_asm: core::cell::RefCell::new(String::new()),
             attribute_groups: core::cell::RefCell::new(Vec::new()),
@@ -2525,6 +2544,7 @@ impl<'ctx> ModuleCore {
             named_metadata: core::cell::RefCell::new(Vec::new()),
             metadata_as_value_cache: core::cell::RefCell::new(std::collections::HashMap::new()),
             next_ssa_builder_id: core::cell::Cell::new(0),
+            liveness: std::sync::Arc::new(()),
         }
     }
 
@@ -2725,7 +2745,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Function(Box::new(fn_data)),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
 
         let param_types: Vec<TypeSlot> = signature
@@ -2744,7 +2764,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
                     parent_fn: fn_id,
                     slot: slot_u32,
                 },
-                use_list: core::cell::RefCell::new(Vec::new()),
+                use_list: core::cell::RefCell::new(UseList::new()),
             });
             arg_ids.push(id);
         }
@@ -3060,7 +3080,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::GlobalVariable(data),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         // A builder-supplied initializer is a use like any other; the setter
         // path registers its edge, so the construction path must too.
@@ -3100,7 +3120,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::GlobalAlias(data),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.core.ctx.retarget_global_field_use(
             value_id,
@@ -3138,7 +3158,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::GlobalIfunc(data),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.core.ctx.retarget_global_field_use(
             value_id,
@@ -3211,7 +3231,14 @@ impl<'ctx> ModuleCore {
     /// Mirrors `Module::getDataLayout`. Returns the default (empty)
     /// layout when no directive has been set.
     pub fn data_layout(&self) -> core::cell::Ref<'_, DataLayout> {
-        self.data_layout.borrow()
+        core::cell::Ref::map(self.data_layout.borrow(), |layout| &**layout)
+    }
+
+    /// The module's [`DataLayout`], shared: the same layout, and the same
+    /// struct-layout cache, as [`Self::data_layout`] borrows, for a holder
+    /// that outlives the borrow.
+    pub(crate) fn data_layout_shared(&self) -> std::sync::Arc<DataLayout> {
+        std::sync::Arc::clone(&self.data_layout.borrow())
     }
 
     /// Replace the data layout. Mirrors
@@ -3219,7 +3246,7 @@ impl<'ctx> ModuleCore {
     /// path parses first ([`DataLayout::parse`]) so this setter itself
     /// cannot fail.
     pub fn set_data_layout(&self, layout: DataLayout) {
-        *self.data_layout.borrow_mut() = layout;
+        *self.data_layout.borrow_mut() = std::sync::Arc::new(layout);
     }
 
     /// `target triple = "..."` directive. Mirrors
@@ -4162,6 +4189,14 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     #[inline]
     pub fn data_layout(&self) -> core::cell::Ref<'_, DataLayout> {
         self.core().data_layout()
+    }
+
+    /// The module's data layout, shared with the module (and with its
+    /// struct-layout cache) beyond a borrow: what an analysis that holds a
+    /// layout takes, instead of a clone, whose cache would start empty.
+    #[inline]
+    pub fn data_layout_shared(&self) -> std::sync::Arc<DataLayout> {
+        self.core().data_layout_shared()
     }
 
     /// Target triple directive.
@@ -5846,7 +5881,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::InlineAsm(data),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         InlineAsm::from_parts(id, self.capability_ref(), ptr_ty)
     }
@@ -5947,7 +5982,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::MetadataAsValue(slot),
-            use_list: core::cell::RefCell::new(Vec::new()),
+            use_list: core::cell::RefCell::new(UseList::new()),
         });
         self.core()
             .metadata_as_value_cache

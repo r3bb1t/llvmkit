@@ -2313,15 +2313,18 @@ fn a_load_at_an_offset_into_an_array_of_scalable_vectors_is_not_folded() -> Resu
     Ok(())
 }
 
-/// **No upstream counterpart**: upstream reports a fatal error on both inputs,
-/// through the implicit `uint64_t` conversion of a scalable `TypeSize`.
-/// `getGEPIndexForOffset` compares the offset with a scalable struct's
-/// `getSizeInBytes`. `ReadDataFromGlobal` reads `getTypeAllocSize` of the empty
-/// array of scalable vectors, which ends a struct whose own size is fixed, when
-/// a load crosses into it. llvmkit declines instead (Doctrine D10). The array
-/// is aligned to offset 16, so an `i128` at offset 1 crosses and an `i32` does
-/// not: that load stops short of the array, upstream's
-/// `BytesLeft <= NextEltOffset - CurEltOffset - ByteOffset`, and folds.
+/// **No upstream counterpart**: upstream cannot fold either input. The first
+/// is a homogeneous struct of scalable vectors, which is sized:
+/// `getGEPIndexForOffset` compares the offset with its scalable
+/// `getSizeInBytes`, through the implicit `uint64_t` conversion of a scalable
+/// `TypeSize`, a fatal error. The second, `{ i32, [0 x <vscale x 4 x i32>] }`,
+/// is unsized (`StructType::isSized` refuses a field that is or holds a
+/// scalable vector), and `ConstantFoldLoadFromConst` reads its
+/// `getTypeAllocSize`, which asserts `isSized`, before anything else; a release
+/// build went on to read a size the type does not have. llvmkit declines both
+/// (Doctrine D10; `docs/divergences.md` D43 for the second): no load from the
+/// unsized struct is folded, the `i128` that would cross into the scalable
+/// array or the `i32` that would stop short of it.
 #[test]
 fn a_load_at_an_offset_into_a_scalable_struct_is_not_folded() -> Result<(), IrError> {
     let m = module_new!("analysis-load-scalable-struct")?;
@@ -2361,7 +2364,113 @@ fn a_load_at_an_offset_into_a_scalable_struct_is_not_folded() -> Result<(), IrEr
             ApInt::from_words(64, &[1]),
             &dl,
         )?,
-        Some(i32_ty.const_zero().as_constant())
+        None
     );
+    Ok(())
+}
+
+/// **No upstream counterpart** (`docs/divergences.md` D43): a load from a
+/// constant whose type, or whose leading field's type, holds an opaque struct
+/// is not folded. Upstream asserts in `getTypeAllocSize` /
+/// `getTypeSizeInBits` there; llvmkit's size queries answer `None` for an
+/// unsized type, and each fold declines. They used to read a made-up size of
+/// 0: the out-of-bounds check folded an `i32` load at offset 4 of
+/// `{ %O } zeroinitializer` to `poison`, and the load-through-bitcast skipped
+/// the "empty" leading `{ %O }` of `{ { %O }, i32 7 }` and answered `i32 7`
+/// for offset 0, which lies inside `%O`. Once `%O` gets a body both answers
+/// would be wrong.
+#[test]
+fn a_load_from_a_constant_of_unsized_type_is_not_folded() -> Result<(), IrError> {
+    let m = module_new!("analysis-unsized-load")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i32_ty = m.i32_type();
+    let opaque = m.opaque_struct("O")?.as_type();
+    let holder = m.struct_type([opaque])?;
+    let zero = i32_ty.const_zero().as_constant();
+    let holder_zero = constant_fold_load_from_uniform_value(zero, holder.as_type(), &dl)?
+        .expect("a uniform zero loads as the zero of any struct");
+    assert_eq!(holder_zero.to_string(), "{ %O } zeroinitializer");
+    assert_eq!(
+        constant_fold_load_from_const(
+            holder_zero,
+            i32_ty.as_type(),
+            ApInt::from_words(64, &[4]),
+            &dl
+        )?,
+        None
+    );
+
+    let pair = m.struct_type([holder.as_type(), i32_ty.as_type()])?;
+    let seven = i32_ty.const_int(7_u32).as_constant();
+    let constant = pair.const_struct([holder_zero, seven])?.as_constant();
+    assert_eq!(
+        constant_fold_load_through_bitcast(constant, i32_ty.as_type(), &dl)?,
+        None
+    );
+    Ok(())
+}
+
+/// `ConstantFoldLoadFromConst` reaches a field through
+/// `getConstantAtOffset`, whose `DataLayout::getGEPIndicesForOffset` asks
+/// `getTypeAllocSize` and the struct layouts, none of which asserts `isSized`
+/// of a struct with a layout. So an `i32` load at byte 8 of
+/// `<{ i32 5, { [0 x <vscale x 4 x i32>], i32 7, i32 9 } }>` folds to
+/// `i32 9` upstream, though both structs are unsized: the inner one holds a
+/// scalable type beside others, and its zero-sized scalable field leaves it a
+/// fixed size, its 8 bytes of fields padded to the alignment of that field
+/// (`<vscale x 4 x i32>`'s, 16 bytes under `e-p:64:64:64`, which keeps the
+/// default vector alignments), so the outer struct is 20 bytes and byte 8 is
+/// the inner struct's byte 4, its last `i32`. The test asserts both sizes. Derived from those routines; **no upstream test** loads
+/// through such a struct. llvmkit-specific regression (`docs/divergences.md`
+/// D43): the folds asked for a `SizedType` before an alloc size, and declined.
+/// Bytes 0 and 4 stay unfolded, as each is a load from an unsized constant
+/// itself: `getConstantAtOffset` answers the outer constant for offset 0 and
+/// the inner one for offset 4, and `ConstantFoldLoadThroughBitcast`'s
+/// `getTypeSizeInBits` asserts `isSized` on either.
+#[test]
+fn a_load_through_an_unsized_struct_with_a_layout_is_folded() -> Result<(), IrError> {
+    let m = module_new!("analysis-unsized-with-layout")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i32_ty = m.i32_type();
+    let empty_scalable = m
+        .array_type(VectorType::scalable_of(i32_ty, lanes::<4>()), 0)?
+        .as_type();
+    let inner = m.struct_type([empty_scalable, i32_ty.as_type(), i32_ty.as_type()])?;
+    assert!(!inner.as_type().is_sized());
+    let outer = m.packed_struct_type([i32_ty.as_type(), inner.as_type()])?;
+    // The sizes the offsets below rest on, asserted rather than assumed.
+    assert_eq!(
+        dl.try_type_alloc_size(inner),
+        Some(llvmkit_ir::TypeSize::fixed(16))
+    );
+    assert_eq!(
+        dl.try_type_alloc_size(outer),
+        Some(llvmkit_ir::TypeSize::fixed(20))
+    );
+    let zero = i32_ty.const_zero().as_constant();
+    let empty = constant_fold_load_from_uniform_value(zero, empty_scalable, &dl)?
+        .expect("a uniform zero loads as the zero of any array");
+    let inner_constant = inner
+        .const_struct([
+            empty,
+            i32_ty.const_int(7_u32).as_constant(),
+            i32_ty.const_int(9_u32).as_constant(),
+        ])?
+        .as_constant();
+    let constant = outer
+        .const_struct([i32_ty.const_int(5_u32).as_constant(), inner_constant])?
+        .as_constant();
+    let load = |offset: u64| {
+        constant_fold_load_from_const(
+            constant,
+            i32_ty.as_type(),
+            ApInt::from_words(64, &[offset]),
+            &dl,
+        )
+        .map(|folded| folded.map(|folded| folded.to_string()))
+    };
+    assert_eq!(load(8)?, Some("i32 9".to_owned()));
+    assert_eq!(load(0)?, None);
+    assert_eq!(load(4)?, None);
     Ok(())
 }

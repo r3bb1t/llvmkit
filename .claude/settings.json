@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I \"$CLAUDE_PROJECT_DIR/.claude/hooks/no_shell_file_edits.py\"",
+            "statusMessage": "Checking for shell file edits",
+            "onFailure": "block"
+          }
+        ]
+      }
+    ]
+  }
+}
