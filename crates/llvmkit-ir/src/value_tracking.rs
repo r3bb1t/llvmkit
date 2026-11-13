@@ -6174,12 +6174,11 @@ fn alloca_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     // Upstream's `AllocaInst` always carries an alignment. One llvmkit leaves
     // unset defaults to the allocated type's ABI alignment, and an unsized
     // type has none to read, so nothing is known.
-    let align = match data.align.align() {
-        Some(align) => align,
-        None => match crate::derived_types::erase_sized(Type::new(data.allocated_ty, module)) {
-            Some(allocated_ty) => query.data_layout().abi_type_align(allocated_ty),
-            None => return KnownBits::unknown(width),
-        },
+    let Ok(align) = query
+        .data_layout()
+        .value_or_abi_type_align(data.align, Type::new(data.allocated_ty, module))
+    else {
+        return KnownBits::unknown(width);
     };
     known_low_zero_bits(width, align)
 }
@@ -6291,8 +6290,10 @@ where
             // `uint64_t Offset = SL->getElementOffset(Idx)` is the implicit
             // `TypeSize` conversion, fatal on a scalable offset. Nothing is
             // known about such a field's address instead.
-            // A struct holding an opaque struct has no layout (D43), where
-            // upstream's `getStructLayout` asserts: nothing is known.
+            // A struct with an unsized field (an opaque struct, or a struct
+            // mixing a scalable vector with other fields) has no layout (D43),
+            // where upstream's `StructLayout` constructor asks the field's size
+            // and asserts `isSized`: nothing is known.
             let Some(layout) = data_layout.struct_layout_of(erase_type(struct_ty)) else {
                 return Ok(KnownBits::unknown(width));
             };
@@ -6304,13 +6305,10 @@ where
             continue;
         }
 
-        // Handle array index arithmetic.
-        if !indexed_ty.is_sized() {
-            known = KnownBits::unknown(width);
-            break;
-        }
-
-        // The guard above is upstream's; `None` here is the same unsized case.
+        // Handle array index arithmetic. Upstream's `if
+        // (!IndexedTy->isSized()) { Known.resetAll(); break; }` is the
+        // stride's `None`: the stride asks for the same proof, so asking
+        // first would walk the type twice.
         let Some(stride) = step.sequential_element_stride(data_layout) else {
             known = KnownBits::unknown(width);
             break;

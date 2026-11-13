@@ -34,7 +34,7 @@ use crate::addr_space::AddressSpace;
 use crate::align::{Align, MaybeAlign};
 use crate::capability::Capability;
 use crate::derived_types::{SizedType, StructType};
-use crate::error::DataLayoutError;
+use crate::error::{DataLayoutError, IrResult};
 use crate::module::{ModuleBrand, ModuleCore, ModuleId};
 use crate::struct_body_state::StructBodyState;
 use crate::r#type::{MAX_INT_BITS, Type, TypeData, TypeSlot, TypeSlotAccess, is_scalable};
@@ -819,15 +819,22 @@ impl DataLayout {
     }
 
     /// Mirrors `DataLayout::getValueOrABITypeAlignment`: `alignment` if it is
-    /// set, otherwise the ABI alignment of `ty`.
+    /// set, otherwise the ABI alignment of `ty`. Upstream reads `ty` only in
+    /// the second case, so only that case needs it sized: `ty` is any type,
+    /// and the proof is asked for when the alignment is unset.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::IrError::UnsizedType`] when `alignment` is unset and `ty` is
+    /// unsized, where upstream's `getABITypeAlign` asserts `isSized`.
     pub fn value_or_abi_type_align<'t, B: ModuleBrand, C: Capability>(
         &self,
         alignment: MaybeAlign,
-        ty: impl Into<SizedType<'t, B, C>>,
-    ) -> Align {
+        ty: Type<'t, B, C>,
+    ) -> IrResult<Align> {
         match alignment.align() {
-            Some(align) => align,
-            None => self.abi_type_align(ty),
+            Some(align) => Ok(align),
+            None => Ok(self.abi_type_align(SizedType::try_from(ty)?)),
         }
     }
 
@@ -1261,6 +1268,13 @@ impl DataLayout {
     ) -> Option<Arc<StructLayoutInfo>> {
         let module = ty.module().core_ref();
         let id = ty.slot_trusting_same_module();
+        // A kept layout is the proof its fields were sized, and a body is set
+        // once, so a hit needs no field scan: the scan costs the struct's
+        // fields, and a struct asked about once per instruction would pay
+        // them on every instruction.
+        if let Some(layout) = self.struct_layouts.get(module, id) {
+            return Some(layout);
+        }
         let TypeData::Struct(data) = module.context().type_data(id) else {
             unreachable!("struct_layout_of is asked only of a struct type")
         };
@@ -1270,8 +1284,8 @@ impl DataLayout {
             .as_ref()?
             .elements
             .iter()
-            .all(|field| SizedType::try_from(Type::new(*field, ty.module())).is_ok());
-        fields_sized.then(|| self.layout_of(module, id))
+            .all(|field| Type::new(*field, ty.module()).is_sized());
+        fields_sized.then(|| self.lay_out_and_keep(module, id))
     }
 
     /// Struct `id`'s layout, from this `DataLayout`'s map or laid out and kept
@@ -1284,6 +1298,11 @@ impl DataLayout {
         if let Some(layout) = self.struct_layouts.get(module, id) {
             return layout;
         }
+        self.lay_out_and_keep(module, id)
+    }
+
+    /// The `new StructLayout` of [`Self::layout_of`]'s miss, kept in the map.
+    fn lay_out_and_keep(&self, module: &ModuleCore, id: TypeSlot) -> Arc<StructLayoutInfo> {
         let layout = Arc::new(self.struct_layout_inner(module, id));
         self.struct_layouts.insert(module, id, Arc::clone(&layout));
         layout

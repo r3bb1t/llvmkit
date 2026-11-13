@@ -10,7 +10,8 @@
 
 use llvmkit_ir::{
     Align, ArrayType, DataLayout, DataLayoutError, IrError, ManglingMode, MaybeAlign, Module,
-    SizedType, TypeSize, VectorType, address_space, lanes, module_new,
+    SizedType, StructType, Type, TypeKindLabel, TypeSize, VectorType, address_space, lanes,
+    module_new,
 };
 
 fn parse(s: &str) -> DataLayout {
@@ -1051,19 +1052,35 @@ fn default_layout_is_default() {
 
 /// `llvmkit-specific`: confirms `MaybeAlign` integration with
 /// `value_or_abi_type_align`. Mirrors
-/// `DataLayout::getValueOrABITypeAlignment`.
+/// `DataLayout::getValueOrABITypeAlignment`, `Alignment ? *Alignment :
+/// getABITypeAlign(Ty)`: the type is read only when the alignment is unset,
+/// so a set alignment is answered for an unsized type too, and only an unset
+/// one meets `getABITypeAlign`'s `isSized` assert, refused here as
+/// `IrError::UnsizedType`.
 #[test]
 fn value_or_abi_type_align() {
     let m = module_new!("m").expect("fresh module");
     let dl = DataLayout::default();
     let custom = MaybeAlign::from(Align::new(16).expect("a"));
+    let i32_ty = m.i32_type().as_type();
     assert_eq!(
-        dl.value_or_abi_type_align(custom, m.i32_type()),
-        Align::new(16).expect("a")
+        dl.value_or_abi_type_align(custom, i32_ty),
+        Ok(Align::new(16).expect("a"))
     );
     assert_eq!(
-        dl.value_or_abi_type_align(MaybeAlign::default(), m.i32_type()),
-        Align::new(4).expect("a")
+        dl.value_or_abi_type_align(MaybeAlign::default(), i32_ty),
+        Ok(Align::new(4).expect("a"))
+    );
+    let opaque = m.opaque_struct("O").expect("fresh name").as_type();
+    assert_eq!(
+        dl.value_or_abi_type_align(custom, opaque),
+        Ok(Align::new(16).expect("a"))
+    );
+    assert_eq!(
+        dl.value_or_abi_type_align(MaybeAlign::default(), opaque),
+        Err(IrError::UnsizedType {
+            kind: TypeKindLabel::Struct
+        })
     );
 }
 
@@ -1217,5 +1234,144 @@ fn copy_assignment_invalidates_struct_layout() {
     assert_eq!(
         layout(&dl2).alignment(),
         Align::new(8).expect("a power of two")
+    );
+}
+
+/// llvmkit-specific, no upstream counterpart: every type that gets a
+/// [`SizedType`] proof answers every `DataLayout` size and alignment query
+/// without reaching an unsized type. The walks under the queries treat an
+/// unsized type as unreachable (`reached_unsized`), which holds only while
+/// `Type::is_sized` (`StructType::isSized`, `Type::isSizedDerivedType`), the
+/// target extension layout table and `struct_layout`'s field check agree on
+/// what is sized; a disagreement aborts a public query. The types here are
+/// every leaf kind, the target extension types `getTargetTypeInfo` lays out
+/// and the ones it cannot, two levels of array, vector, scalable vector and
+/// struct nesting over them, and the same again after the opaque struct
+/// among them gets a body. Each type without a proof is refused with
+/// `IrError::UnsizedType` by `value_or_abi_type_align`'s unset branch. The
+/// counts are a floor on coverage, not an upstream figure: both sides must
+/// be exercised.
+#[test]
+fn every_sized_type_answers_every_size_query() {
+    let m = module_new!("m").expect("fresh module");
+    let i8_ty = m.i8_type().as_type();
+    let i32_ty = m.i32_type();
+    let opaque = m.opaque_struct("O").expect("fresh name");
+    let scalable_i8 = VectorType::scalable_of(m.i8_type(), lanes::<8>()).as_type();
+    let mut leaves: Vec<Type<'_, _>> = vec![
+        m.bool_type().as_type(),
+        i8_ty,
+        i32_ty.as_type(),
+        m.i64_type().as_type(),
+        m.custom_width_int_type(36).expect("i36").as_type(),
+        m.half_type().as_type(),
+        m.bfloat_type().as_type(),
+        m.f32_type().as_type(),
+        m.f64_type().as_type(),
+        m.x86_fp80_type().as_type(),
+        m.fp128_type().as_type(),
+        m.ppc_fp128_type().as_type(),
+        m.x86_amx_type(),
+        m.wasm_exnref_type(),
+        m.ptr_type_in::<0>().as_type(),
+        m.ptr_type_in::<3>().as_type(),
+        m.void_type().as_type(),
+        m.label_type().as_type(),
+        m.metadata_type().as_type(),
+        m.token_type().as_type(),
+        m.function_type(m.void_type(), [i32_ty.as_type()])
+            .expect("a valid function type")
+            .as_type(),
+        VectorType::scalable_of(i32_ty, lanes::<4>()).as_type(),
+        opaque.as_type(),
+    ];
+    let no_types = Vec::<Type<'_, _>>::new();
+    for (name, types, ints) in [
+        ("spirv.Type", no_types.clone(), vec![0, 4]),
+        ("spirv.Type", no_types.clone(), vec![0, 4, 32]),
+        ("spirv.Padding", no_types.clone(), vec![]),
+        ("spirv.Padding", no_types.clone(), vec![4]),
+        ("dx.Padding", no_types.clone(), vec![4]),
+        ("riscv.vector.tuple", vec![i32_ty.as_type()], vec![2]),
+        ("riscv.vector.tuple", vec![scalable_i8], vec![2]),
+        ("aarch64.svcount", no_types.clone(), vec![]),
+        ("llvm.test.vectorelement", no_types.clone(), vec![]),
+        ("amdgcn.named.barrier", no_types.clone(), vec![0]),
+    ] {
+        leaves.push(
+            m.target_ext_type(name, types, ints)
+                .expect("`checkParams` admits it")
+                .as_type(),
+        );
+    }
+    let mut all = leaves;
+    for _ in 0..2 {
+        let mut next = Vec::new();
+        for &ty in &all {
+            next.extend(m.array_type(ty, 3).ok().map(|t| t.as_type()));
+            next.extend(m.vector_type(ty, lanes::<2>()).ok().map(|t| t.as_type()));
+            next.extend(
+                m.scalable_vector_type(ty, lanes::<2>())
+                    .ok()
+                    .map(|t| t.as_type()),
+            );
+            next.extend(m.struct_type([ty]).ok().map(|t| t.as_type()));
+            next.extend(m.struct_type([ty, ty]).ok().map(|t| t.as_type()));
+            next.extend(m.struct_type([ty, i8_ty]).ok().map(|t| t.as_type()));
+        }
+        all.extend(next);
+    }
+
+    let check = |all: &[Type<'_, _>]| {
+        let dl = DataLayout::default();
+        let (mut sized_count, mut unsized_count) = (0_usize, 0_usize);
+        for &ty in all {
+            if let Ok(struct_ty) = StructType::try_from(ty) {
+                // A struct's layout, if it has one, is laid out without
+                // reaching an unsized type either.
+                let _ = dl.struct_layout(struct_ty);
+            }
+            let Ok(sized) = SizedType::try_from(ty) else {
+                unsized_count += 1;
+                assert!(!ty.is_sized(), "{ty}");
+                assert!(
+                    matches!(
+                        dl.value_or_abi_type_align(MaybeAlign::default(), ty),
+                        Err(IrError::UnsizedType { .. })
+                    ),
+                    "{ty}"
+                );
+                continue;
+            };
+            sized_count += 1;
+            let bits = dl.type_size_in_bits(sized);
+            let store = dl.type_store_size(sized);
+            let alloc = dl.type_alloc_size(sized);
+            assert_eq!(bits.is_scalable(), alloc.is_scalable(), "{ty}");
+            assert!(
+                alloc.known_min_value() >= store.known_min_value(),
+                "{ty}: alloc {alloc:?} < store {store:?}"
+            );
+            let _ = dl.type_store_size_in_bits(sized);
+            let _ = dl.type_alloc_size_in_bits(sized);
+            let _ = dl.type_size_equals_store_size(sized);
+            let abi = dl.abi_type_align(sized);
+            assert!(dl.pref_type_align(sized) >= abi, "{ty}");
+            assert_eq!(
+                dl.value_or_abi_type_align(MaybeAlign::default(), ty),
+                Ok(abi),
+                "{ty}"
+            );
+        }
+        assert!(sized_count > 0 && unsized_count > 0);
+        (sized_count, unsized_count)
+    };
+    let (sized_before, unsized_before) = check(&all);
+    m.set_struct_body(opaque, [i32_ty.as_type()], false)
+        .expect("the body is set once");
+    let (sized_after, unsized_after) = check(&all);
+    assert!(
+        sized_after > sized_before && unsized_after < unsized_before,
+        "the body makes the structs over `%O` sized"
     );
 }
