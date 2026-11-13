@@ -57,3 +57,25 @@ fn a_value_with_a_million_uses_is_built_in_linear_time() {
         assert_eq!(newest, last_store, "the newest use heads the list");
     });
 }
+
+/// `-1` at the widest integer type, `i8388608` (`IntegerType::MAX_INT_BITS`,
+/// 2^23), parses and prints back.
+///
+/// **No upstream counterpart.** Upstream's `APInt::setBit` (`APInt.h`) writes
+/// one word, and `APInt::sext` (`APInt.cpp`) is a copy and a fill, so a wide
+/// `-1` costs its words. llvmkit's `ApInt::set_bit` copied every word to set
+/// one, and `ApInt::bits_set` set its range a bit at a time, so sign-extending
+/// the literal to its type cost the width squared over 64: `i1048576 -1` took
+/// 8.1 s to parse at `34fdec9` (release build), and the curve puts this width
+/// at about nine minutes.
+#[test]
+fn the_widest_integer_literal_is_built_in_linear_time() {
+    support::deadline::within_a_minute("setting a bit copies the whole integer", || {
+        let module = parse("@a = global i8388608 -1\n");
+        let printed = format!("{module}");
+        assert!(
+            printed.contains("@a = global i8388608 -1\n"),
+            "the literal prints back:\n{printed}"
+        );
+    });
+}
