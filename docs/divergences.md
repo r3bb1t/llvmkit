@@ -1352,6 +1352,39 @@ docs/divergences.md docs/future-work.md` (run on `46362565`) printed nothing.
 which parses ids near `u32::MAX`, referenced before and after their definitions, inside a
 one-minute deadline.
 
+### D42 — A type size too large for 64 bits saturates, where upstream wraps
+
+**Severity:** model-gap, on types no target can hold: `DataLayout` answers `u64::MAX` for a
+size (in bytes or bits) that does not fit in a `u64`, where upstream answers that size modulo
+2^64.
+**Where:** `crates/llvmkit-ir/src/data_layout.rs` — `align_to`, `align_to_power_of_two`, and
+the size walks' `TypeSize::saturating_scaled` / `TypeSize::saturating_add`
+(`crates/llvmkit-ir/src/type_size.rs`).
+
+**LLVM:** `TypeSize`'s `operator*` and `operator+`, `StructLayout::StructLayout`'s
+`StructSize += ...` and `llvm::alignTo` are `uint64_t` arithmetic, which wraps. A struct of
+`4 * 2^64` bytes (`%t64` of `%tK = type { %t(K-1), %t(K-1) }` over `{ i8, i16 }`) has an alloc
+size of 0.
+
+**llvmkit:** every size computation saturates: a product, a sum, and the round-up to an
+alignment. `u64::MAX` bytes is no size a type can have in memory, so the answer reads as "too
+large to represent", never as a plausible small size; a wrapped size would let such a type pass
+for a small one (an `alloca` of 0 bytes, an offset that fits). Products and sums already
+saturated (`saturating_scaled` documents it); the round-up added `align - 1` unchecked, which
+panicked in a debug build once a struct holding one struct type twice became sized (it was
+taken for a cycle until `struct_is_sized` ported `SCDB_IsSized`), and now saturates too.
+
+**Why:** Doctrine D10 (no undefined behaviour, no silent wrong answer), and no panic on a legal
+query. A fallible size query (`Option<TypeSize>`) was weighed and not taken: every size query
+upstream is infallible, every caller would grow an arm for a case no real type reaches, and the
+saturated value already cannot be mistaken for a real size.
+
+**Fix:** none owed; saturation is the hardening.
+
+**Guarded by:**
+`crates/llvmkit-asmparser/tests/resource_bounds.rs::a_struct_shared_sixty_four_levels_deep_parses_verifies_and_prints`,
+which asserts the `u64::MAX` alloc size of a `4 * 2^64`-byte struct.
+
 ---
 
 ---

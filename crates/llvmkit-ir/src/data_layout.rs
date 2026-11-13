@@ -1823,10 +1823,18 @@ fn div_ceil_u32(value: u32, denom: u32) -> u32 {
     value.div_ceil(denom)
 }
 
+/// Mirrors `llvm::alignTo(uint64_t, Align)` (`Support/Alignment.h`): `value`
+/// rounded up to a multiple of `align`.
+///
+/// Saturating, as every size computation in this file is (see
+/// `TypeSize::saturating_scaled`): a value within `align - 1` of `u64::MAX`
+/// has no aligned `u64` above it, and answers `u64::MAX`, where upstream's
+/// `(Value + Align - 1) / Align * Align` wraps to a small number. A size of
+/// `u64::MAX` bytes is not a size any type can have in memory, so it reads as
+/// "too large to represent", never as a plausible small size.
 #[inline]
 fn align_to(value: u64, align: Align) -> u64 {
-    let a = align.value();
-    (value + a - 1) & !(a - 1)
+    align_to_power_of_two(value, align.value())
 }
 
 /// Mirrors `llvm::alignTo(TypeSize, uint64_t)` (`Support/TypeSize.h`): the
@@ -1839,7 +1847,9 @@ fn align_type_size(size: TypeSize, align: Align) -> TypeSize {
 #[inline]
 fn align_to_power_of_two(value: u64, align: u64) -> u64 {
     debug_assert!(is_power_of_two(align));
-    (value + align - 1) & !(align - 1)
+    value
+        .checked_add(align - 1)
+        .map_or(u64::MAX, |bumped| bumped & !(align - 1))
 }
 
 /// Mirrors `Align(PowerOf2Ceil(N))`. Rounds `bytes` up to the next

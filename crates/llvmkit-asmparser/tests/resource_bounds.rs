@@ -176,3 +176,45 @@ fn a_struct_shared_forty_levels_deep_is_laid_out_once_per_level() {
         assert_eq!(size.known_min_value(), 4u64 << LEVELS);
     });
 }
+
+/// A struct 64 levels deep, each level two copies of the one below, that is
+/// allocated, indexed, loaded and stored, and given a zero initializer.
+///
+/// **No upstream counterpart.** The type is `4 * 2^64` bytes, past `u64`, so
+/// its size saturates at `u64::MAX` (`docs/divergences.md` D42), which the
+/// test asserts; before the saturation was made consistent, `align_to`
+/// overflowed and panicked here in a debug build. Before
+/// `struct_is_sized` remembered a sized struct (`SCDB_IsSized`), the parser
+/// refused such a type as unsized before any walk reached it. Remembering
+/// makes it reachable, and every walk the parser, verifier and printer run
+/// over it has to cost the type's distinct structs, not its 2^64 paths:
+/// `isSized`, `isScalableTy` and `getStructLayout` each memoise per struct
+/// upstream, and so must these.
+#[test]
+fn a_struct_shared_sixty_four_levels_deep_parses_verifies_and_prints() {
+    support::deadline::within_a_minute("a walk visits a shared struct once per path", || {
+        const LEVELS: u32 = 64;
+        let mut source = String::from("%t0 = type { i8, i16 }\n");
+        for level in 1..=LEVELS {
+            let below = level - 1;
+            source.push_str(&format!("%t{level} = type {{ %t{below}, %t{below} }}\n"));
+        }
+        let top = format!("%t{LEVELS}");
+        source.push_str(&format!("@g = global {top} zeroinitializer\n"));
+        source.push_str(&format!(
+            "define void @f(ptr %p) {{\n  %a = alloca {top}\n  \
+             %q = getelementptr {top}, ptr %p, i64 1, i32 1\n  \
+             %v = load {top}, ptr %p\n  \
+             store {top} zeroinitializer, ptr %a\n  ret void\n}}\n"
+        ));
+        let module = parse(&source);
+        // 4 * 2^64 bytes has no `u64`: the size saturates (D42), where
+        // upstream's arithmetic wraps, and asking for it does not panic.
+        let global = module.global("g").expect("@g is defined");
+        let size = DataLayout::default().type_alloc_size(module.view(global).value_type());
+        assert_eq!(size.known_min_value(), u64::MAX);
+        let printed = format!("{module}");
+        parse(&printed).verify().expect("the module verifies");
+        assert_eq!(format!("{}", parse(&printed)), printed);
+    });
+}

@@ -430,6 +430,8 @@ impl Context {
             identity: crate::r#type::StructIdentity::Literal,
             body: RefCell::new(Some(StructBody { elements, packed })),
             schema_held: Cell::new(false),
+            sized: Cell::new(false),
+            scalable: Cell::new(None),
         }));
         self.literal_struct_types.borrow_mut().insert(key, id);
         id
@@ -502,6 +504,8 @@ impl Context {
             },
             body: RefCell::new(None),
             schema_held: Cell::new(false),
+            sized: Cell::new(false),
+            scalable: Cell::new(None),
         }));
         self.named_struct_types
             .borrow_mut()
@@ -522,6 +526,8 @@ impl Context {
             },
             body: RefCell::new(None),
             schema_held: Cell::new(false),
+            sized: Cell::new(false),
+            scalable: Cell::new(None),
         }));
         self.named_struct_order.borrow_mut().push(id);
         id

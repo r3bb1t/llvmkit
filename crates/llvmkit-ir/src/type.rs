@@ -320,6 +320,20 @@ pub(crate) struct StructTypeData {
     /// it. llvmkit-only: upstream has no schemas, and `StructType::setName`
     /// renames anything.
     pub(crate) schema_held: Cell<bool>,
+    /// Mirrors the `SCDB_IsSized` subclass-data bit: set the first time
+    /// [`struct_is_sized`] answers true, and read before anything else, as
+    /// `StructType::isSized` reads it. Only true is remembered, as upstream
+    /// remembers only true: an unsized answer may come from an opaque field
+    /// that a later body makes sized. A sized answer cannot go stale, because
+    /// a body is set once (`Context::set_named_struct_body` refuses a second).
+    pub(crate) sized: Cell<bool>,
+    /// Mirrors the `SCDB_ContainsScalableVector` and
+    /// `SCDB_NotContainsScalableVector` bits: `Some(answer)` once
+    /// [`is_scalable`] has settled this struct's answer, which it reads
+    /// before anything else, as `StructType::isScalableTy` does. An opaque
+    /// struct's answer is never remembered, as upstream does not set either
+    /// bit for one.
+    pub(crate) scalable: Cell<Option<bool>>,
 }
 
 /// Which of LLVM's two struct-identity regimes a struct type belongs to.
@@ -1171,6 +1185,13 @@ fn struct_is_sized(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot
     let TypeData::Struct(data) = module.context().type_data(id) else {
         return false;
     };
+    // `if ((getSubclassData() & SCDB_IsSized) != 0) return true;` — first,
+    // before `Visited`, which is what lets a struct reached twice (a field
+    // type repeated, or shared two levels down) answer true the second time:
+    // `Visited` keeps every struct it has seen, finished or not.
+    if data.sized.get() {
+        return true;
+    }
     let borrowed = data.body.borrow();
     let Some(body) = borrowed.as_ref() else {
         return false;
@@ -1180,12 +1201,17 @@ fn struct_is_sized(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot
     }
     visited.push(id);
     if contains_homogeneous_scalable_vector_types(module, &body.elements) {
+        data.sized.set(true);
         return true;
     }
-    body.elements.iter().all(|elem| {
+    let sized = body.elements.iter().all(|elem| {
         // Upstream asks `isScalableTy()` with a *fresh* visited set here.
         !is_scalable(module, *elem, &mut Vec::new()) && is_sized(module, *elem, visited)
-    })
+    });
+    if sized {
+        data.sized.set(true);
+    }
+    sized
 }
 
 /// Mirrors `StructType::containsHomogeneousTypes`:
@@ -1221,17 +1247,28 @@ fn contains_homogeneous_scalable_vector_types(module: &ModuleCore, elements: &[T
 pub(crate) fn is_scalable(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot>) -> bool {
     match module.context().type_data(id) {
         TypeData::Array { elem, .. } => is_scalable(module, *elem, visited),
+        // `StructType::isScalableTy`, in its order: the two remembered
+        // answers, then `Visited`, then the fields. An opaque struct has no
+        // fields to find one in, and remembers nothing, since a later body
+        // may hold one.
         TypeData::Struct(data) => {
+            if let Some(answer) = data.scalable.get() {
+                return answer;
+            }
             if visited.contains(&id) {
                 return false;
             }
             visited.push(id);
             let borrowed = data.body.borrow();
-            borrowed.as_ref().is_some_and(|body| {
-                body.elements
-                    .iter()
-                    .any(|elem| is_scalable(module, *elem, visited))
-            })
+            let Some(body) = borrowed.as_ref() else {
+                return false;
+            };
+            let scalable = body
+                .elements
+                .iter()
+                .any(|elem| is_scalable(module, *elem, visited));
+            data.scalable.set(Some(scalable));
+            scalable
         }
         TypeData::ScalableVector { .. } => true,
         TypeData::TargetExt(_) => crate::data_layout::target_ext_layout_type(module, id)
