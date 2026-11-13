@@ -5092,11 +5092,10 @@ where
     /// `ty` as a [`SizedType`], or the refusal of upstream's assertion when
     /// it is unsized. Upstream's `getABITypeAlign` / `getPrefTypeAlign`
     /// assert `Ty->isSized()` ("Cannot getTypeInfo() on a type that is
-    /// unsized!"), and `IRBuilder` fills every omitted alignment through them;
-    /// the layout llvmkit answers for an unsized type instead
-    /// (`docs/divergences.md` D43) is no real alignment, and a struct holding
-    /// an opaque struct can still get a body, after which an `align` filled
-    /// from it would be wrong.
+    /// unsized!"), and `IRBuilder` fills every omitted alignment through them.
+    /// An unsized type has no alignment (`docs/divergences.md` D43), and a
+    /// struct holding an opaque struct can still get a body, so no `align`
+    /// can be filled for it now.
     fn sized(&self, ty: TypeSlot) -> IrResult<SizedType> {
         SizedType::checked(Type::new(ty, self.mutable_ref())).ok_or(IrError::InvalidOperation {
             message: "Cannot getTypeInfo() on a type that is unsized!",
@@ -6248,14 +6247,16 @@ where
         let constant = crate::ArrayType::of(i8_ty, len)
             .const_array(bytes)?
             .as_constant();
-        let align = self.module.data_layout().pref_type_align(i8_ty.as_type());
+        // `i8` is sized by construction: its preferred alignment, through the
+        // witness every default alignment takes.
+        let align = self.default_pref_align(SizedType::integer(i8_ty));
         crate::GlobalBuilder::new(module, name, constant.ty())
             .constant()
             .initializer(constant)
             .linkage(crate::Linkage::Private)
             .unnamed_addr(crate::UnnamedAddr::Global)
             .address_space(address_space)
-            .align(crate::MaybeAlign::new(align))
+            .align(align)
             .build()
     }
 

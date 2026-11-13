@@ -2465,19 +2465,19 @@ fn global_pointer_alignment<B: ModuleBrand>(
                 && linkage != Linkage::AvailableExternally
                 && !linkage_is_weak_for_linker(linkage)
             {
-                let mut alignment = dl.pref_type_align(erase_type(value_ty));
+                let mut alignment = dl.pref_type_align(erase_type(value_ty))?;
                 let large_alignment = Align::new(16).ok()?;
                 // `getTypeSizeInBits(ElemType) > 128` is the implicit `TypeSize`
                 // conversion upstream, which is fatal on a scalable global (an
                 // invalid one, but it parses). No alignment is claimed for it.
                 if alignment < large_alignment
-                    && dl.type_size_in_bits(erase_type(value_ty)).fixed_value()? > 128
+                    && dl.type_size_in_bits(erase_type(value_ty))?.fixed_value()? > 128
                 {
                     alignment = large_alignment;
                 }
                 Some(alignment)
             } else {
-                Some(dl.abi_type_align(erase_type(value_ty)))
+                dl.abi_type_align(erase_type(value_ty))
             }
         }
         _ => None,

@@ -2843,7 +2843,8 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GepTypeCursor<'ctx, B, C> {
 
     /// `getSequentialElementStride`, whose `assert` that a vector's element is
     /// byte-addressable is not a release build's behaviour and is not ported.
-    pub(crate) fn sequential_element_stride(self, data_layout: &DataLayout) -> TypeSize {
+    /// `None` for an unsized element, where upstream asserts (D43).
+    pub(crate) fn sequential_element_stride(self, data_layout: &DataLayout) -> Option<TypeSize> {
         match self.kind {
             GepStepKind::Vector => data_layout.type_store_size(self.ty),
             GepStepKind::Sequential | GepStepKind::Struct => data_layout.type_alloc_size(self.ty),

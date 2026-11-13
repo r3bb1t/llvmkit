@@ -358,23 +358,43 @@ fn upstream_fixed_len_comparisons() {
 
     // Check the DataLayout interfaces.
     assert_eq!(dl.type_size_in_bits(v2_i64), dl.type_size_in_bits(v4_i32));
-    assert_eq!(dl.type_size_in_bits(v2_i32).fixed_value(), Some(64));
-    assert_eq!(dl.type_size_in_bits(v2_i64).fixed_value(), Some(128));
+    assert_eq!(
+        dl.type_size_in_bits(v2_i32).and_then(TypeSize::fixed_value),
+        Some(64)
+    );
+    assert_eq!(
+        dl.type_size_in_bits(v2_i64).and_then(TypeSize::fixed_value),
+        Some(128)
+    );
     assert_eq!(dl.type_store_size(v2_i64), dl.type_store_size(v4_i32));
     assert_ne!(
         dl.type_store_size_in_bits(v2_i32),
         dl.type_store_size_in_bits(v2_i64)
     );
-    assert_eq!(dl.type_store_size_in_bits(v2_i32).fixed_value(), Some(64));
-    assert_eq!(dl.type_store_size(v2_i64).fixed_value(), Some(16));
+    assert_eq!(
+        dl.type_store_size_in_bits(v2_i32)
+            .and_then(TypeSize::fixed_value),
+        Some(64)
+    );
+    assert_eq!(
+        dl.type_store_size(v2_i64).and_then(TypeSize::fixed_value),
+        Some(16)
+    );
     assert_eq!(dl.type_alloc_size(v4_i32), dl.type_alloc_size(v2_i64));
     assert_ne!(
         dl.type_alloc_size_in_bits(v2_i32),
         dl.type_alloc_size_in_bits(v2_i64)
     );
-    assert_eq!(dl.type_alloc_size_in_bits(v4_i32).fixed_value(), Some(128));
-    assert_eq!(dl.type_alloc_size(v2_i32).fixed_value(), Some(8));
-    assert!(dl.type_size_equals_store_size(v4_i32));
+    assert_eq!(
+        dl.type_alloc_size_in_bits(v4_i32)
+            .and_then(TypeSize::fixed_value),
+        Some(128)
+    );
+    assert_eq!(
+        dl.type_alloc_size(v2_i32).and_then(TypeSize::fixed_value),
+        Some(8)
+    );
+    assert_eq!(dl.type_size_equals_store_size(v4_i32), Some(true));
 }
 
 /// Port of `TEST(VectorTypesTest, ScalableComparisons)`.
@@ -411,22 +431,39 @@ fn upstream_scalable_comparisons() {
 
     // Check the DataLayout interfaces.
     assert_eq!(dl.type_size_in_bits(v2_i64), dl.type_size_in_bits(v4_i32));
-    assert_eq!(dl.type_size_in_bits(v2_i32).known_min_value(), 64);
+    assert_eq!(
+        dl.type_size_in_bits(v2_i32).map(TypeSize::known_min_value),
+        Some(64)
+    );
     assert_eq!(dl.type_store_size(v2_i64), dl.type_store_size(v4_i32));
     assert_ne!(
         dl.type_store_size_in_bits(v2_i32),
         dl.type_store_size_in_bits(v2_i64)
     );
-    assert_eq!(dl.type_store_size_in_bits(v2_i32).known_min_value(), 64);
-    assert_eq!(dl.type_store_size(v2_i64).known_min_value(), 16);
+    assert_eq!(
+        dl.type_store_size_in_bits(v2_i32)
+            .map(TypeSize::known_min_value),
+        Some(64)
+    );
+    assert_eq!(
+        dl.type_store_size(v2_i64).map(TypeSize::known_min_value),
+        Some(16)
+    );
     assert_eq!(dl.type_alloc_size(v4_i32), dl.type_alloc_size(v2_i64));
     assert_ne!(
         dl.type_alloc_size_in_bits(v2_i32),
         dl.type_alloc_size_in_bits(v2_i64)
     );
-    assert_eq!(dl.type_alloc_size_in_bits(v4_i32).known_min_value(), 128);
-    assert_eq!(dl.type_alloc_size(v2_i32).known_min_value(), 8);
-    assert!(dl.type_size_equals_store_size(v4_i32));
+    assert_eq!(
+        dl.type_alloc_size_in_bits(v4_i32)
+            .map(TypeSize::known_min_value),
+        Some(128)
+    );
+    assert_eq!(
+        dl.type_alloc_size(v2_i32).map(TypeSize::known_min_value),
+        Some(8)
+    );
+    assert_eq!(dl.type_size_equals_store_size(v4_i32), Some(true));
 }
 
 /// Port of `TEST(VectorTypesTest, CrossComparisons)`.

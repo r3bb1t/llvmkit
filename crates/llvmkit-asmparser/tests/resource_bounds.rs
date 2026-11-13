@@ -177,7 +177,9 @@ fn a_struct_shared_forty_levels_deep_is_laid_out_once_per_level() {
         source.push_str(&format!("@g = external global %t{LEVELS}\n"));
         let module = parse(&source);
         let global = module.global("g").expect("@g is declared");
-        let size = DataLayout::default().type_alloc_size(module.view(global).value_type());
+        let size = DataLayout::default()
+            .type_alloc_size(module.view(global).value_type())
+            .expect("the struct is sized");
         assert!(!size.is_scalable());
         assert_eq!(size.known_min_value(), 4u64 << LEVELS);
     });
@@ -219,8 +221,18 @@ fn a_struct_shared_sixty_four_levels_deep_parses_verifies_and_prints() {
         let global = module.global("g").expect("@g is defined");
         let ty = module.view(global).value_type();
         let data_layout = DataLayout::default();
-        assert_eq!(data_layout.type_alloc_size(ty).known_min_value(), u64::MAX);
-        assert_eq!(data_layout.type_store_size(ty).known_min_value(), u64::MAX);
+        assert_eq!(
+            data_layout
+                .type_alloc_size(ty)
+                .map(|size| size.known_min_value()),
+            Some(u64::MAX)
+        );
+        assert_eq!(
+            data_layout
+                .type_store_size(ty)
+                .map(|size| size.known_min_value()),
+            Some(u64::MAX)
+        );
         let printed = format!("{module}");
         parse(&printed).verify().expect("the module verifies");
         assert_eq!(format!("{}", parse(&printed)), printed);
@@ -251,16 +263,22 @@ fn a_size_past_sixty_four_bits_saturates_without_shrinking_its_bytes() {
     let ty = module.view(global).value_type();
     let data_layout = DataLayout::default();
     assert_eq!(
-        data_layout.type_alloc_size(ty).known_min_value(),
-        4u64 << LEVELS
+        data_layout
+            .type_alloc_size(ty)
+            .map(|size| size.known_min_value()),
+        Some(4u64 << LEVELS)
     );
     assert_eq!(
-        data_layout.type_store_size(ty).known_min_value(),
-        4u64 << LEVELS
+        data_layout
+            .type_store_size(ty)
+            .map(|size| size.known_min_value()),
+        Some(4u64 << LEVELS)
     );
     assert_eq!(
-        data_layout.type_size_in_bits(ty).known_min_value(),
-        u64::MAX
+        data_layout
+            .type_size_in_bits(ty)
+            .map(|size| size.known_min_value()),
+        Some(u64::MAX)
     );
 }
 
@@ -299,7 +317,10 @@ fn a_struct_asked_about_again_is_not_laid_out_again() {
             .collect();
         for _ in 0..QUERIES {
             for (layout, bytes) in &layouts {
-                assert_eq!(layout.abi_type_align(ty).value(), *bytes);
+                assert_eq!(
+                    layout.abi_type_align(ty).map(|align| align.value()),
+                    Some(*bytes)
+                );
             }
         }
     });
@@ -309,12 +330,13 @@ fn a_struct_asked_about_again_is_not_laid_out_again() {
 /// struct that holds an opaque struct.
 ///
 /// **No upstream counterpart.** Upstream asserts on every size query of such
-/// a type (`docs/divergences.md` D43). llvmkit answers with the opaque field
-/// empty and never keeps the layout in the `DataLayout`'s map, since the body
-/// may come later; it keeps it for the rest of the query instead
-/// (`StructLayouts::seen`). Without that, each visit of a shared struct laid
-/// it out again, twice per field, and this query would lay `%t0` out 4^30
-/// times. The size is that of the empty layout: 0.
+/// a type (`docs/divergences.md` D43). llvmkit's size queries answer `None`
+/// for it at once (it is unsized), and `struct_layout` answers `None` after
+/// laying it out with the opaque field empty. That layout is never kept in
+/// the `DataLayout`'s map, since the body may come later; it is kept for the
+/// rest of the query instead (`StructLayouts::seen`). Without that, each
+/// visit of a shared struct laid it out again, twice per field, and this
+/// query would lay `%t0` out 4^30 times.
 #[test]
 fn a_shared_struct_over_an_opaque_field_is_laid_out_once_per_query() {
     support::deadline::within_a_minute("an uncached layout is laid out on every visit", || {
@@ -329,7 +351,18 @@ fn a_shared_struct_over_an_opaque_field_is_laid_out_once_per_query() {
         let global = module.global("g").expect("@g is declared");
         let ty = module.view(global).value_type();
         let data_layout = DataLayout::default();
-        assert_eq!(data_layout.type_alloc_size(ty).known_min_value(), 0);
-        assert_eq!(data_layout.abi_type_align(ty).value(), 1);
+        assert_eq!(
+            data_layout.type_alloc_size(ty),
+            None,
+            "an unsized type has no size"
+        );
+        assert_eq!(data_layout.abi_type_align(ty), None);
+        let top = module
+            .named_struct(&format!("t{LEVELS}"))
+            .expect("the top struct is defined");
+        assert!(
+            data_layout.struct_layout(top).is_none(),
+            "it holds an opaque struct"
+        );
     });
 }

@@ -724,93 +724,107 @@ impl DataLayout {
     }
 
     // ----- Type-size / alignment accessors -----
+    //
+    // Each answers `None` for an unsized type, where upstream's
+    // `getTypeSizeInBits` (`DataLayout.h`) and `getAlignment`
+    // (`DataLayout.cpp`) assert `Ty->isSized()`, and every other size query
+    // reaches one of the two. A struct holding an opaque struct, `void`, a
+    // label, a function type: none has a size, and no number stands in for
+    // one (D43).
+
+    /// The walk's state for one sized type, or `None` for an unsized one.
+    fn sized_query<'t, B: ModuleBrand, C: Capability>(
+        ty: Type<'t, B, C>,
+    ) -> Option<(&'t ModuleCore, TypeSlot)> {
+        ty.is_sized()
+            .then(|| (ty.module().core_ref(), ty.slot_trusting_same_module()))
+    }
 
     /// Bit-size of `ty` when held as an SSA value. Mirrors
     /// `DataLayout::getTypeSizeInBits` (the inline definition in
     /// `DataLayout.h`).
-    pub fn type_size_in_bits<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> TypeSize {
-        self.type_size_in_bits_inner(
-            ty.module().core_ref(),
-            ty.slot_trusting_same_module(),
-            &StructLayouts::default(),
-        )
+    pub fn type_size_in_bits<B: ModuleBrand, C: Capability>(
+        &self,
+        ty: Type<'_, B, C>,
+    ) -> Option<TypeSize> {
+        let (module, id) = Self::sized_query(ty)?;
+        Some(self.type_size_in_bits_inner(module, id, &StructLayouts::default()))
     }
 
     /// Mirrors `DataLayout::getTypeStoreSize`. Bytes.
-    pub fn type_store_size<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> TypeSize {
-        self.type_store_size_inner(
-            ty.module().core_ref(),
-            ty.slot_trusting_same_module(),
-            &StructLayouts::default(),
-        )
+    pub fn type_store_size<B: ModuleBrand, C: Capability>(
+        &self,
+        ty: Type<'_, B, C>,
+    ) -> Option<TypeSize> {
+        let (module, id) = Self::sized_query(ty)?;
+        Some(self.type_store_size_inner(module, id, &StructLayouts::default()))
     }
 
     /// Mirrors `DataLayout::getTypeStoreSizeInBits`.
     pub fn type_store_size_in_bits<B: ModuleBrand, C: Capability>(
         &self,
         ty: Type<'_, B, C>,
-    ) -> TypeSize {
-        self.type_store_size_in_bits_inner(
-            ty.module().core_ref(),
-            ty.slot_trusting_same_module(),
-            &StructLayouts::default(),
-        )
+    ) -> Option<TypeSize> {
+        let (module, id) = Self::sized_query(ty)?;
+        Some(self.type_store_size_in_bits_inner(module, id, &StructLayouts::default()))
     }
 
     /// Mirrors `DataLayout::typeSizeEqualsStoreSize`.
     pub fn type_size_equals_store_size<B: ModuleBrand, C: Capability>(
         &self,
         ty: Type<'_, B, C>,
-    ) -> bool {
-        self.type_size_in_bits(ty) == self.type_store_size_in_bits(ty)
+    ) -> Option<bool> {
+        Some(self.type_size_in_bits(ty)? == self.type_store_size_in_bits(ty)?)
     }
 
     /// Mirrors `DataLayout::getTypeAllocSize`. Bytes including
     /// trailing alignment padding.
-    pub fn type_alloc_size<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> TypeSize {
-        self.type_alloc_size_inner(
-            ty.module().core_ref(),
-            ty.slot_trusting_same_module(),
-            &StructLayouts::default(),
-        )
+    pub fn type_alloc_size<B: ModuleBrand, C: Capability>(
+        &self,
+        ty: Type<'_, B, C>,
+    ) -> Option<TypeSize> {
+        let (module, id) = Self::sized_query(ty)?;
+        Some(self.type_alloc_size_inner(module, id, &StructLayouts::default()))
     }
 
     /// Mirrors `DataLayout::getTypeAllocSizeInBits`.
     pub fn type_alloc_size_in_bits<B: ModuleBrand, C: Capability>(
         &self,
         ty: Type<'_, B, C>,
-    ) -> TypeSize {
-        self.type_alloc_size(ty).saturating_scaled(8)
+    ) -> Option<TypeSize> {
+        Some(self.type_alloc_size(ty)?.saturating_scaled(8))
     }
 
     /// Mirrors `DataLayout::getABITypeAlign`.
-    pub fn abi_type_align<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> Align {
-        self.alignment(
-            ty.module().core_ref(),
-            ty.slot_trusting_same_module(),
-            true,
-            &StructLayouts::default(),
-        )
+    pub fn abi_type_align<B: ModuleBrand, C: Capability>(
+        &self,
+        ty: Type<'_, B, C>,
+    ) -> Option<Align> {
+        let (module, id) = Self::sized_query(ty)?;
+        Some(self.alignment(module, id, true, &StructLayouts::default()))
     }
 
     /// Mirrors `DataLayout::getPrefTypeAlign`.
-    pub fn pref_type_align<B: ModuleBrand, C: Capability>(&self, ty: Type<'_, B, C>) -> Align {
-        self.alignment(
-            ty.module().core_ref(),
-            ty.slot_trusting_same_module(),
-            false,
-            &StructLayouts::default(),
-        )
+    pub fn pref_type_align<B: ModuleBrand, C: Capability>(
+        &self,
+        ty: Type<'_, B, C>,
+    ) -> Option<Align> {
+        let (module, id) = Self::sized_query(ty)?;
+        Some(self.alignment(module, id, false, &StructLayouts::default()))
     }
 
-    /// Mirrors `DataLayout::getValueOrABITypeAlignment`. If
-    /// `alignment` is set, returns it; otherwise the ABI alignment.
+    /// Mirrors `DataLayout::getValueOrABITypeAlignment`. If `alignment` is
+    /// set, returns it, whatever `ty` is, as upstream reads no type then;
+    /// otherwise the ABI alignment, `None` for an unsized type.
     pub fn value_or_abi_type_align<B: ModuleBrand, C: Capability>(
         &self,
         alignment: MaybeAlign,
         ty: Type<'_, B, C>,
-    ) -> Align {
-        alignment.align().unwrap_or_else(|| self.abi_type_align(ty))
+    ) -> Option<Align> {
+        match alignment.align() {
+            Some(align) => Some(align),
+            None => self.abi_type_align(ty),
+        }
     }
 
     /// Mirrors `DataLayout::getABIIntegerTypeAlignment(BitWidth)`.
@@ -884,18 +898,19 @@ struct ModuleLayouts {
 /// names a type only within one module, so the layouts are kept per module,
 /// under its [`ModuleId`] (never reused). Upstream's map holds pointers to
 /// types that die with their context; here a module's entry is dropped once
-/// the module is (its `liveness` token is dead), the next time the map takes
-/// in another module, so a long-lived `DataLayout` used with many
-/// short-lived modules holds the layouts of the live ones only.
+/// the module is (its `liveness` token is dead): the map sweeps out dead
+/// modules after as many operations as it holds modules, plus
+/// [`SWEEP_FLOOR`], so a sweep costs amortised constant time per operation
+/// and a dead module's layouts outlive it by a bounded number of lookups,
+/// whatever the map is then asked.
 ///
-/// A clone shares the map. Upstream's `operator=` empties the copy's map
-/// because assignment changes the layout; a `DataLayout` here is fixed once
-/// built (every mutator is private to parsing), so a clone is the same
-/// layout and its layouts are the same layouts. Sharing keeps the cache
-/// across the analyses that clone the module's `DataLayout` to hold it.
-/// The map is no part of the layout's value: [`DataLayout`]'s `==` and
-/// `Hash` leave it out. An `Arc<Mutex<..>>`, so a `DataLayout` stays `Send`
-/// and `Sync`.
+/// A clone starts empty, as upstream's `operator=` empties the copy's map
+/// (`TEST(DataLayoutTest, CopyAssignmentInvalidatesStructLayout)`). Code
+/// that wants one layout's cache shares the layout itself: a module holds its
+/// own in an `Arc` (`Module::data_layout_shared`), which the analyses take
+/// instead of a clone. The map is no part of the layout's value:
+/// [`DataLayout`]'s `==` and `Hash` leave it out. A `Mutex`, so a
+/// `DataLayout` stays `Sync`.
 ///
 /// A cached layout cannot go stale: a struct's body is set once
 /// (`Context::set_named_struct_body` refuses a second), and a layout that
@@ -907,38 +922,68 @@ struct ModuleLayouts {
 /// `%tK = type { %t(K-1), %t(K-1) }` cost four times as much per level, and
 /// a struct asked about once per instruction was laid out once per
 /// instruction.
-#[derive(Clone, Default)]
-struct StructLayoutMap(Arc<Mutex<SlotMap<ModuleId, ModuleLayouts>>>);
+#[derive(Default)]
+struct StructLayoutMap(Mutex<ModuleLayoutMaps>);
+
+/// The fewest operations between two sweeps of dead modules.
+const SWEEP_FLOOR: usize = 64;
+
+#[derive(Default)]
+struct ModuleLayoutMaps {
+    modules: SlotMap<ModuleId, ModuleLayouts>,
+    /// Lookups and insertions since the last sweep of dead modules.
+    since_sweep: usize,
+}
+
+impl ModuleLayoutMaps {
+    /// Count one operation, and drop the dead modules' entries once the
+    /// count passes the number of modules held plus [`SWEEP_FLOOR`]: the
+    /// sweep's cost is spread over at least as many operations as it visits.
+    fn tick(&mut self) {
+        self.since_sweep += 1;
+        if self.since_sweep > self.modules.len() + SWEEP_FLOOR {
+            self.modules
+                .retain(|_, entry| entry.alive.strong_count() > 0);
+            self.since_sweep = 0;
+        }
+    }
+}
+
+impl Clone for StructLayoutMap {
+    /// Empty, as upstream's `DataLayout::operator=` leaves the copy's map.
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
 
 impl StructLayoutMap {
     /// The map, locked. No lock is held across a layout, so a panic cannot
     /// leave one poisoned mid-update; a poisoned lock is read through.
-    fn lock(&self) -> MutexGuard<'_, SlotMap<ModuleId, ModuleLayouts>> {
+    fn lock(&self) -> MutexGuard<'_, ModuleLayoutMaps> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn get(&self, module: &ModuleCore, id: TypeSlot) -> Option<Arc<StructLayoutInfo>> {
-        self.lock()
+        let mut maps = self.lock();
+        maps.tick();
+        maps.modules
             .get(&module.id())
             .and_then(|entry| entry.layouts.get(&id))
             .cloned()
     }
 
-    /// Keep `layout` as `module`'s struct `id`'s. Taking in a module not yet
-    /// held first drops the entries of modules that no longer exist.
+    /// Keep `layout` as `module`'s struct `id`'s.
     fn insert(&self, module: &ModuleCore, id: TypeSlot, layout: Arc<StructLayoutInfo>) {
-        let mut modules = self.lock();
-        let entry = match modules.entry(module.id()) {
-            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::hash_map::Entry::Vacant(_) => {
-                modules.retain(|_, entry| entry.alive.strong_count() > 0);
-                modules.entry(module.id()).or_insert_with(|| ModuleLayouts {
-                    alive: module.liveness(),
-                    layouts: SlotMap::default(),
-                })
-            }
-        };
-        entry.layouts.insert(id, layout);
+        let mut maps = self.lock();
+        maps.tick();
+        maps.modules
+            .entry(module.id())
+            .or_insert_with(|| ModuleLayouts {
+                alive: module.liveness(),
+                layouts: SlotMap::default(),
+            })
+            .layouts
+            .insert(id, layout);
     }
 }
 
@@ -956,11 +1001,11 @@ struct StructLayouts {
     /// layout is answered but not kept in the [`StructLayoutMap`]: the opaque
     /// struct may get a body later, and the answer with it.
     reached_opaque: Cell<bool>,
-    /// Every struct this query has laid out or looked up, and whether its
-    /// layout reached an opaque struct. Read before the shared map, so a
-    /// struct reached again in one walk costs no lock, and a layout that
-    /// reached an opaque struct, which the shared map never keeps, is laid
-    /// out once per query rather than once per visit.
+    /// Every struct this query has laid out, and whether its layout reached
+    /// an opaque struct. Read before the shared map, so a layout that reached
+    /// an opaque struct, which the shared map never keeps, is laid out once
+    /// per query rather than once per visit. A struct the shared map answers
+    /// is not recorded: the hit costs no allocation.
     seen: RefCell<SlotMap<TypeSlot, (Arc<StructLayoutInfo>, bool)>>,
 }
 
@@ -1292,10 +1337,10 @@ impl DataLayout {
             }
             return layout;
         }
-        let (layout, reached_opaque) = match self.struct_layouts.get(module, id) {
-            Some(layout) => (layout, false),
-            None => self.lay_out(module, id, layouts),
-        };
+        if let Some(layout) = self.struct_layouts.get(module, id) {
+            return layout;
+        }
+        let (layout, reached_opaque) = self.lay_out(module, id, layouts);
         layouts
             .seen
             .borrow_mut()
@@ -2159,20 +2204,21 @@ fn spec_format(form: &str) -> DataLayoutError {
 
 #[cfg(test)]
 mod tests {
-    use super::DataLayout;
+    use super::{DataLayout, SWEEP_FLOOR};
     use crate::Module;
 
     /// The number of modules `layout`'s struct-layout map holds.
     fn modules_held(layout: &DataLayout) -> usize {
-        layout.struct_layouts.lock().len()
+        layout.struct_layouts.lock().modules.len()
     }
 
     /// llvmkit-specific, no upstream counterpart: upstream's `StructLayoutMap`
     /// is keyed by `StructType *` and dies with its `DataLayout`. One
     /// `DataLayout` used with the types of module after module keeps only the
-    /// live modules' layouts: a dropped module's entry goes when the map next
-    /// takes in a module. Without that, a long-lived layout grew by every
-    /// module it ever measured.
+    /// live modules' layouts once it has swept: a dropped module's entry goes
+    /// within `SWEEP_FLOOR` plus as many operations as modules held, even
+    /// when every later operation is a hit on a live module. Without the
+    /// sweep, a long-lived layout grew by every module it ever measured.
     #[test]
     fn a_dropped_modules_layouts_leave_the_map() {
         let layout = DataLayout::default();
@@ -2182,28 +2228,39 @@ mod tests {
                 .struct_type([module.i32_type().as_type()])
                 .expect("valid struct elements");
             assert!(layout.struct_layout(ty).is_some());
-            assert_eq!(modules_held(&layout), 1, "only {name}'s layouts are held");
         }
+        let live = Module::dynamic("live");
+        let ty = live
+            .struct_type([live.i32_type().as_type()])
+            .expect("valid struct elements");
+        for _ in 0..=(SWEEP_FLOOR + 4) {
+            assert!(layout.struct_layout(ty).is_some());
+        }
+        assert_eq!(
+            modules_held(&layout),
+            1,
+            "only the live module's layouts are held"
+        );
     }
 
-    /// llvmkit-specific, no upstream counterpart: a clone shares its
-    /// original's struct-layout map, so the analyses that clone the module's
-    /// `DataLayout` to hold it read the layouts the module's queries made.
-    /// Upstream's `operator=` empties the copy's map because assignment
-    /// changes the layout; a `DataLayout` here is fixed once built.
+    /// Mirrors upstream's copy semantics (`DataLayout::operator=` empties the
+    /// copy's map), and pins the sharing that replaces copying: a clone
+    /// starts with no layouts, and the module's own layout, taken through
+    /// `Module::data_layout_shared`, is the module's, cache and all.
     #[test]
-    fn a_clone_shares_the_struct_layouts() {
-        let layout = DataLayout::default();
+    fn a_clone_starts_empty_and_the_module_layout_is_shared() {
         let module = Module::dynamic("shared");
         let ty = module
             .struct_type([module.i32_type().as_type()])
             .expect("valid struct elements");
-        let clone = layout.clone();
-        assert!(layout.struct_layout(ty).is_some());
+        assert!(module.data_layout().struct_layout(ty).is_some());
+        let clone = module.data_layout().clone();
+        assert_eq!(modules_held(&clone), 0, "a clone starts empty");
+        let shared = module.data_layout_shared();
         assert_eq!(
-            modules_held(&clone),
+            modules_held(&shared),
             1,
-            "the clone sees the original's layout"
+            "the shared layout is the module's"
         );
     }
 }

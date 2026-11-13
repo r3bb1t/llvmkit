@@ -1646,6 +1646,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         self.core.data_layout()
     }
 
+    /// The module's data layout, shared with the module (and with its
+    /// struct-layout cache) beyond a borrow.
+    #[inline]
+    pub fn data_layout_shared(self) -> std::sync::Arc<DataLayout> {
+        self.core.data_layout_shared()
+    }
+
     /// Target triple directive.
     #[inline]
     pub fn target_triple(self) -> Option<String> {
@@ -2372,7 +2379,10 @@ pub(super) struct ModuleCore {
     /// Parsed `target datalayout = "..."` directive. Default
     /// (empty string) when the module has no directive. Mirrors
     /// `Module::DL` in `IR/Module.h`.
-    data_layout: core::cell::RefCell<DataLayout>,
+    /// In an `Arc`, so the analyses that hold the module's layout share it,
+    /// and its struct-layout cache, rather than clone it (a clone starts with
+    /// an empty cache, as upstream's copy does).
+    data_layout: core::cell::RefCell<std::sync::Arc<DataLayout>>,
     /// `target triple = "..."` directive. Optional.
     target_triple: core::cell::RefCell<Option<String>>,
     /// Module-level inline assembly. Mirrors `Module::ModuleAsm`.
@@ -2526,7 +2536,7 @@ impl<'ctx> ModuleCore {
             symbol_table: ValueSymbolTable::new(),
             comdats: boxcar::Vec::new(),
             comdat_by_name: core::cell::RefCell::new(std::collections::HashMap::new()),
-            data_layout: core::cell::RefCell::new(DataLayout::default()),
+            data_layout: core::cell::RefCell::new(std::sync::Arc::new(DataLayout::default())),
             target_triple: core::cell::RefCell::new(None),
             module_asm: core::cell::RefCell::new(String::new()),
             attribute_groups: core::cell::RefCell::new(Vec::new()),
@@ -3221,7 +3231,14 @@ impl<'ctx> ModuleCore {
     /// Mirrors `Module::getDataLayout`. Returns the default (empty)
     /// layout when no directive has been set.
     pub fn data_layout(&self) -> core::cell::Ref<'_, DataLayout> {
-        self.data_layout.borrow()
+        core::cell::Ref::map(self.data_layout.borrow(), |layout| &**layout)
+    }
+
+    /// The module's [`DataLayout`], shared: the same layout, and the same
+    /// struct-layout cache, as [`Self::data_layout`] borrows, for a holder
+    /// that outlives the borrow.
+    pub(crate) fn data_layout_shared(&self) -> std::sync::Arc<DataLayout> {
+        std::sync::Arc::clone(&self.data_layout.borrow())
     }
 
     /// Replace the data layout. Mirrors
@@ -3229,7 +3246,7 @@ impl<'ctx> ModuleCore {
     /// path parses first ([`DataLayout::parse`]) so this setter itself
     /// cannot fail.
     pub fn set_data_layout(&self, layout: DataLayout) {
-        *self.data_layout.borrow_mut() = layout;
+        *self.data_layout.borrow_mut() = std::sync::Arc::new(layout);
     }
 
     /// `target triple = "..."` directive. Mirrors
@@ -4172,6 +4189,14 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     #[inline]
     pub fn data_layout(&self) -> core::cell::Ref<'_, DataLayout> {
         self.core().data_layout()
+    }
+
+    /// The module's data layout, shared with the module (and with its
+    /// struct-layout cache) beyond a borrow: what an analysis that holds a
+    /// layout takes, instead of a clone, whose cache would start empty.
+    #[inline]
+    pub fn data_layout_shared(&self) -> std::sync::Arc<DataLayout> {
+        self.core().data_layout_shared()
     }
 
     /// Target triple directive.

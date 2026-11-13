@@ -166,11 +166,7 @@ fn a_target_type_upstream_asserts_on_has_no_layout() {
             .target_ext_type(name, types, ints.clone())
             .expect("`checkParams` admits it");
         assert!(!ty.as_type().is_sized(), "{name} {ints:?}");
-        assert_eq!(
-            dl.type_size_in_bits(ty.as_type()),
-            TypeSize::fixed(0),
-            "{name} {ints:?}"
-        );
+        assert_eq!(dl.type_size_in_bits(ty.as_type()), None, "{name} {ints:?}");
         for property in [
             TargetExtProperty::HasZeroInit,
             TargetExtProperty::CanBeGlobal,
@@ -209,8 +205,8 @@ fn a_spirv_type_layout_multiplies_as_upstream_does() {
             .expect("three integer parameters");
         dl.type_size_in_bits(ty.as_type())
     };
-    assert_eq!(size_of(1 << 29), TypeSize::fixed(0));
-    assert_eq!(size_of(4), TypeSize::fixed(32));
+    assert_eq!(size_of(1 << 29), Some(TypeSize::fixed(0)));
+    assert_eq!(size_of(4), Some(TypeSize::fixed(32)));
 }
 
 /// An intrinsic name whose overload suffix spells a zero-lane vector, or a

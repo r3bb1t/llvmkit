@@ -69,8 +69,8 @@ fn alloca_aligned() -> Result<(), IrError> {
 /// omitted alignment for an unsized type, through the flat entries or the
 /// `load_from` chain. Upstream's `IRBuilder` fills it
 /// from `getPrefTypeAlign` / `getABITypeAlign`, which assert
-/// `Ty->isSized()`; llvmkit refuses with that assertion's text, where it
-/// would otherwise write the alignment of D43's empty layout, which goes
+/// `Ty->isSized()`; llvmkit refuses with that assertion's text. It used to
+/// write the alignment of an empty layout for the opaque field, which goes
 /// wrong once the opaque field gets a body. An explicit alignment is taken,
 /// and the verifier judges the instruction as upstream's does.
 #[test]

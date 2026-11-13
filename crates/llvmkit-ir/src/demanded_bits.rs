@@ -146,7 +146,8 @@ struct ShiftRange {
 /// Cached demanded-bits result for one function.
 #[derive(Debug)]
 pub struct DemandedBits {
-    data_layout: DataLayout,
+    /// Shared with the module, so its struct-layout cache is the module's.
+    data_layout: std::sync::Arc<DataLayout>,
     alive_bits: HashMap<ValueSlot, ApInt>,
     operand_bits: HashMap<(ValueSlot, usize), ApInt>,
     dead_uses: HashSet<(ValueSlot, usize)>,
@@ -155,7 +156,7 @@ pub struct DemandedBits {
 }
 
 impl DemandedBits {
-    fn new(data_layout: DataLayout) -> Self {
+    fn new(data_layout: std::sync::Arc<DataLayout>) -> Self {
         Self {
             data_layout,
             alive_bits: HashMap::new(),
@@ -818,7 +819,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for DemandedBitsAnal
     where
         'ctx: 'v,
     {
-        let mut result = DemandedBits::new(function.module().data_layout().clone());
+        let mut result = DemandedBits::new(function.module().data_layout_shared());
         result.perform_analysis(function)?;
         Ok(result)
     }
@@ -1013,8 +1014,8 @@ fn operand_value<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 fn simplify_demanded_bits_iteration<'ctx, B: ModuleBrand + 'ctx>(
     patch: &FnPatch<'_, '_, 'ctx, B, ()>,
 ) -> IrResult<bool> {
-    let data_layout = patch.function().module().data_layout().clone();
-    let mut demanded = DemandedBits::new(data_layout.clone());
+    let data_layout = patch.function().module().data_layout_shared();
+    let mut demanded = DemandedBits::new(std::sync::Arc::clone(&data_layout));
     demanded.perform_analysis(patch.function())?;
     let query = ValueTrackingQuery::new(&data_layout);
     let module_token = patch.module_mut();
@@ -1463,7 +1464,7 @@ fn value_scalar_size_in_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     // scalar whose size is scalable, which upstream cannot convert, answers
     // the 0 this has always answered a size that does not fit.
     dl.type_size_in_bits(erase_type(value.ty().scalar_type()))
-        .fixed_value()
+        .and_then(crate::TypeSize::fixed_value)
         .and_then(|bits| u32::try_from(bits).ok())
         .unwrap_or(0)
 }

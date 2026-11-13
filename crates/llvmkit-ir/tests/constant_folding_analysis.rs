@@ -2365,3 +2365,44 @@ fn a_load_at_an_offset_into_a_scalable_struct_is_not_folded() -> Result<(), IrEr
     );
     Ok(())
 }
+
+/// **No upstream counterpart** (`docs/divergences.md` D43): a load from a
+/// constant whose type, or whose leading field's type, holds an opaque struct
+/// is not folded. Upstream asserts in `getTypeAllocSize` /
+/// `getTypeSizeInBits` there; llvmkit's size queries answer `None` for an
+/// unsized type, and each fold declines. They used to read a made-up size of
+/// 0: the out-of-bounds check folded an `i32` load at offset 4 of
+/// `{ %O } zeroinitializer` to `poison`, and the load-through-bitcast skipped
+/// the "empty" leading `{ %O }` of `{ { %O }, i32 7 }` and answered `i32 7`
+/// for offset 0, which lies inside `%O`. Once `%O` gets a body both answers
+/// would be wrong.
+#[test]
+fn a_load_from_a_constant_of_unsized_type_is_not_folded() -> Result<(), IrError> {
+    let m = module_new!("analysis-unsized-load")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i32_ty = m.i32_type();
+    let opaque = m.opaque_struct("O")?.as_type();
+    let holder = m.struct_type([opaque])?;
+    let zero = i32_ty.const_zero().as_constant();
+    let holder_zero = constant_fold_load_from_uniform_value(zero, holder.as_type(), &dl)?
+        .expect("a uniform zero loads as the zero of any struct");
+    assert_eq!(holder_zero.to_string(), "{ %O } zeroinitializer");
+    assert_eq!(
+        constant_fold_load_from_const(
+            holder_zero,
+            i32_ty.as_type(),
+            ApInt::from_words(64, &[4]),
+            &dl
+        )?,
+        None
+    );
+
+    let pair = m.struct_type([holder.as_type(), i32_ty.as_type()])?;
+    let seven = i32_ty.const_int(7_u32).as_constant();
+    let constant = pair.const_struct([holder_zero, seven])?.as_constant();
+    assert_eq!(
+        constant_fold_load_through_bitcast(constant, i32_ty.as_type(), &dl)?,
+        None
+    );
+    Ok(())
+}

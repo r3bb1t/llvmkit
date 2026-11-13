@@ -15082,7 +15082,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .module
             .data_layout()
             .type_store_size_in_bits(val_ty)
-            .fixed_value()
+            .and_then(llvmkit_ir::TypeSize::fixed_value)
             .is_some_and(|size| size >= 8 && size.is_power_of_two());
         if !is_byte_sized {
             return Err(self.message_at(
