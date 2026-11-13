@@ -7,13 +7,15 @@ Blocked:
   * an inline interpreter script (python, python3, perl, ruby, node) that
     writes files: `open(..., 'w'/'a'/'x')`, `write_text`, `write_bytes`,
     `shutil.copy*` / `shutil.move`, `os.rename` / `os.replace`, `fs.writeFile`;
-  * output redirection (`>`, `>>`, `&>`) or `tee` into a path outside /tmp
-    and /dev;
-  * `cp`, `mv`, `install` or `dd of=` with a destination outside /tmp and /dev.
+  * output redirection (`>`, `>>`, `&>`) or `tee` into any path outside /dev;
+  * `cp`, `mv`, `install` or `dd of=` with a destination outside /dev.
 
-Allowed: writes under /tmp (the scratchpad lives there) and /dev, `2>&1`,
-heredocs fed to commands such as `git commit -F -`, git itself, cargo, and
-every read-only command.
+There is no exemption for /tmp or the scratchpad: the rule is that files are
+written with the Edit and Write tools, scratch files included, and an earlier
+/tmp exemption was used to write test inputs through the shell.
+
+Allowed: writes under /dev (`> /dev/null`), `2>&1`, heredocs fed to commands
+such as `git commit -F -`, git itself, cargo, and every read-only command.
 
 Exit 2 with a message on stderr blocks the call and tells Claude why.
 """
@@ -23,7 +25,7 @@ import re
 import shlex
 import sys
 
-ALLOWED_PREFIXES = ("/tmp/", "/dev/")
+ALLOWED_PREFIXES = ("/dev/",)
 INTERPRETERS = re.compile(r"(?:^|[\s;&|(])(?:python3?|perl|ruby|node)(?:\s|$)")
 INTERPRETER_WRITES = re.compile(
     r"""open\([^)]*['"][wax]b?\+?['"]"""
@@ -61,7 +63,7 @@ def strip_quotes(text):
 
 def expand_simple_assignments(text):
     """Resolve `NAME=value` assignments made in the same command, so
-    `G=/tmp/x.log; ... > $G` is seen as a write under /tmp."""
+    `G=/tmp/x.log; ... > $G` is seen as the write into /tmp it is."""
     values = dict(re.findall(r"(?:^|[\s;&(])([A-Za-z_]\w*)=([^\s;&|]+)", text))
 
     def resolve(match):
@@ -117,8 +119,8 @@ def main():
     sys.stderr.write(
         f"Blocked: {reason}. In this repository files are changed with the "
         "Edit tool (or Write for a new file), never through the shell, so "
-        "every change is visible and exact. Writes under /tmp and /dev are "
-        "allowed.\n"
+        "every change is visible and exact. Scratch files too: there is no "
+        "exemption for /tmp. Only /dev (such as /dev/null) may be written.\n"
     )
     return 2
 
