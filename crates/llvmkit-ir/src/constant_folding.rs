@@ -589,7 +589,11 @@ fn read_struct_data_from_global<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     let Ok(struct_ty) = StructType::try_from(constant.ty()) else {
         return Ok(false);
     };
-    let layout = dl.struct_layout(struct_ty);
+    // A struct holding an opaque struct has no layout (D43); its bytes are
+    // not read.
+    let Some(layout) = dl.struct_layout(struct_ty) else {
+        return Ok(false);
+    };
     let Some(mut index) = layout.element_containing_offset(byte_offset) else {
         return Ok(false);
     };
@@ -2512,12 +2516,20 @@ pub(crate) fn accumulate_constant_offset<'ctx, B: ModuleBrand + 'ctx, C: Capabil
             let field = step.struct_field(index_id)?;
             // A scalable offset here is upstream's fatal `TypeSize` conversion:
             // the field's own type is fixed, so the bailout above let it by.
+            // A struct holding an opaque struct has no layout (D43), and so no
+            // offset to add.
             let field_offset = dl
-                .struct_layout_of(erase_type(struct_ty))
+                .struct_layout_of(erase_type(struct_ty))?
                 .element_offset(field)
                 .fixed_value()?;
             offset = offset.wrapping_add(&ApInt::from_words(index_bits, &[field_offset]));
             continue;
+        }
+        // An unsized element has no stride: upstream's `getTypeAllocSize`
+        // asserts `isSized`, and the size llvmkit answers there is no real one
+        // (D43). Value tracking's GEP arm declines the same way.
+        if !indexed_ty.is_sized() {
+            return None;
         }
         let stride = step.sequential_element_stride(dl).fixed_value()?;
         offset = offset.wrapping_add(&scaled_offset(
@@ -2972,7 +2984,8 @@ fn gep_index_for_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             ))
         }
         TypeData::Struct(data) => {
-            let layout = dl.struct_layout_of(erase_type(*element_ty));
+            // No layout for a struct holding an opaque struct (D43).
+            let layout = dl.struct_layout_of(erase_type(*element_ty))?;
             let int_offset = offset.try_zext_u64()?;
             if int_offset >= layout.size_in_bytes().fixed_value()? {
                 return None;

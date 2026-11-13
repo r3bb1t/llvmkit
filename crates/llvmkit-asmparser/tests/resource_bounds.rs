@@ -157,9 +157,9 @@ fn a_summary_id_near_the_top_of_the_range_costs_one_entry() {
 /// so each of the 41 structs is laid out once. llvmkit laid a struct out
 /// again every time a walk reached it, twice for each field (`alignment` and
 /// `type_alloc_size_inner`, read at `34fdec9`), so laying out `%tK` laid out
-/// `%t(K-1)` four times, and this query would lay `%t0` out 4^40 times. The
-/// module now keeps each struct's layout per `DataLayout`
-/// (`StructLayoutCache`).
+/// `%t(K-1)` four times, and this query would lay `%t0` out 4^40 times. A
+/// `DataLayout` now keeps each struct's layout, as upstream's does
+/// (`StructLayoutMap`).
 ///
 /// The expected size is derived by hand, not taken from upstream: `%t0` is
 /// 4 bytes (`i8` at 0, `i16` at 2), and each level is two copies of the level
@@ -265,15 +265,16 @@ fn a_size_past_sixty_four_bits_saturates_without_shrinking_its_bytes() {
 }
 
 /// One struct of 20,000 fields, each its own struct type, whose alignment
-/// is asked 20,000 times under each of two `DataLayout`s, taking turns.
+/// is asked 20,000 times under each of five `DataLayout`s, taking turns.
 ///
 /// **No upstream counterpart.** Upstream's `DataLayout::getStructLayout`
 /// keeps each struct's layout in the `DataLayout`'s `StructLayoutMap`, so
 /// only the first query of each `DataLayout` lays the struct out. llvmkit's
-/// module keeps one map per `DataLayout` that asked (`StructLayoutCache`).
-/// A memo that lived for one query, or a cache that kept one `DataLayout`'s
-/// layouts and dropped them when the other asked, laid out all 20,001
-/// structs on every query: 40,000 queries of 40,000 field visits each.
+/// `DataLayout` keeps its map the same way (`StructLayoutMap`). A memo that
+/// lived for one query, a cache on the module that kept one `DataLayout`'s
+/// layouts and dropped them when another asked, or one that kept the four
+/// most recent, laid out all 20,001 structs on every query: 100,000 queries
+/// of 40,000 field visits each.
 #[test]
 fn a_struct_asked_about_again_is_not_laid_out_again() {
     support::deadline::within_a_minute("a struct is laid out again on every query", || {
@@ -289,11 +290,17 @@ fn a_struct_asked_about_again_is_not_laid_out_again() {
         let module = parse(&source);
         let global = module.global("g").expect("@g is declared");
         let ty = module.view(global).value_type();
-        let first = DataLayout::default();
-        let second = DataLayout::parse("e-a:16").expect("a valid layout");
+        let layouts: Vec<(DataLayout, u64)> = [1u64, 2, 4, 8, 16]
+            .into_iter()
+            .map(|bytes| {
+                let spec = format!("e-a:{}", bytes * 8);
+                (DataLayout::parse(spec).expect("a valid layout"), bytes)
+            })
+            .collect();
         for _ in 0..QUERIES {
-            assert_eq!(first.abi_type_align(ty).value(), 1);
-            assert_eq!(second.abi_type_align(ty).value(), 2);
+            for (layout, bytes) in &layouts {
+                assert_eq!(layout.abi_type_align(ty).value(), *bytes);
+            }
         }
     });
 }

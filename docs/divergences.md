@@ -1391,12 +1391,14 @@ which asserts the `u64::MAX` alloc and store sizes of a `4 * 2^64`-byte struct, 
 `resource_bounds.rs::a_size_past_sixty_four_bits_saturates_without_shrinking_its_bytes`, which
 asserts exact 2^62-byte alloc and store sizes and a saturated bit size for a 2^62-byte struct.
 
-### D43 — A struct's opaque field is laid out empty, where upstream asserts
+### D43 — A struct holding an opaque struct has no layout; its sizes take the opaque field as empty
 
-**Severity:** model-gap, on a query upstream does not allow: `DataLayout`'s size and alignment
-of a struct that holds an opaque struct answer as if the opaque field had size 0 and alignment 1.
-**Where:** `crates/llvmkit-ir/src/data_layout.rs` — `struct_layout_inner`, and `layout_of`'s
-refusal to cache such a layout.
+**Severity:** model-gap, on queries upstream does not allow: `DataLayout::struct_layout` of a
+struct that holds an opaque struct (at any depth) answers `None`, and its size and alignment
+queries answer as if the opaque field had size 0 and alignment 1.
+**Where:** `crates/llvmkit-ir/src/data_layout.rs` — `struct_layout_inner`, `lay_out` (which
+refuses to cache such a layout), `struct_layout` / `struct_layout_of` (the `None`);
+`crates/llvmkit-ir/src/ir_builder.rs` — `IrBuilder::sized` and the `SizedType` witness.
 
 **LLVM:** the query is refused by assertion three times over: `DataLayout::getTypeSizeInBits`
 (`DataLayout.h`) and `DataLayout::getAlignment` (`DataLayout.cpp`) assert `Ty->isSized()`, which
@@ -1404,19 +1406,24 @@ a struct holding an opaque struct is not, and `StructLayout::StructLayout` asser
 `!ST->isOpaque()`. A release build skips the asserts and lays the opaque struct out with no
 elements, the same empty layout, and caches it in `getStructLayout`'s `StructLayoutMap`.
 
-**llvmkit:** the empty layout is answered, and neither it nor any layout holding it is cached
-(`StructLayouts::reached_opaque`), so once the opaque struct gets a body the next query answers
-the real layout. Before this entry `struct_layout_inner` reached an `unreachable!` here, a panic
-on a public query (`DataLayout::type_alloc_size` of `{ i8, %opaque }`).
+**llvmkit:** `struct_layout` answers `None`; the size and alignment queries answer the empty
+layout's numbers, and neither is cached (`StructLayouts::reached_opaque`), so once the opaque
+struct gets a body the next query answers the real layout. Before this entry
+`struct_layout_inner` reached an `unreachable!` here, a panic on a public query
+(`DataLayout::type_alloc_size` of `{ i8, %opaque }`).
 
-The empty layout is no real size, and the opaque struct can still get a body, so nothing that
-writes IR takes it: the `IrBuilder` refuses to fill an omitted `alloca`, `load` or `store`
-alignment for an unsized type (`IrBuilder::refuse_default_align_of_unsized`, with the
-assertion's own text, `Cannot getTypeInfo() on a type that is unsized!`), where upstream's
-`IRBuilder` would assert; the parser refuses an unsized `alloca`, `load`, `store` or
-`getelementptr` before any size is asked; constant `getelementptr` creation refuses an unsized
-source (`constants.rs`, the `!source_ty.is_sized()` check), so the constant folds reach only
-sized types through it. Only a caller asking `DataLayout` directly sees the empty layout.
+The empty layout's numbers are no real size, and the opaque struct can still get a body, so the
+crate's own readers do not take them. `rg -n 'struct_layout_of\(|\.struct_layout\('
+crates/llvmkit-ir/src crates/llvmkit-asmparser/src` (run on `27d548b5` plus this change) lists
+the four that read a struct's layout (value tracking's GEP arm, and `read_struct_bytes`,
+`accumulate_constant_offset` and `gep_index_for_offset` in `constant_folding.rs`); each answers
+nothing on `None`. `accumulate_constant_offset` and value tracking's GEP arm also refuse an
+unsized array element's stride. The `IrBuilder` fills an omitted `alloca`, `load` or `store`
+alignment only through a `SizedType` witness, minted checked (`IrBuilder::sized`, refusing with
+the assertion's own text, `Cannot getTypeInfo() on a type that is unsized!`) or for an integer,
+float or pointer type, which is sized by construction. The size queries' numbers stay reachable
+through the public `DataLayout` size and alignment queries, and through any reader of them not
+named here: the search above covers the layout readers, not every size query.
 
 **Why:** no runtime panic in a production path (CLAUDE.md), and a cache that cannot go stale:
 caching the empty layout, as upstream's release build does, would keep answering it after the

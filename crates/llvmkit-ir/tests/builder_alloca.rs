@@ -66,7 +66,8 @@ fn alloca_aligned() -> Result<(), IrError> {
 }
 
 /// llvmkit-specific (`docs/divergences.md` D43): the builder will not fill an
-/// omitted alignment for an unsized type. Upstream's `IRBuilder` fills it
+/// omitted alignment for an unsized type, through the flat entries or the
+/// `load_from` chain. Upstream's `IRBuilder` fills it
 /// from `getPrefTypeAlign` / `getABITypeAlign`, which assert
 /// `Ty->isSized()`; llvmkit refuses with that assertion's text, where it
 /// would otherwise write the alignment of D43's empty layout, which goes
@@ -92,6 +93,9 @@ fn alloca_load_and_store_refuse_to_guess_an_unsized_alignment() -> Result<(), Ir
     assert!(refused(b.alloca(holder, "a").map(|_| ())));
     let pointer: PointerValue<'_, SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     assert!(refused(b.load(holder, pointer, "v").map(|_| ())));
+    assert!(refused(
+        b.load_from(pointer).erased(holder, "w").map(|_| ())
+    ));
     let value = holder.as_type().undef();
     assert!(refused(b.store(value, pointer).map(|_| ())));
     b.alloca_with_align(holder, Align::new(4).expect("a power of two"), "kept")?;

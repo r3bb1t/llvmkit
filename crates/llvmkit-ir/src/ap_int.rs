@@ -234,11 +234,8 @@ impl ApInt {
         }
         // Only the words up to the bit's: the higher ones are zero, and a
         // value keeps no high zero words, so these are already canonical.
-        let idx = u32_to_usize(bit / WORD_BITS);
-        let mut words = vec![0; idx + 1];
-        if let Some(word) = words.get_mut(idx) {
-            *word = 1u64 << (bit % WORD_BITS);
-        }
+        let mut words = vec![0; u32_to_usize(bit / WORD_BITS)];
+        words.push(1u64 << (bit % WORD_BITS));
         Self { bit_width, words }
     }
 

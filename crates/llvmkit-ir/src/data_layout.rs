@@ -23,20 +23,20 @@
 //! - `hasMicrosoftFastStdCallMangling` and friends (presentation-only
 //!   helpers; reachable through [`DataLayout::mangling_mode`]).
 
-use core::cell::{Cell, Ref, RefCell};
+use core::cell::Cell;
 use core::fmt;
 use core::iter::FusedIterator;
 use core::num::NonZeroU32;
 use core::str::FromStr;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::addr_space::AddressSpace;
 use crate::align::{Align, MaybeAlign};
 use crate::capability::Capability;
 use crate::derived_types::StructType;
 use crate::error::DataLayoutError;
-use crate::module::{ModuleBrand, ModuleCore};
+use crate::module::{ModuleBrand, ModuleCore, ModuleId};
 use crate::struct_body_state::StructBodyState;
 use crate::r#type::{MAX_INT_BITS, Type, TypeData, TypeSlot, TypeSlotAccess, is_scalable};
 use crate::type_components::lanes;
@@ -310,6 +310,10 @@ pub struct DataLayout {
     /// The unparsed layout string, in declaration order. Returned by
     /// [`Self::string_representation`].
     string_representation: String,
+    /// The struct layouts this `DataLayout` has computed. Mirrors
+    /// `DataLayout::LayoutMap`; not part of the layout's value, so equality,
+    /// hashing and cloning leave it out (see [`StructLayoutMap`]).
+    struct_layouts: StructLayoutMap,
 }
 
 /// Mirrors `DataLayout::operator==` (`DataLayout.cpp`), field for field.
@@ -318,45 +322,85 @@ pub struct DataLayout {
 /// `p0` describe one layout, and so do the default and `"e"`.
 impl PartialEq for DataLayout {
     fn eq(&self, other: &Self) -> bool {
-        self.big_endian == other.big_endian
-            && self.alloca_addr_space == other.alloca_addr_space
-            && self.program_addr_space == other.program_addr_space
-            && self.default_globals_addr_space == other.default_globals_addr_space
-            && self.stack_natural_align == other.stack_natural_align
-            && self.function_ptr_align == other.function_ptr_align
-            && self.function_ptr_align_type == other.function_ptr_align_type
-            && self.mangling_mode == other.mangling_mode
-            && self.legal_int_widths == other.legal_int_widths
-            && self.int_specs == other.int_specs
-            && self.float_specs == other.float_specs
-            && self.vector_specs == other.vector_specs
-            && self.pointer_specs == other.pointer_specs
-            && self.struct_abi_align == other.struct_abi_align
-            && self.struct_pref_align == other.struct_pref_align
+        // Destructured, so a field added to `DataLayout` must be placed here
+        // (compared, or named as left out) before this compiles.
+        let Self {
+            big_endian,
+            alloca_addr_space,
+            program_addr_space,
+            default_globals_addr_space,
+            stack_natural_align,
+            function_ptr_align,
+            function_ptr_align_type,
+            mangling_mode,
+            legal_int_widths,
+            int_specs,
+            float_specs,
+            vector_specs,
+            pointer_specs,
+            struct_abi_align,
+            struct_pref_align,
+            string_representation: _,
+            struct_layouts: _,
+        } = self;
+        *big_endian == other.big_endian
+            && *alloca_addr_space == other.alloca_addr_space
+            && *program_addr_space == other.program_addr_space
+            && *default_globals_addr_space == other.default_globals_addr_space
+            && *stack_natural_align == other.stack_natural_align
+            && *function_ptr_align == other.function_ptr_align
+            && *function_ptr_align_type == other.function_ptr_align_type
+            && *mangling_mode == other.mangling_mode
+            && *legal_int_widths == other.legal_int_widths
+            && *int_specs == other.int_specs
+            && *float_specs == other.float_specs
+            && *vector_specs == other.vector_specs
+            && *pointer_specs == other.pointer_specs
+            && *struct_abi_align == other.struct_abi_align
+            && *struct_pref_align == other.struct_pref_align
     }
 }
 
 impl Eq for DataLayout {}
 
 /// Hashes exactly the fields [`PartialEq`] compares, so equal layouts hash
-/// equal.
+/// equal; destructured for the same reason.
 impl core::hash::Hash for DataLayout {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        self.big_endian.hash(state);
-        self.alloca_addr_space.hash(state);
-        self.program_addr_space.hash(state);
-        self.default_globals_addr_space.hash(state);
-        self.stack_natural_align.hash(state);
-        self.function_ptr_align.hash(state);
-        self.function_ptr_align_type.hash(state);
-        self.mangling_mode.hash(state);
-        self.legal_int_widths.hash(state);
-        self.int_specs.hash(state);
-        self.float_specs.hash(state);
-        self.vector_specs.hash(state);
-        self.pointer_specs.hash(state);
-        self.struct_abi_align.hash(state);
-        self.struct_pref_align.hash(state);
+        let Self {
+            big_endian,
+            alloca_addr_space,
+            program_addr_space,
+            default_globals_addr_space,
+            stack_natural_align,
+            function_ptr_align,
+            function_ptr_align_type,
+            mangling_mode,
+            legal_int_widths,
+            int_specs,
+            float_specs,
+            vector_specs,
+            pointer_specs,
+            struct_abi_align,
+            struct_pref_align,
+            string_representation: _,
+            struct_layouts: _,
+        } = self;
+        big_endian.hash(state);
+        alloca_addr_space.hash(state);
+        program_addr_space.hash(state);
+        default_globals_addr_space.hash(state);
+        stack_natural_align.hash(state);
+        function_ptr_align.hash(state);
+        function_ptr_align_type.hash(state);
+        mangling_mode.hash(state);
+        legal_int_widths.hash(state);
+        int_specs.hash(state);
+        float_specs.hash(state);
+        vector_specs.hash(state);
+        pointer_specs.hash(state);
+        struct_abi_align.hash(state);
+        struct_pref_align.hash(state);
     }
 }
 
@@ -395,6 +439,7 @@ impl Default for DataLayout {
             struct_abi_align: Align::ONE,
             struct_pref_align: const_align(8),
             string_representation: String::new(),
+            struct_layouts: StructLayoutMap::default(),
         };
         // Default pointer spec for AS 0: 64-bit pointers, 8-byte
         // ABI/pref alignment, 64-bit index width. Mirrors the trailing
@@ -790,26 +835,22 @@ impl DataLayout {
 // Internal: the module's struct layouts
 // --------------------------------------------------------------------------
 
-/// How many [`DataLayout`]s' struct layouts a module keeps at once.
-///
-/// Upstream keeps one `StructLayoutMap` per `DataLayout` object and frees it
-/// with the object. llvmkit's `DataLayout` is a plain value whose end the
-/// module cannot see, so the module keeps the maps of the layouts that asked
-/// most recently, and drops the least recent when one more asks: a module
-/// asked under ever-new layouts holds a bounded number of maps, and a query
-/// compares at most this many layouts. Two or three are the common case (the
-/// module's own, a default, a target's).
-const MAX_CACHED_DATA_LAYOUTS: usize = 4;
-
-/// A module's struct layouts, one map per [`DataLayout`] that asked, for the
-/// [`MAX_CACHED_DATA_LAYOUTS`] that asked most recently. Mirrors
+/// The struct layouts one [`DataLayout`] has computed. Mirrors
 /// `DataLayout::LayoutMap` (`DataLayout.cpp`), the `StructLayoutMap` keyed by
-/// `StructType *` that lets upstream lay each struct out once per layout.
+/// `StructType *` that lets upstream lay each struct out once per layout:
+/// created empty, filled by `getStructLayout`, freed with its `DataLayout`.
 ///
-/// llvmkit's [`DataLayout`] is a plain value usable with any module's types,
-/// and a [`TypeSlot`] names a type only within one module, so the maps live
-/// on the module, each recording the `DataLayout` it belongs to, compared as
-/// upstream's `operator==` compares (the layout string aside).
+/// A `DataLayout` here is usable with any module's types, and a [`TypeSlot`]
+/// names a type only within one module, so the key carries the module's
+/// [`ModuleId`] too (never reused, so a key never names another module's
+/// type). Like upstream's, the map lives as long as its `DataLayout`: a
+/// module's own layout is freed with the module, a temporary one at the end
+/// of its statement.
+///
+/// A clone starts empty, as upstream's `operator=` deletes the copy's map
+/// (`TEST(DataLayoutTest, CopyAssignmentInvalidatesStructLayout)`), and the
+/// map is no part of the layout's value: [`DataLayout`]'s `==` and `Hash`
+/// leave it out. A `Mutex`, so that a `DataLayout` stays `Sync`.
 ///
 /// A cached layout cannot go stale: a struct's body is set once
 /// (`Context::set_named_struct_body` refuses a second), and a layout that
@@ -822,96 +863,36 @@ const MAX_CACHED_DATA_LAYOUTS: usize = 4;
 /// a struct asked about once per instruction was laid out once per
 /// instruction.
 #[derive(Default)]
-pub(crate) struct StructLayoutCache(RefCell<Vec<StructLayoutMap>>);
+struct StructLayoutMap(Mutex<HashMap<(ModuleId, TypeSlot), Arc<StructLayoutInfo>>>);
 
-/// One `DataLayout`'s struct layouts in one module.
-struct StructLayoutMap {
-    data_layout: DataLayout,
-    layouts: HashMap<TypeSlot, Arc<StructLayoutInfo>>,
-}
-
-impl StructLayoutCache {
-    /// The position of `data_layout`'s map, moved to the most recent end,
-    /// adding an empty one (and dropping the least recent past
-    /// [`MAX_CACHED_DATA_LAYOUTS`]) if it has none.
-    ///
-    /// The only routine that reorders or removes maps. A query calls it once,
-    /// before its first lookup, and nothing it walks calls it again (the walk
-    /// asks only its own `DataLayout`), so the position it returns is valid
-    /// for the rest of the query.
-    fn position_of(&self, data_layout: &DataLayout) -> usize {
-        let mut maps = self.0.borrow_mut();
-        match maps.iter().position(|map| map.data_layout == *data_layout) {
-            Some(position) => {
-                let map = maps.remove(position);
-                maps.push(map);
-            }
-            None => {
-                if maps.len() == MAX_CACHED_DATA_LAYOUTS {
-                    maps.remove(0);
-                }
-                maps.push(StructLayoutMap {
-                    data_layout: data_layout.clone(),
-                    layouts: HashMap::new(),
-                });
-            }
-        }
-        maps.len() - 1
-    }
-
-    /// Struct `id`'s cached layout, borrowed; `None` when none is cached.
-    fn cached(&self, position: usize, id: TypeSlot) -> Option<Ref<'_, StructLayoutInfo>> {
-        Ref::filter_map(self.0.borrow(), |maps| {
-            maps.get(position)
-                .unwrap_or_else(|| unreachable!("a query's map position outlives no reordering"))
-                .layouts
-                .get(&id)
-                .map(|layout| &**layout)
-        })
-        .ok()
-    }
-
-    /// Struct `id`'s cached layout, shared.
-    fn shared(&self, position: usize, id: TypeSlot) -> Option<Arc<StructLayoutInfo>> {
-        let maps = self.0.borrow();
-        maps.get(position)
-            .unwrap_or_else(|| unreachable!("a query's map position outlives no reordering"))
-            .layouts
-            .get(&id)
-            .cloned()
-    }
-
-    fn insert(&self, position: usize, id: TypeSlot, layout: Arc<StructLayoutInfo>) {
-        let mut maps = self.0.borrow_mut();
-        maps.get_mut(position)
-            .unwrap_or_else(|| unreachable!("a query's map position outlives no reordering"))
-            .layouts
-            .insert(id, layout);
+impl StructLayoutMap {
+    /// The map, locked. No lock is held across a layout, so a panic cannot
+    /// leave one poisoned mid-update; a poisoned lock is read through.
+    fn lock(&self) -> MutexGuard<'_, HashMap<(ModuleId, TypeSlot), Arc<StructLayoutInfo>>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
-/// One public query's handle on the module's [`StructLayoutCache`].
+impl Clone for StructLayoutMap {
+    /// Empty, as upstream's `DataLayout::operator=` leaves the copy's map.
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl fmt::Debug for StructLayoutMap {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StructLayoutMap").finish_non_exhaustive()
+    }
+}
+
+/// One public query's state for the struct layouts it computes.
 #[derive(Default)]
 struct StructLayouts {
-    /// The position of this `DataLayout`'s map, found the first time the
-    /// query reaches a struct: a query that reaches none (a scalar's size or
-    /// alignment) compares no `DataLayout` at all.
-    map: Cell<Option<usize>>,
     /// Whether the layout being computed reached an opaque struct. Such a
     /// layout is answered but not cached: the opaque struct may get a body
     /// later, and the answer with it.
     reached_opaque: Cell<bool>,
-}
-
-impl StructLayouts {
-    /// This query's map position, found on first use.
-    fn position(&self, data_layout: &DataLayout, module: &ModuleCore) -> usize {
-        self.map.get().unwrap_or_else(|| {
-            let position = module.struct_layout_cache().position_of(data_layout);
-            self.map.set(Some(position));
-            position
-        })
-    }
 }
 
 // --------------------------------------------------------------------------
@@ -1184,18 +1165,19 @@ impl DataLayout {
         }
     }
 
-    /// The layout of an aggregate struct. Mirrors
-    /// `DataLayout::getStructLayout`, which returns a pointer into the
-    /// `DataLayout`'s cache: each struct is laid out once per `DataLayout` and
-    /// module, and every later call shares that layout. The layout itself is
-    /// `StructLayout::StructLayout` in `DataLayout.cpp`.
+    /// The layout of an aggregate struct, or `None` when it holds an opaque
+    /// struct and so has none. Mirrors `DataLayout::getStructLayout`, which
+    /// returns a pointer into the `DataLayout`'s cache: each struct is laid
+    /// out once per `DataLayout`, and every later call shares that layout.
+    /// The layout itself is `StructLayout::StructLayout` in `DataLayout.cpp`,
+    /// whose assertion on an opaque struct is the `None` here (D43).
     ///
     /// Takes a [`StructType`], as upstream's takes a `StructType *`: the
     /// layout of any other type is not a question.
     pub fn struct_layout<Body: StructBodyState, B: ModuleBrand, C: Capability>(
         &self,
         ty: StructType<'_, Body, B, C>,
-    ) -> Arc<StructLayoutInfo> {
+    ) -> Option<Arc<StructLayoutInfo>> {
         self.struct_layout_of(ty.as_type())
     }
 
@@ -1205,21 +1187,20 @@ impl DataLayout {
     pub(crate) fn struct_layout_of<B: ModuleBrand, C: Capability>(
         &self,
         ty: Type<'_, B, C>,
-    ) -> Arc<StructLayoutInfo> {
+    ) -> Option<Arc<StructLayoutInfo>> {
         let module = ty.module().core_ref();
-        let id = ty.slot_trusting_same_module();
-        let layouts = StructLayouts::default();
-        let position = layouts.position(self, module);
-        match module.struct_layout_cache().shared(position, id) {
-            Some(layout) => layout,
-            None => self.lay_out(module, id, position, &layouts),
+        let key = (module.id(), ty.slot_trusting_same_module());
+        if let Some(layout) = self.struct_layouts.lock().get(&key) {
+            return Some(Arc::clone(layout));
         }
+        let (layout, reached_opaque) = self.lay_out(module, key.1, &StructLayouts::default());
+        (!reached_opaque).then_some(layout)
     }
 
     /// Read struct `id`'s layout through `read`, laying it out only the
     /// first time this `DataLayout` asks of `module`. Mirrors
     /// `DataLayout::getStructLayout`'s `StructLayoutMap` lookup, and the
-    /// `new StructLayout` on a miss. A cached layout is read through a borrow:
+    /// `new StructLayout` on a miss. A cached layout is read under the lock:
     /// the walks read one field of it and need not share it.
     fn with_layout<T>(
         &self,
@@ -1228,26 +1209,24 @@ impl DataLayout {
         layouts: &StructLayouts,
         read: impl FnOnce(&StructLayoutInfo) -> T,
     ) -> T {
-        let position = layouts.position(self, module);
-        if let Some(layout) = module.struct_layout_cache().cached(position, id) {
-            return read(&layout);
+        if let Some(layout) = self.struct_layouts.lock().get(&(module.id(), id)) {
+            return read(layout);
         }
-        read(&self.lay_out(module, id, position, layouts))
+        read(&self.lay_out(module, id, layouts).0)
     }
 
-    /// Lay struct `id` out, and cache the layout unless it reached an opaque
-    /// struct. Laid out with no borrow of the cache held: the fields' own
-    /// layouts are read and inserted along the way. Whether this layout
-    /// reached an opaque struct is tracked apart from the enclosing one's,
-    /// then merged into it, since an enclosing layout that holds this one
-    /// reached it too.
+    /// Lay struct `id` out, cache the layout unless it reached an opaque
+    /// struct, and say whether it did. Laid out with no lock held: the
+    /// fields' own layouts are read and inserted along the way. Whether this
+    /// layout reached an opaque struct is tracked apart from the enclosing
+    /// one's, then merged into it, since an enclosing layout that holds this
+    /// one reached it too.
     fn lay_out(
         &self,
         module: &ModuleCore,
         id: TypeSlot,
-        position: usize,
         layouts: &StructLayouts,
-    ) -> Arc<StructLayoutInfo> {
+    ) -> (Arc<StructLayoutInfo>, bool) {
         let enclosing_reached_opaque = layouts.reached_opaque.replace(false);
         let layout = Arc::new(self.struct_layout_inner(module, id, layouts));
         let reached_opaque = layouts.reached_opaque.get();
@@ -1255,11 +1234,11 @@ impl DataLayout {
             .reached_opaque
             .set(enclosing_reached_opaque || reached_opaque);
         if !reached_opaque {
-            module
-                .struct_layout_cache()
-                .insert(position, id, Arc::clone(&layout));
+            self.struct_layouts
+                .lock()
+                .insert((module.id(), id), Arc::clone(&layout));
         }
-        layout
+        (layout, reached_opaque)
     }
 
     fn struct_layout_inner(

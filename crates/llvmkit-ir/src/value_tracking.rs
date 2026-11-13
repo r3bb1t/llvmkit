@@ -6285,7 +6285,11 @@ where
             // `uint64_t Offset = SL->getElementOffset(Idx)` is the implicit
             // `TypeSize` conversion, fatal on a scalable offset. Nothing is
             // known about such a field's address instead.
-            let layout = data_layout.struct_layout_of(erase_type(struct_ty));
+            // A struct holding an opaque struct has no layout (D43), where
+            // upstream's `getStructLayout` asserts: nothing is known.
+            let Some(layout) = data_layout.struct_layout_of(erase_type(struct_ty)) else {
+                return Ok(KnownBits::unknown(width));
+            };
             let Some(field_offset) = layout.element_offset(field).fixed_value() else {
                 return Ok(KnownBits::unknown(width));
             };

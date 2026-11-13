@@ -933,7 +933,7 @@ fn struct_layout_simple() {
     let st = m
         .struct_type([i32_ty.as_type(), i64_ty.as_type()])
         .expect("valid struct elements");
-    let layout = dl.struct_layout(st);
+    let layout = dl.struct_layout(st).expect("a struct with no opaque field");
     assert_eq!(layout.element_offset(0), TypeSize::fixed(0));
     // i64 default ABI alignment is 4, so i64 placed at offset 4.
     assert_eq!(layout.element_offset(1), TypeSize::fixed(4));
@@ -951,7 +951,7 @@ fn struct_layout_packed() {
     let st = m
         .packed_struct_type([i8_ty.as_type(), i32_ty.as_type()])
         .expect("valid struct elements");
-    let layout = dl.struct_layout(st);
+    let layout = dl.struct_layout(st).expect("a struct with no opaque field");
     assert_eq!(layout.element_offset(0), TypeSize::fixed(0));
     assert_eq!(layout.element_offset(1), TypeSize::fixed(1));
     assert_eq!(layout.size_in_bytes(), TypeSize::fixed(5));
@@ -976,7 +976,9 @@ fn a_struct_field_offset_says_whether_it_scales() {
             i32_ty.as_type(),
         ])
         .expect("valid struct elements");
-    let fixed_layout = dl.struct_layout(fixed);
+    let fixed_layout = dl
+        .struct_layout(fixed)
+        .expect("a struct with no opaque field");
     assert_eq!(fixed_layout.element_containing_offset(4), Some(2));
     assert_eq!(fixed_layout.element_containing_offset(0), Some(0));
     assert_eq!(fixed_layout.element_containing_offset(8), None);
@@ -985,7 +987,9 @@ fn a_struct_field_offset_says_whether_it_scales() {
     let scalable = m
         .struct_type([scalable_field, scalable_field])
         .expect("valid struct elements");
-    let scalable_layout = dl.struct_layout(scalable);
+    let scalable_layout = dl
+        .struct_layout(scalable)
+        .expect("a struct with no opaque field");
     assert_eq!(scalable_layout.element_offset(1), TypeSize::scalable(16));
     assert_eq!(
         scalable_layout.element_offset_in_bits(1),
@@ -1017,7 +1021,9 @@ fn a_scalable_size_stays_scalable_through_an_array_and_a_struct() {
     let tuple = tuple_struct.as_type();
     assert_eq!(dl.type_size_in_bits(tuple), TypeSize::scalable(256));
     assert_eq!(dl.type_alloc_size(tuple), TypeSize::scalable(32));
-    let layout = dl.struct_layout(tuple_struct);
+    let layout = dl
+        .struct_layout(tuple_struct)
+        .expect("a struct with no opaque field");
     assert_eq!(layout.size_in_bytes(), TypeSize::scalable(32));
     assert_eq!(layout.size_in_bits(), TypeSize::scalable(256));
     assert!(!layout.is_padded());
@@ -1027,7 +1033,9 @@ fn a_scalable_size_stays_scalable_through_an_array_and_a_struct() {
     let empty_array = m.array_type(vector, 0).expect("a valid element").as_type();
     let empty_tuple = m.struct_type([empty_array]).expect("valid struct elements");
     assert_eq!(
-        dl.struct_layout(empty_tuple).size_in_bytes(),
+        dl.struct_layout(empty_tuple)
+            .expect("a struct with no opaque field")
+            .size_in_bytes(),
         TypeSize::scalable(0)
     );
 
@@ -1123,7 +1131,8 @@ fn equal_layouts_hash_equal() {
 }
 
 /// `llvmkit-specific` (`docs/divergences.md` D43): a struct holding an
-/// opaque struct is laid out with the opaque field empty, where upstream
+/// opaque struct has no `struct_layout`, and its sizes are answered with the
+/// opaque field empty, where upstream
 /// asserts (`isSized` in `getTypeSizeInBits` / `getAlignment`, and
 /// `!ST->isOpaque()` in `StructLayout::StructLayout`); and that answer is
 /// not cached, so once the opaque struct gets a body the layout is the real
@@ -1138,11 +1147,17 @@ fn struct_layout_of_an_opaque_field_is_empty_and_not_cached() {
         .struct_type([m.i8_type().as_type(), opaque.as_type()])
         .expect("valid struct elements");
     assert_eq!(dl.type_alloc_size(outer.as_type()), TypeSize::fixed(1));
+    assert!(
+        dl.struct_layout(outer).is_none(),
+        "a struct holding an opaque struct has no layout"
+    );
     m.set_struct_body(opaque, [m.i32_type().as_type()], false)
         .expect("the body is set once");
     assert_eq!(dl.type_alloc_size(outer.as_type()), TypeSize::fixed(8));
     assert_eq!(
-        dl.struct_layout(outer).element_offset(1),
+        dl.struct_layout(outer)
+            .expect("a struct with no opaque field")
+            .element_offset(1),
         TypeSize::fixed(4)
     );
 }
@@ -1169,4 +1184,45 @@ fn equality() {
         hasher.finish()
     };
     assert_eq!(hash_of(&dl0), hash_of(&dl1));
+}
+
+/// Mirrors `TEST(DataLayoutTest, CopyAssignmentInvalidatesStructLayout)`:
+/// each `DataLayout` lays a struct out under its own pointer size, and a copy
+/// of the second, assigned over the first, answers the second's layout, not
+/// the first's cached one. Upstream's `operator=` deletes the target's
+/// `StructLayoutMap`; llvmkit's clone starts with an empty one.
+#[test]
+fn copy_assignment_invalidates_struct_layout() {
+    let mut dl1 = parse("p:32:32");
+    let dl2 = parse("p:64:64");
+    let m = module_new!("m").expect("fresh module");
+    let ty = m
+        .struct_type([m.ptr_type_in::<0>().as_type()])
+        .expect("valid struct elements");
+    let layout = |dl: &DataLayout| dl.struct_layout(ty).expect("a pointer struct has a layout");
+
+    // Initialize struct layout caches.
+    assert_eq!(layout(&dl1).size_in_bits(), TypeSize::fixed(32));
+    assert_eq!(
+        layout(&dl1).alignment(),
+        Align::new(4).expect("a power of two")
+    );
+    assert_eq!(layout(&dl2).size_in_bits(), TypeSize::fixed(64));
+    assert_eq!(
+        layout(&dl2).alignment(),
+        Align::new(8).expect("a power of two")
+    );
+
+    // The copy should invalidate DL1's cache.
+    dl1 = dl2.clone();
+    assert_eq!(layout(&dl1).size_in_bits(), TypeSize::fixed(64));
+    assert_eq!(
+        layout(&dl1).alignment(),
+        Align::new(8).expect("a power of two")
+    );
+    assert_eq!(layout(&dl2).size_in_bits(), TypeSize::fixed(64));
+    assert_eq!(
+        layout(&dl2).alignment(),
+        Align::new(8).expect("a power of two")
+    );
 }

@@ -5089,38 +5089,39 @@ where
 
     // ---- Memory: alloca / load / store ----
 
-    /// The DataLayout ABI alignment of a type, materialised so load/store
-    /// carry an explicit `align` like upstream (`computeLoadStoreDefaultAlign`
-    /// = `getABITypeAlign`).
-    fn default_abi_align(&self, ty_id: TypeSlot) -> MaybeAlign {
-        let dl = self.module.data_layout();
-        MaybeAlign::new(dl.abi_align_of_id(self.module, ty_id))
-    }
-
-    /// The DataLayout preferred alignment of a type, materialised so alloca
-    /// carries an explicit `align` like upstream (`computeAllocaDefaultAlign`
-    /// = `getPrefTypeAlign`).
-    fn default_pref_align(&self, ty_id: TypeSlot) -> MaybeAlign {
-        let dl = self.module.data_layout();
-        MaybeAlign::new(dl.pref_align_of_id(self.module, ty_id))
-    }
-
-    /// Refuse to fill an omitted alignment from the DataLayout when `ty` is
-    /// unsized. Upstream's `getABITypeAlign` / `getPrefTypeAlign` assert
-    /// `Ty->isSized()` ("Cannot getTypeInfo() on a type that is unsized!"),
-    /// so `IRBuilder` never fills one; the layout llvmkit answers there
-    /// instead (`docs/divergences.md` D43) is no real alignment, and a struct
-    /// holding an opaque struct can still get a body, after which an
-    /// `align` filled from it would be wrong. An explicit alignment is kept:
-    /// the verifier judges an unsized `alloca`, `load` or `store` as upstream's
-    /// does.
-    fn refuse_default_align_of_unsized(&self, ty: TypeSlot, align: MaybeAlign) -> IrResult<()> {
-        if align.align().is_none() && !crate::r#type::is_sized(self.module, ty, &mut Vec::new()) {
-            return Err(IrError::InvalidOperation {
+    /// `ty` as a [`SizedType`], or the refusal of upstream's assertion when
+    /// it is unsized. Upstream's `getABITypeAlign` / `getPrefTypeAlign`
+    /// assert `Ty->isSized()` ("Cannot getTypeInfo() on a type that is
+    /// unsized!"), and `IRBuilder` fills every omitted alignment through them;
+    /// the layout llvmkit answers for an unsized type instead
+    /// (`docs/divergences.md` D43) is no real alignment, and a struct holding
+    /// an opaque struct can still get a body, after which an `align` filled
+    /// from it would be wrong.
+    fn sized(&self, ty: TypeSlot) -> IrResult<SizedType> {
+        if crate::r#type::is_sized(self.module, ty, &mut Vec::new()) {
+            Ok(SizedType(ty))
+        } else {
+            Err(IrError::InvalidOperation {
                 message: "Cannot getTypeInfo() on a type that is unsized!",
-            });
+            })
         }
-        Ok(())
+    }
+
+    /// The DataLayout ABI alignment of a sized type, materialised so
+    /// load/store carry an explicit `align` like upstream
+    /// (`computeLoadStoreDefaultAlign` = `getABITypeAlign`). Taking a
+    /// [`SizedType`] is what makes every default-filling path check.
+    fn default_abi_align(&self, ty: SizedType) -> MaybeAlign {
+        let dl = self.module.data_layout();
+        MaybeAlign::new(dl.abi_align_of_id(self.module, ty.0))
+    }
+
+    /// The DataLayout preferred alignment of a sized type, materialised so
+    /// alloca carries an explicit `align` like upstream
+    /// (`computeAllocaDefaultAlign` = `getPrefTypeAlign`).
+    fn default_pref_align(&self, ty: SizedType) -> MaybeAlign {
+        let dl = self.module.data_layout();
+        MaybeAlign::new(dl.pref_align_of_id(self.module, ty.0))
     }
 
     /// The DataLayout alloca address space (`IRBuilder::CreateAlloca` uses
@@ -5266,13 +5267,12 @@ where
     where
         N: AsRef<str>,
     {
-        self.refuse_default_align_of_unsized(allocated_ty, align)?;
         let addr_space = ptr_ty.address_space();
         // Materialise the DataLayout preferred alignment when omitted, like
         // upstream — every alloca funnels through here
         // (`computeAllocaDefaultAlign`).
         let align = if align.align().is_none() {
-            self.default_pref_align(allocated_ty)
+            self.default_pref_align(self.sized(allocated_ty)?)
         } else {
             align
         };
@@ -5374,8 +5374,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        self.refuse_default_align_of_unsized(ty_id, payload.align)?;
-        let inst = self.load_inner(payload, name);
+        let inst = self.load_inner(payload, name)?;
         Ok(inst.to_erased().id())
     }
 
@@ -5404,7 +5403,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        let inst = self.load_inner(payload, name);
+        let inst = self.load_inner(payload, name)?;
         Ok(inst.to_erased().id())
     }
 
@@ -5617,18 +5616,41 @@ where
         )))
     }
 
-    fn load_inner<N>(&self, mut payload: LoadInstData, name: N) -> Instruction<'ctx, Attached, B>
+    /// Append a load of a type the caller has not proven sized. Materialises
+    /// the DataLayout default like upstream (`computeLoadStoreDefaultAlign`),
+    /// refusing an unsized type then ([`Self::sized`]); an explicit
+    /// alignment is kept, and the verifier judges the load.
+    fn load_inner<N>(
+        &self,
+        mut payload: LoadInstData,
+        name: N,
+    ) -> IrResult<Instruction<'ctx, Attached, B>>
     where
         N: AsRef<str>,
     {
         let pointee_ty = payload.pointee_ty;
-        // Materialise the DataLayout default like upstream — every load
-        // (plain / volatile / atomic) funnels through here, so an omitted
-        // alignment is filled once (`computeLoadStoreDefaultAlign`).
         if payload.align.align().is_none() {
-            payload.align = self.default_abi_align(pointee_ty);
+            payload.align = self.default_abi_align(self.sized(pointee_ty)?);
         }
-        self.append_instruction(pointee_ty, InstructionKindData::Load(payload), name)
+        Ok(self.append_instruction(pointee_ty, InstructionKindData::Load(payload), name))
+    }
+
+    /// Append a load of a type proven sized: the typed integer, float and
+    /// pointer loads, whose types are sized by construction.
+    fn load_sized<N>(
+        &self,
+        mut payload: LoadInstData,
+        pointee: SizedType,
+        name: N,
+    ) -> Instruction<'ctx, Attached, B>
+    where
+        N: AsRef<str>,
+    {
+        payload.pointee_ty = pointee.0;
+        if payload.align.align().is_none() {
+            payload.align = self.default_abi_align(pointee);
+        }
+        self.append_instruction(pointee.0, InstructionKindData::Load(payload), name)
     }
 
     /// Builder-pattern `load` construction: `volatile`, alignment, atomic
@@ -5883,9 +5905,8 @@ where
         // like upstream (`computeLoadStoreDefaultAlign` /
         // `getABITypeAlign(Val->getType())`). Every store funnels through
         // here, so an omitted alignment is filled once.
-        self.refuse_default_align_of_unsized(value.ty().slot_trusting_same_module(), align)?;
         let align = if align.align().is_none() {
-            self.default_abi_align(value.ty().slot_trusting_same_module())
+            self.default_abi_align(self.sized(value.ty().slot_trusting_same_module())?)
         } else {
             align
         };
@@ -10411,12 +10432,11 @@ where
     fn append_int_load<W: IntWidth, N: AsRef<str>>(
         &self,
         ty: IntType<'ctx, W, B>,
-        mut payload: LoadInstData,
+        payload: LoadInstData,
         name: N,
     ) -> IntValue<'ctx, W, B> {
         // Internal: every caller mints `ty` or admits it at its own entry.
-        payload.pointee_ty = ty.slot_trusting_same_module();
-        let inst = self.load_inner(payload, name);
+        let inst = self.load_sized(payload, SizedType::integer(ty), name);
         IntValue::<W, B>::from_value_unchecked(inst.to_erased())
     }
 
@@ -10426,12 +10446,11 @@ where
     fn append_fp_load<K: FloatKind, N: AsRef<str>>(
         &self,
         ty: FloatType<'ctx, K, B>,
-        mut payload: LoadInstData,
+        payload: LoadInstData,
         name: N,
     ) -> FloatValue<'ctx, K, B> {
         // Internal: every caller mints `ty` or admits it at its own entry.
-        payload.pointee_ty = ty.slot_trusting_same_module();
-        let inst = self.load_inner(payload, name);
+        let inst = self.load_sized(payload, SizedType::float(ty), name);
         FloatValue::<K, B>::from_value_unchecked(inst.to_erased())
     }
 
@@ -10460,11 +10479,10 @@ where
     fn append_ptr_load<A: crate::AddrSpace, N: AsRef<str>>(
         &self,
         ptr_ty: PointerType<'ctx, A, B>,
-        mut payload: LoadInstData,
+        payload: LoadInstData,
         name: N,
     ) -> PointerValue<'ctx, A, B> {
-        payload.pointee_ty = ptr_ty.slot_trusting_same_module();
-        let inst = self.load_inner(payload, name);
+        let inst = self.load_sized(payload, SizedType::pointer(ptr_ty), name);
         PointerValue::from_value_unchecked(inst.to_erased())
     }
 
@@ -11583,7 +11601,7 @@ where
         }
         let ty = parent.schema_ir_type::<T>()?;
         let payload = self.payload(ty.slot_trusting_same_module())?;
-        let inst = parent.load_inner(payload, name);
+        let inst = parent.load_inner(payload, name)?;
         // A load's result has the type it loads: the layout's.
         Ok(T::wrap(<T::Layout as FieldLayout>::value_of(
             inst.to_erased(),
@@ -11603,7 +11621,7 @@ where
         // ordering to follow.
         let pointee_ty = ty.slot_in(parent.module.id())?;
         let payload = self.payload(pointee_ty)?;
-        let inst = parent.load_inner(payload, name);
+        let inst = parent.load_inner(payload, name)?;
         Ok(inst.to_erased().id())
     }
 
@@ -11852,6 +11870,29 @@ where
             self.flags,
             &self.name,
         )
+    }
+}
+
+/// A type the builder has proven sized: what [`IrBuilder`]'s default
+/// alignments take, since upstream's `getABITypeAlign` / `getPrefTypeAlign`
+/// assert `Ty->isSized()`. Minted checked by `IrBuilder::sized`, or without a
+/// check for an integer, float or pointer type, each sized by construction
+/// (`Type::isSized`'s first arm). No other constructor exists, so no path
+/// fills a default alignment for a type it has not proven sized.
+#[derive(Clone, Copy)]
+struct SizedType(TypeSlot);
+
+impl SizedType {
+    fn integer<W: IntWidth, B: ModuleBrand>(ty: IntType<'_, W, B>) -> Self {
+        Self(ty.as_type().slot_trusting_same_module())
+    }
+
+    fn float<K: FloatKind, B: ModuleBrand>(ty: FloatType<'_, K, B>) -> Self {
+        Self(ty.as_type().slot_trusting_same_module())
+    }
+
+    fn pointer<A: crate::AddrSpace, B: ModuleBrand>(ty: PointerType<'_, A, B>) -> Self {
+        Self(ty.slot_trusting_same_module())
     }
 }
 
