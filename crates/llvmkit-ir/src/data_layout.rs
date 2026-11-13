@@ -1083,6 +1083,26 @@ fn reached_unsized() -> ! {
     unreachable!("a DataLayout walk under a SizedType reaches only sized types")
 }
 
+/// Why a non-packed struct cannot lay out its unsized field `id`
+/// (`getABITypeAlign`'s `isSized`): [`LayoutRefusal::AwaitingBody`] if `id`
+/// reaches an opaque struct, whose body may make it sized, and
+/// [`LayoutRefusal::Permanent`] otherwise. A type that is unsized for another
+/// reason as well, and reaches an opaque struct, is not kept: the refusal is
+/// permanent then, but nothing is lost by asking again.
+///
+/// This walks the field a second time, after `is_sized` found it unsized.
+/// One walk answering both questions would be a second port of
+/// `StructType::isSized`, which would then have to agree with `Type::is_sized`
+/// on every type; the second walk costs the field's distinct types once more,
+/// and only when a struct is refused.
+fn unsized_refusal(module: &ModuleCore, id: TypeSlot) -> LayoutRefusal {
+    if reaches_opaque_struct(module, id, &mut HashSet::new()) {
+        LayoutRefusal::AwaitingBody
+    } else {
+        LayoutRefusal::Permanent(PermanentRefusal)
+    }
+}
+
 /// Whether `id` reaches an opaque struct through array and vector elements,
 /// struct fields, and a target extension type's layout type: the only part
 /// of a type a later `set_struct_body` can change, so the only reason an
@@ -1419,30 +1439,40 @@ impl DataLayout {
                 Some(layout) => self.alloc_size_or_refusal(module, layout),
                 None => Err(LayoutRefusal::Permanent(PermanentRefusal)),
             },
-            // A vector, a float, `x86_amx` and the rest: no struct inside.
-            _ if is_sized(module, id, &mut HashSet::new()) => {
-                let store = self.type_store_size_inner(module, id);
-                Ok(align_type_size(
-                    store,
-                    self.alignment(module, id, AlignmentKind::Abi),
-                ))
+            // The rest reach `getTypeStoreSize` and `getABITypeAlign`, which
+            // assert `isSized`, and hold no struct. A float or `x86_amx` is
+            // sized by its kind (`Type::isSized`'s first arm), and a vector
+            // is sized when its element is (`isSizedDerivedType`), so only a
+            // vector asks, and only of its element.
+            TypeData::Half
+            | TypeData::Bfloat
+            | TypeData::Float
+            | TypeData::Double
+            | TypeData::X86Fp80
+            | TypeData::Fp128
+            | TypeData::PpcFp128
+            | TypeData::X86Amx => Ok(self.store_size_aligned(module, id)),
+            TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
+                if is_sized(module, *elem, &mut HashSet::new()) {
+                    Ok(self.store_size_aligned(module, id))
+                } else {
+                    Err(LayoutRefusal::Permanent(PermanentRefusal))
+                }
             }
-            _ => Err(LayoutRefusal::Permanent(PermanentRefusal)),
+            TypeData::Void
+            | TypeData::Label
+            | TypeData::Metadata
+            | TypeData::Token
+            | TypeData::WasmExnRef
+            | TypeData::Function { .. } => Err(LayoutRefusal::Permanent(PermanentRefusal)),
         }
     }
 
-    /// Why a non-packed struct cannot lay out its unsized field `id`
-    /// (`getABITypeAlign`'s `isSized`): [`LayoutRefusal::AwaitingBody`] if
-    /// `id` reaches an opaque struct, whose body may make it sized, and
-    /// [`LayoutRefusal::Permanent`] otherwise. A type that is unsized for
-    /// another reason as well, and reaches an opaque struct, is not kept:
-    /// the refusal is permanent then, but nothing is lost by asking again.
-    fn unsized_refusal(&self, module: &ModuleCore, id: TypeSlot) -> LayoutRefusal {
-        if reaches_opaque_struct(module, id, &mut HashSet::new()) {
-            LayoutRefusal::AwaitingBody
-        } else {
-            LayoutRefusal::Permanent(PermanentRefusal)
-        }
+    /// `getTypeAllocSize`'s default arm, `alignTo(getTypeStoreSize(Ty),
+    /// getABITypeAlign(Ty))`, for a sized type.
+    fn store_size_aligned(&self, module: &ModuleCore, id: TypeSlot) -> TypeSize {
+        let store = self.type_store_size_inner(module, id);
+        align_type_size(store, self.alignment(module, id, AlignmentKind::Abi))
     }
 
     /// Mirrors `StructLayout::StructLayout`, refusing where it asserts: an
@@ -1480,7 +1510,7 @@ impl DataLayout {
             } else if is_sized(module, elem, &mut HashSet::new()) {
                 self.alignment(module, elem, AlignmentKind::Abi)
             } else {
-                return Err(self.unsized_refusal(module, elem));
+                return Err(unsized_refusal(module, elem));
             };
             // Only a homogeneous struct of scalable vectors has a scalable
             // size, and its members need no padding.

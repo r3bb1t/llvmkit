@@ -6305,10 +6305,15 @@ where
             continue;
         }
 
-        // Handle array index arithmetic. Upstream's `if
-        // (!IndexedTy->isSized()) { Known.resetAll(); break; }` is the
-        // stride's `None`: the stride asks for the same proof, so asking
-        // first would walk the type twice.
+        // Handle array index arithmetic. Upstream asks `isSized` here, not
+        // only the stride's `getTypeAllocSize`, which answers an unsized
+        // struct with a layout: nothing is known through such an element.
+        if !indexed_ty.is_sized() {
+            known = KnownBits::unknown(width);
+            break;
+        }
+        // A sized element always has a stride, so this `else` does not run;
+        // it answers "nothing known" rather than asserting that.
         let Some(stride) = step.sequential_element_stride(data_layout) else {
             known = KnownBits::unknown(width);
             break;

@@ -355,8 +355,9 @@ fn a_kept_struct_layout_is_answered_without_rechecking_its_fields() {
 /// Each refusal comes only after every field before the last is measured,
 /// and none can change, since a body is set once and none of these reaches
 /// an opaque struct; so each is kept in the struct-layout map beside the
-/// layouts. Before `e4baafdc` only the first was kept, and a query of either
-/// of the other two measured the 100,000 fields again.
+/// layouts. Before `e4baafdc` none was kept; at `e4baafdc` only the first
+/// was, and a query of either of the other two measured the 100,000 fields
+/// again.
 #[test]
 fn a_refused_struct_layout_is_kept_as_refused() {
     support::deadline::within_a_minute("a refused layout is measured again", || {

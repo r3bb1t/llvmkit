@@ -2417,7 +2417,10 @@ fn a_load_from_a_constant_of_unsized_type_is_not_folded() -> Result<(), IrError>
 /// `<{ i32 5, { [0 x <vscale x 4 x i32>], i32 7, i32 9 } }>` folds to
 /// `i32 9` upstream, though both structs are unsized: the inner one holds a
 /// scalable type beside others, and its zero-sized scalable field leaves it a
-/// fixed 8 bytes. Derived from those routines; **no upstream test** loads
+/// fixed size, its 8 bytes of fields padded to the 16-byte alignment of that
+/// field (`<vscale x 4 x i32>`'s natural alignment under the default
+/// layout), so the outer struct is 20 bytes and byte 8 is the inner struct's
+/// byte 4, its last `i32`. Derived from those routines; **no upstream test** loads
 /// through such a struct. llvmkit-specific regression (`docs/divergences.md`
 /// D43): the folds asked for a `SizedType` before an alloc size, and declined.
 /// Bytes 0 and 4 stay unfolded, as each is a load from an unsized constant

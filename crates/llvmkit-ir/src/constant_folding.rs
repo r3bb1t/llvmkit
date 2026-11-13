@@ -2564,8 +2564,10 @@ pub(crate) fn accumulate_constant_offset<'ctx, B: ModuleBrand + 'ctx, C: Capabil
             offset = offset.wrapping_add(&ApInt::from_words(index_bits, &[field_offset]));
             continue;
         }
-        // `None` for an unsized element, which has no stride, where
-        // upstream's `getTypeAllocSize` asserts (D43).
+        // `None` for an element with no stride, where upstream's
+        // `getTypeAllocSize` asserts (D43). `GEPOperator::
+        // accumulateConstantOffset` asks no `isSized` first, unlike
+        // `computeKnownBits`, so an unsized struct with a layout has one.
         let stride = step.sequential_element_stride(dl)?.fixed_value()?;
         offset = offset.wrapping_add(&scaled_offset(
             &index.sext_or_trunc(index_bits),

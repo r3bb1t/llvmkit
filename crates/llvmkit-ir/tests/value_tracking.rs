@@ -8,7 +8,7 @@ use llvmkit_ir::{
     Width, compute_known_bits, is_known_non_zero, is_known_not_poison, is_known_one, is_known_zero,
     known_bits_from_operator, module_new,
 };
-use llvmkit_ir::{VectorType, lanes};
+use llvmkit_ir::{GepNoWrapFlags, VectorType, lanes};
 
 fn zeros(width: usize) -> String {
     "0".repeat(width)
@@ -890,6 +890,59 @@ fn vector_gep_known_bits_use_element_pointer_address_space_index_width() -> Resu
     assert_eq!(
         known(gep.as_erased(), &query)?.to_string(),
         "0000000000000000000000000000000011111111111111111111111111111111"
+    );
+    Ok(())
+}
+
+/// Mirrors `llvm/lib/Analysis/ValueTracking.cpp::computeKnownBitsFromOperator`
+/// `getelementptr` handling: an array index over an unsized indexed type
+/// resets the known bits (`if (!IndexedTy->isSized()) { Known.resetAll();
+/// break; }`), even when `getTypeAllocSize` would answer that type, as it
+/// answers `{ [0 x <vscale x 4 x i32>], i32, i32 }`, an unsized struct with a
+/// layout. From a null base and a constant index, every bit of the result
+/// would otherwise be known. llvmkit-specific regression (no upstream test
+/// builds such a GEP): `d67e070c` dropped the `isSized` guard as redundant
+/// with the stride's, which no longer was. Positive control: the same GEP
+/// over `i32` knows every bit.
+#[test]
+fn gep_known_bits_reset_on_an_unsized_indexed_type() -> Result<(), IrError> {
+    let m = module_new!("vt-gep-unsized")?;
+    let i32_ty = m.i32_type();
+    let i64_ty = m.i64_type();
+    let ptr_ty = m.ptr_type_in::<0>();
+    let empty_scalable = m
+        .array_type(VectorType::scalable_of(i32_ty, lanes::<4>()), 0)?
+        .as_type();
+    let unsized_with_layout = m
+        .struct_type([empty_scalable, i32_ty.as_type(), i32_ty.as_type()])?
+        .as_type();
+    assert!(!unsized_with_layout.is_sized());
+    // A constant GEP refuses an unsized source, as upstream's parser does; an
+    // instruction is judged by the verifier, so an unverified module holds
+    // one, and the analysis can be asked about it, as upstream's can.
+    let fn_ty = m.function_type_no_parameters(m.void_type().as_type())?;
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let base = ptr_ty.const_null().as_erased();
+    let one = i64_ty.const_int(1_i64).as_erased();
+    let over_unsized = b.gep_erased(
+        unsized_with_layout,
+        base,
+        [one],
+        GepNoWrapFlags::empty(),
+        "over.unsized",
+    )?;
+    let over_i32 = b.gep_erased(i32_ty, base, [one], GepNoWrapFlags::empty(), "over.i32")?;
+    let dl = m.data_layout();
+    let query = ValueTrackingQuery::new(&dl);
+    assert_eq!(
+        known(b.view(over_unsized), &query)?.to_string(),
+        "?".repeat(64)
+    );
+    assert_eq!(
+        known(b.view(over_i32), &query)?.to_string(),
+        format!("{:064b}", 4)
     );
     Ok(())
 }
