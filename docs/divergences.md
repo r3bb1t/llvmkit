@@ -1395,50 +1395,56 @@ which asserts the `u64::MAX` alloc and store sizes of a `4 * 2^64`-byte struct, 
 `resource_bounds.rs::a_size_past_sixty_four_bits_saturates_without_shrinking_its_bytes`, which
 asserts exact 2^62-byte alloc and store sizes and a saturated bit size for a 2^62-byte struct.
 
-### D43 — A size query on an unsized type answers `None`, where upstream asserts
+### D43 — A size query cannot be asked of an unsized type, where upstream asserts
 
 **Severity:** model-gap, on queries upstream does not allow. `DataLayout`'s size and alignment
-queries answer `None` for an unsized type, and `DataLayout::struct_layout` answers `None` for a
-struct that holds an opaque struct (at any depth).
-**Where:** `crates/llvmkit-ir/src/data_layout.rs` — `DataLayout::sized_query` and the public
-size and alignment queries it guards (`type_size_in_bits`, `type_store_size`,
-`type_store_size_in_bits`, `type_size_equals_store_size`, `type_alloc_size`,
-`type_alloc_size_in_bits`, `abi_type_align`, `pref_type_align`, `value_or_abi_type_align`);
-`struct_layout` / `struct_layout_of`, `lay_out` and `StructLayouts`;
-`crates/llvmkit-ir/src/ir_builder.rs` — `IrBuilder::sized` and the `SizedType` witness.
+queries take a `SizedType`, a proof that the type is sized, so asking one of an unsized type
+does not compile; the proof itself is refused at run time (`IrError::UnsizedType`).
+`DataLayout::struct_layout` answers `None` for a struct that is not sized.
+**Where:** `crates/llvmkit-ir/src/derived_types.rs` — `SizedType`, minted by
+`TryFrom<Type>` (which asks `Type::is_sized`) or from an integer, float or pointer type, sized by
+construction, and the crate-private `erase_sized`; `crates/llvmkit-ir/src/data_layout.rs` — the
+nine queries that take `impl Into<SizedType>` (`rg -n -U 'pub fn (\w+)<[^>]*>\(\s*&self,\s*(alignment: MaybeAlign,\s*)?ty: impl Into<SizedType' crates/llvmkit-ir/src/data_layout.rs`:
+`type_size_in_bits`, `type_store_size`, `type_store_size_in_bits`,
+`type_size_equals_store_size`, `type_alloc_size`, `type_alloc_size_in_bits`, `abi_type_align`,
+`pref_type_align`, `value_or_abi_type_align`), `reached_unsized`, and `struct_layout` /
+`struct_layout_of`; `crates/llvmkit-ir/src/ir_builder.rs` — `IrBuilder::sized`.
 
 **LLVM:** `DataLayout::getTypeSizeInBits` (`DataLayout.h`) and `DataLayout::getAlignment`
 (`DataLayout.cpp`) assert `Ty->isSized()`, and every other size query reaches one of them;
 `StructLayout::StructLayout` asserts `!ST->isOpaque()`. A release build skips the asserts and
 answers numbers for a type that has no size: an opaque struct laid out with no elements.
 
-**llvmkit:** each of those queries answers `None` for an unsized type (`void`, a label, a
-function type, an opaque struct, a struct holding one, a struct mixing a scalable vector with
-other fields), so no caller can take a number that is no size; each caller in the crate declines
-on `None`. `struct_layout` lays a struct holding an opaque struct out with the opaque field
-empty, to find that it holds one, and answers `None`; that layout is never kept in the
-`DataLayout`'s struct-layout map (the opaque struct may get a body later), only for the rest of
-the query (`StructLayouts::seen`), so a struct reached many times over an opaque leaf is laid
-out once per query. The `IrBuilder` fills an omitted `alloca`, `load` or `store` alignment only
-through a `SizedType` witness, minted checked (`IrBuilder::sized`, refusing with the assertion's
-own text, `Cannot getTypeInfo() on a type that is unsized!`) or for an integer, float or pointer
-type, sized by construction. Before this entry the queries answered the empty layout's numbers,
-and `struct_layout_inner` reached an `unreachable!` on an opaque struct, a panic on a public
-query.
+**llvmkit:** the precondition is in the signature. A query's answer is a plain `TypeSize`,
+`Align` or `bool`, since a sized type always has one. Inside a sized type every type its walk
+reaches is sized (a sized struct's fields, a sized array's element, a sized target extension
+type's layout type), so the walks' arms for unsized types are `reached_unsized`, an
+`unreachable!` that names that closure. The crate's own callers that start from an arbitrary type
+take the proof through `erase_sized` and decline on `None` where upstream would assert (their
+sites: `rg -n 'erase_sized\(' crates/llvmkit-ir/src`). `struct_layout` lays out only a struct
+every field of which is sized, so no layout in the `DataLayout`'s struct-layout map reaches an
+opaque struct, and none goes stale when one gets a body. The `IrBuilder` fills an omitted
+`alloca`, `load` or `store` alignment only through a `SizedType`, and refuses an unsized type with
+`IrError::UnsizedType`. Earlier, the queries answered `None` for an unsized type, and before
+that they answered an empty layout's numbers, and `struct_layout_inner` reached an
+`unreachable!` on an opaque struct, a panic on a public query.
 
-**Why:** no runtime panic in a production path (CLAUDE.md), and no number that is not a size:
-readers of the empty layout's numbers folded loads to the wrong constant and filled alignments
-that went wrong once the opaque struct got a body.
+**Why:** no runtime panic in a production path (CLAUDE.md), no number that is not a size, and
+no `Option` on a query whose answer always exists once its precondition holds: readers of the
+empty layout's numbers folded loads to the wrong constant and filled alignments that went wrong
+once the opaque struct got a body.
 
 **Fix:** none owed; this is hardening of an assert, as D17 and D18 are.
 
 **Guarded by:**
-`crates/llvmkit-ir/tests/data_layout_round_trip.rs::struct_layout_of_an_opaque_field_is_empty_and_not_cached`
-(no layout, no size, and the real ones once the body is set),
+`crates/llvmkit-ir/tests/data_layout_round_trip.rs::struct_layout_of_an_opaque_field_is_refused_and_not_cached`
+(no proof, no layout, and the real ones once the body is set),
+`crates/llvmkit-ir/tests/type_components.rs::a_target_type_upstream_asserts_on_has_no_layout`
+(a target extension type with no layout has no proof),
 `crates/llvmkit-ir/tests/constant_folding_analysis.rs::a_load_from_a_constant_of_unsized_type_is_not_folded`
 (the two folds that read the empty layout's numbers),
 `crates/llvmkit-ir/tests/builder_alloca.rs::alloca_load_and_store_refuse_to_guess_an_unsized_alignment`,
-and `crates/llvmkit-asmparser/tests/resource_bounds.rs::a_shared_struct_over_an_opaque_field_is_laid_out_once_per_query`.
+and `crates/llvmkit-asmparser/tests/resource_bounds.rs::a_shared_struct_over_an_opaque_field_is_refused_at_once`.
 
 ---
 

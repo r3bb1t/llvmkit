@@ -1473,6 +1473,29 @@ pub enum IrError {
         kind: TypeKindLabel,
     },
 
+    /// An operation that reads a type's size as one bit count, upstream's
+    /// `unsigned BitWidth = DL.getTypeSizeInBits(T)`, was given a type whose
+    /// size is a multiple of `vscale`. Upstream's implicit conversion
+    /// `TypeSize::operator ScalarTy` reports a fatal error at the same point.
+    #[error("operation requires a fixed bit width, got type {kind} whose size scales with vscale")]
+    ScalableBitWidth {
+        /// Kind of the scalable type that was rejected.
+        kind: TypeKindLabel,
+    },
+
+    /// An operation that reads a type's size as one bit count was given a
+    /// type wider than `u32::MAX` bits, the most a bit width can name.
+    /// Upstream's `unsigned BitWidth = DL.getTypeSizeInBits(T)` narrows the
+    /// 64-bit size silently and goes on with the remainder; llvmkit refuses
+    /// instead of answering for a width the type does not have.
+    #[error("type {kind} is {bits} bits wide, more than a bit width can hold")]
+    BitWidthTooWide {
+        /// Kind of the rejected type.
+        kind: TypeKindLabel,
+        /// The type's size in bits.
+        bits: u64,
+    },
+
     /// A type constructor was given a component type LLVM forbids in that
     /// position — `<4 x void>`, `[2 x label]`, `{ token }`, `label ()`.
     ///
@@ -2207,6 +2230,8 @@ impl IrError {
             | Self::ArrayLengthMismatch { .. }
             | Self::AddressSpaceMismatch { .. }
             | Self::UnsizedType { .. }
+            | Self::ScalableBitWidth { .. }
+            | Self::BitWidthTooWide { .. }
             | Self::InvalidTypeComponent { .. }
             | Self::TargetExtTypeParameters { .. }
             | Self::InvalidShuffleMaskLength { .. }

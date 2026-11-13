@@ -9,8 +9,8 @@
 //! intentionally differs from upstream `FailedWithMessage` text.
 
 use llvmkit_ir::{
-    Align, ArrayType, DataLayout, DataLayoutError, ManglingMode, MaybeAlign, Module, TypeSize,
-    VectorType, address_space, lanes, module_new,
+    Align, ArrayType, DataLayout, DataLayoutError, IrError, ManglingMode, MaybeAlign, Module,
+    SizedType, TypeSize, VectorType, address_space, lanes, module_new,
 };
 
 fn parse(s: &str) -> DataLayout {
@@ -855,21 +855,17 @@ fn type_size_in_bits_basic_types() {
     let m = module_new!("m").expect("fresh module");
     let dl = DataLayout::default();
     for (ty, bits) in [
-        (m.bool_type().as_type(), 1),
-        (m.i8_type().as_type(), 8),
-        (m.i32_type().as_type(), 32),
-        (m.i64_type().as_type(), 64),
-        (m.half_type().as_type(), 16),
-        (m.f32_type().as_type(), 32),
-        (m.f64_type().as_type(), 64),
-        (m.fp128_type().as_type(), 128),
-        (m.x86_fp80_type().as_type(), 80),
+        (SizedType::from(m.bool_type()), 1),
+        (SizedType::from(m.i8_type()), 8),
+        (SizedType::from(m.i32_type()), 32),
+        (SizedType::from(m.i64_type()), 64),
+        (SizedType::from(m.half_type()), 16),
+        (SizedType::from(m.f32_type()), 32),
+        (SizedType::from(m.f64_type()), 64),
+        (SizedType::from(m.fp128_type()), 128),
+        (SizedType::from(m.x86_fp80_type()), 80),
     ] {
-        assert_eq!(
-            dl.type_size_in_bits(ty),
-            Some(TypeSize::fixed(bits)),
-            "{ty}"
-        );
+        assert_eq!(dl.type_size_in_bits(ty), TypeSize::fixed(bits), "{ty}");
     }
 }
 
@@ -880,11 +876,8 @@ fn type_store_size_non_power_of_two() {
     let m = module_new!("m").expect("fresh module");
     let dl = DataLayout::default();
     let i36 = m.custom_width_int_type(36).expect("i36");
-    assert_eq!(dl.type_store_size(i36.as_type()), Some(TypeSize::fixed(5)));
-    assert_eq!(
-        dl.type_store_size(m.x86_fp80_type().as_type()),
-        Some(TypeSize::fixed(10))
-    );
+    assert_eq!(dl.type_store_size(i36), TypeSize::fixed(5));
+    assert_eq!(dl.type_store_size(m.x86_fp80_type()), TypeSize::fixed(10));
 }
 
 /// `llvmkit-specific`: mirrors `DataLayout::getTypeAllocSize` for the
@@ -896,10 +889,7 @@ fn type_alloc_size_i64_default() {
     let dl = DataLayout::default();
     // Default i64 spec is `i64:32:64` (ABI=4, pref=8). So an i64
     // alloc-size rounds 8 up to 4-byte alignment -- still 8.
-    assert_eq!(
-        dl.type_alloc_size(m.i64_type().as_type()),
-        Some(TypeSize::fixed(8))
-    );
+    assert_eq!(dl.type_alloc_size(m.i64_type()), TypeSize::fixed(8));
 }
 
 /// `llvmkit-specific`: mirrors `DataLayout::getABITypeAlign` for
@@ -908,14 +898,8 @@ fn type_alloc_size_i64_default() {
 fn abi_type_align_i32_default() {
     let m = module_new!("m").expect("fresh module");
     let dl = DataLayout::default();
-    assert_eq!(
-        dl.abi_type_align(m.i32_type().as_type()),
-        Some(Align::new(4).expect("a"))
-    );
-    assert_eq!(
-        dl.abi_type_align(m.f64_type().as_type()),
-        Some(Align::new(8).expect("a"))
-    );
+    assert_eq!(dl.abi_type_align(m.i32_type()), Align::new(4).expect("a"));
+    assert_eq!(dl.abi_type_align(m.f64_type()), Align::new(8).expect("a"));
 }
 
 // ---------------------------------------------------------------------------
@@ -1011,20 +995,21 @@ fn a_struct_field_offset_says_whether_it_scales() {
 fn a_scalable_size_stays_scalable_through_an_array_and_a_struct() {
     let m = module_new!("m").expect("fresh module");
     let dl = DataLayout::default();
+    let sized = |ty| SizedType::try_from(ty).expect("built of a vector of integers");
     let vector = VectorType::scalable_of(m.i32_type(), lanes::<4>()).as_type();
-    assert_eq!(dl.type_size_in_bits(vector), Some(TypeSize::scalable(128)));
+    assert_eq!(dl.type_size_in_bits(sized(vector)), TypeSize::scalable(128));
 
-    let array = m.array_type(vector, 2).expect("a valid element").as_type();
-    assert_eq!(dl.type_size_in_bits(array), Some(TypeSize::scalable(256)));
-    assert_eq!(dl.type_alloc_size(array), Some(TypeSize::scalable(32)));
-    assert_eq!(dl.type_store_size(array), Some(TypeSize::scalable(32)));
+    let array = sized(m.array_type(vector, 2).expect("a valid element").as_type());
+    assert_eq!(dl.type_size_in_bits(array), TypeSize::scalable(256));
+    assert_eq!(dl.type_alloc_size(array), TypeSize::scalable(32));
+    assert_eq!(dl.type_store_size(array), TypeSize::scalable(32));
 
     let tuple_struct = m
         .struct_type([vector, vector])
         .expect("valid struct elements");
-    let tuple = tuple_struct.as_type();
-    assert_eq!(dl.type_size_in_bits(tuple), Some(TypeSize::scalable(256)));
-    assert_eq!(dl.type_alloc_size(tuple), Some(TypeSize::scalable(32)));
+    let tuple = sized(tuple_struct.as_type());
+    assert_eq!(dl.type_size_in_bits(tuple), TypeSize::scalable(256));
+    assert_eq!(dl.type_alloc_size(tuple), TypeSize::scalable(32));
     let layout = dl
         .struct_layout(tuple_struct)
         .expect("a struct with no opaque field");
@@ -1045,8 +1030,8 @@ fn a_scalable_size_stays_scalable_through_an_array_and_a_struct() {
 
     let i64_array = m.array_type(m.i64_type(), 2).expect("a valid element");
     assert_eq!(
-        dl.type_size_in_bits(i64_array.as_type()),
-        Some(TypeSize::fixed(128))
+        dl.type_size_in_bits(sized(i64_array.as_type())),
+        TypeSize::fixed(128)
     );
 }
 
@@ -1073,12 +1058,12 @@ fn value_or_abi_type_align() {
     let dl = DataLayout::default();
     let custom = MaybeAlign::from(Align::new(16).expect("a"));
     assert_eq!(
-        dl.value_or_abi_type_align(custom, m.i32_type().as_type()),
-        Some(Align::new(16).expect("a"))
+        dl.value_or_abi_type_align(custom, m.i32_type()),
+        Align::new(16).expect("a")
     );
     assert_eq!(
-        dl.value_or_abi_type_align(MaybeAlign::default(), m.i32_type().as_type()),
-        Some(Align::new(4).expect("a"))
+        dl.value_or_abi_type_align(MaybeAlign::default(), m.i32_type()),
+        Align::new(4).expect("a")
     );
 }
 
@@ -1135,32 +1120,33 @@ fn equal_layouts_hash_equal() {
 }
 
 /// `llvmkit-specific` (`docs/divergences.md` D43): a struct holding an
-/// opaque struct has no `struct_layout` and no size, where upstream asserts
-/// (`isSized` in `getTypeSizeInBits` / `getAlignment`, and `!ST->isOpaque()`
-/// in `StructLayout::StructLayout`); and the empty layout `struct_layout`
-/// computes to find that out is not cached, so once the opaque struct gets a
-/// body the size and layout are the real ones. A cached layout would go
-/// stale here, and a panic (the `unreachable!` this replaced) would abort a
-/// public query.
+/// opaque struct has no `SizedType` proof, so no size query can be asked of
+/// it, and no `struct_layout`, where upstream asserts (`isSized` in
+/// `getTypeSizeInBits` / `getAlignment`, and `!ST->isOpaque()` in
+/// `StructLayout::StructLayout`). Nothing is cached for it either, so once
+/// the opaque struct gets a body the size and layout are the real ones. A
+/// cached layout would go stale here, and a panic (the `unreachable!` an
+/// earlier version had) would abort a public query.
 #[test]
-fn struct_layout_of_an_opaque_field_is_empty_and_not_cached() {
+fn struct_layout_of_an_opaque_field_is_refused_and_not_cached() {
     let m = module_new!("m").expect("fresh module");
     let dl = DataLayout::default();
     let opaque = m.opaque_struct("O").expect("fresh name");
     let outer = m
         .struct_type([m.i8_type().as_type(), opaque.as_type()])
         .expect("valid struct elements");
-    assert_eq!(dl.type_alloc_size(outer.as_type()), None);
+    assert!(matches!(
+        SizedType::try_from(outer.as_type()),
+        Err(IrError::UnsizedType { .. })
+    ));
     assert!(
         dl.struct_layout(outer).is_none(),
         "a struct holding an opaque struct has no layout"
     );
     m.set_struct_body(opaque, [m.i32_type().as_type()], false)
         .expect("the body is set once");
-    assert_eq!(
-        dl.type_alloc_size(outer.as_type()),
-        Some(TypeSize::fixed(8))
-    );
+    let outer_sized = SizedType::try_from(outer.as_type()).expect("sized once the body is set");
+    assert_eq!(dl.type_alloc_size(outer_sized), TypeSize::fixed(8));
     assert_eq!(
         dl.struct_layout(outer)
             .expect("a struct with no opaque field")

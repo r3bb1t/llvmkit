@@ -23,7 +23,6 @@
 //! - `hasMicrosoftFastStdCallMangling` and friends (presentation-only
 //!   helpers; reachable through [`DataLayout::mangling_mode`]).
 
-use core::cell::{Cell, RefCell};
 use core::fmt;
 use core::iter::FusedIterator;
 use core::num::NonZeroU32;
@@ -34,7 +33,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use crate::addr_space::AddressSpace;
 use crate::align::{Align, MaybeAlign};
 use crate::capability::Capability;
-use crate::derived_types::StructType;
+use crate::derived_types::{SizedType, StructType};
 use crate::error::DataLayoutError;
 use crate::module::{ModuleBrand, ModuleCore, ModuleId};
 use crate::struct_body_state::StructBodyState;
@@ -312,8 +311,8 @@ pub struct DataLayout {
     string_representation: String,
     /// The struct layouts this `DataLayout` has computed. Mirrors
     /// `DataLayout::LayoutMap`; not part of the layout's value, so equality
-    /// and hashing leave it out, and a clone shares it (see
-    /// [`StructLayoutMap`]).
+    /// and hashing leave it out, and a clone starts with an empty one, as
+    /// upstream's `operator=` leaves the copy's (see [`StructLayoutMap`]).
     struct_layouts: StructLayoutMap,
 }
 
@@ -725,124 +724,137 @@ impl DataLayout {
 
     // ----- Type-size / alignment accessors -----
     //
-    // Each answers `None` for an unsized type, where upstream's
-    // `getTypeSizeInBits` (`DataLayout.h`) and `getAlignment`
-    // (`DataLayout.cpp`) assert `Ty->isSized()`, and every other size query
-    // reaches one of the two. A struct holding an opaque struct, `void`, a
-    // label, a function type: none has a size, and no number stands in for
-    // one (D43).
+    // Each takes a [`SizedType`]: upstream's `getTypeSizeInBits`
+    // (`DataLayout.h`) and `getAlignment` (`DataLayout.cpp`) assert
+    // `Ty->isSized()`, and every other size query reaches one of the two, so
+    // the precondition is the parameter's type. An integer, float or pointer
+    // type converts into one; any other type goes through
+    // `SizedType::try_from`, which answers `IrError::UnsizedType` for a type
+    // with no size.
 
-    /// The walk's state for one sized type, or `None` for an unsized one.
-    fn sized_query<'t, B: ModuleBrand, C: Capability>(
-        ty: Type<'t, B, C>,
-    ) -> Option<(&'t ModuleCore, TypeSlot)> {
-        ty.is_sized()
-            .then(|| (ty.module().core_ref(), ty.slot_trusting_same_module()))
+    /// The module and slot of a sized type, for the walks below.
+    fn sized_parts<'t, B: ModuleBrand, C: Capability>(
+        ty: impl Into<SizedType<'t, B, C>>,
+    ) -> (&'t ModuleCore, TypeSlot) {
+        let ty = ty.into().as_type();
+        (ty.module().core_ref(), ty.slot_trusting_same_module())
     }
 
     /// Bit-size of `ty` when held as an SSA value. Mirrors
     /// `DataLayout::getTypeSizeInBits` (the inline definition in
-    /// `DataLayout.h`).
-    pub fn type_size_in_bits<B: ModuleBrand, C: Capability>(
+    /// `DataLayout.h`). Scalable for a type that is or holds a scalable
+    /// vector; a size past `u64::MAX` saturates there, where upstream's
+    /// arithmetic wraps (`docs/divergences.md` D42).
+    pub fn type_size_in_bits<'t, B: ModuleBrand, C: Capability>(
         &self,
-        ty: Type<'_, B, C>,
-    ) -> Option<TypeSize> {
-        let (module, id) = Self::sized_query(ty)?;
-        Some(self.type_size_in_bits_inner(module, id, &StructLayouts::default()))
+        ty: impl Into<SizedType<'t, B, C>>,
+    ) -> TypeSize {
+        let (module, id) = Self::sized_parts(ty);
+        self.type_size_in_bits_inner(module, id)
     }
 
-    /// Mirrors `DataLayout::getTypeStoreSize`. Bytes.
-    pub fn type_store_size<B: ModuleBrand, C: Capability>(
+    /// Mirrors `DataLayout::getTypeStoreSize`: the bytes a store of `ty`
+    /// may overwrite. Saturates as [`Self::type_size_in_bits`] does.
+    pub fn type_store_size<'t, B: ModuleBrand, C: Capability>(
         &self,
-        ty: Type<'_, B, C>,
-    ) -> Option<TypeSize> {
-        let (module, id) = Self::sized_query(ty)?;
-        Some(self.type_store_size_inner(module, id, &StructLayouts::default()))
+        ty: impl Into<SizedType<'t, B, C>>,
+    ) -> TypeSize {
+        let (module, id) = Self::sized_parts(ty);
+        self.type_store_size_inner(module, id)
     }
 
     /// Mirrors `DataLayout::getTypeStoreSizeInBits`.
-    pub fn type_store_size_in_bits<B: ModuleBrand, C: Capability>(
+    pub fn type_store_size_in_bits<'t, B: ModuleBrand, C: Capability>(
         &self,
-        ty: Type<'_, B, C>,
-    ) -> Option<TypeSize> {
-        let (module, id) = Self::sized_query(ty)?;
-        Some(self.type_store_size_in_bits_inner(module, id, &StructLayouts::default()))
+        ty: impl Into<SizedType<'t, B, C>>,
+    ) -> TypeSize {
+        let (module, id) = Self::sized_parts(ty);
+        self.type_store_size_in_bits_inner(module, id)
     }
 
     /// Mirrors `DataLayout::typeSizeEqualsStoreSize`.
-    pub fn type_size_equals_store_size<B: ModuleBrand, C: Capability>(
+    pub fn type_size_equals_store_size<'t, B: ModuleBrand, C: Capability>(
         &self,
-        ty: Type<'_, B, C>,
-    ) -> Option<bool> {
-        Some(self.type_size_in_bits(ty)? == self.type_store_size_in_bits(ty)?)
+        ty: impl Into<SizedType<'t, B, C>>,
+    ) -> bool {
+        let (module, id) = Self::sized_parts(ty);
+        self.type_size_in_bits_inner(module, id) == self.type_store_size_in_bits_inner(module, id)
     }
 
-    /// Mirrors `DataLayout::getTypeAllocSize`. Bytes including
-    /// trailing alignment padding.
-    pub fn type_alloc_size<B: ModuleBrand, C: Capability>(
+    /// Mirrors `DataLayout::getTypeAllocSize`: bytes including trailing
+    /// alignment padding, the offset between two adjacent array elements of
+    /// `ty`. Saturates as [`Self::type_size_in_bits`] does.
+    pub fn type_alloc_size<'t, B: ModuleBrand, C: Capability>(
         &self,
-        ty: Type<'_, B, C>,
-    ) -> Option<TypeSize> {
-        let (module, id) = Self::sized_query(ty)?;
-        Some(self.type_alloc_size_inner(module, id, &StructLayouts::default()))
+        ty: impl Into<SizedType<'t, B, C>>,
+    ) -> TypeSize {
+        let (module, id) = Self::sized_parts(ty);
+        self.type_alloc_size_inner(module, id)
     }
 
     /// Mirrors `DataLayout::getTypeAllocSizeInBits`.
-    pub fn type_alloc_size_in_bits<B: ModuleBrand, C: Capability>(
+    pub fn type_alloc_size_in_bits<'t, B: ModuleBrand, C: Capability>(
         &self,
-        ty: Type<'_, B, C>,
-    ) -> Option<TypeSize> {
-        Some(self.type_alloc_size(ty)?.saturating_scaled(8))
+        ty: impl Into<SizedType<'t, B, C>>,
+    ) -> TypeSize {
+        self.type_alloc_size(ty).saturating_scaled(8)
     }
 
     /// Mirrors `DataLayout::getABITypeAlign`.
-    pub fn abi_type_align<B: ModuleBrand, C: Capability>(
+    pub fn abi_type_align<'t, B: ModuleBrand, C: Capability>(
         &self,
-        ty: Type<'_, B, C>,
-    ) -> Option<Align> {
-        let (module, id) = Self::sized_query(ty)?;
-        Some(self.alignment(module, id, true, &StructLayouts::default()))
+        ty: impl Into<SizedType<'t, B, C>>,
+    ) -> Align {
+        let (module, id) = Self::sized_parts(ty);
+        self.alignment(module, id, AlignmentKind::Abi)
     }
 
     /// Mirrors `DataLayout::getPrefTypeAlign`.
-    pub fn pref_type_align<B: ModuleBrand, C: Capability>(
+    pub fn pref_type_align<'t, B: ModuleBrand, C: Capability>(
         &self,
-        ty: Type<'_, B, C>,
-    ) -> Option<Align> {
-        let (module, id) = Self::sized_query(ty)?;
-        Some(self.alignment(module, id, false, &StructLayouts::default()))
+        ty: impl Into<SizedType<'t, B, C>>,
+    ) -> Align {
+        let (module, id) = Self::sized_parts(ty);
+        self.alignment(module, id, AlignmentKind::Preferred)
     }
 
-    /// Mirrors `DataLayout::getValueOrABITypeAlignment`. If `alignment` is
-    /// set, returns it, whatever `ty` is, as upstream reads no type then;
-    /// otherwise the ABI alignment, `None` for an unsized type.
-    pub fn value_or_abi_type_align<B: ModuleBrand, C: Capability>(
+    /// Mirrors `DataLayout::getValueOrABITypeAlignment`: `alignment` if it is
+    /// set, otherwise the ABI alignment of `ty`.
+    pub fn value_or_abi_type_align<'t, B: ModuleBrand, C: Capability>(
         &self,
         alignment: MaybeAlign,
-        ty: Type<'_, B, C>,
-    ) -> Option<Align> {
+        ty: impl Into<SizedType<'t, B, C>>,
+    ) -> Align {
         match alignment.align() {
-            Some(align) => Some(align),
+            Some(align) => align,
             None => self.abi_type_align(ty),
         }
     }
 
     /// Mirrors `DataLayout::getABIIntegerTypeAlignment(BitWidth)`.
     pub fn abi_integer_type_align(&self, bit_width: u32) -> Align {
-        self.integer_alignment(bit_width, true)
+        self.integer_alignment(bit_width, AlignmentKind::Abi)
     }
+}
 
-    /// ABI alignment of a type by id (brand-free; for builder/parser paths
-    /// that hold a `&ModuleCore` and a `TypeSlot`). Same walk as
-    /// [`Self::abi_type_align`].
-    pub(crate) fn abi_align_of_id(&self, module: &ModuleCore, id: TypeSlot) -> Align {
-        self.alignment(module, id, true, &StructLayouts::default())
-    }
+/// Which of a type's two alignments a walk asks for. Upstream passes a
+/// `bool abi_or_pref`; the two answers are different facts, so they get a
+/// name each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AlignmentKind {
+    /// `getABITypeAlign`: the alignment the ABI requires.
+    Abi,
+    /// `getPrefTypeAlign`: the alignment the target prefers.
+    Preferred,
+}
 
-    /// Preferred alignment of a type by id (brand-free). Same walk as
-    /// [`Self::pref_type_align`].
-    pub(crate) fn pref_align_of_id(&self, module: &ModuleCore, id: TypeSlot) -> Align {
-        self.alignment(module, id, false, &StructLayouts::default())
+impl AlignmentKind {
+    /// The spec's alignment of this kind.
+    fn of_primitive(self, spec: &PrimitiveSpec) -> Align {
+        match self {
+            Self::Abi => spec.abi_align(),
+            Self::Preferred => spec.pref_align(),
+        }
     }
 }
 
@@ -912,10 +924,11 @@ struct ModuleLayouts {
 /// [`DataLayout`]'s `==` and `Hash` leave it out. A `Mutex`, so a
 /// `DataLayout` stays `Sync`.
 ///
-/// A cached layout cannot go stale: a struct's body is set once
-/// (`Context::set_named_struct_body` refuses a second), and a layout that
-/// reached an opaque struct, whose body may come later, is never kept here
-/// ([`StructLayouts`]).
+/// A cached layout cannot go stale. Only a struct whose fields are all sized
+/// is laid out ([`DataLayout::struct_layout`] answers `None` otherwise, and
+/// every other walk runs under a [`SizedType`]), so no layout here reaches an
+/// opaque struct; and a struct's body is set once
+/// (`Context::set_named_struct_body` refuses a second).
 ///
 /// Without it, a struct reached twice was laid out twice — once by
 /// `alignment` and once by `type_alloc_size_inner`, for every field — so
@@ -993,53 +1006,39 @@ impl fmt::Debug for StructLayoutMap {
     }
 }
 
-/// One public query's state for the struct layouts it computes. A query
-/// asks of one module.
-#[derive(Default)]
-struct StructLayouts {
-    /// Whether the layout being computed reached an opaque struct. Such a
-    /// layout is answered but not kept in the [`StructLayoutMap`]: the opaque
-    /// struct may get a body later, and the answer with it.
-    reached_opaque: Cell<bool>,
-    /// Every struct this query has laid out, and whether its layout reached
-    /// an opaque struct. Read before the shared map, so a layout that reached
-    /// an opaque struct, which the shared map never keeps, is laid out once
-    /// per query rather than once per visit. A struct the shared map answers
-    /// is not recorded: the hit costs no allocation.
-    seen: RefCell<SlotMap<TypeSlot, (Arc<StructLayoutInfo>, bool)>>,
-}
-
 // --------------------------------------------------------------------------
 // Internal: alignment + size walks
 // --------------------------------------------------------------------------
 
+/// The arm of a walk under a [`SizedType`] for a type with no size. A sized
+/// type reaches only sized types through its elements, fields and layout
+/// type (`Type::isSizedDerivedType`, `StructType::isSized`), and every walk
+/// below starts from a `SizedType` or from a field of a struct whose fields
+/// [`DataLayout::struct_layout_of`] found sized, so the arm is dead by
+/// construction.
+fn reached_unsized() -> ! {
+    unreachable!("a DataLayout walk under a SizedType reaches only sized types")
+}
+
+// The walks below are entered only from a `SizedType` (the public queries)
+// or from a field of a struct whose fields are all sized
+// (`struct_layout_of`), so every type they reach is sized; see
+// `reached_unsized`.
 impl DataLayout {
-    fn type_size_in_bits_inner(
-        &self,
-        module: &ModuleCore,
-        id: TypeSlot,
-        layouts: &StructLayouts,
-    ) -> TypeSize {
+    fn type_size_in_bits_inner(&self, module: &ModuleCore, id: TypeSlot) -> TypeSize {
         // Upstream's `getTypeSizeInBits(VTy->getElementType()).getFixedValue()`:
         // an element is never a vector, so its size is fixed.
-        let element_bits = |elem: TypeSlot| {
-            self.type_size_in_bits_inner(module, elem, layouts)
-                .known_min_value()
-        };
+        let element_bits =
+            |elem: TypeSlot| self.type_size_in_bits_inner(module, elem).known_min_value();
         match module.context().type_data(id) {
-            TypeData::Label => {
-                TypeSize::fixed(u64::from(self.pointer_size_in_bits(AddressSpace::DEFAULT)))
-            }
             TypeData::Pointer { addr_space } => {
                 TypeSize::fixed(u64::from(self.pointer_size_in_bits(*addr_space)))
             }
             TypeData::Array { elem, n } => self
-                .type_alloc_size_inner(module, *elem, layouts)
+                .type_alloc_size_inner(module, *elem)
                 .saturating_scaled(8)
                 .saturating_scaled(*n),
-            TypeData::Struct(_) => {
-                self.with_layout(module, id, layouts, StructLayoutInfo::size_in_bits)
-            }
+            TypeData::Struct(_) => self.layout_of(module, id).size_in_bits(),
             TypeData::Integer { bits } => TypeSize::fixed(u64::from(*bits)),
             TypeData::Half | TypeData::Bfloat => TypeSize::fixed(16),
             TypeData::Float => TypeSize::fixed(32),
@@ -1054,33 +1053,29 @@ impl DataLayout {
                 TypeSize::scalable(u64::from(min.get()).saturating_mul(element_bits(*elem)))
             }
             TypeData::TargetExt(_) => match target_ext_layout_type(module, id) {
-                Some(layout) => self.type_size_in_bits_inner(module, layout, layouts),
-                None => TypeSize::fixed(0),
+                Some(layout) => self.type_size_in_bits_inner(module, layout),
+                None => reached_unsized(),
             },
-            // Unsized cases: void, function, label-only, metadata, token,
-            // and WebAssembly exception references.
-            TypeData::Void
+            // No size: upstream's `isSized` is false for each, so a sized type
+            // reaches none (a label too, though `getTypeSizeInBits` has an
+            // arm for it behind its `isSized` assert).
+            TypeData::Label
+            | TypeData::Void
             | TypeData::Function { .. }
             | TypeData::Metadata
             | TypeData::Token
-            | TypeData::WasmExnRef => TypeSize::fixed(0),
+            | TypeData::WasmExnRef => reached_unsized(),
         }
     }
 
-    fn type_alloc_size_inner(
-        &self,
-        module: &ModuleCore,
-        id: TypeSlot,
-        layouts: &StructLayouts,
-    ) -> TypeSize {
+    fn type_alloc_size_inner(&self, module: &ModuleCore, id: TypeSlot) -> TypeSize {
         match module.context().type_data(id) {
             TypeData::Array { elem, n } => self
-                .type_alloc_size_inner(module, *elem, layouts)
+                .type_alloc_size_inner(module, *elem)
                 .saturating_scaled(*n),
             TypeData::Struct(_) => {
-                let (size, alignment) = self.with_layout(module, id, layouts, |layout| {
-                    (layout.size_in_bytes(), layout.alignment())
-                });
+                let layout = self.layout_of(module, id);
+                let (size, alignment) = (layout.size_in_bytes(), layout.alignment());
                 let is_packed = matches!(
                     module.context().type_data(id),
                     TypeData::Struct(s) if s.body.borrow().as_ref().is_some_and(|b| b.packed)
@@ -1094,7 +1089,7 @@ impl DataLayout {
             }
             TypeData::Integer { bits } => {
                 let bytes = TypeSize::fixed(u64::from(div_ceil_u32(*bits, 8)));
-                let a = self.integer_alignment(*bits, true);
+                let a = self.integer_alignment(*bits, AlignmentKind::Abi);
                 align_type_size(bytes, a)
             }
             TypeData::Pointer { addr_space } => {
@@ -1102,53 +1097,41 @@ impl DataLayout {
                 align_type_size(size, self.pointer_abi_align(*addr_space))
             }
             TypeData::TargetExt(_) => match target_ext_layout_type(module, id) {
-                Some(layout) => self.type_alloc_size_inner(module, layout, layouts),
-                None => TypeSize::fixed(0),
+                Some(layout) => self.type_alloc_size_inner(module, layout),
+                None => reached_unsized(),
             },
             _ => {
-                let store = self.type_store_size_inner(module, id, layouts);
-                align_type_size(store, self.alignment(module, id, true, layouts))
+                let store = self.type_store_size_inner(module, id);
+                align_type_size(store, self.alignment(module, id, AlignmentKind::Abi))
             }
         }
     }
 
-    fn type_store_size_in_bits_inner(
-        &self,
-        module: &ModuleCore,
-        id: TypeSlot,
-        layouts: &StructLayouts,
-    ) -> TypeSize {
-        let base_size = self.type_size_in_bits_inner(module, id, layouts);
+    fn type_store_size_in_bits_inner(&self, module: &ModuleCore, id: TypeSlot) -> TypeSize {
+        let base_size = self.type_size_in_bits_inner(module, id);
         TypeSize::new(
             align_to_power_of_two(base_size.known_min_value(), 8),
             base_size.is_scalable(),
         )
     }
 
-    fn type_store_size_inner(
-        &self,
-        module: &ModuleCore,
-        id: TypeSlot,
-        layouts: &StructLayouts,
-    ) -> TypeSize {
+    fn type_store_size_inner(&self, module: &ModuleCore, id: TypeSlot) -> TypeSize {
         // Upstream divides the bit size by 8, rounding up. An aggregate's bit
         // size is its byte size times 8, so it is read in bytes here: from
         // 2^61 bytes up there is no bit count in a `u64`, and dividing the
         // saturated one would answer 2^61 - 1 bytes, a plausible size for a
         // type far larger (D42). A scalar or vector is at most 2^55 bits.
         match module.context().type_data(id) {
-            TypeData::Struct(_) => {
-                self.with_layout(module, id, layouts, StructLayoutInfo::size_in_bytes)
-            }
+            TypeData::Struct(_) => self.layout_of(module, id).size_in_bytes(),
             TypeData::Array { elem, n } => self
-                .type_alloc_size_inner(module, *elem, layouts)
+                .type_alloc_size_inner(module, *elem)
                 .saturating_scaled(*n),
             TypeData::TargetExt(_) => match target_ext_layout_type(module, id) {
-                Some(layout) => self.type_store_size_inner(module, layout, layouts),
-                None => TypeSize::fixed(0),
+                Some(layout) => self.type_store_size_inner(module, layout),
+                None => reached_unsized(),
             },
             _ => {
-                let store_size_in_bits = self.type_store_size_in_bits_inner(module, id, layouts);
+                let store_size_in_bits = self.type_store_size_in_bits_inner(module, id);
                 TypeSize::new(
                     store_size_in_bits.known_min_value() / 8,
                     store_size_in_bits.is_scalable(),
@@ -1157,109 +1140,82 @@ impl DataLayout {
         }
     }
 
-    fn alignment(
-        &self,
-        module: &ModuleCore,
-        id: TypeSlot,
-        abi_or_pref: bool,
-        layouts: &StructLayouts,
-    ) -> Align {
+    fn alignment(&self, module: &ModuleCore, id: TypeSlot, kind: AlignmentKind) -> Align {
         match module.context().type_data(id) {
-            TypeData::Integer { bits } => self.integer_alignment(*bits, abi_or_pref),
-            TypeData::Half
-            | TypeData::Bfloat
-            | TypeData::Float
-            | TypeData::Double
-            | TypeData::Fp128
-            | TypeData::PpcFp128
-            | TypeData::X86Fp80 => {
-                let bit_width = match module.context().type_data(id) {
-                    TypeData::Half | TypeData::Bfloat => 16,
-                    TypeData::Float => 32,
-                    TypeData::Double => 64,
-                    TypeData::Fp128 | TypeData::PpcFp128 | TypeData::X86Fp80 => 128,
-                    _ => unreachable!(),
-                };
-                if let Some(s) = self.float_specs.iter().find(|s| s.bit_width() == bit_width) {
-                    if abi_or_pref {
-                        s.abi_align()
-                    } else {
-                        s.pref_align()
-                    }
-                } else {
-                    pow2_ceil_align(bit_width / 8)
-                }
+            TypeData::Integer { bits } => self.integer_alignment(*bits, kind),
+            TypeData::Half | TypeData::Bfloat => self.float_alignment(16, kind),
+            TypeData::Float => self.float_alignment(32, kind),
+            TypeData::Double => self.float_alignment(64, kind),
+            TypeData::Fp128 | TypeData::PpcFp128 | TypeData::X86Fp80 => {
+                self.float_alignment(128, kind)
             }
             TypeData::FixedVector { .. } | TypeData::ScalableVector { .. } => {
                 let bit_width = self
-                    .type_size_in_bits_inner(module, id, layouts)
+                    .type_size_in_bits_inner(module, id)
                     .known_min_value()
                     .try_into()
                     .unwrap_or(u32::MAX);
-                if let Some(s) = self
+                match self
                     .vector_specs
                     .iter()
                     .find(|s| s.bit_width() == bit_width)
                 {
-                    if abi_or_pref {
-                        s.abi_align()
-                    } else {
-                        s.pref_align()
+                    Some(spec) => kind.of_primitive(spec),
+                    None => {
+                        // "It doesn't have to be based on the full size for
+                        // scalable vectors": `getKnownMinValue`, in `getAlignment`.
+                        let store_bytes = self.type_store_size_inner(module, id).known_min_value();
+                        pow2_ceil_align(store_bytes.try_into().unwrap_or(u32::MAX))
                     }
-                } else {
-                    // "It doesn't have to be based on the full size for
-                    // scalable vectors": `getKnownMinValue`, in `getAlignment`.
-                    let store_bytes = self
-                        .type_store_size_inner(module, id, layouts)
-                        .known_min_value();
-                    let store_bytes_u32: u32 = store_bytes.try_into().unwrap_or(u32::MAX);
-                    pow2_ceil_align(store_bytes_u32)
                 }
             }
-            TypeData::Pointer { addr_space } => {
-                if abi_or_pref {
-                    self.pointer_abi_align(*addr_space)
-                } else {
-                    self.pointer_pref_align(*addr_space)
-                }
-            }
-            TypeData::Label => {
-                if abi_or_pref {
-                    self.pointer_abi_align(AddressSpace::DEFAULT)
-                } else {
-                    self.pointer_pref_align(AddressSpace::DEFAULT)
-                }
-            }
-            TypeData::Array { elem, .. } => self.alignment(module, *elem, abi_or_pref, layouts),
+            TypeData::Pointer { addr_space } => match kind {
+                AlignmentKind::Abi => self.pointer_abi_align(*addr_space),
+                AlignmentKind::Preferred => self.pointer_pref_align(*addr_space),
+            },
+            TypeData::Array { elem, .. } => self.alignment(module, *elem, kind),
             TypeData::Struct(s) => {
-                if s.body.borrow().as_ref().is_some_and(|b| b.packed) && abi_or_pref {
-                    Align::ONE
-                } else {
-                    let alignment =
-                        self.with_layout(module, id, layouts, StructLayoutInfo::alignment);
-                    if abi_or_pref {
-                        std::cmp::max(self.struct_abi_align, alignment)
-                    } else {
-                        std::cmp::max(self.struct_pref_align, alignment)
-                    }
+                let packed = s.body.borrow().as_ref().is_some_and(|b| b.packed);
+                match kind {
+                    // Upstream's `if (cast<StructType>(Ty)->isPacked() && abi_or_pref)`.
+                    AlignmentKind::Abi if packed => Align::ONE,
+                    AlignmentKind::Abi => std::cmp::max(
+                        self.struct_abi_align,
+                        self.layout_of(module, id).alignment(),
+                    ),
+                    AlignmentKind::Preferred => std::cmp::max(
+                        self.struct_pref_align,
+                        self.layout_of(module, id).alignment(),
+                    ),
                 }
             }
             TypeData::X86Amx => const_align(64),
             TypeData::TargetExt(_) => match target_ext_layout_type(module, id) {
-                Some(layout) => self.alignment(module, layout, abi_or_pref, layouts),
-                None => Align::ONE,
+                Some(layout) => self.alignment(module, layout, kind),
+                None => reached_unsized(),
             },
-            // Unsized: void, function, metadata, token, WebAssembly exception
-            // references. Upstream unreachable; we return ONE rather than panic.
-            TypeData::Void
+            // No alignment: upstream's `getAlignment` asserts `isSized`, which
+            // each of these fails.
+            TypeData::Label
+            | TypeData::Void
             | TypeData::Function { .. }
             | TypeData::Metadata
             | TypeData::Token
-            | TypeData::WasmExnRef => Align::ONE,
+            | TypeData::WasmExnRef => reached_unsized(),
         }
     }
 
-    fn integer_alignment(&self, bit_width: u32, abi_or_pref: bool) -> Align {
+    /// The alignment of a floating-point type of `bit_width` bits: its spec's,
+    /// or the width in bytes rounded up to a power of two when no spec names
+    /// it. Mirrors the `HalfTyID ... X86_FP80TyID` arm of `getAlignment`.
+    fn float_alignment(&self, bit_width: u32, kind: AlignmentKind) -> Align {
+        match self.float_specs.iter().find(|s| s.bit_width() == bit_width) {
+            Some(spec) => kind.of_primitive(spec),
+            None => pow2_ceil_align(bit_width / 8),
+        }
+    }
+
+    fn integer_alignment(&self, bit_width: u32, kind: AlignmentKind) -> Align {
         // Mirrors `DataLayout::getIntegerAlignment`. Walk forward,
         // pick the first spec >= bit_width; if none, use the last
         // (largest) spec.
@@ -1272,19 +1228,20 @@ impl DataLayout {
         }
         let spec = chosen
             .unwrap_or_else(|| unreachable!("DataLayout default seeds at least one int spec"));
-        if abi_or_pref {
-            spec.abi_align()
-        } else {
-            spec.pref_align()
-        }
+        kind.of_primitive(spec)
     }
 
-    /// The layout of an aggregate struct, or `None` when it holds an opaque
-    /// struct and so has none. Mirrors `DataLayout::getStructLayout`, which
-    /// returns a pointer into the `DataLayout`'s cache: each struct is laid
-    /// out once per `DataLayout`, and every later call shares that layout.
-    /// The layout itself is `StructLayout::StructLayout` in `DataLayout.cpp`,
-    /// whose assertion on an opaque struct is the `None` here (D43).
+    /// The layout of an aggregate struct, or `None` when a field is unsized.
+    /// Mirrors `DataLayout::getStructLayout`, which returns a pointer into the
+    /// `DataLayout`'s cache: each struct is laid out once per `DataLayout`,
+    /// and every later call shares that layout. The layout itself is
+    /// `StructLayout::StructLayout` in `DataLayout.cpp`, which asks each
+    /// field's `getTypeAllocSize` and `getABITypeAlign` (both asserting
+    /// `isSized`), and asserts `!ST->isOpaque()` itself: those preconditions
+    /// are the `None` here.
+    ///
+    /// The struct itself need not be sized: one mixing a scalable vector with
+    /// other fields is unsized but has a layout, as it has upstream.
     ///
     /// Takes a [`StructType`], as upstream's takes a `StructType *`: the
     /// layout of any other type is not a question.
@@ -1303,92 +1260,44 @@ impl DataLayout {
         ty: Type<'_, B, C>,
     ) -> Option<Arc<StructLayoutInfo>> {
         let module = ty.module().core_ref();
-        let layouts = StructLayouts::default();
-        let layout = self.layout_of(module, ty.slot_trusting_same_module(), &layouts);
-        (!layouts.reached_opaque.get()).then_some(layout)
+        let id = ty.slot_trusting_same_module();
+        let TypeData::Struct(data) = module.context().type_data(id) else {
+            unreachable!("struct_layout_of is asked only of a struct type")
+        };
+        let fields_sized = data
+            .body
+            .borrow()
+            .as_ref()?
+            .elements
+            .iter()
+            .all(|field| SizedType::try_from(Type::new(*field, ty.module())).is_ok());
+        fields_sized.then(|| self.layout_of(module, id))
     }
 
-    /// Read struct `id`'s layout through `read`. See [`Self::layout_of`].
-    fn with_layout<T>(
-        &self,
-        module: &ModuleCore,
-        id: TypeSlot,
-        layouts: &StructLayouts,
-        read: impl FnOnce(&StructLayoutInfo) -> T,
-    ) -> T {
-        read(&self.layout_of(module, id, layouts))
-    }
-
-    /// Struct `id`'s layout: from this query's own record, then from this
-    /// `DataLayout`'s map, laying it out only when neither has it. Mirrors
-    /// `DataLayout::getStructLayout`'s `StructLayoutMap` lookup, and the
-    /// `new StructLayout` on a miss. Marks the query when the layout reached
-    /// an opaque struct, however it was found.
-    fn layout_of(
-        &self,
-        module: &ModuleCore,
-        id: TypeSlot,
-        layouts: &StructLayouts,
-    ) -> Arc<StructLayoutInfo> {
-        let seen = layouts.seen.borrow().get(&id).cloned();
-        if let Some((layout, reached_opaque)) = seen {
-            if reached_opaque {
-                layouts.reached_opaque.set(true);
-            }
-            return layout;
-        }
+    /// Struct `id`'s layout, from this `DataLayout`'s map or laid out and kept
+    /// there. Mirrors `DataLayout::getStructLayout`'s `StructLayoutMap`
+    /// lookup, and the `new StructLayout` on a miss. Every caller holds a
+    /// struct whose fields are sized (see `reached_unsized`). Laid out with no
+    /// lock held: the fields' own layouts are looked up and kept along the
+    /// way.
+    fn layout_of(&self, module: &ModuleCore, id: TypeSlot) -> Arc<StructLayoutInfo> {
         if let Some(layout) = self.struct_layouts.get(module, id) {
             return layout;
         }
-        let (layout, reached_opaque) = self.lay_out(module, id, layouts);
-        layouts
-            .seen
-            .borrow_mut()
-            .insert(id, (Arc::clone(&layout), reached_opaque));
+        let layout = Arc::new(self.struct_layout_inner(module, id));
+        self.struct_layouts.insert(module, id, Arc::clone(&layout));
         layout
     }
 
-    /// Lay struct `id` out, keep the layout in this `DataLayout`'s map unless
-    /// it reached an opaque struct, and say whether it did. Laid out with no
-    /// lock or borrow held: the fields' own layouts are read and recorded
-    /// along the way. Whether this layout reached an opaque struct is tracked
-    /// apart from the enclosing one's, then merged into it, since an
-    /// enclosing layout that holds this one reached it too.
-    fn lay_out(
-        &self,
-        module: &ModuleCore,
-        id: TypeSlot,
-        layouts: &StructLayouts,
-    ) -> (Arc<StructLayoutInfo>, bool) {
-        let enclosing_reached_opaque = layouts.reached_opaque.replace(false);
-        let layout = Arc::new(self.struct_layout_inner(module, id, layouts));
-        let reached_opaque = layouts.reached_opaque.get();
-        layouts
-            .reached_opaque
-            .set(enclosing_reached_opaque || reached_opaque);
-        if !reached_opaque {
-            self.struct_layouts.insert(module, id, Arc::clone(&layout));
-        }
-        (layout, reached_opaque)
-    }
-
-    fn struct_layout_inner(
-        &self,
-        module: &ModuleCore,
-        id: TypeSlot,
-        layouts: &StructLayouts,
-    ) -> StructLayoutInfo {
-        let s = match module.context().type_data(id) {
-            TypeData::Struct(s) => s,
-            _ => unreachable!("struct_layout invariant: TypeData::Struct"),
+    fn struct_layout_inner(&self, module: &ModuleCore, id: TypeSlot) -> StructLayoutInfo {
+        let TypeData::Struct(s) = module.context().type_data(id) else {
+            unreachable!("struct_layout_inner is asked only of a struct type")
         };
         let body = s.body.borrow();
-        // `StructLayout::StructLayout` asserts `!ST->isOpaque()`; an opaque
-        // struct has no layout. llvmkit answers an empty one instead of panicking (D43),
-        // and marks the query so that no layout holding it is cached.
+        // `StructLayout::StructLayout` asserts `!ST->isOpaque()`; a struct
+        // whose fields are sized has a body.
         let Some(body) = body.as_ref() else {
-            layouts.reached_opaque.set(true);
-            return StructLayoutInfo::new(TypeSize::fixed(0), Align::ONE, false, Vec::new());
+            reached_unsized()
         };
         let elements: &[TypeSlot] = &body.elements;
         let packed = body.packed;
@@ -1399,14 +1308,14 @@ impl DataLayout {
         let mut member_offsets = Vec::with_capacity(elements.len());
 
         for (index, &elem) in elements.iter().enumerate() {
-            if index == 0 && is_scalable(module, elem, &mut Vec::new()) {
+            if index == 0 && is_scalable(module, elem, &mut std::collections::HashSet::new()) {
                 size = TypeSize::scalable(0);
             }
 
             let ty_align = if packed {
                 Align::ONE
             } else {
-                self.alignment(module, elem, true, layouts)
+                self.alignment(module, elem, AlignmentKind::Abi)
             };
             // Only a homogeneous struct of scalable vectors has a scalable
             // size, and its members need no padding.
@@ -1418,7 +1327,7 @@ impl DataLayout {
                 alignment = ty_align;
             }
             member_offsets.push(size);
-            size = size.saturating_add(self.type_alloc_size_inner(module, elem, layouts));
+            size = size.saturating_add(self.type_alloc_size_inner(module, elem));
         }
         if !size.is_scalable() && !size.known_min_value().is_multiple_of(alignment.value()) {
             is_padded = true;
@@ -2217,8 +2126,12 @@ mod tests {
     /// `DataLayout` used with the types of module after module keeps only the
     /// live modules' layouts once it has swept: a dropped module's entry goes
     /// within `SWEEP_FLOOR` plus as many operations as modules held, even
-    /// when every later operation is a hit on a live module. Without the
-    /// sweep, a long-lived layout grew by every module it ever measured.
+    /// when every later operation is a hit on a live module, and a live
+    /// module's entry stays although nothing asks about it during the sweep.
+    /// Without the sweep, a long-lived layout grew by every module it ever
+    /// measured; a sweep that also dropped live entries would leave
+    /// `untouched` out, which one live module alone could not show, since
+    /// the module asked about is laid out again on its next lookup.
     #[test]
     fn a_dropped_modules_layouts_leave_the_map() {
         let layout = DataLayout::default();
@@ -2229,17 +2142,27 @@ mod tests {
                 .expect("valid struct elements");
             assert!(layout.struct_layout(ty).is_some());
         }
-        let live = Module::dynamic("live");
-        let ty = live
-            .struct_type([live.i32_type().as_type()])
+        let untouched = Module::dynamic("untouched");
+        let untouched_ty = untouched
+            .struct_type([untouched.i64_type().as_type()])
             .expect("valid struct elements");
-        for _ in 0..=(SWEEP_FLOOR + 4) {
+        assert!(layout.struct_layout(untouched_ty).is_some());
+        let asked = Module::dynamic("asked");
+        let ty = asked
+            .struct_type([asked.i32_type().as_type()])
+            .expect("valid struct elements");
+        assert_eq!(
+            modules_held(&layout),
+            4,
+            "every module measured so far is held"
+        );
+        for _ in 0..=(SWEEP_FLOOR + 6) {
             assert!(layout.struct_layout(ty).is_some());
         }
         assert_eq!(
             modules_held(&layout),
-            1,
-            "only the live module's layouts are held"
+            2,
+            "both live modules' layouts are held, and only theirs"
         );
     }
 

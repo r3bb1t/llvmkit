@@ -1,8 +1,8 @@
 use llvmkit_ir::{
     Analyses, ApInt, Constant, ConstantIntValue, DemandedBitsAnalysis, FunctionAnalysisManager,
-    IntDyn, IntValue, IrBuilder, IrError, KnownBits, Linkage, NoFolder, SimplifyDemandedBitsPass,
-    ValueTrackingQuery, VectorType, Width, ZextFlags, lanes, module_new, run_function_pass,
-    simplify_demanded_bits,
+    IntDyn, IntValue, IrBuilder, IrError, KnownBits, Linkage, NoFolder, PointerValue,
+    SimplifyDemandedBitsPass, SpaceDyn, TypeKindLabel, ValueTrackingQuery, VectorType, Width,
+    ZextFlags, lanes, module_new, run_function_pass, simplify_demanded_bits,
 };
 
 fn bits(value: ApInt) -> String {
@@ -36,23 +36,23 @@ fn demanded_bits_basic_trunc_zext_chain() -> Result<(), IrError> {
     let demanded = fam.result::<DemandedBitsAnalysis, _>(m.view(f))?;
 
     assert_eq!(
-        bits(demanded.demanded_bits(m.view(add).as_erased())),
+        bits(demanded.demanded_bits(m.view(add).as_erased())?),
         "00000000000000000000000011111111"
     );
     assert_eq!(
-        bits(demanded.demanded_bits(m.view(mul).as_erased())),
+        bits(demanded.demanded_bits(m.view(mul).as_erased())?),
         "00000000000000000000000011111111"
     );
     assert_eq!(
-        bits(demanded.demanded_bits(m.view(trunc_i8).as_erased())),
+        bits(demanded.demanded_bits(m.view(trunc_i8).as_erased())?),
         "11111111"
     );
     assert_eq!(
-        bits(demanded.demanded_bits(m.view(trunc_i1).as_erased())),
+        bits(demanded.demanded_bits(m.view(trunc_i1).as_erased())?),
         "1"
     );
     assert_eq!(
-        bits(demanded.demanded_bits(m.view(zext).as_erased())),
+        bits(demanded.demanded_bits(m.view(zext).as_erased())?),
         "11111111"
     );
     assert_eq!(
@@ -103,35 +103,35 @@ fn demanded_bits_add_and_or_carry_propagation() -> Result<(), IrError> {
     let demanded = fam.result::<DemandedBitsAnalysis, _>(m.view(f))?;
 
     assert_eq!(
-        bits(demanded.demanded_bits(m.view(and_a).as_erased())),
+        bits(demanded.demanded_bits(m.view(and_a).as_erased())?),
         "00000000000000000000000000011110"
     );
     assert_eq!(
-        bits(demanded.demanded_bits(m.view(and_b).as_erased())),
+        bits(demanded.demanded_bits(m.view(and_b).as_erased())?),
         "00000000000000000000000000011010"
     );
     assert_eq!(
-        bits(demanded.demanded_bits(m.view(and_c).as_erased())),
+        bits(demanded.demanded_bits(m.view(and_c).as_erased())?),
         "00000000000000000000000000011010"
     );
     assert_eq!(
-        bits(demanded.demanded_bits(m.view(and_d).as_erased())),
+        bits(demanded.demanded_bits(m.view(and_d).as_erased())?),
         "00000000000000000000000000011010"
     );
     assert_eq!(
-        bits(demanded.demanded_bits(m.view(or_bc).as_erased())),
+        bits(demanded.demanded_bits(m.view(or_bc).as_erased())?),
         "00000000000000000000000000011010"
     );
     assert_eq!(
-        bits(demanded.demanded_bits(m.view(or_dbc).as_erased())),
+        bits(demanded.demanded_bits(m.view(or_dbc).as_erased())?),
         "00000000000000000000000000011010"
     );
     assert_eq!(
-        bits(demanded.demanded_bits(m.view(add).as_erased())),
+        bits(demanded.demanded_bits(m.view(add).as_erased())?),
         "00000000000000000000000000010000"
     );
     assert_eq!(
-        bits(demanded.demanded_bits(m.view(mask).as_erased())),
+        bits(demanded.demanded_bits(m.view(mask).as_erased())?),
         "11111111111111111111111111111111"
     );
     assert_eq!(
@@ -809,7 +809,7 @@ fn variable_lshr_demands_source_bits_that_can_reach_low_result() -> Result<(), I
     fam.register_pass(DemandedBitsAnalysis);
     let demanded = fam.result::<DemandedBitsAnalysis, _>(m.view(f))?;
     assert_eq!(
-        bits(demanded.demanded_bits(m.view(masked).as_erased())),
+        bits(demanded.demanded_bits(m.view(masked).as_erased())?),
         "11111111111111111111111111111111"
     );
 
@@ -880,10 +880,78 @@ fn a_vector_of_floats_is_demanded_at_its_scalar_width() -> Result<(), IrError> {
     for index in 0..3 {
         let value = m.view(f).param(index)?.as_erased();
         assert_eq!(
-            demanded.demanded_bits(value).bit_width(),
+            demanded.demanded_bits(value)?.bit_width(),
             32,
             "parameter {index}"
         );
     }
+    Ok(())
+}
+
+/// `DemandedBits::getDemandedBits(Instruction *)` answers an untracked value
+/// with `APInt::getAllOnes(DL.getTypeSizeInBits(T->getScalarType()))`, and
+/// `getDemandedBits(Use *)` asks it of the use's user. Each way that line
+/// fails upstream is a typed refusal here: a `void` user (the `store` of an
+/// integer) is the `isSized` assert, a homogeneous struct of scalable vectors
+/// (sized, at a scalable size) the fatal `TypeSize::operator ScalarTy`, and an
+/// array of 2^35 bits the narrowing to `unsigned`. No upstream test reaches
+/// any of them, since upstream's callers ask only of integer instructions.
+/// llvmkit-specific regression: each answered a zero-width mask, on which
+/// every predicate is vacuously true. Positive control: the `add` the store
+/// reads demands all 32 bits.
+#[test]
+fn a_value_with_no_bit_width_is_refused_with_its_reason() -> Result<(), IrError> {
+    let m = module_new!("demanded-no-width")?;
+    let i32_ty = m.i32_type();
+    let scalable = VectorType::scalable_of(i32_ty, lanes::<4>()).as_type();
+    let tuple = m.struct_type([scalable, scalable])?.as_type();
+    let wide = m.array_type(m.i64_type(), 1 << 29)?.as_type();
+    let ptr_ty = m.ptr_type_in::<0>();
+    let fn_ty = m.function_type(
+        m.void_type(),
+        [i32_ty.as_type(), ptr_ty.as_type(), tuple, wide],
+    )?;
+    let f = m.add_function_dyn("no_width", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+    let p: PointerValue<'_, SpaceDyn, _> = m.view(f).param(1)?.try_into()?;
+    let sum = b.int_add::<i32, _, _, _>(x, i32_ty.const_int(1_u32), "sum")?;
+    let store = b.store(sum, p)?.to_erased();
+    b.ret_void()?;
+
+    let mut fam = FunctionAnalysisManager::new();
+    fam.register_pass(DemandedBitsAnalysis);
+    let demanded = fam.result::<DemandedBitsAnalysis, _>(m.view(f))?;
+
+    assert_eq!(
+        bits(demanded.demanded_bits(m.view(sum).as_erased())?),
+        "11111111111111111111111111111111"
+    );
+    assert_eq!(
+        demanded.demanded_bits(store),
+        Err(IrError::UnsizedType {
+            kind: TypeKindLabel::Void
+        })
+    );
+    assert_eq!(
+        demanded.operand_demanded_bits(store, 0),
+        Err(IrError::UnsizedType {
+            kind: TypeKindLabel::Void
+        })
+    );
+    assert_eq!(
+        demanded.demanded_bits(m.view(f).param(2)?.as_erased()),
+        Err(IrError::ScalableBitWidth {
+            kind: TypeKindLabel::Struct
+        })
+    );
+    assert_eq!(
+        demanded.demanded_bits(m.view(f).param(3)?.as_erased()),
+        Err(IrError::BitWidthTooWide {
+            kind: TypeKindLabel::Array,
+            bits: 1 << 35
+        })
+    );
     Ok(())
 }

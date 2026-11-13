@@ -27,7 +27,9 @@ use super::value::{GlobalFieldKind, UseList, ValueUse};
 use crate::addr_space::AddressSpace;
 use crate::constant::{ConstantData, ConstantExprData};
 use crate::instr_types::{CallAttributeData, CallAttributesSlot};
-use crate::r#type::{StructBody, TypeData, TypeSlot, TypedPointeeSlot, TypedPointerSlot};
+use crate::r#type::{
+    ScalableMemo, SizedMemo, StructBody, TypeData, TypeSlot, TypedPointeeSlot, TypedPointerSlot,
+};
 use crate::value::{ValueData, ValueKindData, ValueSlot};
 
 /// What [`Context::get_or_create_named_struct`] answered with: the identified
@@ -430,8 +432,8 @@ impl Context {
             identity: crate::r#type::StructIdentity::Literal,
             body: RefCell::new(Some(StructBody { elements, packed })),
             schema_held: Cell::new(false),
-            sized: Cell::new(false),
-            scalable: Cell::new(None),
+            sized: Cell::new(SizedMemo::NotKnown),
+            scalable: Cell::new(ScalableMemo::Unknown),
         }));
         self.literal_struct_types.borrow_mut().insert(key, id);
         id
@@ -504,8 +506,8 @@ impl Context {
             },
             body: RefCell::new(None),
             schema_held: Cell::new(false),
-            sized: Cell::new(false),
-            scalable: Cell::new(None),
+            sized: Cell::new(SizedMemo::NotKnown),
+            scalable: Cell::new(ScalableMemo::Unknown),
         }));
         self.named_struct_types
             .borrow_mut()
@@ -526,8 +528,8 @@ impl Context {
             },
             body: RefCell::new(None),
             schema_held: Cell::new(false),
-            sized: Cell::new(false),
-            scalable: Cell::new(None),
+            sized: Cell::new(SizedMemo::NotKnown),
+            scalable: Cell::new(ScalableMemo::Unknown),
         }));
         self.named_struct_order.borrow_mut().push(id);
         id
@@ -655,66 +657,70 @@ impl Context {
         Ok(())
     }
 
+    /// Mirrors `StructType::checkBody`: one worklist, a `SmallSetVector`
+    /// upstream, of every type `body` reaches, each entered once, so the
+    /// check costs the distinct types reached. A walk from each element
+    /// with a fresh visited list, searched linearly, cost each element its
+    /// whole reach again: a wide body over a shared struct was quadratic.
     fn body_would_be_recursive(&self, target: TypeSlot, body: &StructBody) -> bool {
-        body.elements
-            .iter()
-            .any(|&elem| self.type_reaches_type(elem, target, &mut Vec::new()))
-    }
-
-    fn type_reaches_type(
-        &self,
-        ty: TypeSlot,
-        target: TypeSlot,
-        visited: &mut Vec<TypeSlot>,
-    ) -> bool {
-        if ty == target {
-            return true;
-        }
-        if visited.contains(&ty) {
-            return false;
-        }
-        visited.push(ty);
-
-        match self.type_data(ty) {
-            TypeData::Function { ret, params, .. } => {
-                self.type_reaches_type(*ret, target, visited)
-                    || params
-                        .iter()
-                        .any(|&param| self.type_reaches_type(param, target, visited))
+        let mut seen = std::collections::HashSet::new();
+        let mut worklist = Vec::new();
+        let mut enqueue = |ty: TypeSlot, worklist: &mut Vec<TypeSlot>| {
+            if seen.insert(ty) {
+                worklist.push(ty);
             }
-            TypeData::Array { elem, .. }
-            | TypeData::FixedVector { elem, .. }
-            | TypeData::ScalableVector { elem, .. } => {
-                self.type_reaches_type(*elem, target, visited)
-            }
-            TypeData::Struct(s) => {
-                let body = s.body.borrow();
-                body.as_ref().is_some_and(|body| {
-                    body.elements
-                        .iter()
-                        .any(|&elem| self.type_reaches_type(elem, target, visited))
-                })
-            }
-            TypeData::TargetExt(data) => data
-                .type_params
-                .iter()
-                .any(|&param| self.type_reaches_type(param, target, visited)),
-            TypeData::Void
-            | TypeData::Half
-            | TypeData::Bfloat
-            | TypeData::Float
-            | TypeData::Double
-            | TypeData::X86Fp80
-            | TypeData::Fp128
-            | TypeData::PpcFp128
-            | TypeData::X86Amx
-            | TypeData::WasmExnRef
-            | TypeData::Label
-            | TypeData::Metadata
-            | TypeData::Token
-            | TypeData::Integer { .. }
-            | TypeData::Pointer { .. } => false,
+        };
+        for &elem in &body.elements {
+            enqueue(elem, &mut worklist);
         }
+        let mut next = 0;
+        while let Some(&ty) = worklist.get(next) {
+            next += 1;
+            if ty == target {
+                return true;
+            }
+            // `Worklist.insert_range(Ty->subtypes())`.
+            match self.type_data(ty) {
+                TypeData::Function { ret, params, .. } => {
+                    enqueue(*ret, &mut worklist);
+                    for &param in params.iter() {
+                        enqueue(param, &mut worklist);
+                    }
+                }
+                TypeData::Array { elem, .. }
+                | TypeData::FixedVector { elem, .. }
+                | TypeData::ScalableVector { elem, .. } => enqueue(*elem, &mut worklist),
+                // `target` is never borrowed here: reaching it returned above.
+                TypeData::Struct(s) => {
+                    if let Some(body) = s.body.borrow().as_ref() {
+                        for &elem in &body.elements {
+                            enqueue(elem, &mut worklist);
+                        }
+                    }
+                }
+                TypeData::TargetExt(data) => {
+                    for &param in data.type_params.iter() {
+                        enqueue(param, &mut worklist);
+                    }
+                }
+                TypeData::Void
+                | TypeData::Half
+                | TypeData::Bfloat
+                | TypeData::Float
+                | TypeData::Double
+                | TypeData::X86Fp80
+                | TypeData::Fp128
+                | TypeData::PpcFp128
+                | TypeData::X86Amx
+                | TypeData::WasmExnRef
+                | TypeData::Label
+                | TypeData::Metadata
+                | TypeData::Token
+                | TypeData::Integer { .. }
+                | TypeData::Pointer { .. } => {}
+            }
+        }
+        false
     }
 
     // ---- Value arena ----

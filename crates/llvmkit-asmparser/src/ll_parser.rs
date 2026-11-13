@@ -15076,13 +15076,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 format!("atomicrmw {op} operand must be an integer"),
             ));
         }
-        // Upstream's `unsigned Size` is the implicit `uint64_t` conversion. A
-        // scalable operand was refused above, so the size is fixed.
-        let is_byte_sized = self
-            .module
-            .data_layout()
-            .type_store_size_in_bits(val_ty)
-            .and_then(llvmkit_ir::TypeSize::fixed_value)
+        // Upstream's `unsigned Size` is the implicit `uint64_t` conversion. An
+        // integer, a float, a float vector and a pointer are each sized, and a
+        // scalable operand was refused above, so the size is fixed; a type
+        // that is neither is no power-of-two byte size either.
+        let is_byte_sized = llvmkit_ir::SizedType::try_from(val_ty)
+            .ok()
+            .and_then(|ty| {
+                self.module
+                    .data_layout()
+                    .type_store_size_in_bits(ty)
+                    .fixed_value()
+            })
             .is_some_and(|size| size >= 8 && size.is_power_of_two());
         if !is_byte_sized {
             return Err(self.message_at(

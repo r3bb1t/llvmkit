@@ -29,7 +29,7 @@ use super::constant::{
 };
 use super::constants::{ConstantExprOptions, ConstantFloatValue, ConstantIntValue};
 use super::data_layout::FunctionPtrAlignType;
-use super::derived_types::{ArrayType, FloatType, IntType, StructType, VectorType};
+use super::derived_types::{ArrayType, FloatType, IntType, StructType, VectorType, erase_sized};
 use super::element::ElemDyn;
 use super::float_kind::FloatDyn;
 use super::gep_no_wrap_flags::GepNoWrapFlags;
@@ -42,7 +42,7 @@ use super::instruction::{InstructionKindData, InstructionView};
 use super::instructions::is_eliminable_cast_pair;
 use super::int_width::IntDyn;
 use super::module::{ModuleBrand, ModuleRef, ModuleView};
-use super::r#type::{ElementCount, IrType, Type, TypeData, TypeSlotAccess, erase_type};
+use super::r#type::{ElementCount, IrType, Type, TypeData, TypeSlotAccess};
 use super::type_components::lanes;
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{IsValue, Value, ValueKindData, ValueSlot, ValueSlotAccess};
@@ -2454,10 +2454,11 @@ fn global_pointer_alignment<B: ModuleBrand>(
             if let Some(explicit) = data.align.get().align() {
                 return Some(explicit);
             }
-            let value_ty = Type::new(data.value_type, module);
-            if !value_ty.is_sized() {
+            // Upstream's `if (!ObjectType->isSized()) return Align(1)`, kept as
+            // the proof the size queries below take.
+            let Some(value_ty) = erase_sized(Type::new(data.value_type, module)) else {
                 return Some(Align::ONE);
-            }
+            };
             let dl = module.data_layout();
             let linkage = data.linkage.get();
             let has_initializer = data.initializer.get().is_some();
@@ -2465,19 +2466,19 @@ fn global_pointer_alignment<B: ModuleBrand>(
                 && linkage != Linkage::AvailableExternally
                 && !linkage_is_weak_for_linker(linkage)
             {
-                let mut alignment = dl.pref_type_align(erase_type(value_ty))?;
+                let mut alignment = dl.pref_type_align(value_ty);
                 let large_alignment = Align::new(16).ok()?;
                 // `getTypeSizeInBits(ElemType) > 128` is the implicit `TypeSize`
                 // conversion upstream, which is fatal on a scalable global (an
                 // invalid one, but it parses). No alignment is claimed for it.
                 if alignment < large_alignment
-                    && dl.type_size_in_bits(erase_type(value_ty))?.fixed_value()? > 128
+                    && dl.type_size_in_bits(value_ty).fixed_value()? > 128
                 {
                     alignment = large_alignment;
                 }
                 Some(alignment)
             } else {
-                dl.abi_type_align(erase_type(value_ty))
+                Some(dl.abi_type_align(value_ty))
             }
         }
         _ => None,

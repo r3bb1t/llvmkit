@@ -1827,6 +1827,7 @@ impl<B: ModuleBrand, C: Capability> CapabilityOf for SizedType<'_, B, C> {
 }
 
 impl<'ctx, B: ModuleBrand, C: Capability> SizedType<'ctx, B, C> {
+    /// The type, without the proof.
     #[inline]
     pub fn as_type(self) -> Type<'ctx, B, C> {
         self.0
@@ -1866,6 +1867,16 @@ impl<'ctx, B: ModuleBrand, C: Capability> fmt::Display for SizedType<'ctx, B, C>
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
+}
+
+/// `ty`, brand-erased as [`crate::r#type::erase_type`] erases it, with the
+/// proof that it is sized; `None` when it is not. For the crate's folds and
+/// analyses, which ask `DataLayout` sizes of brand-erased types and decline
+/// where upstream's size query would assert `isSized`.
+pub(crate) fn erase_sized<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    ty: Type<'ctx, B, C>,
+) -> Option<SizedType<'ctx, crate::DynBrand, crate::ReadOnly>> {
+    SizedType::try_from(crate::r#type::erase_type(ty)).ok()
 }
 
 /// First-class types that may carry an SSA value: integer / float /

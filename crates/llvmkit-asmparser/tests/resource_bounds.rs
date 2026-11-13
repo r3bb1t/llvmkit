@@ -9,7 +9,7 @@
 //! binary, and, where a count can say more than a clock, as a failed count.
 
 use llvmkit_asmparser::parser;
-use llvmkit_ir::{DataLayout, DynBrand, Module, Unverified};
+use llvmkit_ir::{DataLayout, DynBrand, IrError, Module, SizedType, Unverified};
 
 pub mod support;
 
@@ -177,9 +177,9 @@ fn a_struct_shared_forty_levels_deep_is_laid_out_once_per_level() {
         source.push_str(&format!("@g = external global %t{LEVELS}\n"));
         let module = parse(&source);
         let global = module.global("g").expect("@g is declared");
-        let size = DataLayout::default()
-            .type_alloc_size(module.view(global).value_type())
-            .expect("the struct is sized");
+        let ty =
+            SizedType::try_from(module.view(global).value_type()).expect("the struct is sized");
+        let size = DataLayout::default().type_alloc_size(ty);
         assert!(!size.is_scalable());
         assert_eq!(size.known_min_value(), 4u64 << LEVELS);
     });
@@ -219,20 +219,11 @@ fn a_struct_shared_sixty_four_levels_deep_parses_verifies_and_prints() {
         // 4 * 2^64 bytes has no `u64`: both byte sizes saturate (D42),
         // where upstream's arithmetic wraps, and asking does not panic.
         let global = module.global("g").expect("@g is defined");
-        let ty = module.view(global).value_type();
+        let ty =
+            SizedType::try_from(module.view(global).value_type()).expect("the struct is sized");
         let data_layout = DataLayout::default();
-        assert_eq!(
-            data_layout
-                .type_alloc_size(ty)
-                .map(|size| size.known_min_value()),
-            Some(u64::MAX)
-        );
-        assert_eq!(
-            data_layout
-                .type_store_size(ty)
-                .map(|size| size.known_min_value()),
-            Some(u64::MAX)
-        );
+        assert_eq!(data_layout.type_alloc_size(ty).known_min_value(), u64::MAX);
+        assert_eq!(data_layout.type_store_size(ty).known_min_value(), u64::MAX);
         let printed = format!("{module}");
         parse(&printed).verify().expect("the module verifies");
         assert_eq!(format!("{}", parse(&printed)), printed);
@@ -260,25 +251,19 @@ fn a_size_past_sixty_four_bits_saturates_without_shrinking_its_bytes() {
     source.push_str(&format!("@g = external global %t{LEVELS}\n"));
     let module = parse(&source);
     let global = module.global("g").expect("@g is declared");
-    let ty = module.view(global).value_type();
+    let ty = SizedType::try_from(module.view(global).value_type()).expect("the struct is sized");
     let data_layout = DataLayout::default();
     assert_eq!(
-        data_layout
-            .type_alloc_size(ty)
-            .map(|size| size.known_min_value()),
-        Some(4u64 << LEVELS)
+        data_layout.type_alloc_size(ty).known_min_value(),
+        4u64 << LEVELS
     );
     assert_eq!(
-        data_layout
-            .type_store_size(ty)
-            .map(|size| size.known_min_value()),
-        Some(4u64 << LEVELS)
+        data_layout.type_store_size(ty).known_min_value(),
+        4u64 << LEVELS
     );
     assert_eq!(
-        data_layout
-            .type_size_in_bits(ty)
-            .map(|size| size.known_min_value()),
-        Some(u64::MAX)
+        data_layout.type_size_in_bits(ty).known_min_value(),
+        u64::MAX
     );
 }
 
@@ -307,7 +292,8 @@ fn a_struct_asked_about_again_is_not_laid_out_again() {
         source.push_str("@g = external global %top\n");
         let module = parse(&source);
         let global = module.global("g").expect("@g is declared");
-        let ty = module.view(global).value_type();
+        let ty =
+            SizedType::try_from(module.view(global).value_type()).expect("the struct is sized");
         let layouts: Vec<(DataLayout, u64)> = [1u64, 2, 4, 8, 16]
             .into_iter()
             .map(|bytes| {
@@ -317,10 +303,7 @@ fn a_struct_asked_about_again_is_not_laid_out_again() {
             .collect();
         for _ in 0..QUERIES {
             for (layout, bytes) in &layouts {
-                assert_eq!(
-                    layout.abi_type_align(ty).map(|align| align.value()),
-                    Some(*bytes)
-                );
+                assert_eq!(layout.abi_type_align(ty).value(), *bytes);
             }
         }
     });
@@ -329,17 +312,18 @@ fn a_struct_asked_about_again_is_not_laid_out_again() {
 /// A struct 30 levels deep, each level two copies of the one below, over a
 /// struct that holds an opaque struct.
 ///
-/// **No upstream counterpart.** Upstream asserts on every size query of such
-/// a type (`docs/divergences.md` D43). llvmkit's size queries answer `None`
-/// for it at once (it is unsized), and `struct_layout` answers `None` after
-/// laying it out with the opaque field empty. That layout is never kept in
-/// the `DataLayout`'s map, since the body may come later; it is kept for the
-/// rest of the query instead (`StructLayouts::seen`). Without that, each
-/// visit of a shared struct laid it out again, twice per field, and this
-/// query would lay `%t0` out 4^30 times.
+/// **No upstream counterpart.** Upstream asserts `isSized` on every size
+/// query of such a type. llvmkit's size queries take a [`SizedType`] proof,
+/// which this type refuses (`IrError::UnsizedType`), and `struct_layout`
+/// answers `None` for it. Both ask `isSized`, whose walk stops at the first
+/// unsized field, as upstream's `StructType::isSized` does. Before the
+/// queries took the proof they laid such a struct out with the opaque field
+/// empty, and a layout that was not kept was redone on every visit of a
+/// shared struct, twice per field: this query would have laid `%t0` out
+/// 4^30 times.
 #[test]
-fn a_shared_struct_over_an_opaque_field_is_laid_out_once_per_query() {
-    support::deadline::within_a_minute("an uncached layout is laid out on every visit", || {
+fn a_shared_struct_over_an_opaque_field_is_refused_at_once() {
+    support::deadline::within_a_minute("an unsized struct is walked on every path", || {
         const LEVELS: u32 = 30;
         let mut source = String::from("%O = type opaque\n%t0 = type { %O }\n");
         for level in 1..=LEVELS {
@@ -350,13 +334,11 @@ fn a_shared_struct_over_an_opaque_field_is_laid_out_once_per_query() {
         let module = parse(&source);
         let global = module.global("g").expect("@g is declared");
         let ty = module.view(global).value_type();
-        let data_layout = DataLayout::default();
-        assert_eq!(
-            data_layout.type_alloc_size(ty),
-            None,
-            "an unsized type has no size"
+        assert!(
+            matches!(SizedType::try_from(ty), Err(IrError::UnsizedType { .. })),
+            "an unsized type has no size proof"
         );
-        assert_eq!(data_layout.abi_type_align(ty), None);
+        let data_layout = DataLayout::default();
         let top = module
             .named_struct(&format!("t{LEVELS}"))
             .expect("the top struct is defined");
@@ -364,5 +346,64 @@ fn a_shared_struct_over_an_opaque_field_is_laid_out_once_per_query() {
             data_layout.struct_layout(top).is_none(),
             "it holds an opaque struct"
         );
+    });
+}
+
+/// A named struct of 100,000 fields, each the same struct `%s`, which reaches
+/// 1,000 distinct structs of its own.
+///
+/// **No upstream counterpart.** Upstream's `StructType::checkBody`
+/// (`Type.cpp`), which `setBody` runs to refuse a recursive body, walks one
+/// `SmallSetVector` worklist of every type the body reaches, entering each
+/// once, so this body costs its 1,002 distinct types. llvmkit walked from
+/// each field with a fresh visited list, searched linearly, so each of the
+/// 100,000 fields walked `%s`'s reach again at a cost quadratic in it: about
+/// 5 * 10^10 comparisons. `Context::body_would_be_recursive` is now the
+/// worklist.
+#[test]
+fn a_wide_body_over_a_shared_struct_is_checked_once() {
+    support::deadline::within_a_minute("a body's check walks each field's reach", || {
+        const REACH: usize = 1_000;
+        const FIELDS: usize = 100_000;
+        let mut source = String::new();
+        for index in 0..REACH {
+            source.push_str(&format!("%d{index} = type {{ i8 }}\n"));
+        }
+        let reached: Vec<String> = (0..REACH).map(|index| format!("%d{index}")).collect();
+        source.push_str(&format!("%s = type {{ {} }}\n", reached.join(", ")));
+        source.push_str(&format!(
+            "%top = type {{ {} }}\n",
+            vec!["%s"; FIELDS].join(", ")
+        ));
+        let module = parse(&source);
+        let top = module.named_struct("top").expect("%top is defined");
+        assert_eq!(top.field_count(), FIELDS, "every field is in the body");
+    });
+}
+
+/// A named struct of 200,000 fields, each its own struct type, given a zero
+/// initializer, which asks whether it is sized.
+///
+/// **No upstream counterpart.** Upstream's `StructType::isSized` (`Type.cpp`)
+/// threads a `SmallPtrSet` of the structs it has visited, so asking costs the
+/// distinct structs reached. llvmkit's visited set was a list searched on
+/// every struct, so each of the 200,000 fields searched the fields before
+/// it: about 2 * 10^10 comparisons. `is_sized` and `is_scalable` now thread a
+/// set.
+#[test]
+fn a_wide_struct_of_distinct_structs_is_sized_in_linear_time() {
+    support::deadline::within_a_minute("isSized searches a list of visited structs", || {
+        const FIELDS: usize = 200_000;
+        let mut source = String::new();
+        for field in 0..FIELDS {
+            source.push_str(&format!("%s{field} = type {{ i8 }}\n"));
+        }
+        let fields: Vec<String> = (0..FIELDS).map(|field| format!("%s{field}")).collect();
+        source.push_str(&format!("%top = type {{ {} }}\n", fields.join(", ")));
+        source.push_str("@g = global %top zeroinitializer\n");
+        let module = parse(&source);
+        let global = module.global("g").expect("@g is defined");
+        let ty = module.view(global).value_type();
+        assert!(ty.is_sized(), "a struct of sized structs is sized");
     });
 }

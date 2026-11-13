@@ -35,7 +35,7 @@ use super::constants::{
 };
 use super::data_layout::DataLayout;
 use super::denormal_mode::{DenormalMode, DenormalModeKind, DenormalModeSide};
-use super::derived_types::{FloatType, IntType, PointerType, StructType, VectorType};
+use super::derived_types::{FloatType, IntType, PointerType, StructType, VectorType, erase_sized};
 use super::element::ElemDyn;
 use super::float_kind::FloatDyn;
 use super::fmf::FastMathFlags;
@@ -444,12 +444,12 @@ pub(crate) fn constant_fold_load_from_const_trusting_same_module<
 
     // Explicitly check for out-of-bounds access, so we return poison even if
     // the constant is a uniform value. A scalable size is not known here.
-    // An unsized constant has no size, where upstream's `getTypeAllocSize`
-    // asserts (D43): nothing is read from it.
-    let Some(constant_size) = dl.type_alloc_size(erase_type(constant.ty())) else {
+    // An unsized constant has no size to check against, where upstream's
+    // `getTypeAllocSize` asserts `isSized`: nothing is read from it.
+    let Some(constant_ty) = erase_sized(constant.ty()) else {
         return Ok(None);
     };
-    if let Some(size) = constant_size.fixed_value()
+    if let Some(size) = dl.type_alloc_size(constant_ty).fixed_value()
         && offset_sge(&offset, size)
     {
         return Ok(Some(ty.poison().as_constant()));
@@ -493,10 +493,10 @@ fn read_data_from_global<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     out: &mut [u8],
     dl: &DataLayout,
 ) -> IrResult<bool> {
-    // Reading type padding, return zero.
-    let Some(store_size) = dl
-        .type_store_size(erase_type(constant.ty()))
-        .and_then(TypeSize::fixed_value)
+    // Reading type padding, return zero. An unsized constant has no bytes to
+    // read, where upstream's `getTypeStoreSize` asserts `isSized`.
+    let Some(store_size) =
+        erase_sized(constant.ty()).and_then(|ty| dl.type_store_size(ty).fixed_value())
     else {
         return Ok(false);
     };
@@ -620,10 +620,10 @@ fn read_struct_data_from_global<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         else {
             return Ok(false);
         };
-        // `None` for an unsized element, where upstream asserts (D43).
-        let Some(element_size) = dl
-            .type_alloc_size(erase_type(element.ty()))
-            .and_then(TypeSize::fixed_value)
+        // An unsized element has no size, where upstream's `getTypeAllocSize`
+        // asserts `isSized`: no bytes are read.
+        let Some(element_size) =
+            erase_sized(element.ty()).and_then(|ty| dl.type_alloc_size(ty).fixed_value())
         else {
             return Ok(false);
         };
@@ -671,10 +671,10 @@ fn read_sequence_data_from_global<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 ) -> IrResult<bool> {
     let module = constant.module;
     let (num_elts, elt_size) = if let Some((element, length)) = constant.ty().data().as_array() {
-        // `None` for an unsized element, where upstream asserts (D43).
-        let Some(size) = dl
-            .type_alloc_size(erase_type(Type::new(element, module)))
-            .and_then(TypeSize::fixed_value)
+        // An unsized element has no size, where upstream's `getTypeAllocSize`
+        // asserts `isSized`: no bytes are read.
+        let Some(size) = erase_sized(Type::new(element, module))
+            .and_then(|ty| dl.type_alloc_size(ty).fixed_value())
         else {
             return Ok(false);
         };
@@ -683,16 +683,16 @@ fn read_sequence_data_from_global<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         let Some((element, lanes, _)) = constant.ty().data().as_vector() else {
             return Ok(false);
         };
-        let element = Type::new(element, module);
+        // A vector of a target extension type with no layout is unsized.
+        let Some(element) = erase_sized(Type::new(element, module)) else {
+            return Ok(false);
+        };
         // TODO: For non-byte-sized vectors, current implementation assumes
         // there is padding to the next byte boundary between elements.
-        if dl.type_size_equals_store_size(erase_type(element)) != Some(true) {
+        if !dl.type_size_equals_store_size(element) {
             return Ok(false);
         }
-        let Some(size) = dl
-            .type_store_size(erase_type(element))
-            .and_then(TypeSize::fixed_value)
-        else {
+        let Some(size) = dl.type_store_size(element).fixed_value() else {
             return Ok(false);
         };
         (u64::from(lanes.get()), size)
@@ -758,10 +758,10 @@ fn fold_reinterpret_load_from_const<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }
 
     // TODO: We should be able to support scalable types.
-    // `None` for an unsized initializer too, where upstream asserts (D43).
-    let Some(initializer_size) = dl
-        .type_alloc_size(erase_type(constant.ty()))
-        .and_then(TypeSize::fixed_value)
+    // An unsized initializer has no size either, where upstream's
+    // `getTypeAllocSize` asserts `isSized`.
+    let Some(initializer_size) =
+        erase_sized(constant.ty()).and_then(|ty| dl.type_alloc_size(ty).fixed_value())
     else {
         return Ok(None);
     };
@@ -822,13 +822,15 @@ fn fold_reinterpret_load_as_integer<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     }
     let is_pointer = load_ty.is_ptr_or_ptr_vector();
 
+    // A vector of a target extension type with no layout is unsized, where
+    // upstream's `getTypeSizeInBits` asserts `isSized`: no fold.
+    let Some(load_ty_sized) = erase_sized(load_ty) else {
+        return Ok(None);
+    };
     // `getFixedValue`. The caller refused a scalable vector, and a float, a
     // pointer and a fixed vector each have a fixed size.
-    let Some(bits) = dl
-        .type_size_in_bits(erase_type(load_ty))
-        .and_then(TypeSize::fixed_value)
-    else {
-        unreachable!("a float, a pointer or a fixed vector is sized, and its size is fixed");
+    let Some(bits) = dl.type_size_in_bits(load_ty_sized).fixed_value() else {
+        unreachable!("the caller refused a scalable vector; every other load type here is fixed");
     };
     // `Type::getIntNTy` asserts on a width no `IntegerType` has. Past 32 bytes
     // the integer load answers null anyway, so that is what this answers.
@@ -953,8 +955,10 @@ pub(crate) fn constant_fold_load_from_uniform_value_trusting_same_module<
         return Some(ty.undef().as_constant());
     }
     // If padding is needed when storing C to memory, then it isn't considered
-    // as uniform.
-    if dl.type_size_equals_store_size(erase_type(constant.ty())) != Some(true) {
+    // as uniform. An unsized constant declines, where upstream's
+    // `typeSizeEqualsStoreSize` asserts `isSized`.
+    let constant_ty = erase_sized(constant.ty())?;
+    if !dl.type_size_equals_store_size(constant_ty) {
         return None;
     }
     if constant.is_null_value() && !matches!(ty.data(), TypeData::X86Amx) {
@@ -2214,14 +2218,14 @@ pub(crate) fn constant_fold_load_through_bitcast_trusting_same_module<
         if value.ty() == dest_ty {
             return Ok(Some(value));
         }
-        // `None` for an unsized side, where upstream's `getTypeSizeInBits`
-        // asserts (D43): no fold.
-        let (Some(dest_size), Some(src_size)) = (
-            dl.type_size_in_bits(erase_type(dest_ty)),
-            dl.type_size_in_bits(erase_type(value.ty())),
-        ) else {
+        // An unsized side declines, where upstream's `getTypeSizeInBits`
+        // asserts `isSized`: no fold.
+        let (Some(dest_sized), Some(src_sized)) = (erase_sized(dest_ty), erase_sized(value.ty()))
+        else {
             return Ok(None);
         };
+        let dest_size = dl.type_size_in_bits(dest_sized);
+        let src_size = dl.type_size_in_bits(src_sized);
         if !TypeSize::is_known_ge(src_size, dest_size) {
             return Ok(None);
         }
@@ -2947,7 +2951,7 @@ fn constant_at_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 }
 
 /// Mirrors `DataLayout::getGEPIndicesForOffset`, with `None` for an unsized
-/// `ty`, where upstream's `getTypeAllocSize` asserts (D43).
+/// `ty`, where upstream's `getTypeAllocSize` asserts `isSized`.
 fn gep_indices_for_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     ty: Type<'ctx, B, C>,
     offset: &mut ApInt,
@@ -2955,7 +2959,7 @@ fn gep_indices_for_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 ) -> Option<Vec<ApInt>> {
     let mut element_ty = ty;
     let mut indices = vec![element_index(
-        dl.type_alloc_size(erase_type(element_ty))?,
+        dl.type_alloc_size(erase_sized(element_ty)?),
         offset,
     )];
     while !offset.is_zero() {
@@ -3005,14 +3009,15 @@ fn gep_index_for_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         TypeData::Array { elem, .. } => {
             *element_ty = Type::new(*elem, module);
             // `None` for an unsized element, which has no stride to divide by,
-            // where upstream's `getTypeAllocSize` asserts (D43).
+            // where upstream's `getTypeAllocSize` asserts `isSized`.
             Some(element_index(
-                dl.type_alloc_size(erase_type(*element_ty))?,
+                dl.type_alloc_size(erase_sized(*element_ty)?),
                 offset,
             ))
         }
         TypeData::Struct(data) => {
-            // No layout for a struct holding an opaque struct (D43).
+            // No layout for an unsized struct, where upstream's
+            // `getStructLayout` asserts `isSized`.
             let layout = dl.struct_layout_of(erase_type(*element_ty))?;
             let int_offset = offset.try_zext_u64()?;
             if int_offset >= layout.size_in_bytes().fixed_value()? {
@@ -3228,10 +3233,10 @@ fn aggregate_first_element<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             let mut index = 0_u32;
             loop {
                 let element = constant.aggregate_element(index)?;
-                // An unsized element has no size to skip (D43), where
-                // upstream's `getTypeSizeInBits` asserts: no element.
+                // An unsized element has no size to skip, where upstream's
+                // `getTypeSizeInBits` asserts `isSized`: no element.
                 if dl
-                    .type_size_in_bits(erase_type(element.ty()))?
+                    .type_size_in_bits(erase_sized(element.ty())?)
                     .known_min_value()
                     != 0
                 {
@@ -3244,8 +3249,10 @@ fn aggregate_first_element<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         // For non-byte-sized vector elements, the first element is not
         // necessarily located at the vector base address.
         TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
-            let elem_ty = Type::new(*elem, module);
-            if dl.type_size_equals_store_size(erase_type(elem_ty)) != Some(true) {
+            // A vector of a target extension type with no layout is unsized,
+            // where upstream's `typeSizeEqualsStoreSize` asserts `isSized`.
+            let elem_ty = erase_sized(Type::new(*elem, module))?;
+            if !dl.type_size_equals_store_size(elem_ty) {
                 return None;
             }
             constant.aggregate_element(0)
@@ -3330,7 +3337,7 @@ fn fold_const_vector_to_ap_int<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     // Now that we know that the input value is a vector of integers, just shift
     // and insert them into our result.
     let bit_shift = u32::try_from(
-        dl.type_size_in_bits(erase_type(src_elt_ty))?
+        dl.type_size_in_bits(erase_sized(src_elt_ty)?)
             .fixed_value()?,
     )
     .ok()?;
@@ -3376,9 +3383,8 @@ fn fold_vector_to_scalar_bitcast<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     };
 
     // A cast of equal sizes has a fixed one, because the scalar's is.
-    let Some(result_bits) = dl
-        .type_size_in_bits(erase_type(dest_ty))
-        .and_then(TypeSize::fixed_value)
+    let Some(result_bits) = erase_sized(dest_ty)
+        .and_then(|ty| dl.type_size_in_bits(ty).fixed_value())
         .and_then(|bits| u32::try_from(bits).ok())
     else {
         return Ok(None);

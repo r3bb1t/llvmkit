@@ -364,7 +364,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         if crate::r#type::is_scalable(
             self.module,
             value_ty.slot_trusting_same_module(),
-            &mut Vec::new(),
+            &mut std::collections::HashSet::new(),
         ) {
             return Err(self.fail_global(
                 g,

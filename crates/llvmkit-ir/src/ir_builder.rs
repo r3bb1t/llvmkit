@@ -5089,34 +5089,27 @@ where
 
     // ---- Memory: alloca / load / store ----
 
-    /// `ty` as a [`SizedType`], or the refusal of upstream's assertion when
-    /// it is unsized. Upstream's `getABITypeAlign` / `getPrefTypeAlign`
-    /// assert `Ty->isSized()` ("Cannot getTypeInfo() on a type that is
-    /// unsized!"), and `IRBuilder` fills every omitted alignment through them.
-    /// An unsized type has no alignment (`docs/divergences.md` D43), and a
-    /// struct holding an opaque struct can still get a body, so no `align`
-    /// can be filled for it now.
-    fn sized(&self, ty: TypeSlot) -> IrResult<SizedType> {
-        SizedType::checked(Type::new(ty, self.mutable_ref())).ok_or(IrError::InvalidOperation {
-            message: "Cannot getTypeInfo() on a type that is unsized!",
-        })
+    /// `ty` as a [`SizedType`], or [`IrError::UnsizedType`] where upstream's
+    /// `getABITypeAlign` / `getPrefTypeAlign` assert `Ty->isSized()`.
+    /// `IRBuilder` fills every omitted alignment through them, and an
+    /// unsized type has no alignment to fill.
+    fn sized(&self, ty: TypeSlot) -> IrResult<SizedType<'ctx, B>> {
+        SizedType::try_from(Type::new(ty, self.mutable_ref()))
     }
 
     /// The DataLayout ABI alignment of a sized type, materialised so
     /// load/store carry an explicit `align` like upstream
     /// (`computeLoadStoreDefaultAlign` = `getABITypeAlign`). Taking a
     /// [`SizedType`] is what makes every default-filling path check.
-    fn default_abi_align(&self, ty: SizedType) -> MaybeAlign {
-        let dl = self.module.data_layout();
-        MaybeAlign::new(dl.abi_align_of_id(self.module, ty.slot()))
+    fn default_abi_align(&self, ty: SizedType<'ctx, B>) -> MaybeAlign {
+        MaybeAlign::new(self.module.data_layout().abi_type_align(ty))
     }
 
     /// The DataLayout preferred alignment of a sized type, materialised so
     /// alloca carries an explicit `align` like upstream
     /// (`computeAllocaDefaultAlign` = `getPrefTypeAlign`).
-    fn default_pref_align(&self, ty: SizedType) -> MaybeAlign {
-        let dl = self.module.data_layout();
-        MaybeAlign::new(dl.pref_align_of_id(self.module, ty.slot()))
+    fn default_pref_align(&self, ty: SizedType<'ctx, B>) -> MaybeAlign {
+        MaybeAlign::new(self.module.data_layout().pref_type_align(ty))
     }
 
     /// The DataLayout alloca address space (`IRBuilder::CreateAlloca` uses
@@ -5638,13 +5631,13 @@ where
     fn load_sized<N>(
         &self,
         mut payload: LoadInstData,
-        pointee: SizedType,
+        pointee: SizedType<'ctx, B>,
         name: N,
     ) -> Instruction<'ctx, Attached, B>
     where
         N: AsRef<str>,
     {
-        payload.pointee_ty = pointee.slot();
+        payload.pointee_ty = pointee.as_type().slot_trusting_same_module();
         if payload.align.align().is_none() {
             payload.align = self.default_abi_align(pointee);
         }
@@ -6249,7 +6242,7 @@ where
             .as_constant();
         // `i8` is sized by construction: its preferred alignment, through the
         // witness every default alignment takes.
-        let align = self.default_pref_align(SizedType::integer(i8_ty));
+        let align = self.default_pref_align(SizedType::from(i8_ty));
         crate::GlobalBuilder::new(module, name, constant.ty())
             .constant()
             .initializer(constant)
@@ -10445,7 +10438,7 @@ where
         name: N,
     ) -> IntValue<'ctx, W, B> {
         // Internal: every caller mints `ty` or admits it at its own entry.
-        let inst = self.load_sized(payload, SizedType::integer(ty), name);
+        let inst = self.load_sized(payload, SizedType::from(ty), name);
         IntValue::<W, B>::from_value_unchecked(inst.to_erased())
     }
 
@@ -10460,7 +10453,7 @@ where
         name: N,
     ) -> FloatValue<'ctx, K, B> {
         // Internal: every caller mints `ty` or admits it at its own entry.
-        let inst = self.load_sized(payload, SizedType::float(ty), name);
+        let inst = self.load_sized(payload, SizedType::from(ty), name);
         FloatValue::<K, B>::from_value_unchecked(inst.to_erased())
     }
 
@@ -10493,7 +10486,7 @@ where
         payload: LoadInstData,
         name: N,
     ) -> PointerValue<'ctx, A, B> {
-        let inst = self.load_sized(payload, SizedType::pointer(ptr_ty), name);
+        let inst = self.load_sized(payload, SizedType::from(ptr_ty), name);
         PointerValue::from_value_unchecked(inst.to_erased())
     }
 
@@ -11886,57 +11879,7 @@ where
     }
 }
 
-use sized_type::SizedType;
-
-/// The [`SizedType`] witness, in a module of its own so that its field and
-/// constructors are private to it: code elsewhere in this file cannot write
-/// `SizedType(slot)` without a check.
-mod sized_type {
-    use crate::derived_types::{FloatType, IntType, PointerType};
-    use crate::float_kind::FloatKind;
-    use crate::int_width::IntWidth;
-    use crate::module::ModuleBrand;
-    use crate::r#type::{Type, TypeSlot, TypeSlotAccess};
-
-    /// A type the builder has proven sized: what [`IrBuilder`]'s default
-    /// alignments take, since upstream's `getABITypeAlign` /
-    /// `getPrefTypeAlign` assert `Ty->isSized()`. Minted checked
-    /// ([`Self::checked`]), or without a check for an integer, float or
-    /// pointer type, each sized by construction (`Type::isSized`'s first
-    /// arm). No other constructor exists, so no path fills a default
-    /// alignment for a type it has not proven sized.
-    ///
-    /// [`IrBuilder`]: crate::IrBuilder
-    #[derive(Clone, Copy)]
-    pub(super) struct SizedType(TypeSlot);
-
-    impl SizedType {
-        /// `ty`, if it is sized.
-        pub(super) fn checked<B: ModuleBrand, C: crate::Capability>(
-            ty: Type<'_, B, C>,
-        ) -> Option<Self> {
-            ty.is_sized().then(|| Self(ty.slot_trusting_same_module()))
-        }
-
-        pub(super) fn integer<W: IntWidth, B: ModuleBrand>(ty: IntType<'_, W, B>) -> Self {
-            Self(ty.as_type().slot_trusting_same_module())
-        }
-
-        pub(super) fn float<K: FloatKind, B: ModuleBrand>(ty: FloatType<'_, K, B>) -> Self {
-            Self(ty.as_type().slot_trusting_same_module())
-        }
-
-        pub(super) fn pointer<A: crate::AddrSpace, B: ModuleBrand>(
-            ty: PointerType<'_, A, B>,
-        ) -> Self {
-            Self(ty.slot_trusting_same_module())
-        }
-
-        pub(super) fn slot(self) -> TypeSlot {
-            self.0
-        }
-    }
-}
+use crate::derived_types::SizedType;
 
 // `require_same_int_width` is no longer needed: the IrBuilder's binary-
 

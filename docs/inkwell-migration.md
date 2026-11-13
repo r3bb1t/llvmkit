@@ -169,7 +169,7 @@ check at runtime:
 
 |Invariant|Inkwell|llvmkit|
 |---|---|---|
-|"this is a sized type"|runtime `is_sized()`|`SizedType<'ctx, B>` refinement (`TryFrom<Type>`); the verifier's alloca / load / store / GEP element-sizedness rules are phrased through it — `alloca` accepts any `IrType`, and sized-ness is enforced at verification|
+|"this is a sized type"|runtime `is_sized()`|`SizedType<'ctx, B>` refinement (`TryFrom<Type>`, or `From` an integer, float or pointer type); the `DataLayout` size and alignment queries take it, so none can be asked of an unsized type, and the verifier's alloca / load / store / GEP element-sizedness rules are phrased through it — `alloca` accepts any `IrType`, and sized-ness is enforced at verification|
 |"this is first-class"|n/a|`BasicTypeEnum<'ctx, B>` excludes function / label / metadata / token / void / opaque-struct|
 |"this is an aggregate"|n/a|`AggregateType<'ctx, B>` (array or struct only — vector is *first-class but not aggregate* per LangRef)|
 |"this is basic-or-metadata" (variadic intrinsic)|n/a|`BasicMetadataTypeEnum<'ctx, B>`|

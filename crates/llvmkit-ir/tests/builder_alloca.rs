@@ -5,7 +5,9 @@
 //! Per-test citations name the upstream `unittests/IR/IRBuilderTest.cpp`
 //! `TEST_F` or `test/Assembler/*.ll` fixture each Rust test ports.
 
-use llvmkit_ir::{Align, Dyn, IrBuilder, IrError, Linkage, PointerValue, SpaceDyn, module_new};
+use llvmkit_ir::{
+    Align, Dyn, IrBuilder, IrError, Linkage, PointerValue, SpaceDyn, TypeKindLabel, module_new,
+};
 
 /// llvmkit-specific: AsmWriter byte-for-byte parity check for the
 /// no-align `alloca` print form. Closest upstream functional coverage:
@@ -69,10 +71,12 @@ fn alloca_aligned() -> Result<(), IrError> {
 /// omitted alignment for an unsized type, through the flat entries or the
 /// `load_from` chain. Upstream's `IRBuilder` fills it
 /// from `getPrefTypeAlign` / `getABITypeAlign`, which assert
-/// `Ty->isSized()`; llvmkit refuses with that assertion's text. It used to
-/// write the alignment of an empty layout for the opaque field, which goes
-/// wrong once the opaque field gets a body. An explicit alignment is taken,
-/// and the verifier judges the instruction as upstream's does.
+/// `Ty->isSized()`; llvmkit refuses with the typed [`IrError::UnsizedType`],
+/// naming the struct kind. It used to write the alignment of an empty layout
+/// for the opaque field, which goes wrong once the opaque field gets a body,
+/// and then refused with a string-carrying `InvalidOperation`. An explicit
+/// alignment is taken, and the verifier judges the instruction as upstream's
+/// does.
 #[test]
 fn alloca_load_and_store_refuse_to_guess_an_unsized_alignment() -> Result<(), IrError> {
     let m = module_new!("unsized")?;
@@ -83,12 +87,10 @@ fn alloca_load_and_store_refuse_to_guess_an_unsized_alignment() -> Result<(), Ir
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let refused = |result: Result<(), IrError>| {
-        matches!(
-            result,
-            Err(IrError::InvalidOperation {
-                message: "Cannot getTypeInfo() on a type that is unsized!"
+        result
+            == Err(IrError::UnsizedType {
+                kind: TypeKindLabel::Struct,
             })
-        )
     };
     assert!(refused(b.alloca(holder, "a").map(|_| ())));
     let pointer: PointerValue<'_, SpaceDyn, _> = m.view(f).param(0)?.try_into()?;

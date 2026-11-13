@@ -11,7 +11,7 @@ use super::analysis::{
 use super::capability::Capability;
 use super::constant::ConstantData;
 use super::data_layout::DataLayout;
-use super::derived_types::IntType;
+use super::derived_types::{IntType, erase_sized};
 use super::instr_types::{BinaryOpData, CallInstData, CastOpData, CastOpcode, InvokeInstData};
 use super::instruction::{Instruction, InstructionData, InstructionKindData, state};
 use super::int_width::IntDyn;
@@ -20,7 +20,7 @@ use super::module::{ModuleBrand, ModuleRef};
 use super::pass_access::PatchBody;
 use super::pass_context::{FnCx, FnPatch, FnReport, FunctionView};
 use super::pass_manager::FunctionPass;
-use super::r#type::{Type, TypeKind, TypeSlotAccess, erase_type};
+use super::r#type::{Type, TypeKind, TypeSlotAccess};
 use super::value::{IntValue, Value, ValueKindData, ValueSlot, ValueSlotAccess, ValueUse};
 use super::value_id::IntValueId;
 use super::value_tracking::{ValueTrackingQuery, compute_known_bits, value_from_slot};
@@ -90,13 +90,13 @@ pub fn simplify_demanded_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 ) -> IrResult<SimplifyDemandedBitsResult<B>> {
     let Some(width) = int_scalar_bit_width(value.ty()) else {
         return Ok(SimplifyDemandedBitsResult {
-            known: KnownBits::unknown(value_scalar_size_in_bits(value, query.data_layout())),
+            known: KnownBits::unknown(value_scalar_size_in_bits(value, query.data_layout())?),
             demanded: ApInt::zero(0),
             replacement: None,
             demanded_bits_changed: false,
         });
     };
-    let demanded = demanded_bits.demanded_bits(value);
+    let demanded = demanded_bits.demanded_bits(value)?;
     let full = ApInt::low_bits_set(width, u32::MAX);
     let known = compute_known_bits(value, query)?;
     let known_mask = known.zero_mask().bitor(known.one_mask());
@@ -167,20 +167,32 @@ impl DemandedBits {
         }
     }
 
-    /// Return the bits demanded from an instruction value.
+    /// Return the bits demanded from an instruction value. Mirrors
+    /// `DemandedBits::getDemandedBits(Instruction *)`: a value the analysis
+    /// did not track demands every bit of its scalar type.
+    ///
+    /// # Errors
+    ///
+    /// For an untracked value whose scalar type has no bit width, where
+    /// upstream's `DL.getTypeSizeInBits(I->getType()->getScalarType())` fails:
+    /// [`IrError::UnsizedType`] for `void` or another unsized type (upstream
+    /// asserts `isSized`), [`IrError::ScalableBitWidth`] for a size that scales
+    /// with `vscale` (upstream's fatal `TypeSize::operator ScalarTy`), and
+    /// [`IrError::BitWidthTooWide`] past `u32::MAX` bits (upstream narrows
+    /// to `unsigned`).
     pub fn demanded_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         &self,
         value: Value<'ctx, B, C>,
-    ) -> ApInt {
+    ) -> IrResult<ApInt> {
         // boundary (F2): Task 27
         // A caller's value looked up in a result computed for one function.
         if let Some(bits) = self.alive_bits.get(&value.slot_trusting_same_module()) {
-            return bits.clone();
+            return Ok(bits.clone());
         }
-        ApInt::low_bits_set(
-            value_scalar_size_in_bits(value, &self.data_layout),
+        Ok(ApInt::low_bits_set(
+            value_scalar_size_in_bits(value, &self.data_layout)?,
             u32::MAX,
-        )
+        ))
     }
 
     /// Return the bits demanded from operand `operand_index` of instruction `user`.
@@ -205,14 +217,16 @@ impl DemandedBits {
         let operand = value_from_slot(user, operand_id);
         let Some(width) = int_scalar_bit_width(operand.ty()) else {
             return Ok(ApInt::low_bits_set(
-                value_scalar_size_in_bits(operand, &self.data_layout),
+                value_scalar_size_in_bits(operand, &self.data_layout)?,
                 u32::MAX,
             ));
         };
         if self.is_use_dead(user, operand_index)? {
             return Ok(ApInt::zero(width));
         }
-        let a_out = self.demanded_bits(user);
+        // A `void` user has no bits to demand: upstream's
+        // `getDemandedBits(UserI)` asserts there, and this refuses.
+        let a_out = self.demanded_bits(user)?;
         self.determine_live_operand_bits(user, operand, operand_index, &a_out)
     }
 
@@ -1086,7 +1100,7 @@ fn simplify_demanded_operands<'a, 'ctx, B: ModuleBrand + 'ctx>(
     demanded_bits: &DemandedBits,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
-    let demanded = demanded_bits.demanded_bits(value);
+    let demanded = demanded_bits.demanded_bits(value)?;
     let ValueKindData::Instruction(inst) = &value.data().kind else {
         return Ok(false);
     };
@@ -1115,7 +1129,7 @@ fn demanded_value_replacement<'a, 'ctx, B: ModuleBrand + 'ctx>(
     demanded_bits: &DemandedBits,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<Option<Value<'ctx, B>>> {
-    let demanded = demanded_bits.demanded_bits(value);
+    let demanded = demanded_bits.demanded_bits(value)?;
     if !demanded.is_all_ones() && value.num_uses() != 1 {
         return Ok(None);
     }
@@ -1456,15 +1470,21 @@ fn int_scalar_bit_width<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 fn value_scalar_size_in_bits<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Value<'ctx, B, C>,
     dl: &DataLayout,
-) -> u32 {
+) -> IrResult<u32> {
     if let Some(width) = int_scalar_bit_width(value.ty()) {
-        return width;
+        return Ok(width);
     }
-    // `DL.getTypeSizeInBits(T->getScalarType())`, read through `unsigned`. A
-    // scalar whose size is scalable, which upstream cannot convert, answers
-    // the 0 this has always answered a size that does not fit.
-    dl.type_size_in_bits(erase_type(value.ty().scalar_type()))
-        .and_then(crate::TypeSize::fixed_value)
-        .and_then(|bits| u32::try_from(bits).ok())
-        .unwrap_or(0)
+    // `unsigned BitWidth = DL.getTypeSizeInBits(T->getScalarType())`. Each
+    // way that line fails upstream is a typed refusal here: an unsized
+    // scalar (`void`, `label`, an opaque struct) is the `isSized` assert, a
+    // scalable one the fatal `TypeSize::operator ScalarTy`, and one wider
+    // than `u32::MAX` bits the silent narrowing to `unsigned`.
+    let scalar = value.ty().scalar_type();
+    let kind = scalar.kind_label();
+    let sized = erase_sized(scalar).ok_or(IrError::UnsizedType { kind })?;
+    let bits = dl
+        .type_size_in_bits(sized)
+        .fixed_value()
+        .ok_or(IrError::ScalableBitWidth { kind })?;
+    u32::try_from(bits).map_err(|_| IrError::BitWidthTooWide { kind, bits })
 }

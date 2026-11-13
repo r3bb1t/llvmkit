@@ -6171,14 +6171,15 @@ fn alloca_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 ) -> KnownBits {
     let width = query.data_layout().pointer_size_in_bits(data.addr_space);
     let module = module_ref(value);
-    let allocated_ty = erase_type(Type::new(data.allocated_ty, module));
-    // An alloca of an unsized type with no alignment of its own has none to
-    // read (D43); upstream's `AllocaInst` always carries one.
-    let Some(align) = query
-        .data_layout()
-        .value_or_abi_type_align(data.align, allocated_ty)
-    else {
-        return KnownBits::unknown(width);
+    // Upstream's `AllocaInst` always carries an alignment. One llvmkit leaves
+    // unset defaults to the allocated type's ABI alignment, and an unsized
+    // type has none to read, so nothing is known.
+    let align = match data.align.align() {
+        Some(align) => align,
+        None => match crate::derived_types::erase_sized(Type::new(data.allocated_ty, module)) {
+            Some(allocated_ty) => query.data_layout().abi_type_align(allocated_ty),
+            None => return KnownBits::unknown(width),
+        },
     };
     known_low_zero_bits(width, align)
 }
