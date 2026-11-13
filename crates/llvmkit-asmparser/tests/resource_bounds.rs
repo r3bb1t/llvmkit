@@ -112,3 +112,34 @@ fn a_function_of_two_hundred_thousand_blocks_parses_in_linear_time() {
         );
     });
 }
+
+/// A summary whose global-value ids are near `u32::MAX`, one referenced
+/// before and one after its definition.
+///
+/// **No upstream counterpart.** Upstream's `LLParser::addGlobalValueToIndex`
+/// stores `^N` at index `N` of `NumberedValueInfos`, resizing the vector to
+/// `N + 1`, so a 78-byte summary naming `^4000000000` asks for 64 GB (16
+/// bytes a slot); llvmkit's parser did the same and aborted on the
+/// allocation. The parser now keys the ids in a map. The non-contiguous ids
+/// upstream does test are `parser_summary.rs::index_value_order_renumbers_summary_ids`.
+/// What this pins beyond the deadline: both references resolve, to the GUIDs
+/// the ids were defined with, and the printer renumbers the ids densely.
+#[test]
+fn a_summary_id_near_the_top_of_the_range_costs_one_entry() {
+    support::deadline::within_a_minute("a summary id sizes a vector", || {
+        let index = llvmkit_asmparser::parse_summary_index_assembly(concat!(
+            "^0 = module: (path: \"a.o\", hash: (0, 0, 0, 0, 0))\n",
+            "^4000000000 = gv: (guid: 1)\n",
+            "^4000000001 = gv: (guid: 2, summaries: (variable: (module: ^0, ",
+            "flags: (linkage: external), varFlags: (readonly: 0), ",
+            "refs: (^4000000000, ^4000000002))))\n",
+            "^4000000002 = gv: (guid: 3)\n",
+        ))
+        .expect("the index parses");
+        let printed = index.to_string();
+        assert!(
+            printed.contains("refs: (^1, ^3)"),
+            "both references resolve:\n{printed}"
+        );
+    });
+}

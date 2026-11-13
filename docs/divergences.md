@@ -1322,6 +1322,36 @@ entry, `rg -n -i "MAX_EXPANDED|expanded lanes|walk.*lanes" docs/divergences.md d
 **Guarded by:** `crates/llvmkit-asmparser/tests/long_splat_folds.rs`, whose tests each fail
 (by exhausting memory, or by a one-minute deadline) if their fold walks a long splat's lanes.
 
+### D41 — A summary id costs one entry, where upstream sizes a vector by it
+
+**Severity:** hardening. No answer differs against an upstream that can allocate what it asks
+for; where it cannot, upstream fails to allocate and llvmkit parses.
+**Where:** `crates/llvmkit-asmparser/src/ll_parser.rs` — the `numbered_value_infos` field,
+written by `add_global_value_to_index` and read by `parse_gv_reference`.
+
+**LLVM:** `LLParser::addGlobalValueToIndex` stores the `ValueInfo` of `^N = gv: ...` at index
+`N` of `NumberedValueInfos`, a `std::vector`, resizing it to `N + 1` when `N` is past its end
+("to make test simplification easier"); `LLParser::parseGVReference` reads index `N` back. So a
+summary naming `^4000000000` asks for 4000000001 slots, 64 GB at 16 bytes a `ValueInfo`.
+
+**llvmkit:** the ids are keys of a `HashMap<u32, Guid>`, so an id costs one entry whatever its
+value. The three answers upstream gives are kept: a defined id resolves to its GUID, an id never
+defined is a forward reference, and a second definition of an id replaces the first (upstream's
+`NumberedValueInfos[ID] = VI`). The `expected summary id to fit in a machine word` error the
+vector's index conversion needed is gone with it: a `u32` key needs no conversion.
+
+**Why:** a 78-byte summary aborted the parser on a 64 GB allocation (measured at `34fdec9`
+under a 4 GiB cap; `^100000000` succeeded in 0.92 s at 1,534 MiB).
+Before this entry, `rg -n -i 'NumberedValueInfos|numbered_value_infos|summary id'
+docs/divergences.md docs/future-work.md` (run on `46362565`) printed nothing.
+
+**Fix:** none owed; the map is the hardening.
+
+**Guarded by:**
+`crates/llvmkit-asmparser/tests/resource_bounds.rs::a_summary_id_near_the_top_of_the_range_costs_one_entry`,
+which parses ids near `u32::MAX`, referenced before and after their definitions, inside a
+one-minute deadline.
+
 ---
 
 ---
