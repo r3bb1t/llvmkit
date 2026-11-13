@@ -6306,10 +6306,11 @@ where
         }
 
         // Handle array index arithmetic. `if (!IndexedTy->isSized()) {
-        // Known.resetAll(); break; }`, then the stride: one question, whose
-        // `None` is the unsized indexed type, including an unsized struct
-        // with a layout, whose `getTypeAllocSize` alone would answer.
-        let Some(stride) = step.sized_sequential_element_stride(data_layout) else {
+        // Known.resetAll(); break; }`, then the stride: the stride's `None`
+        // is that guard, and covers an unsized struct with a layout, whose
+        // `getTypeAllocSize` alone would answer. It still walks the type
+        // twice, once for the proof and once for the size.
+        let Some(stride) = step.sequential_element_stride(data_layout) else {
             known = KnownBits::unknown(width);
             break;
         };

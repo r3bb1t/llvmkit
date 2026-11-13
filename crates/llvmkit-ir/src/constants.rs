@@ -2841,36 +2841,26 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GepTypeCursor<'ctx, B, C> {
         )
     }
 
-    /// `getSequentialElementStride`, whose `assert` that a vector's element is
-    /// byte-addressable is not a release build's behaviour and is not ported.
-    /// `None` where upstream asserts: a vector's unsized element
-    /// (`getTypeStoreSize`'s `isSized`), or an element whose
-    /// `getTypeAllocSize` asserts, which an unsized struct with a layout does
-    /// not.
-    /// `computeKnownBits`' `if (!IndexedTy->isSized()) { ...; break; }`
-    /// followed by `getSequentialElementStride`, as one question: `None`
-    /// exactly when the indexed type is unsized, otherwise its stride, which
-    /// a sized type always has. Unlike [`Self::sequential_element_stride`],
-    /// it refuses an unsized struct with a layout, whose `getTypeAllocSize`
-    /// upstream answers but `computeKnownBits` never asks.
-    pub(crate) fn sized_sequential_element_stride(
-        self,
-        data_layout: &DataLayout,
-    ) -> Option<TypeSize> {
-        let element = crate::derived_types::erase_sized(self.ty)?;
-        Some(match self.kind {
-            GepStepKind::Vector => data_layout.type_store_size(element),
-            GepStepKind::Sequential | GepStepKind::Struct => data_layout.type_alloc_size(element),
-        })
-    }
-
+    /// `getSequentialElementStride` of a sized element: `None` when the step
+    /// is no sequential step (upstream's `assert(isSequential())`) or its
+    /// element is unsized, otherwise the element's stride, which a sized type
+    /// always has. Its `assert` that a vector's element is byte-addressable
+    /// is not a release build's behaviour and is not ported.
+    ///
+    /// Upstream's own stride asks `getTypeAllocSize`, which answers some
+    /// unsized types too (a struct with a layout that holds a scalable
+    /// vector); its two callers here never ask that of one.
+    /// `computeKnownBits` asks `if (!IndexedTy->isSized()) { ...; break; }`
+    /// first, and this `None` is that guard; `accumulateConstantOffset`
+    /// refuses a scalable indexed type first, and every unsized type with an
+    /// alloc size holds a scalable vector.
     pub(crate) fn sequential_element_stride(self, data_layout: &DataLayout) -> Option<TypeSize> {
         match self.kind {
+            GepStepKind::Struct => None,
             GepStepKind::Vector => crate::derived_types::erase_sized(self.ty)
                 .map(|element| data_layout.type_store_size(element)),
-            GepStepKind::Sequential | GepStepKind::Struct => {
-                data_layout.try_type_alloc_size(self.ty)
-            }
+            GepStepKind::Sequential => crate::derived_types::erase_sized(self.ty)
+                .map(|element| data_layout.type_alloc_size(element)),
         }
     }
 }

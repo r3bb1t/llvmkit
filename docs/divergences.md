@@ -1422,12 +1422,15 @@ alloc size (`LayoutRefusal::Permanent`). The same `getTypeAllocSize` is public a
 `DataLayout::try_type_alloc_size`, which takes any type and answers `None` where upstream asserts.
 `type_alloc_size` takes a `SizedType` and answers a plain `TypeSize`. The crate's folds that
 mirror `getTypeAllocSize` (`ConstantFoldLoadFromConst`, `ReadDataFromGlobal`,
-`getGEPIndicesForOffset`, `getSequentialElementStride`) go through `try_type_alloc_size`.
+`getGEPIndicesForOffset`) go through `try_type_alloc_size`. `getSequentialElementStride` takes a
+`SizedType` and answers `None` for an unsized element: its two callers ask it only of a sized one
+(`computeKnownBits` asks `isSized` first, and `accumulateConstantOffset` refuses a scalable
+indexed type first).
 
 An unsized struct can have a layout, as upstream's can: `{ <vscale x 4 x i32>, <vscale x 8 x i16> }`
 (scalable, but not homogeneous) and `{ <vscale x 4 x i32>, [0 x i8] }` both do, so
-`struct_layout(s).is_some()` is no proof that `s` is sized. Four earlier states were wrong, and
-this list corrects them:
+`struct_layout(s).is_some()` is no proof that `s` is sized. Each earlier state below was wrong,
+and this list corrects it:
 - commit `f54f4825`'s message said `None` "exactly when the struct is unsized";
 - commit `a5fecaaa` wrote here that every struct mixing a scalable vector with sized fields has
   a layout;
@@ -1439,8 +1442,13 @@ this list corrects them:
 - commit `d67e070c` dropped `computeKnownBits`' `isSized` guard before a GEP stride, as redundant
   with the stride's own refusal, which `try_type_alloc_size` had just narrowed: a GEP over an
   unsized struct with a layout reported known bits where upstream reports none. The guard is
-  `GepTypeCursor`'s `sized_sequential_element_stride`, which takes the proof through
-  `erase_sized`.
+  `GepTypeCursor::sequential_element_stride`, which takes the proof through `erase_sized` and
+  answers `None` for an unsized element or a struct step;
+- commit `5a603537` added that guard as a second stride method beside one that answered unsized
+  elements through `try_type_alloc_size`, left the second's doc fused into the first's, and was
+  titled "one proof, not two walks", though the guard still walks the type twice (once for the
+  proof, once for the size). There is one stride method now, and its comment says it walks
+  twice.
 
 At `a5fecaaa`, `{ <vscale x 4 x i32>, i8 }` was laid out with a scalable offset and a fixed
 32-byte size.
@@ -1501,6 +1509,10 @@ once the opaque struct got a body.
 `crates/llvmkit-ir/tests/data_layout_round_trip.rs::a_refusal_waiting_on_an_opaque_body_is_not_kept`
 (a refusal that rests on an opaque struct below a field gives way to the layout once the body is
 set),
+`crates/llvmkit-ir/tests/value_tracking.rs::gep_known_bits_reset_on_an_unsized_indexed_type`
+(the `isSized` guard before a GEP stride, over a fixed and a scalable stride),
+`crates/llvmkit-ir/tests/value_tracking.rs::a_gep_over_an_unsized_struct_with_a_layout_accumulates_no_offset`
+(no constant offset accumulated through a scalable indexed type with an alloc size),
 `crates/llvmkit-ir/tests/constant_folding_analysis.rs::a_load_through_an_unsized_struct_with_a_layout_is_folded`
 (a fold that asks `getTypeAllocSize` of an unsized struct with a layout goes through),
 `crates/llvmkit-ir/tests/constant_folding_analysis.rs::a_load_from_a_constant_of_unsized_type_is_not_folded`

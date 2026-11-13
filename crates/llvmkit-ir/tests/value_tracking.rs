@@ -8,7 +8,7 @@ use llvmkit_ir::{
     Width, compute_known_bits, is_known_non_zero, is_known_not_poison, is_known_one, is_known_zero,
     known_bits_from_operator, module_new,
 };
-use llvmkit_ir::{GepNoWrapFlags, VectorType, lanes};
+use llvmkit_ir::{GepNoWrapFlags, VectorType, lanes, pointer_base_with_constant_offset};
 
 fn zeros(width: usize) -> String {
     "0".repeat(width)
@@ -943,6 +943,19 @@ fn gep_known_bits_reset_on_an_unsized_indexed_type() -> Result<(), IrError> {
         ])?
         .as_type();
     assert!(!two_scalable.is_sized());
+    // The test means something only while `getTypeAllocSize` answers both
+    // structs, so the guard, not a refusal of the size, is what resets.
+    {
+        let dl = m.data_layout();
+        assert_eq!(
+            dl.try_type_alloc_size(unsized_with_layout),
+            Some(llvmkit_ir::TypeSize::fixed(16))
+        );
+        assert_eq!(
+            dl.try_type_alloc_size(two_scalable),
+            Some(llvmkit_ir::TypeSize::scalable(32))
+        );
+    }
     let over_scalable = b.gep_erased(
         two_scalable,
         base,
@@ -960,6 +973,59 @@ fn gep_known_bits_reset_on_an_unsized_indexed_type() -> Result<(), IrError> {
         known(b.view(over_i32), &query)?.to_string(),
         format!("{:064b}", 4)
     );
+    Ok(())
+}
+
+/// Mirrors `llvm/lib/IR/Operator.cpp::GEPOperator::accumulateConstantOffset`,
+/// reached through `GetPointerBaseWithConstantOffset`: a nonzero constant
+/// index over a scalable indexed type returns `false` ("if the type is
+/// scalable and the constant is not zero ... bailout") before any stride is
+/// asked, so the walk stops at the GEP. `{ [0 x <vscale x 4 x i32>], i32,
+/// i32 }` holds a scalable type, so a GEP over it at index 1 is not peeled,
+/// though its `getTypeAllocSize` would answer a fixed 16 bytes. llvmkit's
+/// port has the bailout and, besides it, a stride that refuses an unsized
+/// element; either alone gives upstream's answer, and the test pins that
+/// answer, so it fails only if both go (a stride taking `getTypeAllocSize`
+/// as upstream's does, without the bailout, peels to `%p` plus 16).
+/// Derived from the routine; no vendored fixture spells the type
+/// (`rg '\[0 x <vscale' llvm/test` in the vendored 22.1.4 tree is empty).
+/// Positive control: the same GEP over `i32` peels to `%p` plus 4.
+#[test]
+fn a_gep_over_an_unsized_struct_with_a_layout_accumulates_no_offset() -> Result<(), IrError> {
+    let m = module_new!("vt-gep-offset-unsized")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i32_ty = m.i32_type();
+    let i64_ty = m.i64_type();
+    let ptr_ty = m.ptr_type_in::<0>();
+    let empty_scalable = m
+        .array_type(VectorType::scalable_of(i32_ty, lanes::<4>()), 0)?
+        .as_type();
+    let unsized_with_layout = m
+        .struct_type([empty_scalable, i32_ty.as_type(), i32_ty.as_type()])?
+        .as_type();
+    assert!(unsized_with_layout.is_scalable());
+    assert_eq!(
+        dl.try_type_alloc_size(unsized_with_layout),
+        Some(llvmkit_ir::TypeSize::fixed(16))
+    );
+    let fn_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()])?;
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let p = m.view(f).param(0)?;
+    let one = i64_ty.const_int(1_i64).as_erased();
+    let over_unsized = b.gep_erased(
+        unsized_with_layout,
+        p,
+        [one],
+        GepNoWrapFlags::empty(),
+        "over.unsized",
+    )?;
+    let over_i32 = b.gep_erased(i32_ty, p, [one], GepNoWrapFlags::empty(), "over.i32")?;
+    let (base, offset) = pointer_base_with_constant_offset(b.view(over_unsized), &dl, true);
+    assert_eq!((base, offset), (b.view(over_unsized), 0));
+    let (base, offset) = pointer_base_with_constant_offset(b.view(over_i32), &dl, true);
+    assert_eq!((base, offset), (p.as_erased(), 4));
     Ok(())
 }
 

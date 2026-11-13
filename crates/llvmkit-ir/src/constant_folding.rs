@@ -2564,12 +2564,15 @@ pub(crate) fn accumulate_constant_offset<'ctx, B: ModuleBrand + 'ctx, C: Capabil
             offset = offset.wrapping_add(&ApInt::from_words(index_bits, &[field_offset]));
             continue;
         }
-        // `None` for an element with no stride, where upstream's
-        // `getTypeAllocSize` asserts (D43). `GEPOperator::
-        // accumulateConstantOffset` asks no `isSized` first, unlike
-        // `computeKnownBits`; but an unsized type that has a stride holds a
-        // scalable vector, which the bailout above has already refused, so
-        // every element reaching here is sized.
+        // The stride of a sized element. `GEPOperator::
+        // accumulateConstantOffset` asks `getSequentialElementStride` with no
+        // `isSized` first, and its `getTypeAllocSize` would answer an
+        // unsized struct with a layout; but such a type holds a scalable
+        // vector, which the bailout above has refused, so every element
+        // reaching here is sized and has a stride (D43); the stride refusing
+        // an unsized element is a second guard for the same answer.
+        // `a_gep_over_an_unsized_struct_with_a_layout_accumulates_no_offset`
+        // in `tests/value_tracking.rs` pins that answer.
         let stride = step.sequential_element_stride(dl)?.fixed_value()?;
         offset = offset.wrapping_add(&scaled_offset(
             &index.sext_or_trunc(index_bits),
