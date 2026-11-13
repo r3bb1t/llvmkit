@@ -304,3 +304,32 @@ fn a_struct_asked_about_again_is_not_laid_out_again() {
         }
     });
 }
+
+/// A struct 30 levels deep, each level two copies of the one below, over a
+/// struct that holds an opaque struct.
+///
+/// **No upstream counterpart.** Upstream asserts on every size query of such
+/// a type (`docs/divergences.md` D43). llvmkit answers with the opaque field
+/// empty and never keeps the layout in the `DataLayout`'s map, since the body
+/// may come later; it keeps it for the rest of the query instead
+/// (`StructLayouts::seen`). Without that, each visit of a shared struct laid
+/// it out again, twice per field, and this query would lay `%t0` out 4^30
+/// times. The size is that of the empty layout: 0.
+#[test]
+fn a_shared_struct_over_an_opaque_field_is_laid_out_once_per_query() {
+    support::deadline::within_a_minute("an uncached layout is laid out on every visit", || {
+        const LEVELS: u32 = 30;
+        let mut source = String::from("%O = type opaque\n%t0 = type { %O }\n");
+        for level in 1..=LEVELS {
+            let below = level - 1;
+            source.push_str(&format!("%t{level} = type {{ %t{below}, %t{below} }}\n"));
+        }
+        source.push_str(&format!("@g = external global %t{LEVELS}\n"));
+        let module = parse(&source);
+        let global = module.global("g").expect("@g is declared");
+        let ty = module.view(global).value_type();
+        let data_layout = DataLayout::default();
+        assert_eq!(data_layout.type_alloc_size(ty).known_min_value(), 0);
+        assert_eq!(data_layout.abi_type_align(ty).value(), 1);
+    });
+}

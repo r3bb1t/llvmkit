@@ -2397,6 +2397,10 @@ pub(super) struct ModuleCore {
     /// of [`ModuleId::fresh`], but per-module (an `SsaBuilderId` only needs
     /// to disambiguate builders within one module, not process-globally).
     next_ssa_builder_id: core::cell::Cell<u32>,
+    /// Alive exactly as long as this module: a `DataLayout`'s struct-layout
+    /// map holds a `Weak` of it per module, and drops a module's layouts once
+    /// it is dead (`data_layout.rs::StructLayoutMap`).
+    liveness: std::sync::Arc<()>,
 }
 
 /// Linear module token carrying a brand `B` and verification state `S`.
@@ -2499,6 +2503,11 @@ impl<B: ModuleBrand, S: 'static> core::fmt::Debug for Module<B, S> {
 }
 
 impl<'ctx> ModuleCore {
+    /// A token that is dead once this module is dropped.
+    pub(crate) fn liveness(&self) -> std::sync::Weak<()> {
+        std::sync::Arc::downgrade(&self.liveness)
+    }
+
     /// Construct a fresh, empty module with a freshly-allocated
     /// [`ModuleId`].
     pub(super) fn new<N>(name: N) -> Self
@@ -2525,6 +2534,7 @@ impl<'ctx> ModuleCore {
             named_metadata: core::cell::RefCell::new(Vec::new()),
             metadata_as_value_cache: core::cell::RefCell::new(std::collections::HashMap::new()),
             next_ssa_builder_id: core::cell::Cell::new(0),
+            liveness: std::sync::Arc::new(()),
         }
     }
 

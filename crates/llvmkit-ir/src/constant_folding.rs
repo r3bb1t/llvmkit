@@ -612,6 +612,11 @@ fn read_struct_data_from_global<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         else {
             return Ok(false);
         };
+        // An unsized element has no size: upstream's `getTypeAllocSize`
+        // asserts `isSized`, and llvmkit's answer there is no real one (D43).
+        if !element.ty().is_sized() {
+            return Ok(false);
+        }
         let Some(element_size) = dl.type_alloc_size(erase_type(element.ty())).fixed_value() else {
             return Ok(false);
         };
@@ -659,6 +664,10 @@ fn read_sequence_data_from_global<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
 ) -> IrResult<bool> {
     let module = constant.module;
     let (num_elts, elt_size) = if let Some((element, length)) = constant.ty().data().as_array() {
+        // No size for an unsized element (D43), where upstream asserts.
+        if !Type::new(element, module).is_sized() {
+            return Ok(false);
+        }
         let Some(size) = dl
             .type_alloc_size(erase_type(Type::new(element, module)))
             .fixed_value()
@@ -2978,6 +2987,11 @@ fn gep_index_for_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     match element_ty.data() {
         TypeData::Array { elem, .. } => {
             *element_ty = Type::new(*elem, module);
+            // An unsized element has no stride to divide by (D43), where
+            // upstream's `getTypeAllocSize` asserts.
+            if !element_ty.is_sized() {
+                return None;
+            }
             Some(element_index(
                 dl.type_alloc_size(erase_type(*element_ty)),
                 offset,

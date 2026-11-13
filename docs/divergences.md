@@ -1407,8 +1407,10 @@ a struct holding an opaque struct is not, and `StructLayout::StructLayout` asser
 elements, the same empty layout, and caches it in `getStructLayout`'s `StructLayoutMap`.
 
 **llvmkit:** `struct_layout` answers `None`; the size and alignment queries answer the empty
-layout's numbers, and neither is cached (`StructLayouts::reached_opaque`), so once the opaque
-struct gets a body the next query answers the real layout. Before this entry
+layout's numbers. Neither is kept in the `DataLayout`'s struct-layout map
+(`StructLayouts::reached_opaque`), so once the opaque struct gets a body the next query answers
+the real layout; within one query the layout is kept (`StructLayouts::seen`), so a struct
+reached many times over an opaque leaf is laid out once per query, not once per visit. Before this entry
 `struct_layout_inner` reached an `unreachable!` here, a panic on a public query
 (`DataLayout::type_alloc_size` of `{ i8, %opaque }`).
 
@@ -1417,8 +1419,9 @@ crate's own readers do not take them. `rg -n 'struct_layout_of\(|\.struct_layout
 crates/llvmkit-ir/src crates/llvmkit-asmparser/src` (run on `27d548b5` plus this change) lists
 the four that read a struct's layout (value tracking's GEP arm, and `read_struct_bytes`,
 `accumulate_constant_offset` and `gep_index_for_offset` in `constant_folding.rs`); each answers
-nothing on `None`. `accumulate_constant_offset` and value tracking's GEP arm also refuse an
-unsized array element's stride. The `IrBuilder` fills an omitted `alloca`, `load` or `store`
+nothing on `None`. The readers of an element's size beside them refuse an unsized element:
+`accumulate_constant_offset`, value tracking's GEP arm, `gep_index_for_offset`'s array arm,
+`read_struct_data_from_global`, and the array arm of `read_sequence_data_from_global`. The `IrBuilder` fills an omitted `alloca`, `load` or `store`
 alignment only through a `SizedType` witness, minted checked (`IrBuilder::sized`, refusing with
 the assertion's own text, `Cannot getTypeInfo() on a type that is unsized!`) or for an integer,
 float or pointer type, which is sized by construction. The size queries' numbers stay reachable

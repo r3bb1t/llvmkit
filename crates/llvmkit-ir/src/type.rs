@@ -1154,7 +1154,7 @@ pub(crate) fn is_floating_point_data(data: &TypeData) -> bool {
     is_ieee_like_fp_data(data) || matches!(data, TypeData::X86Fp80 | TypeData::PpcFp128)
 }
 
-pub(crate) fn is_sized(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot>) -> bool {
+fn is_sized(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot>) -> bool {
     let data = module.context().type_data(id);
     match data {
         TypeData::Void

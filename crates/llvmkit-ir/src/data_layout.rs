@@ -23,13 +23,13 @@
 //! - `hasMicrosoftFastStdCallMangling` and friends (presentation-only
 //!   helpers; reachable through [`DataLayout::mangling_mode`]).
 
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 use core::fmt;
 use core::iter::FusedIterator;
 use core::num::NonZeroU32;
 use core::str::FromStr;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use crate::addr_space::AddressSpace;
 use crate::align::{Align, MaybeAlign};
@@ -311,8 +311,9 @@ pub struct DataLayout {
     /// [`Self::string_representation`].
     string_representation: String,
     /// The struct layouts this `DataLayout` has computed. Mirrors
-    /// `DataLayout::LayoutMap`; not part of the layout's value, so equality,
-    /// hashing and cloning leave it out (see [`StructLayoutMap`]).
+    /// `DataLayout::LayoutMap`; not part of the layout's value, so equality
+    /// and hashing leave it out, and a clone shares it (see
+    /// [`StructLayoutMap`]).
     struct_layouts: StructLayoutMap,
 }
 
@@ -835,48 +836,109 @@ impl DataLayout {
 // Internal: the module's struct layouts
 // --------------------------------------------------------------------------
 
+/// A hasher for the small integer keys of the struct-layout maps (a
+/// [`ModuleId`], a [`TypeSlot`]): one multiply per word. The keys are slots
+/// the crate assigned in sequence, not values an input chooses, so the
+/// collision resistance of the default SipHash buys nothing here, and the
+/// lookups sit on every struct a size or alignment walk reaches.
+#[derive(Default)]
+struct SlotHasher(u64);
+
+impl core::hash::Hasher for SlotHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.write_u64(u64::from(*byte));
+        }
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        self.write_u64(u64::from(value));
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        // Fibonacci hashing: odd multiplier, the high bits well mixed.
+        self.0 = (self.0.rotate_left(5) ^ value).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+}
+
+type SlotMap<K, V> = HashMap<K, V, core::hash::BuildHasherDefault<SlotHasher>>;
+
+/// One module's struct layouts under one [`DataLayout`], with the token that
+/// says whether the module still exists.
+struct ModuleLayouts {
+    /// Dead once the module is dropped (`ModuleCore::liveness`).
+    alive: Weak<()>,
+    layouts: SlotMap<TypeSlot, Arc<StructLayoutInfo>>,
+}
+
 /// The struct layouts one [`DataLayout`] has computed. Mirrors
 /// `DataLayout::LayoutMap` (`DataLayout.cpp`), the `StructLayoutMap` keyed by
 /// `StructType *` that lets upstream lay each struct out once per layout:
 /// created empty, filled by `getStructLayout`, freed with its `DataLayout`.
 ///
 /// A `DataLayout` here is usable with any module's types, and a [`TypeSlot`]
-/// names a type only within one module, so the key carries the module's
-/// [`ModuleId`] too (never reused, so a key never names another module's
-/// type). Like upstream's, the map lives as long as its `DataLayout`: a
-/// module's own layout is freed with the module, a temporary one at the end
-/// of its statement.
+/// names a type only within one module, so the layouts are kept per module,
+/// under its [`ModuleId`] (never reused). Upstream's map holds pointers to
+/// types that die with their context; here a module's entry is dropped once
+/// the module is (its `liveness` token is dead), the next time the map takes
+/// in another module, so a long-lived `DataLayout` used with many
+/// short-lived modules holds the layouts of the live ones only.
 ///
-/// A clone starts empty, as upstream's `operator=` deletes the copy's map
-/// (`TEST(DataLayoutTest, CopyAssignmentInvalidatesStructLayout)`), and the
-/// map is no part of the layout's value: [`DataLayout`]'s `==` and `Hash`
-/// leave it out. A `Mutex`, so that a `DataLayout` stays `Sync`.
+/// A clone shares the map. Upstream's `operator=` empties the copy's map
+/// because assignment changes the layout; a `DataLayout` here is fixed once
+/// built (every mutator is private to parsing), so a clone is the same
+/// layout and its layouts are the same layouts. Sharing keeps the cache
+/// across the analyses that clone the module's `DataLayout` to hold it.
+/// The map is no part of the layout's value: [`DataLayout`]'s `==` and
+/// `Hash` leave it out. An `Arc<Mutex<..>>`, so a `DataLayout` stays `Send`
+/// and `Sync`.
 ///
 /// A cached layout cannot go stale: a struct's body is set once
 /// (`Context::set_named_struct_body` refuses a second), and a layout that
-/// reached an opaque struct, whose body may come later, is never cached
-/// ([`StructLayouts::reached_opaque`]).
+/// reached an opaque struct, whose body may come later, is never kept here
+/// ([`StructLayouts`]).
 ///
 /// Without it, a struct reached twice was laid out twice — once by
 /// `alignment` and once by `type_alloc_size_inner`, for every field — so
 /// `%tK = type { %t(K-1), %t(K-1) }` cost four times as much per level, and
 /// a struct asked about once per instruction was laid out once per
 /// instruction.
-#[derive(Default)]
-struct StructLayoutMap(Mutex<HashMap<(ModuleId, TypeSlot), Arc<StructLayoutInfo>>>);
+#[derive(Clone, Default)]
+struct StructLayoutMap(Arc<Mutex<SlotMap<ModuleId, ModuleLayouts>>>);
 
 impl StructLayoutMap {
     /// The map, locked. No lock is held across a layout, so a panic cannot
     /// leave one poisoned mid-update; a poisoned lock is read through.
-    fn lock(&self) -> MutexGuard<'_, HashMap<(ModuleId, TypeSlot), Arc<StructLayoutInfo>>> {
+    fn lock(&self) -> MutexGuard<'_, SlotMap<ModuleId, ModuleLayouts>> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
-}
 
-impl Clone for StructLayoutMap {
-    /// Empty, as upstream's `DataLayout::operator=` leaves the copy's map.
-    fn clone(&self) -> Self {
-        Self::default()
+    fn get(&self, module: &ModuleCore, id: TypeSlot) -> Option<Arc<StructLayoutInfo>> {
+        self.lock()
+            .get(&module.id())
+            .and_then(|entry| entry.layouts.get(&id))
+            .cloned()
+    }
+
+    /// Keep `layout` as `module`'s struct `id`'s. Taking in a module not yet
+    /// held first drops the entries of modules that no longer exist.
+    fn insert(&self, module: &ModuleCore, id: TypeSlot, layout: Arc<StructLayoutInfo>) {
+        let mut modules = self.lock();
+        let entry = match modules.entry(module.id()) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(_) => {
+                modules.retain(|_, entry| entry.alive.strong_count() > 0);
+                modules.entry(module.id()).or_insert_with(|| ModuleLayouts {
+                    alive: module.liveness(),
+                    layouts: SlotMap::default(),
+                })
+            }
+        };
+        entry.layouts.insert(id, layout);
     }
 }
 
@@ -886,13 +948,20 @@ impl fmt::Debug for StructLayoutMap {
     }
 }
 
-/// One public query's state for the struct layouts it computes.
+/// One public query's state for the struct layouts it computes. A query
+/// asks of one module.
 #[derive(Default)]
 struct StructLayouts {
     /// Whether the layout being computed reached an opaque struct. Such a
-    /// layout is answered but not cached: the opaque struct may get a body
-    /// later, and the answer with it.
+    /// layout is answered but not kept in the [`StructLayoutMap`]: the opaque
+    /// struct may get a body later, and the answer with it.
     reached_opaque: Cell<bool>,
+    /// Every struct this query has laid out or looked up, and whether its
+    /// layout reached an opaque struct. Read before the shared map, so a
+    /// struct reached again in one walk costs no lock, and a layout that
+    /// reached an opaque struct, which the shared map never keeps, is laid
+    /// out once per query rather than once per visit.
+    seen: RefCell<SlotMap<TypeSlot, (Arc<StructLayoutInfo>, bool)>>,
 }
 
 // --------------------------------------------------------------------------
@@ -1189,19 +1258,12 @@ impl DataLayout {
         ty: Type<'_, B, C>,
     ) -> Option<Arc<StructLayoutInfo>> {
         let module = ty.module().core_ref();
-        let key = (module.id(), ty.slot_trusting_same_module());
-        if let Some(layout) = self.struct_layouts.lock().get(&key) {
-            return Some(Arc::clone(layout));
-        }
-        let (layout, reached_opaque) = self.lay_out(module, key.1, &StructLayouts::default());
-        (!reached_opaque).then_some(layout)
+        let layouts = StructLayouts::default();
+        let layout = self.layout_of(module, ty.slot_trusting_same_module(), &layouts);
+        (!layouts.reached_opaque.get()).then_some(layout)
     }
 
-    /// Read struct `id`'s layout through `read`, laying it out only the
-    /// first time this `DataLayout` asks of `module`. Mirrors
-    /// `DataLayout::getStructLayout`'s `StructLayoutMap` lookup, and the
-    /// `new StructLayout` on a miss. A cached layout is read under the lock:
-    /// the walks read one field of it and need not share it.
+    /// Read struct `id`'s layout through `read`. See [`Self::layout_of`].
     fn with_layout<T>(
         &self,
         module: &ModuleCore,
@@ -1209,18 +1271,44 @@ impl DataLayout {
         layouts: &StructLayouts,
         read: impl FnOnce(&StructLayoutInfo) -> T,
     ) -> T {
-        if let Some(layout) = self.struct_layouts.lock().get(&(module.id(), id)) {
-            return read(layout);
-        }
-        read(&self.lay_out(module, id, layouts).0)
+        read(&self.layout_of(module, id, layouts))
     }
 
-    /// Lay struct `id` out, cache the layout unless it reached an opaque
-    /// struct, and say whether it did. Laid out with no lock held: the
-    /// fields' own layouts are read and inserted along the way. Whether this
-    /// layout reached an opaque struct is tracked apart from the enclosing
-    /// one's, then merged into it, since an enclosing layout that holds this
-    /// one reached it too.
+    /// Struct `id`'s layout: from this query's own record, then from this
+    /// `DataLayout`'s map, laying it out only when neither has it. Mirrors
+    /// `DataLayout::getStructLayout`'s `StructLayoutMap` lookup, and the
+    /// `new StructLayout` on a miss. Marks the query when the layout reached
+    /// an opaque struct, however it was found.
+    fn layout_of(
+        &self,
+        module: &ModuleCore,
+        id: TypeSlot,
+        layouts: &StructLayouts,
+    ) -> Arc<StructLayoutInfo> {
+        let seen = layouts.seen.borrow().get(&id).cloned();
+        if let Some((layout, reached_opaque)) = seen {
+            if reached_opaque {
+                layouts.reached_opaque.set(true);
+            }
+            return layout;
+        }
+        let (layout, reached_opaque) = match self.struct_layouts.get(module, id) {
+            Some(layout) => (layout, false),
+            None => self.lay_out(module, id, layouts),
+        };
+        layouts
+            .seen
+            .borrow_mut()
+            .insert(id, (Arc::clone(&layout), reached_opaque));
+        layout
+    }
+
+    /// Lay struct `id` out, keep the layout in this `DataLayout`'s map unless
+    /// it reached an opaque struct, and say whether it did. Laid out with no
+    /// lock or borrow held: the fields' own layouts are read and recorded
+    /// along the way. Whether this layout reached an opaque struct is tracked
+    /// apart from the enclosing one's, then merged into it, since an
+    /// enclosing layout that holds this one reached it too.
     fn lay_out(
         &self,
         module: &ModuleCore,
@@ -1234,9 +1322,7 @@ impl DataLayout {
             .reached_opaque
             .set(enclosing_reached_opaque || reached_opaque);
         if !reached_opaque {
-            self.struct_layouts
-                .lock()
-                .insert((module.id(), id), Arc::clone(&layout));
+            self.struct_layouts.insert(module, id, Arc::clone(&layout));
         }
         (layout, reached_opaque)
     }
@@ -2069,4 +2155,55 @@ fn invalid(reason: String) -> DataLayoutError {
 
 fn spec_format(form: &str) -> DataLayoutError {
     invalid(format!("malformed specification, expected {form}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DataLayout;
+    use crate::Module;
+
+    /// The number of modules `layout`'s struct-layout map holds.
+    fn modules_held(layout: &DataLayout) -> usize {
+        layout.struct_layouts.lock().len()
+    }
+
+    /// llvmkit-specific, no upstream counterpart: upstream's `StructLayoutMap`
+    /// is keyed by `StructType *` and dies with its `DataLayout`. One
+    /// `DataLayout` used with the types of module after module keeps only the
+    /// live modules' layouts: a dropped module's entry goes when the map next
+    /// takes in a module. Without that, a long-lived layout grew by every
+    /// module it ever measured.
+    #[test]
+    fn a_dropped_modules_layouts_leave_the_map() {
+        let layout = DataLayout::default();
+        for name in ["first", "second", "third"] {
+            let module = Module::dynamic(name);
+            let ty = module
+                .struct_type([module.i32_type().as_type()])
+                .expect("valid struct elements");
+            assert!(layout.struct_layout(ty).is_some());
+            assert_eq!(modules_held(&layout), 1, "only {name}'s layouts are held");
+        }
+    }
+
+    /// llvmkit-specific, no upstream counterpart: a clone shares its
+    /// original's struct-layout map, so the analyses that clone the module's
+    /// `DataLayout` to hold it read the layouts the module's queries made.
+    /// Upstream's `operator=` empties the copy's map because assignment
+    /// changes the layout; a `DataLayout` here is fixed once built.
+    #[test]
+    fn a_clone_shares_the_struct_layouts() {
+        let layout = DataLayout::default();
+        let module = Module::dynamic("shared");
+        let ty = module
+            .struct_type([module.i32_type().as_type()])
+            .expect("valid struct elements");
+        let clone = layout.clone();
+        assert!(layout.struct_layout(ty).is_some());
+        assert_eq!(
+            modules_held(&clone),
+            1,
+            "the clone sees the original's layout"
+        );
+    }
 }
