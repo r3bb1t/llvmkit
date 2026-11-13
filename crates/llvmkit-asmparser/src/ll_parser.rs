@@ -14847,8 +14847,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // `SmallPtrSet<Value*, 32> SeenCases` — duplicate *values*, compared
         // by identity, which for uniqued constants is equality. A set, as
         // upstream's is: a list searched on every case made a switch of N
-        // cases cost N squared.
-        let mut seen_cases: std::collections::HashSet<llvmkit_ir::Value<'ctx, B>> =
+        // cases cost N squared. Keyed by the value's id, which names it the
+        // same way and holds no module reference.
+        let mut seen_cases: std::collections::HashSet<llvmkit_ir::ValueId<B>> =
             std::collections::HashSet::new();
         loop {
             if matches!(self.peek(), Token::RSquare) {
@@ -14867,7 +14868,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             let (_, case_v) = self.parse_type_and_value(state)?;
             self.expect_punct(PunctKind::Comma, "',' after case value")?;
             let case_bb = self.parse_type_and_basic_block(state)?;
-            if !seen_cases.insert(case_v) {
+            if !seen_cases.insert(case_v.id()) {
                 return Err(self.message_at(case_loc, "duplicate case value in switch"));
             }
             // `!isa<ConstantInt>(Constant)` — an *integer* is not enough; an
