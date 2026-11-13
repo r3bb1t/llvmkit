@@ -899,11 +899,14 @@ fn vector_gep_known_bits_use_element_pointer_address_space_index_width() -> Resu
 /// resets the known bits (`if (!IndexedTy->isSized()) { Known.resetAll();
 /// break; }`), even when `getTypeAllocSize` would answer that type, as it
 /// answers `{ [0 x <vscale x 4 x i32>], i32, i32 }`, an unsized struct with a
-/// layout. From a null base and a constant index, every bit of the result
-/// would otherwise be known. llvmkit-specific regression (no upstream test
-/// builds such a GEP): `d67e070c` dropped the `isSized` guard as redundant
-/// with the stride's, which no longer was. Positive control: the same GEP
-/// over `i32` knows every bit.
+/// layout and a fixed stride, and `{ <vscale x 4 x i32>, <vscale x 8 x i16> }`,
+/// one with a scalable stride. From a null base and a constant index, every
+/// bit of the first result would otherwise be known, and the low bits of the
+/// second (the scaling factor's trailing zeros). llvmkit-specific
+/// regression: `d67e070c` dropped the `isSized` guard as redundant with the
+/// stride's, which no longer was. No upstream fixture spells the first type
+/// (`rg '\[0 x <vscale' llvm/test` in the vendored 22.1.4 tree is empty).
+/// Positive control: the same GEP over `i32` knows every bit.
 #[test]
 fn gep_known_bits_reset_on_an_unsized_indexed_type() -> Result<(), IrError> {
     let m = module_new!("vt-gep-unsized")?;
@@ -933,13 +936,26 @@ fn gep_known_bits_reset_on_an_unsized_indexed_type() -> Result<(), IrError> {
         GepNoWrapFlags::empty(),
         "over.unsized",
     )?;
+    let two_scalable = m
+        .struct_type([
+            VectorType::scalable_of(i32_ty, lanes::<4>()).as_type(),
+            VectorType::scalable_of(m.i16_type(), lanes::<8>()).as_type(),
+        ])?
+        .as_type();
+    assert!(!two_scalable.is_sized());
+    let over_scalable = b.gep_erased(
+        two_scalable,
+        base,
+        [one],
+        GepNoWrapFlags::empty(),
+        "over.scalable",
+    )?;
     let over_i32 = b.gep_erased(i32_ty, base, [one], GepNoWrapFlags::empty(), "over.i32")?;
     let dl = m.data_layout();
     let query = ValueTrackingQuery::new(&dl);
-    assert_eq!(
-        known(b.view(over_unsized), &query)?.to_string(),
-        "?".repeat(64)
-    );
+    for gep in [over_scalable, over_unsized] {
+        assert_eq!(known(b.view(gep), &query)?.to_string(), "?".repeat(64));
+    }
     assert_eq!(
         known(b.view(over_i32), &query)?.to_string(),
         format!("{:064b}", 4)

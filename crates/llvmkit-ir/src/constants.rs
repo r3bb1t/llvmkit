@@ -2847,6 +2847,23 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> GepTypeCursor<'ctx, B, C> {
     /// (`getTypeStoreSize`'s `isSized`), or an element whose
     /// `getTypeAllocSize` asserts, which an unsized struct with a layout does
     /// not.
+    /// `computeKnownBits`' `if (!IndexedTy->isSized()) { ...; break; }`
+    /// followed by `getSequentialElementStride`, as one question: `None`
+    /// exactly when the indexed type is unsized, otherwise its stride, which
+    /// a sized type always has. Unlike [`Self::sequential_element_stride`],
+    /// it refuses an unsized struct with a layout, whose `getTypeAllocSize`
+    /// upstream answers but `computeKnownBits` never asks.
+    pub(crate) fn sized_sequential_element_stride(
+        self,
+        data_layout: &DataLayout,
+    ) -> Option<TypeSize> {
+        let element = crate::derived_types::erase_sized(self.ty)?;
+        Some(match self.kind {
+            GepStepKind::Vector => data_layout.type_store_size(element),
+            GepStepKind::Sequential | GepStepKind::Struct => data_layout.type_alloc_size(element),
+        })
+    }
+
     pub(crate) fn sequential_element_stride(self, data_layout: &DataLayout) -> Option<TypeSize> {
         match self.kind {
             GepStepKind::Vector => crate::derived_types::erase_sized(self.ty)

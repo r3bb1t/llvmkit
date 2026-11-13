@@ -2567,7 +2567,9 @@ pub(crate) fn accumulate_constant_offset<'ctx, B: ModuleBrand + 'ctx, C: Capabil
         // `None` for an element with no stride, where upstream's
         // `getTypeAllocSize` asserts (D43). `GEPOperator::
         // accumulateConstantOffset` asks no `isSized` first, unlike
-        // `computeKnownBits`, so an unsized struct with a layout has one.
+        // `computeKnownBits`; but an unsized type that has a stride holds a
+        // scalable vector, which the bailout above has already refused, so
+        // every element reaching here is sized.
         let stride = step.sequential_element_stride(dl)?.fixed_value()?;
         offset = offset.wrapping_add(&scaled_offset(
             &index.sext_or_trunc(index_bits),

@@ -1435,7 +1435,12 @@ this list corrects them:
   upstream lays out;
 - commit `e4baafdc` kept only the incompatible-sum refusal, and its folds took an alloc size only
   from a `SizedType`, so they declined a load through an unsized struct with a layout that
-  upstream folds.
+  upstream folds;
+- commit `d67e070c` dropped `computeKnownBits`' `isSized` guard before a GEP stride, as redundant
+  with the stride's own refusal, which `try_type_alloc_size` had just narrowed: a GEP over an
+  unsized struct with a layout reported known bits where upstream reports none. The guard is
+  `GepTypeCursor`'s `sized_sequential_element_stride`, which takes the proof through
+  `erase_sized`.
 
 At `a5fecaaa`, `{ <vscale x 4 x i32>, i8 }` was laid out with a scalable offset and a fixed
 32-byte size.
