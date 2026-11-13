@@ -1049,7 +1049,8 @@ impl DataLayout {
 
     /// The layout of an aggregate struct. Mirrors
     /// `DataLayout::getStructLayout`, laying a struct out once per
-    /// `DataLayout` and module (see [`StructLayoutCache`]); the layout itself
+    /// `DataLayout` and module (the module keeps the layouts under the last
+    /// `DataLayout` that asked); the layout itself
     /// is `StructLayout::StructLayout` in `DataLayout.cpp`.
     pub fn struct_layout<B: ModuleBrand, C: Capability>(
         &self,
