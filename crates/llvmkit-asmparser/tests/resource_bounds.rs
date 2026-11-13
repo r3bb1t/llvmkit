@@ -9,7 +9,7 @@
 //! binary, and, where a count can say more than a clock, as a failed count.
 
 use llvmkit_asmparser::parser;
-use llvmkit_ir::{DynBrand, Module, Unverified};
+use llvmkit_ir::{DataLayout, DynBrand, Module, Unverified};
 
 pub mod support;
 
@@ -141,5 +141,38 @@ fn a_summary_id_near_the_top_of_the_range_costs_one_entry() {
             printed.contains("refs: (^1, ^3)"),
             "both references resolve:\n{printed}"
         );
+    });
+}
+
+/// The alloc size of a struct 40 levels deep, each level two copies of the
+/// one below: `%tK = type { %t(K-1), %t(K-1) }` over `%t0 = type { i8, i16 }`.
+///
+/// **No upstream counterpart.** Upstream's `DataLayout::getStructLayout`
+/// (`DataLayout.cpp`) caches each struct's layout in its `StructLayoutMap`,
+/// so the query lays out each of the 41 structs once. llvmkit laid a struct
+/// out again every time a walk reached it, twice for each field
+/// (`alignment` and `type_alloc_size_inner`), four times per level: 14
+/// levels took 18.6 s at `34fdec9` (release build), so 40 would take years.
+/// Each query now memoises the structs it lays out.
+///
+/// The expected size is derived by hand, not taken from upstream: `%t0` is
+/// 4 bytes (`i8` at 0, `i16` at 2), and each level is two copies of the level
+/// below with no padding (its 2-byte alignment divides its size), so `%tK` is
+/// `4 * 2^K` bytes.
+#[test]
+fn a_struct_shared_forty_levels_deep_is_laid_out_once_per_level() {
+    support::deadline::within_a_minute("a shared struct is laid out on every visit", || {
+        const LEVELS: u32 = 40;
+        let mut source = String::from("%t0 = type { i8, i16 }\n");
+        for level in 1..=LEVELS {
+            let below = level - 1;
+            source.push_str(&format!("%t{level} = type {{ %t{below}, %t{below} }}\n"));
+        }
+        source.push_str(&format!("@g = external global %t{LEVELS}\n"));
+        let module = parse(&source);
+        let global = module.global("g").expect("@g is declared");
+        let size = DataLayout::default().type_alloc_size(module.view(global).value_type());
+        assert!(!size.is_scalable());
+        assert_eq!(size.known_min_value(), 4u64 << LEVELS);
     });
 }
