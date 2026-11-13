@@ -1036,10 +1036,6 @@ fn a_scalable_size_stays_scalable_through_an_array_and_a_struct() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Defaults / isDefault
-// ---------------------------------------------------------------------------
-
 /// `StructLayout::StructLayout` adds each field's alloc size with
 /// `TypeSize::operator+=`, which asserts "Incompatible types" when a nonzero
 /// scalable size meets a nonzero fixed one, so `{ <vscale x 4 x i32>, i8 }`
@@ -1075,6 +1071,69 @@ fn a_struct_mixing_scalable_and_fixed_sizes_has_no_layout() {
         TypeSize::scalable(16)
     );
 }
+
+/// `StructLayout::StructLayout` asks a field's `getABITypeAlign`, which
+/// asserts `isSized`, only for a non-packed struct; a packed one asks only
+/// `getTypeAllocSize`, which in `DataLayout.cpp` asks no `isSized` of a
+/// struct or an array, only that the struct has a layout. So an unsized
+/// struct with a layout, `{ <vscale x 4 x i32>, <vscale x 8 x i16> }` (two
+/// scalable vectors of different types, so not homogeneous), is a valid
+/// field of a packed struct and of an array in one, and not of a non-packed
+/// struct. A packed struct's opaque field, or one of a target extension type
+/// with no layout, still asserts (`getStructLayout`'s `!isOpaque()`, and
+/// `getTypeStoreSize`'s `isSized`). **No upstream test**; llvmkit-specific
+/// regression: `struct_layout` refused every unsized field, packed or not,
+/// rejecting structs upstream lays out.
+#[test]
+fn a_packed_struct_lays_out_an_unsized_field_that_has_an_alloc_size() {
+    let m = module_new!("m").expect("fresh module");
+    let dl = DataLayout::default();
+    let i32x4 = VectorType::scalable_of(m.i32_type(), lanes::<4>()).as_type();
+    let i16x8 = VectorType::scalable_of(m.i16_type(), lanes::<8>()).as_type();
+    let mixed = m
+        .struct_type([i32x4, i16x8])
+        .expect("valid struct elements");
+    assert!(
+        !mixed.as_type().is_sized(),
+        "two scalable types, not homogeneous"
+    );
+    assert_eq!(
+        dl.struct_layout(mixed)
+            .expect("an unsized struct with a layout")
+            .size_in_bytes(),
+        TypeSize::scalable(32)
+    );
+    let array = m.array_type(mixed, 1).expect("a valid element").as_type();
+    for field in [mixed.as_type(), array] {
+        let packed = m
+            .packed_struct_type([field])
+            .expect("valid struct elements");
+        assert_eq!(
+            dl.struct_layout(packed)
+                .expect("a packed struct asks no field's alignment")
+                .size_in_bytes(),
+            TypeSize::scalable(32),
+            "{packed}"
+        );
+        let unpacked = m.struct_type([field]).expect("valid struct elements");
+        assert!(dl.struct_layout(unpacked).is_none(), "{unpacked}");
+    }
+    let opaque = m.opaque_struct("O").expect("fresh name").as_type();
+    let no_layout = m
+        .target_ext_type("spirv.Padding", Vec::<Type<'_, _>>::new(), Vec::new())
+        .expect("`checkParams` admits it")
+        .as_type();
+    for field in [opaque, no_layout] {
+        let packed = m
+            .packed_struct_type([field])
+            .expect("valid struct elements");
+        assert!(dl.struct_layout(packed).is_none(), "{packed}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Defaults / isDefault
+// ---------------------------------------------------------------------------
 
 /// `llvmkit-specific`: mirrors `DataLayout::isDefault`.
 #[test]
@@ -1278,12 +1337,15 @@ fn copy_assignment_invalidates_struct_layout() {
 /// without reaching an unsized type. The walks under the queries treat an
 /// unsized type as unreachable (`reached_unsized`), which holds only while
 /// `Type::is_sized` (`StructType::isSized`, `Type::isSizedDerivedType`), the
-/// target extension layout table and `struct_layout`'s field check agree on
-/// what is sized; a disagreement aborts a public query. The types here are
-/// every leaf kind, the target extension types `getTargetTypeInfo` lays out
-/// and the ones it cannot, two levels of array, vector, scalable vector and
-/// struct nesting over them, and the same again after the opaque struct
-/// among them gets a body. Each type without a proof is refused with
+/// target extension layout table, `struct_layout_inner`'s refusals and
+/// `alloc_size_defined` agree; a disagreement aborts a public query. So the
+/// test also pins that a sized struct has a layout (`layout_of` relies on
+/// it) and that a non-packed struct with an unsized field has none. The
+/// types here are every leaf kind, the target extension types
+/// `getTargetTypeInfo` lays out and the ones it cannot, two levels of array,
+/// vector, scalable vector, struct and packed struct nesting over them, and
+/// the same again after the opaque struct among them gets a body. Each type
+/// without a proof is refused with
 /// `IrError::UnsizedType` by `value_or_abi_type_align`'s unset branch. The
 /// counts are a floor on coverage, not an upstream figure: both sides must
 /// be exercised.
@@ -1354,6 +1416,8 @@ fn every_sized_type_answers_every_size_query() {
             next.extend(m.struct_type([ty]).ok().map(|t| t.as_type()));
             next.extend(m.struct_type([ty, ty]).ok().map(|t| t.as_type()));
             next.extend(m.struct_type([ty, i8_ty]).ok().map(|t| t.as_type()));
+            next.extend(m.packed_struct_type([ty]).ok().map(|t| t.as_type()));
+            next.extend(m.packed_struct_type([ty, i8_ty]).ok().map(|t| t.as_type()));
         }
         all.extend(next);
     }
@@ -1363,15 +1427,19 @@ fn every_sized_type_answers_every_size_query() {
         let (mut sized_count, mut unsized_count) = (0_usize, 0_usize);
         for &ty in all {
             if let Ok(struct_ty) = StructType::try_from(ty) {
-                // Laying a struct out reaches no unsized type either; a sized
-                // struct has a layout, and one with an unsized field (or an
-                // opaque body) has none, where `StructLayout` asserts.
+                // Laying a struct out, packed or not, reaches no type the
+                // walks hold unreachable either; a sized struct has a layout,
+                // and a non-packed one with an unsized field (or an opaque
+                // body) has none, where `StructLayout`'s `getABITypeAlign`
+                // asserts. A packed struct asks no field's alignment, so an
+                // unsized field with an alloc size is laid out.
                 let layout = dl.struct_layout(struct_ty);
                 if ty.is_sized() {
                     assert!(layout.is_some(), "{ty}: a sized struct has a layout");
                 }
-                let has_unsized_field =
-                    struct_ty.is_opaque() || struct_ty.fields().any(|field| !field.is_sized());
+                let has_unsized_field = struct_ty.is_opaque()
+                    || (!struct_ty.is_packed()
+                        && struct_ty.fields().any(|field| !field.is_sized()));
                 if has_unsized_field {
                     assert!(layout.is_none(), "{ty}: an unsized field has no layout");
                 }

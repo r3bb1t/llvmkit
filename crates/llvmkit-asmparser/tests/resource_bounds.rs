@@ -313,12 +313,15 @@ fn a_struct_asked_about_again_is_not_laid_out_again() {
 ///
 /// **No upstream counterpart.** Upstream's `DataLayout::getStructLayout`
 /// answers a struct it has laid out from its `StructLayoutMap` before
-/// anything else, so a repeated query costs one lookup. llvmkit's
-/// `struct_layout` checks that every field is sized before laying a struct
-/// out; when that check ran before the map lookup, every query cost the
-/// struct's fields again, here 10^11 field checks, which no machine does
-/// inside the deadline (10^10 already ran past it in a debug build). A kept
-/// layout already proves its fields sized, so the lookup now comes first.
+/// anything else, so a repeated query costs one lookup. At `f54f4825`
+/// llvmkit's `struct_layout` scanned every field for sizedness before that
+/// lookup, so every query cost the struct's fields again: here 10^11 field
+/// checks. With 100,000 queries (10^10 checks) and that order put back on
+/// top of `a5fecaaa`, this test ran past its deadline in the gate's debug
+/// profile (`cargo +1.96.0 test -p llvmkit-asmparser --test
+/// resource_bounds -- a_kept`); ten times as many leaves a fast machine no
+/// way through. The lookup now comes first, and the layout walk itself
+/// checks each field as it reaches it.
 #[test]
 fn a_kept_struct_layout_is_answered_without_rechecking_its_fields() {
     support::deadline::within_a_minute("a kept layout rechecks every field", || {
@@ -333,6 +336,36 @@ fn a_kept_struct_layout_is_answered_without_rechecking_its_fields() {
                 .struct_layout(top)
                 .expect("every field is sized");
             assert_eq!(layout.size_in_bytes().fixed_value(), Some(100_000));
+        }
+    });
+}
+
+/// One struct of 100,000 `i8` fields and a scalable vector, whose layout is
+/// asked 100,000 times.
+///
+/// **No upstream counterpart.** Upstream asserts on this struct's layout
+/// (`TypeSize::operator+=`'s "Incompatible types" when the vector's scalable
+/// size meets the fixed 100,000 bytes before it), and llvmkit refuses it
+/// (`docs/divergences.md` D43). That refusal comes only after every field
+/// before the vector is measured, and it can never change, since a body is
+/// set once; so the refusal is kept in the struct-layout map beside the
+/// layouts. Not kept, every query would measure the 100,000 fields again.
+#[test]
+fn a_refused_struct_layout_is_kept_as_refused() {
+    support::deadline::within_a_minute("a refused layout is measured again", || {
+        const FIELDS: usize = 100_000;
+        const QUERIES: usize = 100_000;
+        let mut fields = vec!["i8"; FIELDS];
+        fields.push("<vscale x 4 x i32>");
+        let source = format!("%t = type {{ {} }}\n", fields.join(", "));
+        let module = parse(&source);
+        let ty = module.named_struct("t").expect("%t is defined");
+        let data_layout = DataLayout::default();
+        for _ in 0..QUERIES {
+            assert!(
+                data_layout.struct_layout(ty).is_none(),
+                "a scalable size added to a fixed one"
+            );
         }
     });
 }
