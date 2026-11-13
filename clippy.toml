@@ -6,3 +6,10 @@
 # exported items too — `wrong_self_convention` among them, which is why the
 # `Copy` handles' `to_erased` take `self`.
 avoid-breaking-exported-api = false
+
+# `DataLayout` carries its struct-layout cache behind a `Mutex`
+# (`data_layout.rs::StructLayoutMap`, upstream's `LayoutMap`), and its
+# hand-written `==` and `Hash` leave that field out, so mutating the cache
+# never changes a key's hash. `mutable_key_type` sees only the `Mutex`; this
+# names the one type whose interior mutability is outside `Hash` and `Eq`.
+ignore-interior-mutability = ["llvmkit_ir::data_layout::StructLayoutMap"]
