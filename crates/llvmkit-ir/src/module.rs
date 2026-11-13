@@ -2397,8 +2397,9 @@ pub(super) struct ModuleCore {
     /// of [`ModuleId::fresh`], but per-module (an `SsaBuilderId` only needs
     /// to disambiguate builders within one module, not process-globally).
     next_ssa_builder_id: core::cell::Cell<u32>,
-    /// Each struct's layout under the last [`DataLayout`] that asked. Mirrors
-    /// the `StructLayoutMap` upstream keeps on its `DataLayout`; see
+    /// Each struct's layout, one map per [`DataLayout`] that asked, for the
+    /// few that asked most recently. Mirrors the `StructLayoutMap` upstream
+    /// keeps on each `DataLayout`; see
     /// [`crate::data_layout::StructLayoutCache`] for why it lives here.
     struct_layouts: crate::data_layout::StructLayoutCache,
 }

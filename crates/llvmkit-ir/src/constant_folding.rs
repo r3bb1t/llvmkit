@@ -589,7 +589,7 @@ fn read_struct_data_from_global<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     let Ok(struct_ty) = StructType::try_from(constant.ty()) else {
         return Ok(false);
     };
-    let layout = dl.struct_layout(erase_type(constant.ty()));
+    let layout = dl.struct_layout(struct_ty);
     let Some(mut index) = layout.element_containing_offset(byte_offset) else {
         return Ok(false);
     };
@@ -2513,7 +2513,7 @@ pub(crate) fn accumulate_constant_offset<'ctx, B: ModuleBrand + 'ctx, C: Capabil
             // A scalable offset here is upstream's fatal `TypeSize` conversion:
             // the field's own type is fixed, so the bailout above let it by.
             let field_offset = dl
-                .struct_layout(erase_type(struct_ty))
+                .struct_layout_of(erase_type(struct_ty))
                 .element_offset(field)
                 .fixed_value()?;
             offset = offset.wrapping_add(&ApInt::from_words(index_bits, &[field_offset]));
@@ -2972,7 +2972,7 @@ fn gep_index_for_offset<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             ))
         }
         TypeData::Struct(data) => {
-            let layout = dl.struct_layout(erase_type(*element_ty));
+            let layout = dl.struct_layout_of(erase_type(*element_ty));
             let int_offset = offset.try_zext_u64()?;
             if int_offset >= layout.size_in_bytes().fixed_value()? {
                 return None;

@@ -1409,6 +1409,15 @@ elements, the same empty layout, and caches it in `getStructLayout`'s `StructLay
 the real layout. Before this entry `struct_layout_inner` reached an `unreachable!` here, a panic
 on a public query (`DataLayout::type_alloc_size` of `{ i8, %opaque }`).
 
+The empty layout is no real size, and the opaque struct can still get a body, so nothing that
+writes IR takes it: the `IrBuilder` refuses to fill an omitted `alloca`, `load` or `store`
+alignment for an unsized type (`IrBuilder::refuse_default_align_of_unsized`, with the
+assertion's own text, `Cannot getTypeInfo() on a type that is unsized!`), where upstream's
+`IRBuilder` would assert; the parser refuses an unsized `alloca`, `load`, `store` or
+`getelementptr` before any size is asked; constant `getelementptr` creation refuses an unsized
+source (`constants.rs`, the `!source_ty.is_sized()` check), so the constant folds reach only
+sized types through it. Only a caller asking `DataLayout` directly sees the empty layout.
+
 **Why:** no runtime panic in a production path (CLAUDE.md), and a cache that cannot go stale:
 caching the empty layout, as upstream's release build does, would keep answering it after the
 body is set.
@@ -1417,7 +1426,9 @@ body is set.
 
 **Guarded by:**
 `crates/llvmkit-ir/tests/data_layout_round_trip.rs::struct_layout_of_an_opaque_field_is_empty_and_not_cached`,
-which fails if the layout is cached.
+which fails if the layout is cached, and
+`crates/llvmkit-ir/tests/builder_alloca.rs::alloca_load_and_store_refuse_to_guess_an_unsized_alignment`,
+which fails if the builder fills an alignment for an unsized type.
 
 ---
 

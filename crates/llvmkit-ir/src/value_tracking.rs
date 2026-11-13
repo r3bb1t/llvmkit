@@ -6285,7 +6285,7 @@ where
             // `uint64_t Offset = SL->getElementOffset(Idx)` is the implicit
             // `TypeSize` conversion, fatal on a scalable offset. Nothing is
             // known about such a field's address instead.
-            let layout = data_layout.struct_layout(erase_type(struct_ty));
+            let layout = data_layout.struct_layout_of(erase_type(struct_ty));
             let Some(field_offset) = layout.element_offset(field).fixed_value() else {
                 return Ok(KnownBits::unknown(width));
             };

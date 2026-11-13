@@ -232,13 +232,14 @@ impl ApInt {
         if bit >= bit_width {
             return Self::zero(bit_width);
         }
-        let mut words = vec![0; words_for_bits_usize(bit_width)];
+        // Only the words up to the bit's: the higher ones are zero, and a
+        // value keeps no high zero words, so these are already canonical.
         let idx = u32_to_usize(bit / WORD_BITS);
-        let shift = bit % WORD_BITS;
+        let mut words = vec![0; idx + 1];
         if let Some(word) = words.get_mut(idx) {
-            *word |= 1u64 << shift;
+            *word = 1u64 << (bit % WORD_BITS);
         }
-        Self::from_words(bit_width, &words)
+        Self { bit_width, words }
     }
 
     /// The bits in `[lo, hi)` set, `hi` clamped to the width. Mirrors

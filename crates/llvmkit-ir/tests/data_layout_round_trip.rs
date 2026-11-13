@@ -933,7 +933,7 @@ fn struct_layout_simple() {
     let st = m
         .struct_type([i32_ty.as_type(), i64_ty.as_type()])
         .expect("valid struct elements");
-    let layout = dl.struct_layout(st.as_type());
+    let layout = dl.struct_layout(st);
     assert_eq!(layout.element_offset(0), TypeSize::fixed(0));
     // i64 default ABI alignment is 4, so i64 placed at offset 4.
     assert_eq!(layout.element_offset(1), TypeSize::fixed(4));
@@ -951,7 +951,7 @@ fn struct_layout_packed() {
     let st = m
         .packed_struct_type([i8_ty.as_type(), i32_ty.as_type()])
         .expect("valid struct elements");
-    let layout = dl.struct_layout(st.as_type());
+    let layout = dl.struct_layout(st);
     assert_eq!(layout.element_offset(0), TypeSize::fixed(0));
     assert_eq!(layout.element_offset(1), TypeSize::fixed(1));
     assert_eq!(layout.size_in_bytes(), TypeSize::fixed(5));
@@ -976,7 +976,7 @@ fn a_struct_field_offset_says_whether_it_scales() {
             i32_ty.as_type(),
         ])
         .expect("valid struct elements");
-    let fixed_layout = dl.struct_layout(fixed.as_type());
+    let fixed_layout = dl.struct_layout(fixed);
     assert_eq!(fixed_layout.element_containing_offset(4), Some(2));
     assert_eq!(fixed_layout.element_containing_offset(0), Some(0));
     assert_eq!(fixed_layout.element_containing_offset(8), None);
@@ -985,7 +985,7 @@ fn a_struct_field_offset_says_whether_it_scales() {
     let scalable = m
         .struct_type([scalable_field, scalable_field])
         .expect("valid struct elements");
-    let scalable_layout = dl.struct_layout(scalable.as_type());
+    let scalable_layout = dl.struct_layout(scalable);
     assert_eq!(scalable_layout.element_offset(1), TypeSize::scalable(16));
     assert_eq!(
         scalable_layout.element_offset_in_bits(1),
@@ -1011,13 +1011,13 @@ fn a_scalable_size_stays_scalable_through_an_array_and_a_struct() {
     assert_eq!(dl.type_alloc_size(array), TypeSize::scalable(32));
     assert_eq!(dl.type_store_size(array), TypeSize::scalable(32));
 
-    let tuple = m
+    let tuple_struct = m
         .struct_type([vector, vector])
-        .expect("valid struct elements")
-        .as_type();
+        .expect("valid struct elements");
+    let tuple = tuple_struct.as_type();
     assert_eq!(dl.type_size_in_bits(tuple), TypeSize::scalable(256));
     assert_eq!(dl.type_alloc_size(tuple), TypeSize::scalable(32));
-    let layout = dl.struct_layout(tuple);
+    let layout = dl.struct_layout(tuple_struct);
     assert_eq!(layout.size_in_bytes(), TypeSize::scalable(32));
     assert_eq!(layout.size_in_bits(), TypeSize::scalable(256));
     assert!(!layout.is_padded());
@@ -1025,10 +1025,7 @@ fn a_scalable_size_stays_scalable_through_an_array_and_a_struct() {
     // `operator+=` alone takes a non-zero field's scalability. A first field of
     // size zero is what `getScalable(0)` is for.
     let empty_array = m.array_type(vector, 0).expect("a valid element").as_type();
-    let empty_tuple = m
-        .struct_type([empty_array])
-        .expect("valid struct elements")
-        .as_type();
+    let empty_tuple = m.struct_type([empty_array]).expect("valid struct elements");
     assert_eq!(
         dl.struct_layout(empty_tuple).size_in_bytes(),
         TypeSize::scalable(0)
@@ -1145,7 +1142,31 @@ fn struct_layout_of_an_opaque_field_is_empty_and_not_cached() {
         .expect("the body is set once");
     assert_eq!(dl.type_alloc_size(outer.as_type()), TypeSize::fixed(8));
     assert_eq!(
-        dl.struct_layout(outer.as_type()).element_offset(1),
+        dl.struct_layout(outer).element_offset(1),
         TypeSize::fixed(4)
     );
+}
+
+/// Mirrors `TEST(DataLayoutTest, Equality)`: `p00(global):32:8` and
+/// `p0(global):32:8` keep their own strings and compare equal, since
+/// `DataLayout::operator==` does not read the string. Beyond the port, the
+/// two hash equal, which llvmkit's `Hash` owes its `Eq`.
+#[test]
+fn equality() {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let layout0 = "p00(global):32:8";
+    let layout1 = "p0(global):32:8";
+    let dl0 = parse(layout0);
+    let dl1 = parse(layout1);
+    assert_eq!(dl0.string_representation(), layout0);
+    assert_eq!(dl1.string_representation(), layout1);
+    assert_eq!(dl0, dl1);
+    let hash_of = |dl: &DataLayout| {
+        let mut hasher = DefaultHasher::new();
+        dl.hash(&mut hasher);
+        hasher.finish()
+    };
+    assert_eq!(hash_of(&dl0), hash_of(&dl1));
 }

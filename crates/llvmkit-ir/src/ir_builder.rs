@@ -5105,6 +5105,24 @@ where
         MaybeAlign::new(dl.pref_align_of_id(self.module, ty_id))
     }
 
+    /// Refuse to fill an omitted alignment from the DataLayout when `ty` is
+    /// unsized. Upstream's `getABITypeAlign` / `getPrefTypeAlign` assert
+    /// `Ty->isSized()` ("Cannot getTypeInfo() on a type that is unsized!"),
+    /// so `IRBuilder` never fills one; the layout llvmkit answers there
+    /// instead (`docs/divergences.md` D43) is no real alignment, and a struct
+    /// holding an opaque struct can still get a body, after which an
+    /// `align` filled from it would be wrong. An explicit alignment is kept:
+    /// the verifier judges an unsized `alloca`, `load` or `store` as upstream's
+    /// does.
+    fn refuse_default_align_of_unsized(&self, ty: TypeSlot, align: MaybeAlign) -> IrResult<()> {
+        if align.align().is_none() && !crate::r#type::is_sized(self.module, ty, &mut Vec::new()) {
+            return Err(IrError::InvalidOperation {
+                message: "Cannot getTypeInfo() on a type that is unsized!",
+            });
+        }
+        Ok(())
+    }
+
     /// The DataLayout alloca address space (`IRBuilder::CreateAlloca` uses
     /// `getAllocaAddrSpace`).
     fn alloca_addr_space(&self) -> crate::AddressSpace {
@@ -5126,7 +5144,7 @@ where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
     {
-        Ok(self.alloca_inner(
+        self.alloca_inner(
             // Boundary: the caller's allocated type.
             ty.slot_in(self.module.id())?,
             None,
@@ -5134,7 +5152,7 @@ where
             self.mutable_ref().ptr_type_in::<N>(),
             AllocaFlags::none(),
             name,
-        ))
+        )
     }
 
     /// Produce `alloca <ty>`. Mirrors `IRBuilder::CreateAlloca`.
@@ -5148,7 +5166,7 @@ where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
     {
-        Ok(self.alloca_inner(
+        self.alloca_inner(
             // Boundary: the caller's allocated type.
             ty.slot_in(self.module.id())?,
             None,
@@ -5156,7 +5174,7 @@ where
             self.mutable_ref().ptr_type(self.alloca_addr_space()),
             AllocaFlags::none(),
             name,
-        ))
+        )
     }
 
     /// Produce `alloca <ty>, <size-ty> <num_elements>`. Mirrors
@@ -5173,7 +5191,7 @@ where
         N: IntoIntValue<'ctx, IntDyn, B>,
     {
         let n = num_elements.into_int_value(self.mutable_ref())?;
-        Ok(self.alloca_inner(
+        self.alloca_inner(
             // Boundary: the caller's allocated type.
             ty.slot_in(self.module.id())?,
             Some(n.slot_trusting_same_module()),
@@ -5181,7 +5199,7 @@ where
             self.mutable_ref().ptr_type(self.alloca_addr_space()),
             AllocaFlags::none(),
             name,
-        ))
+        )
     }
 
     /// Produce `alloca <ty>, <size-ty> <num_elements>, align <N>`. The
@@ -5199,7 +5217,7 @@ where
         N: IntoIntValue<'ctx, IntDyn, B>,
     {
         let n = num_elements.into_int_value(self.mutable_ref())?;
-        Ok(self.alloca_inner(
+        self.alloca_inner(
             // Boundary: the caller's allocated type.
             ty.slot_in(self.module.id())?,
             Some(n.slot_trusting_same_module()),
@@ -5207,7 +5225,7 @@ where
             self.mutable_ref().ptr_type(self.alloca_addr_space()),
             AllocaFlags::none(),
             name,
-        ))
+        )
     }
 
     /// Produce `alloca <ty>, align <N>`. Mirrors
@@ -5222,7 +5240,7 @@ where
         Name: AsRef<str>,
         T: IrType<'ctx, B>,
     {
-        Ok(self.alloca_inner(
+        self.alloca_inner(
             // Boundary: the caller's allocated type.
             ty.slot_in(self.module.id())?,
             None,
@@ -5230,7 +5248,7 @@ where
             self.mutable_ref().ptr_type(self.alloca_addr_space()),
             AllocaFlags::none(),
             name,
-        ))
+        )
     }
 
     /// The alloca's result pointer type `ptr_ty` names its address space; the
@@ -5244,10 +5262,11 @@ where
         ptr_ty: PointerType<'ctx, A, B>,
         flags: AllocaFlags,
         name: N,
-    ) -> PointerValueId<A, B>
+    ) -> IrResult<PointerValueId<A, B>>
     where
         N: AsRef<str>,
     {
+        self.refuse_default_align_of_unsized(allocated_ty, align)?;
         let addr_space = ptr_ty.address_space();
         // Materialise the DataLayout preferred alignment when omitted, like
         // upstream — every alloca funnels through here
@@ -5259,8 +5278,9 @@ where
         };
         let payload =
             AllocaInstData::new_with_flags(allocated_ty, num_elements, align, addr_space, flags);
-        self.append_ptr(ptr_ty, InstructionKindData::Alloca(payload), name)
-            .id()
+        Ok(self
+            .append_ptr(ptr_ty, InstructionKindData::Alloca(payload), name)
+            .id())
     }
 
     /// Builder-pattern `alloca` construction: array size, alignment,
@@ -5354,6 +5374,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
+        self.refuse_default_align_of_unsized(ty_id, payload.align)?;
         let inst = self.load_inner(payload, name);
         Ok(inst.to_erased().id())
     }
@@ -5836,14 +5857,14 @@ where
     {
         let v = value.into_erased_value(self.mutable_ref())?;
         let p = ptr.into_pointer_value(self.mutable_ref())?;
-        Ok(self.store_payload_lifted(
+        self.store_payload_lifted(
             v,
             p.slot_trusting_same_module(),
             align,
             volatile,
             ordering,
             sync_scope,
-        ))
+        )
     }
 
     /// Payload assembly for operands that are already lifted and
@@ -5857,25 +5878,26 @@ where
         volatile: bool,
         ordering: AtomicOrdering,
         sync_scope: SyncScope,
-    ) -> StoreInstData {
+    ) -> IrResult<StoreInstData> {
         // Materialise the DataLayout default off the stored value's type,
         // like upstream (`computeLoadStoreDefaultAlign` /
         // `getABITypeAlign(Val->getType())`). Every store funnels through
         // here, so an omitted alignment is filled once.
+        self.refuse_default_align_of_unsized(value.ty().slot_trusting_same_module(), align)?;
         let align = if align.align().is_none() {
             self.default_abi_align(value.ty().slot_trusting_same_module())
         } else {
             align
         };
         // Internal: every caller lifted `value` against this module.
-        StoreInstData::new(
+        Ok(StoreInstData::new(
             value.slot_trusting_same_module(),
             ptr,
             align,
             volatile,
             ordering,
             sync_scope,
-        )
+        ))
     }
 
     /// Ports the `CallInst::init` / `CallBrInst::init` assertions
@@ -11698,7 +11720,7 @@ where
             self.volatile,
             self.ordering,
             self.sync_scope,
-        );
+        )?;
         Ok(parent.store_inner(payload))
     }
 }
@@ -11822,14 +11844,14 @@ where
     pub fn build(self) -> IrResult<PointerValueId<crate::SpaceDyn, B>> {
         let allocated_ty = self.allocated_ty?;
         let num_elements = self.num_elements?;
-        Ok(self.parent.alloca_inner(
+        self.parent.alloca_inner(
             allocated_ty,
             num_elements,
             self.align,
             self.parent.mutable_ref().ptr_type(self.addr_space),
             self.flags,
             &self.name,
-        ))
+        )
     }
 }
 

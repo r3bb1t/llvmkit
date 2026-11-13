@@ -991,14 +991,55 @@ the instruction with a scan of the block and removes it with `Vec::remove`.
 Upstream's `Use::removeFromList` and `iplist::erase` are constant time. So
 erasing K users of one value, all in one block, is quadratic twice over.
 
-Measured at `46362565` (release, rustc 1.96.0) by a scratch integration test,
-not committed, that built one function `foo(i32 %x)` of K `add i32 %x, 0`
-through `IrBuilder::int_add`, collected the K instructions with a
-`BlockCursor`, and timed `erase_from_parent` over all of them with
-`std::time::Instant`: K = 80,000 took 22.6 s front to back (each `remove_use`
-walks to the list's tail, where the oldest use sits) and 2.66 s back to front
-(each `remove_instruction` walks the block to its end); K = 20,000 took 1.36 s
-and 0.16 s. Fixing it needs an edge to know its position: an intrusive list,
+Measured at `46362565` with `cargo +1.96.0 test --release -p llvmkit-ir --test
+erase_probe -- --nocapture`, where `crates/llvmkit-ir/tests/erase_probe.rs` is
+this probe (written for the measurement and not kept in the tree):
+
+```rust
+use llvmkit_ir::{Dyn, IntValue, IrBuilder, IrError, Linkage, iter::BlockCursor, module_new};
+
+fn run(k: usize, reverse: bool) -> Result<(), IrError> {
+    let m = module_new!("e")?;
+    let fn_ty = m.function_type(m.void_type(), [m.i32_type().as_type()])?;
+    let f = m.add_function_dyn("foo", fn_ty, Linkage::External)?;
+    let bb = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
+    let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+    for _ in 0..k {
+        b.int_add(x, 0_i32, "")?;
+    }
+    let mut cursor = BlockCursor::at_start(b.into_insert_block());
+    let mut insts = Vec::new();
+    for _ in 0..k {
+        let (inst, next) = cursor.step().expect("instruction");
+        insts.push(inst);
+        cursor = next;
+    }
+    if reverse {
+        insts.reverse();
+    }
+    let t = std::time::Instant::now();
+    for inst in insts {
+        inst.erase_from_parent(&m);
+    }
+    println!("k={k} reverse={reverse} erase={:?}", t.elapsed());
+    Ok(())
+}
+
+#[test]
+fn probe() -> Result<(), IrError> {
+    for k in [20_000, 80_000] {
+        run(k, false)?;
+        run(k, true)?;
+    }
+    Ok(())
+}
+```
+
+K = 80,000 took 22.6 s front to back (each `remove_use` walks to the list's
+tail, where the oldest use sits) and 2.66 s back to front (each
+`remove_instruction` walks the block to its end); K = 20,000 took 1.36 s and
+0.16 s. Fixing it needs an edge to know its position: an intrusive list,
 or indices that removal keeps up to date. Not started because neither
 representation is a local change: every use-list reader indexes the list
 (`sort_use_list`, `predictValueUseListOrder`'s positions).
