@@ -1340,8 +1340,8 @@ defined is a forward reference, and a second definition of an id replaces the fi
 `NumberedValueInfos[ID] = VI`). The `expected summary id to fit in a machine word` error the
 vector's index conversion needed is gone with it: a `u32` key needs no conversion.
 
-**Why:** a 78-byte summary aborted the parser on a 64 GB allocation (measured at `34fdec9`
-under a 4 GiB cap; `^100000000` succeeded in 0.92 s at 1,534 MiB).
+**Why:** a 78-byte summary naming `^4000000000` asked for 4,000,000,001 slots of
+`Option<Guid>`, 16 bytes each (a `u64` with no niche), 64 GB, before parsing anything after it.
 Before this entry, `rg -n -i 'NumberedValueInfos|numbered_value_infos|summary id'
 docs/divergences.md docs/future-work.md` (run on `46362565`) printed nothing.
 
@@ -1355,10 +1355,12 @@ one-minute deadline.
 ### D42 — A type size too large for 64 bits saturates, where upstream wraps
 
 **Severity:** model-gap, on types no target can hold: `DataLayout` answers `u64::MAX` for a
-size (in bytes or bits) that does not fit in a `u64`, where upstream answers that size modulo
-2^64.
-**Where:** `crates/llvmkit-ir/src/data_layout.rs` — `align_to`, `align_to_power_of_two`, and
-the size walks' `TypeSize::saturating_scaled` / `TypeSize::saturating_add`
+size that does not fit in a `u64` in the unit asked for, where upstream answers that size
+modulo 2^64. A type of 2^61 bytes or more has no bit size in a `u64`, so from there its bit
+sizes saturate while its byte sizes stay exact until they too pass 2^64.
+**Where:** `crates/llvmkit-ir/src/data_layout.rs` — `align_to`, `align_to_power_of_two`,
+`type_store_size_inner` (which reads an aggregate's store size in bytes), and the size walks'
+`TypeSize::saturating_scaled` / `TypeSize::saturating_add`
 (`crates/llvmkit-ir/src/type_size.rs`).
 
 **LLVM:** `TypeSize`'s `operator*` and `operator+`, `StructLayout::StructLayout`'s
@@ -1367,7 +1369,9 @@ the size walks' `TypeSize::saturating_scaled` / `TypeSize::saturating_add`
 size of 0.
 
 **llvmkit:** every size computation saturates: a product, a sum, and the round-up to an
-alignment. `u64::MAX` bytes is no size a type can have in memory, so the answer reads as "too
+alignment. Upstream's `getTypeStoreSize` divides the bit size by 8; llvmkit reads a struct's or
+an array's store size in bytes instead (the same value whenever the bit size fits), because
+dividing a saturated bit count would answer 2^61 - 1 bytes for any larger type. `u64::MAX` bytes is no size a type can have in memory, so the answer reads as "too
 large to represent", never as a plausible small size; a wrapped size would let such a type pass
 for a small one (an `alloca` of 0 bytes, an offset that fits). Products and sums already
 saturated (`saturating_scaled` documents it); the round-up added `align - 1` unchecked, which
@@ -1383,7 +1387,9 @@ saturated value already cannot be mistaken for a real size.
 
 **Guarded by:**
 `crates/llvmkit-asmparser/tests/resource_bounds.rs::a_struct_shared_sixty_four_levels_deep_parses_verifies_and_prints`,
-which asserts the `u64::MAX` alloc size of a `4 * 2^64`-byte struct.
+which asserts the `u64::MAX` alloc and store sizes of a `4 * 2^64`-byte struct, and
+`resource_bounds.rs::a_size_past_sixty_four_bits_saturates_without_shrinking_its_bytes`, which
+asserts exact 2^62-byte alloc and store sizes and a saturated bit size for a 2^62-byte struct.
 
 ---
 

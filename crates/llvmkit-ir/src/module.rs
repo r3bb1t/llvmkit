@@ -2397,6 +2397,10 @@ pub(super) struct ModuleCore {
     /// of [`ModuleId::fresh`], but per-module (an `SsaBuilderId` only needs
     /// to disambiguate builders within one module, not process-globally).
     next_ssa_builder_id: core::cell::Cell<u32>,
+    /// Each struct's layout under the last [`DataLayout`] that asked. Mirrors
+    /// the `StructLayoutMap` upstream keeps on its `DataLayout`; see
+    /// [`crate::data_layout::StructLayoutCache`] for why it lives here.
+    struct_layouts: crate::data_layout::StructLayoutCache,
 }
 
 /// Linear module token carrying a brand `B` and verification state `S`.
@@ -2499,6 +2503,11 @@ impl<B: ModuleBrand, S: 'static> core::fmt::Debug for Module<B, S> {
 }
 
 impl<'ctx> ModuleCore {
+    /// The module's struct layouts, read and filled by [`DataLayout`]'s walks.
+    pub(crate) fn struct_layout_cache(&self) -> &crate::data_layout::StructLayoutCache {
+        &self.struct_layouts
+    }
+
     /// Construct a fresh, empty module with a freshly-allocated
     /// [`ModuleId`].
     pub(super) fn new<N>(name: N) -> Self
@@ -2525,6 +2534,7 @@ impl<'ctx> ModuleCore {
             named_metadata: core::cell::RefCell::new(Vec::new()),
             metadata_as_value_cache: core::cell::RefCell::new(std::collections::HashMap::new()),
             next_ssa_builder_id: core::cell::Cell::new(0),
+            struct_layouts: crate::data_layout::StructLayoutCache::default(),
         }
     }
 

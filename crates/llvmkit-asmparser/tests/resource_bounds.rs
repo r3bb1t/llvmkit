@@ -26,8 +26,10 @@ fn parse(source: &str) -> Module<DynBrand, Unverified> {
 /// constant-time prepend, and llvmkit's `Context::add_use` matches it with a
 /// deque's `push_front`. When it shifted the whole list instead
 /// (`Vec::insert(0, ..)`), a value with K uses cost K squared to build: 80,000
-/// stores took 5.2 s to parse at `34fdec9` (release build), so 2^20 would take
-/// minutes, past the deadline. The count and the head of the list are the
+/// stores took 6.07 s to parse at `34fdec9` (wall time of
+/// `target/release/examples/parse_file` on a file of 80,000
+/// `store i32 0, ptr %p`, rustc 1.96.0), so 2^20, 13 times as many, would
+/// take about 170 times as long, past the deadline. The count and the head of the list are the
 /// order upstream's list has: every store, newest first.
 #[test]
 fn a_value_with_a_million_uses_is_built_in_linear_time() {
@@ -65,9 +67,10 @@ fn a_value_with_a_million_uses_is_built_in_linear_time() {
 /// one word, and `APInt::sext` (`APInt.cpp`) is a copy and a fill, so a wide
 /// `-1` costs its words. llvmkit's `ApInt::set_bit` copied every word to set
 /// one, and `ApInt::bits_set` set its range a bit at a time, so sign-extending
-/// the literal to its type cost the width squared over 64: `i1048576 -1` took
-/// 8.1 s to parse at `34fdec9` (release build), and the curve puts this width
-/// at about nine minutes.
+/// the literal to its type cost the width squared over 64: `i65536 -1` took
+/// 0.05 s to parse and `i262144 -1` 0.76 s at `34fdec9` (wall time of
+/// `target/release/examples/parse_file` on the one-line file, rustc 1.96.0),
+/// and this width is 32 times the second, so about 1,000 times as long.
 #[test]
 fn the_widest_integer_literal_is_built_in_linear_time() {
     support::deadline::within_a_minute("setting a bit copies the whole integer", || {
@@ -89,7 +92,9 @@ fn the_widest_integer_literal_is_built_in_linear_time() {
 /// searching every block of the function (`block_view_for_value`), and
 /// `FunctionValue::move_basic_block_to_end` searched for the block from the
 /// front, so each block cost a walk of the blocks before it: 80,000 blocks
-/// took 5.9 s to parse at `34fdec9` (release build). The label is now
+/// took 5.90 s to parse at `34fdec9` (wall time of
+/// `target/release/examples/parse_file` on a file of 80,000
+/// `bN:\n  ret void` blocks, rustc 1.96.0). The label is now
 /// narrowed by `FunctionValue::basic_block`, and the move searches from the
 /// back, where a block defined as it is appended already sits.
 #[test]
@@ -149,11 +154,12 @@ fn a_summary_id_near_the_top_of_the_range_costs_one_entry() {
 ///
 /// **No upstream counterpart.** Upstream's `DataLayout::getStructLayout`
 /// (`DataLayout.cpp`) caches each struct's layout in its `StructLayoutMap`,
-/// so the query lays out each of the 41 structs once. llvmkit laid a struct
-/// out again every time a walk reached it, twice for each field
-/// (`alignment` and `type_alloc_size_inner`), four times per level: 14
-/// levels took 18.6 s at `34fdec9` (release build), so 40 would take years.
-/// Each query now memoises the structs it lays out.
+/// so each of the 41 structs is laid out once. llvmkit laid a struct out
+/// again every time a walk reached it, twice for each field (`alignment` and
+/// `type_alloc_size_inner`, read at `34fdec9`), so laying out `%tK` laid out
+/// `%t(K-1)` four times, and this query would lay `%t0` out 4^40 times. The
+/// module now keeps each struct's layout per `DataLayout`
+/// (`StructLayoutCache`).
 ///
 /// The expected size is derived by hand, not taken from upstream: `%t0` is
 /// 4 bytes (`i8` at 0, `i16` at 2), and each level is two copies of the level
@@ -208,13 +214,52 @@ fn a_struct_shared_sixty_four_levels_deep_parses_verifies_and_prints() {
              store {top} zeroinitializer, ptr %a\n  ret void\n}}\n"
         ));
         let module = parse(&source);
-        // 4 * 2^64 bytes has no `u64`: the size saturates (D42), where
-        // upstream's arithmetic wraps, and asking for it does not panic.
+        // 4 * 2^64 bytes has no `u64`: both byte sizes saturate (D42),
+        // where upstream's arithmetic wraps, and asking does not panic.
         let global = module.global("g").expect("@g is defined");
-        let size = DataLayout::default().type_alloc_size(module.view(global).value_type());
-        assert_eq!(size.known_min_value(), u64::MAX);
+        let ty = module.view(global).value_type();
+        let data_layout = DataLayout::default();
+        assert_eq!(data_layout.type_alloc_size(ty).known_min_value(), u64::MAX);
+        assert_eq!(data_layout.type_store_size(ty).known_min_value(), u64::MAX);
         let printed = format!("{module}");
         parse(&printed).verify().expect("the module verifies");
         assert_eq!(format!("{}", parse(&printed)), printed);
     });
+}
+
+/// A size that fits in bytes but not in bits: `%t60` of the same shape is
+/// `4 * 2^60` = 2^62 bytes, which is 2^65 bits.
+///
+/// **No upstream counterpart** (`docs/divergences.md` D42). Upstream's sizes
+/// wrap, so its bit size of this type is 0. llvmkit's saturates at
+/// `u64::MAX` bits, and its byte sizes stay exact: the store size is read in
+/// bytes for an aggregate, not divided down from the saturated bit count,
+/// which would answer 2^61 - 1 bytes, a plausible size for a type eight times
+/// larger. The expected 2^62 is derived by hand as in
+/// [`a_struct_shared_forty_levels_deep_is_laid_out_once_per_level`].
+#[test]
+fn a_size_past_sixty_four_bits_saturates_without_shrinking_its_bytes() {
+    const LEVELS: u32 = 60;
+    let mut source = String::from("%t0 = type { i8, i16 }\n");
+    for level in 1..=LEVELS {
+        let below = level - 1;
+        source.push_str(&format!("%t{level} = type {{ %t{below}, %t{below} }}\n"));
+    }
+    source.push_str(&format!("@g = external global %t{LEVELS}\n"));
+    let module = parse(&source);
+    let global = module.global("g").expect("@g is declared");
+    let ty = module.view(global).value_type();
+    let data_layout = DataLayout::default();
+    assert_eq!(
+        data_layout.type_alloc_size(ty).known_min_value(),
+        4u64 << LEVELS
+    );
+    assert_eq!(
+        data_layout.type_store_size(ty).known_min_value(),
+        4u64 << LEVELS
+    );
+    assert_eq!(
+        data_layout.type_size_in_bits(ty).known_min_value(),
+        u64::MAX
+    );
 }

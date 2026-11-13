@@ -333,6 +333,14 @@ pub(crate) struct StructTypeData {
     /// before anything else, as `StructType::isScalableTy` does. An opaque
     /// struct's answer is never remembered, as upstream does not set either
     /// bit for one.
+    ///
+    /// A struct with a body remembers `false` even when a field is a still
+    /// opaque struct, as upstream sets `SCDB_NotContainsScalableVector` on
+    /// any non-opaque struct whose fields answered false: if that field later
+    /// gets a body holding a scalable vector, the outer struct still answers
+    /// `false`. This is upstream's own behaviour, kept rather than corrected,
+    /// so the verifier's `Globals cannot contain scalable types` check
+    /// accepts what upstream's accepts after the same sequence of edits.
     pub(crate) scalable: Cell<Option<bool>>,
 }
 

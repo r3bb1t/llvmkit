@@ -125,9 +125,6 @@ impl ApInt {
         let limit = words_for_bits_usize(bit_width);
         let mut v: Vec<u64> = words.iter().take(limit).copied().collect();
         canonicalize_words(bit_width, &mut v);
-        // Trimming can leave most of the allocation unused (a wide zero keeps
-        // no words at all); a value is long-lived, so it holds only its words.
-        v.shrink_to_fit();
         Self {
             bit_width,
             words: v,
@@ -250,7 +247,10 @@ impl ApInt {
         {
             *word &= u64::MAX >> (WORD_BITS - tail);
         }
-        Self::from_words(bit_width, &words)
+        // The words are already within the width; trimming is all that
+        // `from_words` would add, and it would copy them first.
+        canonicalize_words(bit_width, &mut words);
+        Self { bit_width, words }
     }
 
     pub fn bits_set_with_wrap(bit_width: u32, lo: u32, hi: u32) -> Self {
