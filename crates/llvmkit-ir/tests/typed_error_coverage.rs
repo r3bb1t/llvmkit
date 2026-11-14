@@ -11,9 +11,11 @@
 //! directories, other than this one.
 //!
 //! What the scan reads, so its reach is not overstated: a variant counts as
-//! asserted when its whole path appears in a test file's code (comment lines
-//! are skipped, and a path that continues into a longer identifier does not
-//! count). It does not check that the
+//! asserted when its whole path appears in a test file's code: comment lines
+//! are skipped, and an occurrence that an identifier character precedes or
+//! follows does not count (`BuilderError::OperandType` inside
+//! `BuilderError::OperandTypesDiffer`, `ConstantError::X` inside
+//! `GepConstantError::X`). It does not check that the
 //! appearance is an assertion of a result. The exemptions below name the
 //! variants no public entry can reach, each with the reason.
 //!
@@ -169,7 +171,7 @@ pub enum Next {
 /// **No upstream counterpart**: the positive control for the path match of
 /// [`every_typed_error_variant_is_asserted`].
 #[test]
-fn a_prefix_variant_is_not_named_by_the_longer_one() {
+fn a_variant_is_named_only_by_its_whole_path() {
     let longer_only = "assert_eq!(e, BuilderError::OperandTypesDiffer { operation });";
     assert!(!names(longer_only, "BuilderError::OperandType"));
     assert!(names(longer_only, "BuilderError::OperandTypesDiffer"));

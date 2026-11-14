@@ -9894,12 +9894,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Ok(if lhs_ty.is_scalable() {
                     self.module
                         .scalable_vector_type(element, mask_ty.min_len())
-                        .map_err(|e| self.builder_err("shufflevector", e))?
+                        .map_err(|e| self.builder_err_at(id_loc, "valid shufflevector", e))?
                         .as_type()
                 } else {
                     self.module
                         .vector_type(element, mask_ty.min_len())
-                        .map_err(|e| self.builder_err("shufflevector", e))?
+                        .map_err(|e| self.builder_err_at(id_loc, "valid shufflevector", e))?
                         .as_type()
                 })
             }

@@ -623,12 +623,18 @@ fn constant_expr_shufflevector_rejects_out_of_range_mask() {
 /// parser's own guard, which upstream's single `isValidOperands` call
 /// reports at the same `ID.Loc`.
 ///
-/// Every re-anchored site parsed text can reach has a case, the GEP base
-/// check on an empty operand list among them (`getelementptr (i8, )`, which
-/// `parse_global_value_vector` returns empty). Two are unreachable from text
-/// and have none: the `AnyTypeEnum::Vector` fallbacks that follow
-/// `is_valid_shufflevector` / `is_valid_extractelement`, which those guards
-/// already require to be vectors.
+/// The validators' sites are the 16 `message_at` / `expected_at` calls
+/// `fc2df246` re-anchored (`git diff 8a36e8be fc2df246 --
+/// crates/llvmkit-asmparser/src/ll_parser.rs | grep -cE
+/// '^\+.*(message_at|expected_at)\('`, measured at `416d6e37`). Each one parsed text
+/// can reach has a case below, the GEP base check on an empty operand list
+/// among them (`getelementptr (i8, )`, which `parse_global_value_vector`
+/// returns empty): 14 of the 16. The other two are unreachable from text: the
+/// `AnyTypeEnum::Vector` fallbacks that follow `is_valid_shufflevector` /
+/// `is_valid_extractelement`, which those guards already require to be
+/// vectors. The `ptrauth` and IR-refused shufflevector cases cover the two
+/// `ParseError::Constant` / shufflevector anchors in `build_constant_expr`
+/// and `parse_ptrauth_constant`.
 #[test]
 fn constant_expression_refusals_are_anchored_at_the_expression() {
     for (source, message, anchor) in [

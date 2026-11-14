@@ -14,7 +14,7 @@ use super::capability::{Capability, Mutable};
 use super::cmp_predicate::{CmpPredicate, IntPredicate};
 use super::constant::{
     Constant, ConstantAggregateKind, ConstantData, ConstantDataKind, ConstantExprData,
-    ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantKind,
+    ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantExprShape, ConstantKind,
     ConstantSequentialKind, is_poison, is_undef, is_undef_or_poison,
 };
 use super::constant_fold::{
@@ -2057,12 +2057,13 @@ pub(crate) fn constant_fold_binary_op_operands_trusting_same_module<
         return Ok(Some(folded));
     }
     let _ = dl;
-    if lhs.ty() != rhs.ty() || !opcode.is_supported_constant_expr() {
-        return Ok(None);
-    }
+    // `ConstantExpr::isSupportedBinOp` is the opcode map's answer.
     let Some(expr_opcode) = ConstantExprOpcode::from_binary_opcode(opcode) else {
         return Ok(None);
     };
+    if lhs.ty() != rhs.ty() {
+        return Ok(None);
+    }
     lhs.module
         .constant_expr(
             lhs.ty(),
@@ -3048,17 +3049,14 @@ fn constant_fold_constant_expr_operands<'ctx, B: ModuleBrand + 'ctx, C: Capabili
     tli: Option<&TargetLibraryInfo>,
 ) -> IrResult<Option<Constant<'ctx, B, C>>> {
     let _ = tli;
-    match expr.opcode {
-        ConstantExprOpcode::Add | ConstantExprOpcode::Sub | ConstantExprOpcode::Xor => {
+    match expr.opcode.shape() {
+        ConstantExprShape::Binary(opcode) => {
             let [lhs, rhs] = operands else {
                 return Ok(None);
             };
-            let Some(opcode) = expr.opcode.binary_opcode() else {
-                unreachable!("each opcode of this arm is a binary operator (invariant)");
-            };
             constant_fold_binary_op_operands_trusting_same_module(opcode, *lhs, *rhs, dl)
         }
-        ConstantExprOpcode::GetElementPtr => {
+        ConstantExprShape::GetElementPtr => {
             let Some(source_ty) = expr.source_ty else {
                 return Ok(None);
             };
@@ -3077,35 +3075,27 @@ fn constant_fold_constant_expr_operands<'ctx, B: ModuleBrand + 'ctx, C: Capabili
             }
             constant_fold_get_element_ptr_trusting_same_module(*pointer, indices, in_range)
         }
-        ConstantExprOpcode::ShuffleVector => {
+        ConstantExprShape::ShuffleVector => {
             let [lhs, rhs, mask] = operands else {
                 return Ok(None);
             };
             crate::constant_fold::constant_fold_shuffle_vector_with_mask_constant(*lhs, *rhs, *mask)
         }
-        ConstantExprOpcode::InsertElement => {
+        ConstantExprShape::InsertElement => {
             let [vector, value, index] = operands else {
                 return Ok(None);
             };
             constant_fold_insert_element_instruction_trusting_same_module(*vector, *value, *index)
         }
-        ConstantExprOpcode::ExtractElement => {
+        ConstantExprShape::ExtractElement => {
             let [vector, index] = operands else {
                 return Ok(None);
             };
             constant_fold_extract_element_instruction_trusting_same_module(*vector, *index)
         }
-        ConstantExprOpcode::Trunc
-        | ConstantExprOpcode::PtrToAddr
-        | ConstantExprOpcode::PtrToInt
-        | ConstantExprOpcode::IntToPtr
-        | ConstantExprOpcode::BitCast
-        | ConstantExprOpcode::AddrSpaceCast => {
+        ConstantExprShape::Cast(opcode) => {
             let [operand] = operands else {
                 return Ok(None);
-            };
-            let Some(opcode) = expr.opcode.cast_opcode() else {
-                unreachable!("each opcode of this arm is a cast (invariant)");
             };
             constant_fold_cast_operand_trusting_same_module(
                 opcode,

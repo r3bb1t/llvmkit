@@ -669,9 +669,12 @@ pub(crate) fn constant_fold_cast_instruction_trusting_same_module<
 }
 
 /// `ConstantFoldCastInstruction` for a cast already known valid: the entry
-/// above checked it, or it is a cast that follows from one it checked — a
-/// lane of a valid vector cast, or the pair `isEliminableCastPair` folds two
-/// valid casts into — so the recursion does not re-validate each.
+/// above checked it, the cast-pair fold checked the pair's cast, or it is a
+/// lane of a valid same-lane vector cast. Each of `cast_is_valid`'s vector
+/// rules asks that the element counts agree and then applies the scalar rule
+/// to the elements — `bitcast`'s equal total size, over equal lane counts, is
+/// equal element size — so each lane of a valid same-lane vector cast is a
+/// valid cast, and the per-lane recursion does not re-validate it.
 fn fold_valid_cast<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     opcode: CastOpcode,
     operand: Constant<'ctx, B, C>,
@@ -824,6 +827,11 @@ fn fold_constant_cast_pair<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     ) else {
         return Ok(None);
     };
+    // The pair's cast is `isEliminableCastPair`'s table answer, not a cast
+    // that follows from the one the entry checked, so it is checked itself.
+    if !cast_is_valid(new_opcode, source.ty(), dest_ty) {
+        return Ok(None);
+    }
     fold_maybe_undesirable_cast(new_opcode, source, dest_ty)
 }
 
@@ -2052,7 +2060,9 @@ pub fn constant_fold_get_element_ptr<'ctx, B: ModuleBrand + 'ctx, C: Capability>
     for index in indices {
         index.slot_in(owner)?;
     }
-    // `PointeeTy` is admitted above and read by no fold llvmkit ports.
+    // `source_ty` is upstream's `PointeeTy`: `ConstantFoldGetElementPtr` takes
+    // it and reads it in none of its folds (`ConstantFold.cpp`), so it is
+    // admitted above and kept for the signature, not forwarded.
     constant_fold_get_element_ptr_trusting_same_module(pointer, indices, in_range)
 }
 

@@ -30,8 +30,8 @@ use super::block_state::BlockTerminationState;
 use super::capability::{CanMutate, Capability, CapabilityOf, Mutable, ReadOnly};
 use super::constant::{
     CanonicalAggregate, Constant, ConstantData, ConstantExprData, ConstantExprFlags,
-    ConstantExprOpcode, ForwardRefValue, IntoConstantValue, IsConstant, Undefined,
-    canonical_aggregate, splat_canonical,
+    ConstantExprOpcode, ConstantExprShape, ForwardRefValue, IntoConstantValue, IsConstant,
+    Undefined, canonical_aggregate, splat_canonical,
 };
 use super::constant_fold::{
     constant_fold_binary_instruction_trusting_same_module,
@@ -1701,31 +1701,20 @@ fn fold_constant_expr_data<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     let Some(operands) = constant_expr_operands(module, &data.operands) else {
         return Ok(None);
     };
-    match data.opcode {
-        ConstantExprOpcode::Add | ConstantExprOpcode::Sub | ConstantExprOpcode::Xor => {
+    match data.opcode.shape() {
+        ConstantExprShape::Binary(opcode) => {
             let [lhs, rhs] = operands.as_slice() else {
                 return Ok(None);
             };
-            let Some(opcode) = data.opcode.binary_opcode() else {
-                unreachable!("each opcode of this arm is a binary operator (invariant)");
-            };
             constant_fold_binary_instruction_trusting_same_module(opcode, *lhs, *rhs)
         }
-        ConstantExprOpcode::Trunc
-        | ConstantExprOpcode::PtrToAddr
-        | ConstantExprOpcode::PtrToInt
-        | ConstantExprOpcode::IntToPtr
-        | ConstantExprOpcode::BitCast
-        | ConstantExprOpcode::AddrSpaceCast => {
+        ConstantExprShape::Cast(opcode) => {
             let [operand] = operands.as_slice() else {
                 return Ok(None);
             };
-            let Some(opcode) = data.opcode.cast_opcode() else {
-                unreachable!("each opcode of this arm is a cast (invariant)");
-            };
             constant_fold_cast_instruction_trusting_same_module(opcode, *operand, result_ty)
         }
-        ConstantExprOpcode::GetElementPtr => {
+        ConstantExprShape::GetElementPtr => {
             // An expression without a source type is not one
             // `ConstantFoldGetElementPtr` is handed.
             if data.source_ty.is_none() {
@@ -1740,19 +1729,19 @@ fn fold_constant_expr_data<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             };
             constant_fold_get_element_ptr_trusting_same_module(*base, indices, in_range)
         }
-        ConstantExprOpcode::ExtractElement => {
+        ConstantExprShape::ExtractElement => {
             let [vector, index] = operands.as_slice() else {
                 return Ok(None);
             };
             constant_fold_extract_element_instruction_trusting_same_module(*vector, *index)
         }
-        ConstantExprOpcode::InsertElement => {
+        ConstantExprShape::InsertElement => {
             let [vector, element, index] = operands.as_slice() else {
                 return Ok(None);
             };
             constant_fold_insert_element_instruction_trusting_same_module(*vector, *element, *index)
         }
-        ConstantExprOpcode::ShuffleVector => {
+        ConstantExprShape::ShuffleVector => {
             let [lhs, rhs, mask] = operands.as_slice() else {
                 return Ok(None);
             };
@@ -2930,18 +2919,10 @@ pub(super) fn validate_constant_expr_data(
         .map(|id| Type::new(module.context().value_data(*id).ty, module))
         .collect();
     validate_constant_expr_flags(data)?;
-    match data.opcode {
-        ConstantExprOpcode::Trunc
-        | ConstantExprOpcode::PtrToAddr
-        | ConstantExprOpcode::PtrToInt
-        | ConstantExprOpcode::IntToPtr
-        | ConstantExprOpcode::BitCast
-        | ConstantExprOpcode::AddrSpaceCast => {
+    match data.opcode.shape() {
+        ConstantExprShape::Cast(cast) => {
             // Each cast asks `CastInst::castIsValid`, as each
             // `ConstantExpr::get*` cast constructor asserts it.
-            let Some(cast) = data.opcode.cast_opcode() else {
-                unreachable!("each opcode of this arm is a cast (invariant)");
-            };
             let [src_ty] = operand_tys.as_slice() else {
                 return Err(ConstantExprError::OperandCount {
                     opcode: data.opcode,
@@ -2955,10 +2936,10 @@ pub(super) fn validate_constant_expr_data(
                 .into());
             }
         }
-        ConstantExprOpcode::GetElementPtr => {
+        ConstantExprShape::GetElementPtr => {
             validate_gep_constant_expr(module, data, result_ty, &operand_tys)?;
         }
-        ConstantExprOpcode::ExtractElement => {
+        ConstantExprShape::ExtractElement => {
             let [vector_ty, index_ty] = operand_tys.as_slice() else {
                 return Err(ConstantExprError::OperandCount {
                     opcode: ConstantExprOpcode::ExtractElement,
@@ -2982,7 +2963,7 @@ pub(super) fn validate_constant_expr_data(
                 .into());
             }
         }
-        ConstantExprOpcode::InsertElement => {
+        ConstantExprShape::InsertElement => {
             let [vector_ty, value_ty, index_ty] = operand_tys.as_slice() else {
                 return Err(ConstantExprError::OperandCount {
                     opcode: ConstantExprOpcode::InsertElement,
@@ -3009,7 +2990,7 @@ pub(super) fn validate_constant_expr_data(
                 .into());
             }
         }
-        ConstantExprOpcode::ShuffleVector => {
+        ConstantExprShape::ShuffleVector => {
             let [lhs_ty, rhs_ty, mask_ty] = operand_tys.as_slice() else {
                 return Err(ConstantExprError::OperandCount {
                     opcode: ConstantExprOpcode::ShuffleVector,
@@ -3083,7 +3064,7 @@ pub(super) fn validate_constant_expr_data(
                 .into());
             }
         }
-        ConstantExprOpcode::Add | ConstantExprOpcode::Sub | ConstantExprOpcode::Xor => {
+        ConstantExprShape::Binary(_) => {
             let [lhs_ty, rhs_ty] = operand_tys.as_slice() else {
                 return Err(ConstantExprError::OperandCount {
                     opcode: data.opcode,

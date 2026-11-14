@@ -106,23 +106,38 @@ impl ConstantExprOpcode {
         self.cast_opcode().is_some()
     }
 
+    /// What an expression of this opcode is: a binary operator or a cast,
+    /// with the instruction opcode it is, or one of the four other
+    /// expressions. A `match` on the shape binds the instruction opcode where
+    /// it exists, so no arm has to re-derive it.
+    pub(crate) const fn shape(self) -> ConstantExprShape {
+        match self {
+            Self::Add => ConstantExprShape::Binary(BinaryOpcode::Add),
+            Self::Sub => ConstantExprShape::Binary(BinaryOpcode::Sub),
+            Self::Xor => ConstantExprShape::Binary(BinaryOpcode::Xor),
+            Self::Trunc => ConstantExprShape::Cast(CastOpcode::Trunc),
+            Self::PtrToAddr => ConstantExprShape::Cast(CastOpcode::PtrToAddr),
+            Self::PtrToInt => ConstantExprShape::Cast(CastOpcode::PtrToInt),
+            Self::IntToPtr => ConstantExprShape::Cast(CastOpcode::IntToPtr),
+            Self::BitCast => ConstantExprShape::Cast(CastOpcode::BitCast),
+            Self::AddrSpaceCast => ConstantExprShape::Cast(CastOpcode::AddrSpaceCast),
+            Self::GetElementPtr => ConstantExprShape::GetElementPtr,
+            Self::ShuffleVector => ConstantExprShape::ShuffleVector,
+            Self::InsertElement => ConstantExprShape::InsertElement,
+            Self::ExtractElement => ConstantExprShape::ExtractElement,
+        }
+    }
+
     /// The instruction binary opcode a binary expression of this opcode is, or
     /// `None` for an opcode that is no binary operator.
-    pub(crate) fn binary_opcode(self) -> Option<BinaryOpcode> {
-        match self {
-            Self::Add => Some(BinaryOpcode::Add),
-            Self::Sub => Some(BinaryOpcode::Sub),
-            Self::Xor => Some(BinaryOpcode::Xor),
-            Self::GetElementPtr
-            | Self::ShuffleVector
-            | Self::InsertElement
-            | Self::ExtractElement
-            | Self::Trunc
-            | Self::PtrToAddr
-            | Self::PtrToInt
-            | Self::IntToPtr
-            | Self::BitCast
-            | Self::AddrSpaceCast => None,
+    pub(crate) const fn binary_opcode(self) -> Option<BinaryOpcode> {
+        match self.shape() {
+            ConstantExprShape::Binary(opcode) => Some(opcode),
+            ConstantExprShape::Cast(_)
+            | ConstantExprShape::GetElementPtr
+            | ConstantExprShape::ShuffleVector
+            | ConstantExprShape::InsertElement
+            | ConstantExprShape::ExtractElement => None,
         }
     }
 
@@ -178,23 +193,34 @@ impl ConstantExprOpcode {
     /// The instruction cast opcode a cast expression of this opcode is
     /// (`ConstantExpr::getCast`'s `Opcode`), or `None` for an opcode that is no
     /// cast.
-    pub(crate) fn cast_opcode(self) -> Option<CastOpcode> {
-        match self {
-            Self::Trunc => Some(CastOpcode::Trunc),
-            Self::PtrToAddr => Some(CastOpcode::PtrToAddr),
-            Self::PtrToInt => Some(CastOpcode::PtrToInt),
-            Self::IntToPtr => Some(CastOpcode::IntToPtr),
-            Self::BitCast => Some(CastOpcode::BitCast),
-            Self::AddrSpaceCast => Some(CastOpcode::AddrSpaceCast),
-            Self::Add
-            | Self::Sub
-            | Self::Xor
-            | Self::GetElementPtr
-            | Self::ShuffleVector
-            | Self::InsertElement
-            | Self::ExtractElement => None,
+    pub(crate) const fn cast_opcode(self) -> Option<CastOpcode> {
+        match self.shape() {
+            ConstantExprShape::Cast(opcode) => Some(opcode),
+            ConstantExprShape::Binary(_)
+            | ConstantExprShape::GetElementPtr
+            | ConstantExprShape::ShuffleVector
+            | ConstantExprShape::InsertElement
+            | ConstantExprShape::ExtractElement => None,
         }
     }
+}
+
+/// What a [`ConstantExprOpcode`] is (see [`ConstantExprOpcode::shape`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConstantExprShape {
+    /// `add`, `sub` or `xor`, as this instruction opcode.
+    Binary(BinaryOpcode),
+    /// One of the six casts LLVM 22 keeps an expression of, as this
+    /// instruction opcode.
+    Cast(CastOpcode),
+    /// `getelementptr`.
+    GetElementPtr,
+    /// `shufflevector`.
+    ShuffleVector,
+    /// `insertelement`.
+    InsertElement,
+    /// `extractelement`.
+    ExtractElement,
 }
 
 /// No-wrap flags accepted by LLVM 22's `add`/`sub` constant-expression parser.
