@@ -64,13 +64,18 @@ impl Pattern {
 /// The site counts at the ceiling, as [`loose_types_do_not_grow`] measures
 /// them: first on `33b2aaaf` with the rule added, and again in each commit
 /// that lowered one. Lower one whenever its count falls; never raise one.
-/// `PublicTupleAlias` was added later, at its count when it was introduced.
+/// `PublicTupleAlias` was added in `864d2c03`; its ceiling is the count this
+/// test measures, 13, which agrees with the 13 distinct aliases that
+/// `rg -U --glob '*.rs' -n -o 'pub type \w+(<[^=;]*>)? =\s*(IrResult<|Option<|Result<)?\(' crates/*/src`
+/// lists at that commit (`TerminatedBlockInvoke` breaks the line after its
+/// `=`, so that match prints over two lines, and a line-oriented `grep` does
+/// not see it at all).
 const CEILINGS: [(Pattern, usize); 5] = [
     (Pattern::InvalidOperationSite, 42),
     (Pattern::StringParseDiagnostic, 504),
     (Pattern::PublicTupleReturn, 46),
     (Pattern::PublicBoolParameter, 43),
-    (Pattern::PublicTupleAlias, 12),
+    (Pattern::PublicTupleAlias, 13),
 ];
 
 /// Every `.rs` file under `dir`, recursively.
@@ -212,18 +217,47 @@ fn count(path: &Path, code: &str, counts: &mut [usize; 5]) {
             counts[3] += 1;
         }
     }
-    // A `pub type` declaration runs to its `;`, across lines; what it aliases
-    // is the text after its ` = `.
     for (start, _) in code.match_indices("pub type ") {
-        let rest = &code[start + "pub type ".len()..];
-        let declaration = &rest[..rest.find(';').unwrap_or(rest.len())];
-        if declaration
-            .split_once(" = ")
-            .is_some_and(|(_, aliased)| spells_tuple(aliased.trim()))
-        {
+        if aliased_text(&code[start + "pub type ".len()..]).is_some_and(spells_tuple) {
             counts[4] += 1;
         }
     }
+}
+
+/// The type a `pub type` declaration aliases, given the text after
+/// `pub type `: from the `=` outside its generic parameters (so a defaulted
+/// parameter, `<T = u32>`, is skipped) to the `;` outside every bracket (so
+/// an array length, `[u8; 4]`, does not end it), across lines.
+fn aliased_text(declaration: &str) -> Option<&str> {
+    let mut angle = 0i32;
+    let mut equals = None;
+    for (offset, c) in declaration.char_indices() {
+        match c {
+            '<' => angle += 1,
+            '>' => angle -= 1,
+            '=' if angle == 0 => {
+                equals = Some(offset + '='.len_utf8());
+                break;
+            }
+            ';' if angle == 0 => return None,
+            _ => {}
+        }
+    }
+    let aliased = &declaration[equals?..];
+    let mut depth = 0i32;
+    let end = aliased
+        .char_indices()
+        .find_map(|(offset, c)| {
+            match c {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth -= 1,
+                ';' if depth == 0 => return Some(offset),
+                _ => {}
+            }
+            None
+        })
+        .unwrap_or(aliased.len());
+    Some(aliased[..end].trim())
 }
 
 /// The scanner counts each pattern in synthetic sources that spell it, in
@@ -256,10 +290,14 @@ fn the_scanner_sees_each_pattern() {
         pub type Wrapped = IrResult<(u32, u32)>;\n\
         pub type OfAlias<'ctx, B> = Pair<'ctx, B>;\n\
         pub type Unit = ();\n\
+        pub type Defaulted<T = u32> = (T, T);\n\
+        pub type Lanes = ([u8; 4], u32);\n\
+        pub type OneArray = [u8; 4];\n\
+        pub type BrokenLine<'ctx, B> =\n    (Block<'ctx, B>, Inst<'ctx, B>);\n\
         // pub type Commented = (u32, u32);\n";
     let mut counts = [0usize; 5];
     count(ir, &code_only(source), &mut counts);
-    assert_eq!(counts, [1, 0, 3, 2, 3], "the IR crate's patterns");
+    assert_eq!(counts, [1, 0, 3, 2, 6], "the IR crate's patterns");
 
     let diagnostics = "\
         fn p(&self) { self.message(\"a\"); self.expected_at(loc, \"b\"); }\n\

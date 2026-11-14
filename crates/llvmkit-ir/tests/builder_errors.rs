@@ -376,6 +376,32 @@ fn a_builder_before_an_erased_anchor_refuses_to_build() -> Result<(), IrError> {
         !arg.as_erased().has_uses(),
         "the refusal comes before the instruction is created, so `%0` gains no use"
     );
+    // An intrinsic call inserts its declaration before it appends the call:
+    // the anchor is checked first, so the refusal declares nothing.
+    let umax = llvmkit_ir::IntrinsicId::lookup("llvm.umax").expect("llvm.umax is an intrinsic");
+    let err = refusal(
+        before_ret.intrinsic_call_by_signature(
+            i32_ty.as_type(),
+            umax,
+            [arg.as_erased(), arg.as_erased()],
+            "max",
+        ),
+        "an intrinsic call before an erased anchor",
+    );
+    assert_eq!(err, IrError::from(BlockError::AnchorNotInBlock));
+    assert_eq!(
+        format!("{m}"),
+        printed,
+        "a refused intrinsic call declares nothing"
+    );
+    // A phi is placed at the block's phi head, not before the anchor, but a
+    // stale insertion point is refused by every build.
+    let err = refusal(
+        before_ret.phi_dyn(i32_ty.as_type(), "p"),
+        "a phi through a builder whose anchor was erased",
+    );
+    assert_eq!(err, IrError::from(BlockError::AnchorNotInBlock));
+    assert_eq!(format!("{m}"), printed, "a refused phi adds nothing");
     let err = refusal(
         before_ret.ret_void(),
         "a `ret void` before an erased anchor",
@@ -409,6 +435,29 @@ fn position_past_allocas_refuses_a_declaration() -> Result<(), IrError> {
         err.to_string(),
         "cannot position past the allocas of a function with no blocks"
     );
+    Ok(())
+}
+
+/// `position_past_allocas` refuses a function of another module that shares
+/// the builder's brand (every `Module::dynamic` is `DynBrand`), before reading
+/// any of its blocks: the module tag is the backstop the brand cannot be.
+/// Upstream's `SetInsertPointPastAllocas` takes any `Function *`; llvmkit's
+/// refusal is its own.
+#[test]
+fn position_past_allocas_refuses_another_modules_function() -> Result<(), IrError> {
+    let builder_module = llvmkit_ir::Module::dynamic("builder-module");
+    let other = llvmkit_ir::Module::dynamic("other-module");
+    let fn_ty = other.function_type(other.void_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
+    let f = other.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = other.view(f).append_basic_block(&other, "entry");
+    IrBuilder::new_for::<Dyn>(&other)
+        .position_at_end(entry)
+        .ret_void()?;
+    let err = refusal(
+        IrBuilder::new_for::<Dyn>(&builder_module).position_past_allocas(other.view(f)),
+        "positioning past the allocas of another module's function",
+    );
+    assert_eq!(err, IrError::ForeignValueId);
     Ok(())
 }
 

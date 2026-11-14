@@ -268,6 +268,48 @@ fn struct_schema_reuses_matching_named_body() -> Result<(), IrError> {
     Ok(())
 }
 
+/// A schema build through a builder whose anchor was erased is refused before
+/// the schema's named struct type is minted, so the refusal adds no
+/// `%Point = type` to the module.
+///
+/// **No upstream counterpart**: `IRBuilderBase::SetInsertPoint(Instruction*)`
+/// keeps a raw iterator, undefined once the anchor is erased, and upstream has
+/// no schema layer; llvmkit refuses with `BlockError::AnchorNotInBlock`.
+#[test]
+fn a_schema_build_before_an_erased_anchor_mints_no_struct_type() -> Result<(), IrError> {
+    let m = module_new!("schema-stale-anchor")?;
+    let fn_ty = m.function_type(m.void_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let (_, ret) = IrBuilder::new_for::<Dyn>(&m)
+        .position_at_end(entry)
+        .ret_void()?;
+    let before_ret = IrBuilder::new_for::<Dyn>(&m).position_before(ret.placed())?;
+    ret.erase_from_parent(&m);
+    let printed = format!("{m}");
+    let refused = before_ret.typed_alloca::<Point, _>("p");
+    assert!(
+        matches!(
+            refused,
+            Err(IrError::Block(llvmkit_ir::BlockError::AnchorNotInBlock))
+        ),
+        "{refused:?}"
+    );
+    // The printed module alone would not show it: the writer prints a named
+    // struct only once something in the module uses it, so the type table is
+    // read directly.
+    assert!(
+        m.named_struct("Point").is_none(),
+        "a refused schema build mints no `%Point`"
+    );
+    assert_eq!(
+        format!("{m}"),
+        printed,
+        "a refused schema build adds nothing"
+    );
+    Ok(())
+}
+
 /// llvmkit-specific schema facade over LLVM named structs; closest upstream
 /// coverage is `lib/IR/LLVMContextImpl.cpp::getOrCreateNamedStruct` reuse rules.
 #[test]

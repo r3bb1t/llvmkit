@@ -5,9 +5,12 @@
 //!
 //! The builder carries two state-marker generics:
 //!
-//! - `S` ([`Unpositioned`] / [`PositionedAtEnd`]) — distinguishes "I have an
-//!   insertion point" from "I do not". The emitter methods are only
-//!   available on the [`PositionedAtEnd`] state.
+//! - `S` ([`Unpositioned`] / [`PositionedAtEnd`] / [`PositionedBefore`]) —
+//!   whether the builder has an insertion point, and if so, where. The
+//!   emitter methods are available on both positioned states (the
+//!   [`Positioning`] bound). A [`PositionedAtEnd`] build with nothing else
+//!   to refuse is infallible. A [`PositionedBefore`] build returns
+//!   [`IrResult`], because its anchor can leave the block after positioning.
 //! - `R: ReturnMarker` — the parent function's return shape. The
 //!   typed `ret` methods are dispatched on `R` so calling
 //!   `ret(int_value)` against a `void`-returning builder is a
@@ -837,7 +840,10 @@ where
 }
 
 // --------------------------------------------------------------------------
-// Positioning methods that move from any state to PositionedAtEnd.
+// Positioning methods, available in every state: to `PositionedAtEnd`
+// (`position_at_end*`), to `PositionedBefore` (`position_before`), to
+// whichever `position_past_allocas` lands in, or to the state an
+// `InsertPoint` was saved in (`restore_insert_point`).
 // --------------------------------------------------------------------------
 
 impl<'m, 'ctx, B, F, S, R> IrBuilder<'m, 'ctx, B, F, S, R>
@@ -938,27 +944,6 @@ where
     {
         let slot = ty.as_type().slot_in(self.module.id())?;
         Ok(Type::new(slot, self.mutable_ref()))
-    }
-
-    /// The type of field kind `T`, minted in this builder's module from its
-    /// layout — so it needs no admission.
-    #[inline]
-    fn schema_ir_type<T>(&self) -> IrResult<Type<'ctx, B>>
-    where
-        T: IrField,
-    {
-        self.mutable_ref().mint_layout::<T::Layout>()
-    }
-
-    /// Schema `S`'s struct type, minted in this builder's module.
-    #[inline]
-    fn schema_struct_type<Sch>(&self) -> IrResult<StructType<'ctx, StructBodyDyn, B>>
-    where
-        Sch: StructSchema,
-    {
-        let module = self.mutable_ref();
-        let ty = module.mint_layout::<Sch>()?;
-        Ok(StructType::new(ty.slot_trusting_same_module(), module))
     }
 
     /// Position the builder at the end of the block named by a storable
@@ -1079,6 +1064,10 @@ where
         self,
         f: FunctionValue<'ctx, R, B, C>,
     ) -> IrResult<PastAllocas<'m, 'ctx, B, F, R>> {
+        let module = self.mutable_ref();
+        // Boundary: the caller's function, admitted against this builder's
+        // module before any of its blocks or instructions is read.
+        f.slot_in(module.id())?;
         let entry = f.entry_block().ok_or(BuilderError::FunctionWithoutBlocks)?;
         // Find the first non-alloca instruction id, mirroring
         // `BasicBlock::getFirstNonPHIOrDbgOrAlloca`. We don't ship phi/dbg
@@ -1088,21 +1077,16 @@ where
             match inst.kind() {
                 Some(InstructionKind::Alloca(_)) => continue,
                 _ => {
-                    // `f` may belong to another module; this infallible entry
-                    // cannot refuse it.
-                    // boundary (F1): refused by Task 26
+                    // Internal: an instruction of `f`, admitted above.
                     anchor = Some(inst.to_erased().slot_trusting_same_module());
                     break;
                 }
             }
         }
         // The entry block, re-minted at the builder's own reference: that is
-        // what lets a function of either capability position the builder. `f`
-        // may belong to another module; this infallible entry cannot refuse
-        // it.
-        let module = self.mutable_ref();
+        // what lets a function of either capability position the builder.
         let label_ty = module.label_type().as_type().slot_trusting_same_module();
-        // boundary (F1): refused by Task 26
+        // Internal: the entry block of `f`, admitted above.
         let entry_slot = entry.to_erased().slot_trusting_same_module();
         let insert_block =
             BasicBlock::<R, Unterminated, B>::from_parts(entry_slot, module, label_ty);
@@ -1560,6 +1544,48 @@ where
         }
     }
 
+    /// Refuse a stale insertion point: a builder positioned before an anchor
+    /// that has since left its block. An at-end builder holds no anchor and
+    /// always passes.
+    ///
+    /// Every build calls this before its first change to the module — the
+    /// instruction, an intrinsic declaration, a schema's named struct type —
+    /// so a refused build leaves the module as it was.
+    fn refuse_stale_anchor(&self) -> IrResult<()> {
+        match self.insert_before {
+            Some(anchor) if !self.insert_block().holds_instruction(anchor) => {
+                Err(BlockError::AnchorNotInBlock.into())
+            }
+            Some(_) | None => Ok(()),
+        }
+    }
+
+    /// The type of field kind `T`, minted in this builder's module from its
+    /// layout — so it needs no admission. Minting a schema layout can add a
+    /// named struct type to the module, so the insertion point is checked
+    /// first.
+    #[inline]
+    fn schema_ir_type<T>(&self) -> IrResult<Type<'ctx, B>>
+    where
+        T: IrField,
+    {
+        self.refuse_stale_anchor()?;
+        self.mutable_ref().mint_layout::<T::Layout>()
+    }
+
+    /// Schema `Sch`'s struct type, minted in this builder's module, after the
+    /// insertion point is checked (see [`Self::schema_ir_type`]).
+    #[inline]
+    fn schema_struct_type<Sch>(&self) -> IrResult<StructType<'ctx, StructBodyDyn, B>>
+    where
+        Sch: StructSchema,
+    {
+        self.refuse_stale_anchor()?;
+        let module = self.mutable_ref();
+        let ty = module.mint_layout::<Sch>()?;
+        Ok(StructType::new(ty.slot_trusting_same_module(), module))
+    }
+
     /// Current insertion block. Always populated in either positioned
     /// state.
     #[inline]
@@ -1577,7 +1603,7 @@ where
     pub fn into_insert_block(self) -> BasicBlock<'ctx, R, Unterminated, B> {
         match self.insert_block {
             Some(bb) => bb,
-            None => unreachable!("PositionedAtEnd builder always has an insertion point"),
+            None => unreachable!("a positioned builder always has an insertion block (invariant)"),
         }
     }
 
@@ -6278,6 +6304,8 @@ where
         &self,
         descriptor: &IntrinsicDescriptor<'ctx, B, C>,
     ) -> IrResult<IntrinsicCallBuilder<'_, 'm, 'ctx, B, F, S, R>> {
+        // Before the declaration is inserted: a refused call adds nothing.
+        self.refuse_stale_anchor()?;
         let callee = self
             .mutable_ref()
             .get_or_insert_intrinsic_declaration(descriptor)?;
@@ -6319,6 +6347,8 @@ where
     where
         Name: AsRef<str>,
     {
+        // Before the declaration is inserted: a refused call adds nothing.
+        self.refuse_stale_anchor()?;
         let callee = self.intrinsic_callee_by_id(id, intrinsic_name)?;
         let descriptor =
             callee
@@ -6393,6 +6423,8 @@ where
         V: IntoErasedValue<'ctx, B>,
         Name: AsRef<str>,
     {
+        // Before the declaration is inserted: a refused call adds nothing.
+        self.refuse_stale_anchor()?;
         let module = self.mutable_ref();
         let args = args
             .into_iter()
@@ -8344,11 +8376,13 @@ where
     {
         let ty = W::ir_type(self.mutable_ref());
         let payload = PhiData::new();
-        let inst = self.append_phi_instruction(
-            ty.slot_trusting_same_module(),
-            InstructionKindData::Phi(payload),
-            name,
-        );
+        let inst = self
+            .append_phi_instruction(
+                ty.slot_trusting_same_module(),
+                InstructionKindData::Phi(payload),
+                name,
+            )
+            .expect("the raw-phi tests build at a live insertion point");
         PhiInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -8376,7 +8410,7 @@ where
             ty.slot_in(self.module.id())?,
             InstructionKindData::Phi(payload),
             name,
-        );
+        )?;
         Ok(PhiInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -8402,11 +8436,13 @@ where
     {
         let ty = K::ir_type(self.mutable_ref());
         let payload = super::instr_types::PhiData::new();
-        let inst = self.append_phi_instruction(
-            ty.slot_trusting_same_module(),
-            InstructionKindData::Phi(payload),
-            name,
-        );
+        let inst = self
+            .append_phi_instruction(
+                ty.slot_trusting_same_module(),
+                InstructionKindData::Phi(payload),
+                name,
+            )
+            .expect("the raw-phi tests build at a live insertion point");
         FpPhiInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -8434,7 +8470,7 @@ where
             ty.slot_in(self.module.id())?,
             InstructionKindData::Phi(payload),
             name,
-        );
+        )?;
         Ok(FpPhiInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -8458,11 +8494,13 @@ where
     {
         let ty = self.module.ptr_type::<B>(crate::AddressSpace::DEFAULT);
         let payload = super::instr_types::PhiData::new();
-        let inst = self.append_phi_instruction(
-            ty.slot_trusting_same_module(),
-            InstructionKindData::Phi(payload),
-            name,
-        );
+        let inst = self
+            .append_phi_instruction(
+                ty.slot_trusting_same_module(),
+                InstructionKindData::Phi(payload),
+                name,
+            )
+            .expect("the raw-phi tests build at a live insertion point");
         PointerPhiInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -8491,7 +8529,7 @@ where
             ty.slot_in(self.module.id())?,
             InstructionKindData::Phi(payload),
             name,
-        );
+        )?;
         Ok(PointerPhiInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -8542,7 +8580,7 @@ where
             ty.slot_in(self.module.id())?,
             InstructionKindData::Phi(payload),
             name,
-        );
+        )?;
         Ok(OtherPhiInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -10453,11 +10491,7 @@ where
         // cannot refuse a block of another module.
         // boundary (F1): refused by Task 26
         let bb_id = bb.to_erased().slot_trusting_same_module();
-        if let Some(anchor) = self.insert_before
-            && !bb.holds_instruction(anchor)
-        {
-            return Err(BlockError::AnchorNotInBlock.into());
-        }
+        self.refuse_stale_anchor()?;
         // The operands' uses are registered as the instruction is created,
         // and its name is entered in the function's table below, once it is
         // in a block.
@@ -10624,12 +10658,18 @@ where
     /// [`BasicBlock::insert_instruction_at_phi_head`], regardless of the
     /// builder's cursor, so phis stay grouped at the top of the block by
     /// construction rather than only by a verifier check.
+    ///
+    /// The placement does not read the anchor, but a builder whose anchor has
+    /// left its block is refused all the same
+    /// ([`BlockError::AnchorNotInBlock`]): a stale insertion point is refused
+    /// by every build, not by every build but a phi.
     fn append_phi_instruction<N: AsRef<str>>(
         &self,
         ty: TypeSlot,
         kind: InstructionKindData,
         name: N,
-    ) -> Instruction<'ctx, Attached, B> {
+    ) -> IrResult<Instruction<'ctx, Attached, B>> {
+        self.refuse_stale_anchor()?;
         let name = name.as_ref();
         let bb = self.insert_block();
         // The insert block came from an infallible positioning call, which
@@ -10660,7 +10700,7 @@ where
                 FunctionValue::<Dyn, B>::from_parts_unchecked(parent_fn_id, self.mutable_ref());
             parent_fn.set_local_value_name(id, Some(name));
         }
-        Instruction::from_parts(id, self.mutable_ref())
+        Ok(Instruction::from_parts(id, self.mutable_ref()))
     }
 
     fn int_type_for_bits(&self, bits: u32) -> IrResult<IntType<'ctx, IntDyn, B>> {
