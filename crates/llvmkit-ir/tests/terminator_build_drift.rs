@@ -23,7 +23,8 @@
 use std::path::{Path, PathBuf};
 
 /// Every `.rs` file under `dir`, recursively, sorted. A directory that cannot
-/// be read is an error, not an empty scan.
+/// be read is an error, not an empty scan. (The same walker as
+/// `position_door_drift.rs`'s; integration tests share no module.)
 fn rust_files(dir: &Path) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         let entries = std::fs::read_dir(dir).expect("a source directory reads");
@@ -66,18 +67,45 @@ fn terminator_kinds(instruction_rs: &str) -> Vec<String> {
         .collect()
 }
 
+/// `line` without a trailing `//` comment (the whole line, for a comment
+/// line, is empty). No header or build in this tree holds `//` in a string.
+fn without_trailing_comment(line: &str) -> &str {
+    match line.find("//") {
+        Some(start) => &line[..start],
+        None => line,
+    }
+}
+
+/// Whether `code` bounds `S: Terminating` itself — the whole trait name, so
+/// `S: TerminatingExt` does not count.
+fn bounds_s_terminating(code: &str) -> bool {
+    const BOUND: &str = "S: Terminating";
+    code.match_indices(BOUND).any(|(start, _)| {
+        let before_ok = code[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_alphanumeric() && c != '_');
+        let after_ok = code[start + BOUND.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_alphanumeric() && c != '_');
+        before_ok && after_ok
+    })
+}
+
 /// The 1-based lines of `source` that build one of `kinds` outside an impl
 /// whose header bounds `S: Terminating`, and the number of such builds seen.
 ///
 /// A build is a code line (not a `//` comment) containing
 /// `InstructionKindData::Kind(`. An impl starts at a column-0 `impl<` or
 /// `impl ` line; its header runs to the first line ending in `{`, and the
-/// impl is a `Terminating` one when a code line of the header bounds
-/// `S: Terminating`. An impl whose line ends in `{}` opens and closes there.
-/// Any other column-0 code line — the impl's closing `}`, a free `fn`, a
-/// macro definition or call (`impl_thing!(..)` included), a `mod` — leaves
-/// every impl, so a build there counts as outside. Comment lines are neither
-/// header nor builds.
+/// impl is a `Terminating` one when a header line bounds `S: Terminating`
+/// (the whole trait name). An impl whose line ends in `{}` opens and closes
+/// there. Any other column-0 code line — the impl's closing `}`, a free `fn`,
+/// a macro definition or call (`impl_thing!(..)` included), a `mod` — leaves
+/// every impl, so a build there counts as outside. Every line is read without
+/// its `//` comment, so a comment line or a trailing comment neither bounds
+/// an impl nor hides the `{` that closes a header.
 fn builds_outside_terminating_impls(source: &str, kinds: &[String]) -> (Vec<usize>, usize) {
     let lines: Vec<&str> = source.lines().collect();
     let mut outside = Vec::new();
@@ -85,8 +113,10 @@ fn builds_outside_terminating_impls(source: &str, kinds: &[String]) -> (Vec<usiz
     let mut in_terminating_impl = false;
     let mut in_header = false;
     for (index, line) in lines.iter().enumerate() {
-        let code = line.trim_start();
-        let is_comment = code.starts_with("//");
+        // The line's code, without a trailing `//` comment: a comment never
+        // bounds an impl or closes a header.
+        let code = without_trailing_comment(line);
+        let is_comment = code.trim().is_empty() && !line.trim().is_empty();
         let column_zero_code = !line.is_empty()
             && !line.starts_with(char::is_whitespace)
             && !is_comment
@@ -98,10 +128,10 @@ fn builds_outside_terminating_impls(source: &str, kinds: &[String]) -> (Vec<usiz
             in_terminating_impl = false;
         }
         if in_header && !is_comment {
-            if code.starts_with("S: Terminating") || line.contains(" S: Terminating") {
+            if bounds_s_terminating(code) {
                 in_terminating_impl = true;
             }
-            let end = line.trim_end();
+            let end = code.trim_end();
             if end.ends_with("{}") {
                 in_header = false;
                 in_terminating_impl = false;
@@ -128,13 +158,14 @@ fn builds_outside_terminating_impls(source: &str, kinds: &[String]) -> (Vec<usiz
 /// Every terminator payload `ir_builder.rs` and the modules under
 /// `src/ir_builder/` (recursively) build sits in an impl bounded
 /// `S: Terminating`, so a lent `InPass` builder can reach none of them.
-/// Positive control: the kind reader finds `Ret` and `Unreachable`; and, in
-/// synthetic sources, the scanner flags a build in a `S: Positioning` impl,
-/// accepts one in a `S: Terminating` impl, and flags a free helper after a
-/// `Terminating` impl closes, after a column-0 `impl_thing!(..)` call whose
-/// arguments name `S: Terminating`, and after a one-line `impl .. {}`
-/// followed by a comment naming it; and the tree has builds to check, so a
-/// rename cannot make the test pass vacuously.
+/// Positive control: the kind reader finds `Ret` and `Unreachable`; in
+/// synthetic sources the scanner flags a build in a `S: Positioning` impl
+/// and accepts one in a `S: Terminating` impl; and seven more controls each
+/// pin one scanner rule (an impl's closing `}`, `impl<` / `impl ` only, a
+/// one-line `impl .. {}`, a comment line, a trailing comment, a `{` before a
+/// trailing comment, the whole trait name), each checked to fail with only
+/// its rule removed. And the tree has builds to check, so a rename cannot
+/// make the test pass vacuously.
 ///
 /// No upstream counterpart: llvmkit-specific regression for the lent-builder
 /// terminator law (`docs/design/layout-token-design.md` decisions 9 and 10).
@@ -157,28 +188,53 @@ fn every_terminator_payload_is_built_in_a_terminating_impl() {
         builds_outside_terminating_impls(terminating, &kinds),
         (Vec::new(), 1)
     );
-    // Each control below passes only on the scanner as it is now; each names
-    // the rule an older scanner broke.
-    // An impl ends at its closing `}`: a free helper after it is outside.
+    // Each control below pins one scanner rule: with that rule removed and
+    // the others kept, its assertion fails (each was checked so, removing
+    // the rule by hand).
+    // Rule: an impl ends at its column-0 closing `}`.
     let after_close =
         format!("{terminating}fn helper() -> K {{\n    InstructionKindData::Br(p)\n}}\n");
     assert_eq!(
         builds_outside_terminating_impls(&after_close, &kinds),
         (vec![10], 2)
     );
-    // A column-0 macro call starting with `impl` opens no header, so a
-    // `S: Terminating` among its arguments marks nothing.
+    // Rule: only `impl<` / `impl ` opens a header, so a column-0 macro call
+    // naming `S: Terminating` among its arguments marks nothing.
     let macro_call = "impl_thing!(\n    S: Terminating,\n);\nfn helper() -> K {\n    InstructionKindData::Br(p)\n}\n";
     assert_eq!(
         builds_outside_terminating_impls(macro_call, &kinds),
         (vec![5], 1)
     );
-    // A one-line `impl .. {}` closes its own header, so a comment naming
-    // `S: Terminating` after it marks nothing.
-    let empty_impl = "impl Marker for State {}\n/// for the impls bounded S: Terminating\nfn helper() -> K {\n    InstructionKindData::Br(p)\n}\n";
+    // Rule: a one-line `impl .. {}` closes its own header, so a following
+    // fn's `where S: Terminating` marks nothing.
+    let empty_impl = "impl Marker for State {}\nfn helper<S>() -> K\nwhere\n    S: Terminating,\n{\n    InstructionKindData::Br(p)\n}\n";
     assert_eq!(
         builds_outside_terminating_impls(empty_impl, &kinds),
+        (vec![6], 1)
+    );
+    // Rule: a comment line in a header bounds nothing.
+    let comment_line = "impl<S> X<S>\nwhere\n    S: Positioning,\n    // unlike an impl bounded S: Terminating\n{\n    fn f(&self) {\n        InstructionKindData::Br(p);\n    }\n}\n";
+    assert_eq!(
+        builds_outside_terminating_impls(comment_line, &kinds),
+        (vec![7], 1)
+    );
+    // Rule: a trailing comment bounds nothing ...
+    let trailing_comment = "impl<S> X<S>\nwhere\n    S: Positioning, // unlike S: Terminating\n{\n    fn f(&self) {\n        InstructionKindData::Br(p);\n    }\n}\n";
+    assert_eq!(
+        builds_outside_terminating_impls(trailing_comment, &kinds),
+        (vec![6], 1)
+    );
+    // ... and does not hide the `{` that closes a header.
+    let brace_then_comment = "impl<S> X<S> where S: Terminating { // note\n}\nfn helper() -> K {\n    InstructionKindData::Br(p)\n}\n";
+    assert_eq!(
+        builds_outside_terminating_impls(brace_then_comment, &kinds),
         (vec![4], 1)
+    );
+    // Rule: the bound is the whole trait name.
+    let longer_name = "impl<S> X<S>\nwhere\n    S: TerminatingExt,\n{\n    fn f(&self) {\n        InstructionKindData::Br(p);\n    }\n}\n";
+    assert_eq!(
+        builds_outside_terminating_impls(longer_name, &kinds),
+        (vec![6], 1)
     );
 
     let mut files = vec![String::from("ir_builder.rs")];

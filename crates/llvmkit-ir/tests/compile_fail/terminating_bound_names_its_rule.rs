@@ -6,13 +6,15 @@
 //! rustc reports that as `E0599` naming the unmet bound, never with a trait's
 //! message. A helper generic over `S: Terminating` is the other route, and the
 //! one the message exists for: it says which state was handed in and where a
-//! `ReshapeCfg` pass changes the CFG instead. This fixture fails if the
-//! attribute is dropped or its message changes. No upstream counterpart: an
-//! upstream `IRBuilder` has no positioning typestate.
+//! `ReshapeCfg` pass changes the CFG instead. Both states that fail the bound
+//! are pinned: a lent `InPass` builder, and an `Unpositioned` one. This
+//! fixture fails if the attribute is dropped or its message changes. No
+//! upstream counterpart: an upstream `IRBuilder` has no positioning
+//! typestate.
 
 use llvmkit_ir::{
-    FnCx, FnReport, FunctionPass, IrBuilder, IrBuilderFolder, IrResult, ModuleBrand, ReshapeCfg,
-    ReturnMarker, Terminating,
+    FnCx, FnReport, FunctionPass, IrBuilder, IrBuilderFolder, IrResult, Module, ModuleBrand,
+    ReshapeCfg, ReturnMarker, Terminating,
 };
 
 /// Close the builder's block with `unreachable`.
@@ -51,4 +53,14 @@ impl<B: ModuleBrand> FunctionPass<B> for CloseThroughHelper {
     }
 }
 
-fn main() {}
+/// The other state that fails the bound: an unpositioned builder, whose
+/// error names its state and says to position it first.
+fn unpositioned() {
+    let mut module = Module::dynamic("unpositioned");
+    let mut key = module.layout_token();
+    close(IrBuilder::new_for::<()>(&mut key));
+}
+
+fn main() {
+    unpositioned();
+}

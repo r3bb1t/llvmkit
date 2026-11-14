@@ -1531,7 +1531,9 @@ where
     /// walk hands out is [`ReadOnly`].
     ///
     /// Errors: [`IrError::ForeignValueId`] if `block` is not from this module;
-    /// otherwise the errors of [`BasicBlock::split_at`].
+    /// otherwise the errors of [`BasicBlock::split_at`] but
+    /// [`IrError::ForeignLayoutToken`], which this entry cannot raise: it
+    /// takes no token (the context holds the module's mutation authority).
     #[inline]
     pub fn split_block<Name, C2>(
         &self,

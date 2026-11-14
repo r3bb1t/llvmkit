@@ -25,14 +25,14 @@ const DOOR_CALL: &str = ".position_at_end_trusting_same_module(";
 /// halves so that this file's own spelling is no call site's justification.
 const MARKER: &str = concat!("// ", "Same-module block:");
 
-/// Every `.rs` file under `dir`, recursively.
+/// Every `.rs` file under `dir`, recursively, sorted. A directory that cannot
+/// be read is an error, not an empty scan. (The same walker as
+/// `terminator_build_drift.rs`'s; integration tests share no module.)
 fn rust_files(dir: &Path) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
+        let entries = std::fs::read_dir(dir).expect("a source directory reads");
+        for entry in entries {
+            let path = entry.expect("a directory entry reads").path();
             if path.is_dir() {
                 walk(&path, out);
             } else if path.extension().is_some_and(|ext| ext == "rs") {

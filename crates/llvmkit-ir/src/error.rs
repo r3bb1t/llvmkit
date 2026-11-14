@@ -2437,8 +2437,8 @@ impl IrError {
             // put in one, handed to an API that needs that block.
             Self::InstructionHasNoParent => Blame::UsageError,
 
-            // A handle or id the caller minted in one module and handed to
-            // another.
+            // A handle, id or layout token the caller took from one module
+            // and handed to an entry working in another.
             Self::ForeignValueId
             | Self::ForeignLayoutToken
             | Self::ForeignType

@@ -412,7 +412,8 @@ the function.
      is `a builder in the `{Self}` state cannot emit a terminator`, and the
      note covers both. Fixture `terminating_bound_names_its_rule.rs` pins
      it firing, through a helper generic over `S: Terminating`.
-   - **Each scanner control now discriminates.** Every positive control in
+   - **Each scanner control now discriminates.** (Overclaimed: corrected in
+     decision 12.) Every positive control in
      `terminator_build_drift.rs` fails on the scanner it replaced (an impl's
      closing `}`, an `impl_*!` call naming `S: Terminating`, a one-line
      `impl .. {}` followed by a comment naming it); comment lines are no
@@ -421,3 +422,26 @@ the function.
      fails on a `// Same-module block:` marker above anything but a door
      call, so "this door's alone" is a checked property rather than a
      sentence.
+12. **Review of `2a1ee73a`.**
+   - **One control per scanner rule, each red-checked.** Decision 11's
+     "every control fails on the scanner it replaced" held for one of its
+     three controls: `after_close` and `macro_call` pass on `f10481fb`'s
+     scanner, and the one-line `impl .. {}` control passed with either of
+     its two rules removed. `terminator_build_drift.rs` now has seven
+     controls, one per rule (an impl's closing `}`; `impl<` / `impl ` only;
+     a one-line `impl .. {}`; a comment line; a trailing comment; a `{`
+     before a trailing comment; the whole trait name), and each was checked
+     by removing only its rule and seeing only its assertion fail. The
+     scanner reads every line without its `//` comment and matches the
+     bound as a whole word (`S: TerminatingExt` does not count).
+   - **Token-first is pinned.** `layout_token.rs::a_foreign_token_is_named_before_a_foreign_second_handle`
+     hands the eight edits with a second handle a foreign token and a
+     foreign second handle, and expects `ForeignLayoutToken`; with
+     `splice_into`'s token check moved after its `dest` check it fails,
+     reporting `ForeignValueId`.
+   - **Both states that fail `Terminating` are pinned.** The fixture also
+     hands `close` an `Unpositioned` builder.
+   - **Smaller.** `FnReshape::split_block` documents that it cannot raise
+     `ForeignLayoutToken` (it takes no token); the two drift tests' file
+     walkers are one strict walker (a directory that cannot be read fails
+     the test); the `Blame` group comment names layout tokens.

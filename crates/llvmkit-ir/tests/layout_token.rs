@@ -159,6 +159,113 @@ fn every_keyed_edit_refuses_another_modules_token() {
     );
 }
 
+/// Each of the eight layout edits that take a second handle (an anchor, a
+/// destination block, a split point) refuses a foreign token with
+/// `IrError::ForeignLayoutToken` even when that second handle is foreign
+/// too: the token is checked first, so the error names the token argument.
+/// The second handles here are all of the token's module, which is not the
+/// edited one; checked second, they would answer `ForeignValueId`.
+#[test]
+fn a_foreign_token_is_named_before_a_foreign_second_handle() {
+    let mut owner_module = Module::dynamic("token-owner");
+    let mut owner_key = owner_module.layout_token();
+    let owner = owner_key.module();
+    let mut edited_module = Module::dynamic("edited");
+    let mut edited_key = edited_module.layout_token();
+    let edited = edited_key.module();
+
+    // The second handles, all of the token's module.
+    let foreign_anchor = returning(&mut owner_key, "foreign_anchor").ret.placed();
+    let foreign_dest = returning(&mut owner_key, "foreign_dest").block;
+    let foreign_open_function = owner
+        .add_typed_function::<(), (), _>("foreign_open", Linkage::External)
+        .expect("declare")
+        .as_function();
+    let foreign_open = owner
+        .view(foreign_open_function)
+        .append_basic_block(owner, "foreign_open");
+    let foreign_split_point = returning(&mut owner_key, "foreign_split_point").ret;
+
+    // The edited handles, of the other module.
+    let moved_before = returning(&mut edited_key, "moved_before").ret;
+    let moved_after = returning(&mut edited_key, "moved_after").ret;
+    let inserted_before = returning(&mut edited_key, "inserted_before")
+        .ret
+        .detach_from_parent(&mut edited_key)
+        .expect("the module's own token");
+    let inserted_after = returning(&mut edited_key, "inserted_after")
+        .ret
+        .detach_from_parent(&mut edited_key)
+        .expect("the module's own token");
+    let appended = returning(&mut edited_key, "appended")
+        .ret
+        .detach_from_parent(&mut edited_key)
+        .expect("the module's own token");
+    let split_at = returning(&mut edited_key, "split_at").block;
+    let split_before = returning(&mut edited_key, "split_before").block;
+    let spliced = returning(&mut edited_key, "spliced").block;
+    let before = format!("{edited}");
+
+    let outcomes: Vec<(&str, Result<(), IrError>)> = vec![
+        (
+            "move_before",
+            moved_before.move_before(&mut owner_key, foreign_anchor),
+        ),
+        (
+            "move_after",
+            moved_after.move_after(&mut owner_key, foreign_anchor),
+        ),
+        (
+            "insert_before",
+            inserted_before
+                .insert_before(&mut owner_key, foreign_anchor)
+                .map(|_| ()),
+        ),
+        (
+            "insert_after",
+            inserted_after
+                .insert_after(&mut owner_key, foreign_anchor)
+                .map(|_| ()),
+        ),
+        (
+            "append_to",
+            appended
+                .append_to(&mut owner_key, &foreign_open)
+                .map(|_| ()),
+        ),
+        (
+            "split_at",
+            split_at
+                .split_at(&mut owner_key, &foreign_split_point.as_view(), "tail")
+                .map(|_| ()),
+        ),
+        (
+            "split_before",
+            split_before
+                .split_before(&mut owner_key, &foreign_split_point.as_view(), "head")
+                .map(|_| ()),
+        ),
+        (
+            "splice_into",
+            spliced.splice_into(&mut owner_key, foreign_dest),
+        ),
+    ];
+    let let_through: Vec<String> = outcomes
+        .into_iter()
+        .filter(|(_, outcome)| *outcome != Err(IrError::ForeignLayoutToken))
+        .map(|(entry, outcome)| format!("{entry}: {outcome:?}"))
+        .collect();
+    assert!(
+        let_through.is_empty(),
+        "each entry must name the foreign token first: {let_through:#?}"
+    );
+    assert_eq!(
+        format!("{edited}"),
+        before,
+        "a refused edit changes nothing"
+    );
+}
+
 /// Each entry that binds a token-holding builder to a handle refuses a handle
 /// of another module than the token's: the builder's arena is the token's
 /// module, so it must not write into another module's block or function.
