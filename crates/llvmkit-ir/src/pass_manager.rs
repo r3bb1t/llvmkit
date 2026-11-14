@@ -1682,12 +1682,13 @@ impl ReadOnlyMod for Inspect {}
 /// whose verdict is DERIVED, use [`function_pipeline`]; for a pipeline that provably
 /// only reads, use [`DynReadOnlyFunctionPipeline`].
 ///
-/// Internally a `Vec<Box<dyn ErasedFunctionPass>>` over the crate-private erased
-/// trait — the only place `dyn` appears for pass *dispatch*. (The unrelated
+/// Internally a `Vec` of members, each a `Box<dyn ErasedFunctionPass>` over the
+/// crate-private erased trait or a nested pipeline ([`Self::push_pipeline`]) —
+/// the erased trait is the only place `dyn` appears for pass *dispatch*. (The unrelated
 /// `Box<dyn ExactSizeIterator>` in `ModuleFunctionViews` is plain std iterator
 /// type-erasure, with no bearing on pass coherence.)
 pub struct DynFunctionPipeline<'ctx, B: ModuleBrand + 'ctx> {
-    passes: Vec<Box<dyn ErasedFunctionPass<'ctx, B> + 'ctx>>,
+    passes: Vec<FunctionMember<'ctx, B>>,
 }
 
 /// Prints the member count, not the members: an erased pipeline holds
@@ -1717,7 +1718,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynFunctionPipeline<'ctx, B> {
         <P::Access as FnAccess>::Verdict: VerdictCarry,
         Downgrades: ProvidesToken<<P::Access as FnAccess>::Verdict>,
     {
-        self.passes.push(Box::new(pass));
+        self.passes.push(FunctionMember::Pass(Box::new(pass)));
+    }
+
+    /// Append `nested` as one member: upstream's `FPM.addPass(NestedFPM)`, a
+    /// `function(…)` element inside a function pipeline. The nested pipeline
+    /// runs its members in order, each invalidating from its own report, and
+    /// reports what `PassManager::run` does: the intersection of its
+    /// members' reports, with every function analysis preserved, since its
+    /// members did that invalidation. Its name is `function`, and it is
+    /// required, as upstream's pass managers are.
+    pub fn push_pipeline(&mut self, nested: DynFunctionPipeline<'ctx, B>) {
+        self.passes.push(FunctionMember::Pipeline(nested));
     }
 
     /// Number of passes queued.
@@ -1759,9 +1771,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynFunctionPipeline<'ctx, B> {
         let unverified = module.unverify();
         let view = view_in(&unverified, function);
         let fam = analyses.function_manager_mut();
-        for pass in &mut self.passes {
-            pass.run_erased(&unverified, view, fam)?;
-        }
+        // Each member invalidates `fam` from its own report; the pipeline's
+        // report has no caller to hand it to.
+        self.run_members(&unverified, view, fam)?;
         Ok(unverified)
     }
 }
@@ -1873,7 +1885,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Default for DynReadOnlyFunctionPipeline<'ctx, 
 /// always yields `Module<Unverified>` (D8). Invalidates both managers after each
 /// member (mirrors [`ModulePassList`]).
 pub struct DynModulePipeline<'ctx, B: ModuleBrand + 'ctx> {
-    passes: Vec<Box<dyn ErasedModulePass<'ctx, B> + 'ctx>>,
+    passes: Vec<ModuleMember<'ctx, B>>,
 }
 
 /// Prints the member count, not the members: an erased pipeline holds
@@ -1902,7 +1914,38 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynModulePipeline<'ctx, B> {
         <P::Access as ModAccess>::Verdict: VerdictCarry,
         Downgrades: ProvidesToken<<P::Access as ModAccess>::Verdict>,
     {
-        self.passes.push(Box::new(pass));
+        self.passes.push(ModuleMember::Pass(Box::new(pass)));
+    }
+
+    /// Append `nested` as one member: upstream's `MPM.addPass(NestedMPM)`, a
+    /// `module(…)` element. The nested pipeline runs its members in order,
+    /// invalidating both managers from each member's report, and reports what
+    /// `PassManager::run` does: the intersection of its members' reports, with
+    /// every module analysis preserved, since its members did that
+    /// invalidation. Its name is `module`, and it is required, as upstream's
+    /// pass managers are.
+    pub fn push_pipeline(&mut self, nested: DynModulePipeline<'ctx, B>) {
+        self.passes.push(ModuleMember::Pipeline(nested));
+    }
+
+    /// Append `pipeline` run over every function definition: upstream's
+    /// `createModuleToFunctionPassAdaptor` (`ModuleToFunctionPassAdaptor::run`,
+    /// PassManager.cpp), a `function(…)` element of a module pipeline.
+    /// Declarations are skipped, each function's analyses are invalidated as
+    /// `invalidation` says, and the adaptor reports the intersection of the
+    /// functions' reports with every function analysis and the
+    /// function-analysis proxy preserved. Its name is `function`, or
+    /// `function<eager-inv>` when invalidation is eager, and it is required,
+    /// as upstream's adaptor is.
+    pub fn push_function_pipeline(
+        &mut self,
+        pipeline: DynFunctionPipeline<'ctx, B>,
+        invalidation: FunctionAdaptorInvalidation,
+    ) {
+        self.passes.push(ModuleMember::FunctionAdaptor {
+            pipeline,
+            invalidation,
+        });
     }
 
     /// Number of passes queued.
@@ -1936,11 +1979,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynModulePipeline<'ctx, B> {
         let unverified = module.unverify();
         let view = unverified.as_view();
         let (mam, fam) = analyses.managers_mut();
-        for pass in &mut self.passes {
-            let pa = pass.run_erased(&unverified, view, mam, fam)?;
-            mam.invalidate(view, &pa)?;
-            fam.invalidate_module(view, &pa)?;
-        }
+        // Each member's report invalidates both managers; the pipeline's
+        // report has no caller to hand it to.
+        self.run_members(&unverified, view, mam, fam)?;
         Ok(unverified)
     }
 }
@@ -2035,4 +2076,217 @@ impl<'ctx, B: ModuleBrand + 'ctx> Default for DynReadOnlyModulePipeline<'ctx, B>
     fn default() -> Self {
         Self::new()
     }
+}
+
+// -------------------------------------------------------------------------
+// Nested pipelines and the module-to-function adaptor
+// -------------------------------------------------------------------------
+
+/// How a module-to-function adaptor invalidates a function's analyses once
+/// its pipeline has run over it: the `eager-inv` parameter of upstream's
+/// `function<…>` adaptor (`ModuleToFunctionPassAdaptor::EagerlyInvalidate`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FunctionAdaptorInvalidation {
+    /// Drop what the function pipeline's report does not preserve: upstream's
+    /// default, `FAM.invalidate(F, PassPA)`.
+    FromReport,
+    /// Drop every analysis of the function: `function<eager-inv>`,
+    /// `FAM.invalidate(F, PreservedAnalyses::none())`.
+    Eager,
+}
+
+/// One member of a [`DynFunctionPipeline`]: a boxed pass, or a nested
+/// function pipeline. The nested pipeline is a variant, not another
+/// implementor of the erased trait, so the erased trait keeps its single
+/// blanket impl.
+enum FunctionMember<'ctx, B: ModuleBrand + 'ctx> {
+    /// A pass, behind the erased trait.
+    Pass(Box<dyn ErasedFunctionPass<'ctx, B> + 'ctx>),
+    /// A nested function pipeline: upstream's `PassManager<Function>` added
+    /// to another as a pass.
+    Pipeline(DynFunctionPipeline<'ctx, B>),
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionMember<'ctx, B> {
+    fn run<'m>(
+        &mut self,
+        token: &'m Module<B, Unverified>,
+        function: FunctionView<'m, B>,
+        fam: &mut FunctionAnalysisManager<'ctx, B>,
+    ) -> IrResult<PreservedAnalyses>
+    where
+        'ctx: 'm,
+    {
+        match self {
+            Self::Pass(pass) => pass.run_erased(token, function, fam),
+            Self::Pipeline(pipeline) => pipeline.run_members(token, function, fam),
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::Pass(pass) => pass.name(),
+            Self::Pipeline(_) => "function",
+        }
+    }
+
+    fn required(&self) -> bool {
+        match self {
+            Self::Pass(pass) => pass.required(),
+            // `PassManager::isRequired`: a pass manager always runs.
+            Self::Pipeline(_) => true,
+        }
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> DynFunctionPipeline<'ctx, B> {
+    /// Mirrors `PassManager<Function>::run` (PassManagerImpl.h), less the
+    /// instrumentation callbacks, which llvmkit does not fire yet: each
+    /// member in order, each invalidating `fam` from its own report, and a
+    /// report that intersects theirs and preserves every function analysis,
+    /// since that invalidation is done.
+    fn run_members<'m>(
+        &mut self,
+        token: &'m Module<B, Unverified>,
+        function: FunctionView<'m, B>,
+        fam: &mut FunctionAnalysisManager<'ctx, B>,
+    ) -> IrResult<PreservedAnalyses>
+    where
+        'ctx: 'm,
+    {
+        let mut preserved = PreservedAnalyses::all();
+        for member in &mut self.passes {
+            preserved.intersect(member.run(token, function, fam)?);
+        }
+        preserved.preserve_set::<AllAnalysesOnFunction>();
+        Ok(preserved)
+    }
+}
+
+/// One member of a [`DynModulePipeline`]: a boxed pass, a nested module
+/// pipeline, or a function pipeline run over every function. Variants, not
+/// implementors of the erased trait, for the reason [`FunctionMember`] gives.
+enum ModuleMember<'ctx, B: ModuleBrand + 'ctx> {
+    /// A pass, behind the erased trait.
+    Pass(Box<dyn ErasedModulePass<'ctx, B> + 'ctx>),
+    /// A nested module pipeline: upstream's `PassManager<Module>` added to
+    /// another as a pass.
+    Pipeline(DynModulePipeline<'ctx, B>),
+    /// Upstream's `ModuleToFunctionPassAdaptor` over a function pipeline.
+    FunctionAdaptor {
+        pipeline: DynFunctionPipeline<'ctx, B>,
+        invalidation: FunctionAdaptorInvalidation,
+    },
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> ModuleMember<'ctx, B> {
+    fn run<'m>(
+        &mut self,
+        token: &'m Module<B, Unverified>,
+        module: ModuleView<'m, B>,
+        mam: &mut ModuleAnalysisManager<'ctx, B>,
+        fam: &mut FunctionAnalysisManager<'ctx, B>,
+    ) -> IrResult<PreservedAnalyses>
+    where
+        'ctx: 'm,
+    {
+        match self {
+            Self::Pass(pass) => pass.run_erased(token, module, mam, fam),
+            Self::Pipeline(pipeline) => pipeline.run_members(token, module, mam, fam),
+            Self::FunctionAdaptor {
+                pipeline,
+                invalidation,
+            } => run_function_adaptor(pipeline, *invalidation, token, module, fam),
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::Pass(pass) => pass.name(),
+            Self::Pipeline(_) => "module",
+            Self::FunctionAdaptor {
+                invalidation: FunctionAdaptorInvalidation::FromReport,
+                ..
+            } => "function",
+            Self::FunctionAdaptor {
+                invalidation: FunctionAdaptorInvalidation::Eager,
+                ..
+            } => "function<eager-inv>",
+        }
+    }
+
+    fn required(&self) -> bool {
+        match self {
+            Self::Pass(pass) => pass.required(),
+            // `PassManager::isRequired` and
+            // `ModuleToFunctionPassAdaptor::isRequired`: both always run.
+            Self::Pipeline(_) | Self::FunctionAdaptor { .. } => true,
+        }
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> DynModulePipeline<'ctx, B> {
+    /// Mirrors `PassManager<Module>::run` (PassManagerImpl.h), less the
+    /// instrumentation callbacks: each member in order, invalidating both
+    /// managers from its report, and a report that intersects theirs and
+    /// preserves every module analysis, since that invalidation is done.
+    fn run_members<'m>(
+        &mut self,
+        token: &'m Module<B, Unverified>,
+        module: ModuleView<'m, B>,
+        mam: &mut ModuleAnalysisManager<'ctx, B>,
+        fam: &mut FunctionAnalysisManager<'ctx, B>,
+    ) -> IrResult<PreservedAnalyses>
+    where
+        'ctx: 'm,
+    {
+        let mut preserved = PreservedAnalyses::all();
+        for member in &mut self.passes {
+            let pa = member.run(token, module, mam, fam)?;
+            mam.invalidate(module, &pa)?;
+            fam.invalidate_module(module, &pa)?;
+            preserved.intersect(pa);
+        }
+        preserved.preserve_set::<AllAnalysesOnModule>();
+        Ok(preserved)
+    }
+}
+
+/// Mirrors `ModuleToFunctionPassAdaptor::run` (PassManager.cpp), whose pass
+/// is the function pass manager, less the instrumentation callbacks, which
+/// llvmkit does not fire yet.
+fn run_function_adaptor<'m, 'ctx, B: ModuleBrand + 'ctx>(
+    pipeline: &mut DynFunctionPipeline<'ctx, B>,
+    invalidation: FunctionAdaptorInvalidation,
+    token: &'m Module<B, Unverified>,
+    module: ModuleView<'m, B>,
+    fam: &mut FunctionAnalysisManager<'ctx, B>,
+) -> IrResult<PreservedAnalyses>
+where
+    'ctx: 'm,
+{
+    let mut preserved = PreservedAnalyses::all();
+    for function in module.functions() {
+        // `F.isDeclaration()`: only a definition has a body to run over.
+        if function.entry_block().is_none() {
+            continue;
+        }
+        let pass_pa = pipeline.run_members(token, function, fam)?;
+        // A function pass cannot have invalidated another function's
+        // analyses, so this function's are invalidated here directly.
+        match invalidation {
+            FunctionAdaptorInvalidation::FromReport => fam.invalidate(function, &pass_pa)?,
+            FunctionAdaptorInvalidation::Eager => {
+                fam.invalidate(function, &PreservedAnalyses::none())?;
+            }
+        }
+        // Intersect, so module analyses are invalidated once the adaptor
+        // completes.
+        preserved.intersect(pass_pa);
+    }
+    // The function passes added or removed no function, and every function's
+    // analyses were invalidated above.
+    preserved.preserve_set::<AllAnalysesOnFunction>();
+    preserved.preserve::<FunctionAnalysisManagerModuleProxy>();
+    Ok(preserved)
 }

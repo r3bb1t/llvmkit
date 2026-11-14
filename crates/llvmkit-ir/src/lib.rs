@@ -132,6 +132,7 @@ pub mod named_md_node;
 pub mod operator;
 pub mod optimization_level;
 pub mod pass_access;
+pub mod pass_builder;
 pub mod pass_context;
 pub mod pass_instrumentation;
 pub mod pass_manager;
@@ -349,6 +350,11 @@ pub use pass_access::{
     Downgrades, FnAccess, Inspect, ModAccess, MutatingFn, MutatingModule, PatchBody,
     PipelineVerdict, ReshapeCfg, RewriteModule, StaysVerified, VerdictFold,
 };
+pub use pass_builder::{
+    NoOpFunctionPass, NoOpModulePass, PassLayer, PipelineEntryKind, RegisteredFunctionPass,
+    RegisteredModulePass, UnmodeledPassManager, parse_function_pass_pipeline,
+    parse_module_pass_pipeline,
+};
 pub use pass_context::{
     BasicBlockView, BlockInstructionViews, BrEdit, CallBrEdit, CondBrEdit, FnCx, FnPatch, FnReport,
     FnReshape, FunctionBasicBlockViews, FunctionBody, FunctionView, IntoFunctionId, InvokeEdit,
@@ -358,14 +364,17 @@ pub use pass_context::{
 pub use pass_instrumentation::{PassInstrumentationAnalysis, PassInstrumentationCallbacks};
 pub use pass_manager::{
     DynFunctionPipeline, DynModulePipeline, DynReadOnlyFunctionPipeline, DynReadOnlyModulePipeline,
-    ForEachFunction, FunctionPass, FunctionPassList, FunctionPipeline, FunctionPipelineExecute,
-    FunctionPipelineMember, ModulePass, ModulePassList, ModulePipeline, ModulePipelineExecute,
-    ModulePipelineMember, PassExecution, ProvidesToken, ReadOnlyFn, ReadOnlyMod, VerdictCarry,
-    for_each_function, function_pipeline, module_pipeline, run_function_pass, run_module_pass,
+    ForEachFunction, FunctionAdaptorInvalidation, FunctionPass, FunctionPassList, FunctionPipeline,
+    FunctionPipelineExecute, FunctionPipelineMember, ModulePass, ModulePassList, ModulePipeline,
+    ModulePipelineExecute, ModulePipelineMember, PassExecution, ProvidesToken, ReadOnlyFn,
+    ReadOnlyMod, VerdictCarry, for_each_function, function_pipeline, module_pipeline,
+    run_function_pass, run_module_pass,
 };
-// Data-only textual-pipeline recipe names and AST (not yet executable — they
-// mirror LLVM's pipeline strings but construct no passes). Kept importable from
-// the crate root, but hidden from the crate-root doc listing so the runnable
+// Textual-pipeline names, recipe data and the parsed AST. The text is made
+// runnable by `pass_builder` (`parse_module_pass_pipeline`,
+// `parse_function_pass_pipeline`, re-exported above); the recipes are data
+// only, since most of their passes are not ported. Kept importable from the
+// crate root, but hidden from the crate-root doc listing so the runnable
 // pass-authoring surface stays findable; browse them on the [`pass_pipeline`]
 // module page instead.
 #[doc(hidden)]
@@ -373,10 +382,11 @@ pub use pass_pipeline::{
     BDCE, CLEANUP_LIFT, CLEANUP_MIN, CLEANUP_O1_ISH, DCE, DEFAULT_O0, DEFAULT_O1, EARLY_CSE,
     FunctionPassScope, FunctionPipelineScope, FunctionPipelineStep, GVN_LITE, HasOptimizationLevel,
     INSTCOMBINE, INSTSIMPLIFY, ModulePassScope, ModulePipelineScope, ModulePipelineStep,
-    NoOptimizationLevel, PassName, PassPipeline, PassPipelineElement, PassPipelineRecipe,
-    PassPipelineTextName, PassScope, PipelineName, PipelineScope, RecipeLevelState, SCCP,
-    SIMPLIFYCFG, cleanup_lift_pipeline, cleanup_min_pipeline, cleanup_o1_ish_pipeline,
-    default_o0_pipeline, default_o1_pipeline, default_pipeline, parse_pass_pipeline_text,
+    NO_OP_FUNCTION, NO_OP_MODULE, NoOptimizationLevel, PassName, PassPipeline, PassPipelineElement,
+    PassPipelineRecipe, PassPipelineTextName, PassScope, PipelineName, PipelineScope,
+    RecipeLevelState, SCCP, SIMPLIFYCFG, cleanup_lift_pipeline, cleanup_min_pipeline,
+    cleanup_o1_ish_pipeline, default_o0_pipeline, default_o1_pipeline, default_pipeline,
+    parse_pass_pipeline_text,
 };
 // Internal contract for llvmkit-asmparser; not public API, may change
 // without notice. The parser runs the verifier's phi-coherence algorithm

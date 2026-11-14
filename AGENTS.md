@@ -420,7 +420,8 @@ anchors, not as an exhaustive inventory):
     │   │   ├── pass_access.rs       # the capability rungs
     │   │   ├── pass_context.rs      # FnPatch / FnReshape / ModRewrite contexts
     │   │   ├── pass_manager.rs      # run_*_pass, tuple pipelines, Dyn containers
-    │   │   ├── pass_pipeline.rs     # data-only textual pipeline names / recipes
+    │   │   ├── pass_pipeline.rs     # textual pipeline parser (AST), names, recipe data
+    │   │   ├── pass_builder.rs      # name → pass registry; text → runnable Dyn pipeline
     │   │   ├── matchers.rs          # PatternMatch.h-style combinators
     │   │   ├── dce.rs               # DcePass
     │   │   ├── inst_simplify.rs     # InstSimplifyPass

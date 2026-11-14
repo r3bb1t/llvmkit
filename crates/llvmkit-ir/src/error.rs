@@ -20,6 +20,7 @@ use core::fmt;
 
 use crate::addr_space::AddressSpace;
 use crate::instr_types::{CastOpcode, OperandBundleTag};
+use crate::pass_builder::{PassLayer, PipelineEntryKind, UnmodeledPassManager};
 
 /// Whether a failure indicates a bug in llvmkit.
 ///
@@ -1826,11 +1827,64 @@ pub enum IrError {
         /// The pass or pipeline name containing invalid syntax.
         name: String,
     },
-    /// A textual pass pipeline has invalid delimiter nesting.
-    #[error("invalid pass pipeline '{pipeline}'")]
+    /// A textual pass pipeline has invalid delimiter nesting. Upstream's
+    /// "invalid pipeline" (`PassBuilder::parsePassPipeline`).
+    #[error("invalid pipeline '{pipeline}'")]
     InvalidPassPipeline {
         /// The pipeline string with invalid delimiter nesting.
         pipeline: String,
+    },
+    /// A textual pipeline names a pass the registry has no entry for at the
+    /// layer it is resolved at. Upstream's "unknown module pass" / "unknown
+    /// function pass" (`PassBuilder::parseModulePass`, `parseFunctionPass`).
+    #[error("unknown {layer} pass '{name}'")]
+    UnknownPass {
+        /// The layer the name was resolved at.
+        layer: PassLayer,
+        /// The unknown name.
+        name: String,
+    },
+    /// A function pipeline's first name is not a function-layer name.
+    /// Upstream's "unknown function pass '…' in pipeline '…'"
+    /// (`PassBuilder::parsePassPipeline(FunctionPassManager &, StringRef)`).
+    #[error("unknown {layer} pass '{name}' in pipeline '{pipeline}'")]
+    UnknownPassInPipeline {
+        /// The layer the pipeline is built at.
+        layer: PassLayer,
+        /// The pipeline's first name.
+        name: String,
+        /// The whole pipeline text.
+        pipeline: String,
+    },
+    /// A module pipeline's first name belongs to no layer. Upstream's
+    /// "unknown pass name" / "unknown pipeline name"
+    /// (`PassBuilder::parsePassPipeline(ModulePassManager &, StringRef)`).
+    #[error("unknown {kind} name '{name}'")]
+    UnknownPipelineEntry {
+        /// Whether the name carried an inner pipeline.
+        kind: PipelineEntryKind,
+        /// The pipeline's first name.
+        name: String,
+    },
+    /// A pass that is not a pass manager was given an inner pipeline.
+    /// Upstream's "invalid use of '…' pass as … pipeline".
+    #[error("invalid use of '{name}' pass as {layer} pipeline")]
+    PassUsedAsPipeline {
+        /// The layer the name was resolved at.
+        layer: PassLayer,
+        /// The pass name.
+        name: String,
+    },
+    /// `function<no-rerun>(…)` in a module pipeline. Upstream's message,
+    /// from `PassBuilder::parseModulePass`.
+    #[error("cannot have a no-rerun module to function adaptor")]
+    NoRerunFunctionAdaptor,
+    /// A textual pipeline names a pass manager upstream accepts and llvmkit
+    /// does not model (no CGSCC, loop or machine-function layer).
+    #[error("pass manager '{manager}' is not modeled by llvmkit")]
+    UnmodeledPassManager {
+        /// The pass manager named.
+        manager: UnmodeledPassManager,
     },
     /// An analysis result was requested before its analysis pass was registered.
     #[error("analysis {name} is not registered")]
@@ -2276,7 +2330,13 @@ impl IrError {
             | Self::InvalidDiscriminant { .. }
             | Self::InvalidOptimizationLevel { .. }
             | Self::InvalidPassPipelineName { .. }
-            | Self::InvalidPassPipeline { .. } => Blame::UsageError,
+            | Self::InvalidPassPipeline { .. }
+            | Self::UnknownPass { .. }
+            | Self::UnknownPassInPipeline { .. }
+            | Self::UnknownPipelineEntry { .. }
+            | Self::PassUsedAsPipeline { .. }
+            | Self::NoRerunFunctionAdaptor
+            | Self::UnmodeledPassManager { .. } => Blame::UsageError,
 
             // The broad LangRef-rule family, classified as one class: its sites
             // reject a caller's argument or report a host bound. The two

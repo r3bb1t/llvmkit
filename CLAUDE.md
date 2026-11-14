@@ -74,7 +74,7 @@ A caution the summary work paid for twice: **an upstream `.ll` `CHECK` block is 
 
 A pass declares a **rung** (`Inspect` / `PatchBody` / `ReshapeCfg` / `RewriteModule`) plus its `Requires` analyses, and writes one `run(cx)`. Preservation is **derived from the rung, never declared** — the report constructor is `pub(crate)`, so over-claiming is unspellable. An `Inspect` context has no `cx.mutate()` at all. A pipeline's output typestate is likewise derived: any mutating member downgrades the module to `Unverified` until `verify()` runs again.
 
-`pass_pipeline.rs` parses pipeline strings into an erased AST (`PassPipeline`), but **nothing can run one** — there is no NAME→constructor registry yet. That is the gating item for the transform work.
+`pass_pipeline.rs` parses pipeline strings into an erased AST (`PassPipeline`, a port of `parsePipelineText`). `pass_builder.rs` resolves the AST into a runnable `DynModulePipeline` / `DynFunctionPipeline` (`parse_module_pass_pipeline` is `opt -passes=`). The registry is the closed enums `RegisteredModulePass` / `RegisteredFunctionPass`. A new transform is runnable from text once it has a variant there. A name upstream registers and llvmkit does not is refused as unknown (`docs/divergences.md`). So the transform work is gated on porting passes, not on plumbing. The named recipes (`cleanup-min`, …) are still data only, because most of their passes are not ported.
 
 ## Rules that fail CI or review
 

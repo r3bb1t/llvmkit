@@ -1520,6 +1520,47 @@ set),
 `crates/llvmkit-ir/tests/builder_alloca.rs::alloca_load_and_store_refuse_to_guess_an_unsized_alignment`,
 and `crates/llvmkit-asmparser/tests/resource_bounds.rs::a_shared_struct_over_an_opaque_field_is_refused_at_once`.
 
+### D44 — A textual pipeline resolves only the passes and layers llvmkit ports
+
+**Severity:** rejects-valid, on pipeline text, not on IR.
+`parse_module_pass_pipeline` / `parse_function_pass_pipeline` (`pass_builder.rs`) port
+`PassBuilder::parsePassPipeline`, `parseModulePass` and `parseFunctionPass` arm for arm. They
+refuse three kinds of text that upstream accepts:
+
+- **A pass llvmkit does not port.** The registry is the closed enums `RegisteredModulePass`
+  (`no-op-module`) and `RegisteredFunctionPass` (`dce`, `instsimplify`, `no-op-function`).
+  Any other name, such as `sroa` or `instcombine`, is refused with upstream's own "unknown
+  module pass" / "unknown function pass" message, the one upstream gives a name it does not
+  register. The analysis pseudo-passes `require<…>` / `invalidate<…>` are refused the same
+  way, since llvmkit's analyses carry no registry names.
+- **A pass manager of a layer llvmkit does not model.** `cgscc(…)`, `coro-cond(…)`, `loop(…)`,
+  `loop-mssa(…)` and `machine-function(…)` are refused with
+  `IrError::UnmodeledPassManager`, which names the manager. `coro-cond` parses its inner module
+  pipeline first, as upstream does. The others refuse before reading their inner pipeline,
+  since llvmkit has no parser for those layers, so an error inside one is reported as the
+  manager's refusal, where upstream reports the inner error.
+- **A first name of an unmodeled layer.** Upstream's `parsePassPipeline(ModulePassManager &)`
+  wraps a pipeline that starts with a CGSCC, loop-nest, loop or machine-function pass name in
+  that layer's adaptor. No such name is registered here, so the first name is "unknown pass
+  name" (or "unknown pipeline name").
+
+Nothing that resolves runs differently from upstream: the nested managers, the
+module-to-function adaptor (with `eager-inv`, and `no-rerun` refused with upstream's message)
+and their invalidation port `PassManager::run` and `ModuleToFunctionPassAdaptor::run`. The one
+thing they do not do is fire the pass-instrumentation callbacks, which llvmkit does not wire
+yet (`docs/future-work.md`).
+
+**Why:** a pass that is not ported cannot be run, and a substitute would be a different pass
+under upstream's name. Refusing with upstream's message keeps every resolved pipeline
+upstream's pipeline.
+
+**Fix:** port the passes and layers; each pass is runnable from text once it has a variant in
+the registry.
+
+**Guarded by:** `crates/llvmkit-asmparser/tests/pass_pipeline_parsing.rs`, the port of
+`test/Other/pass-pipeline-parsing.ll` (its CGSCC and loop runs are this entry), and its
+`unmodeled_managers_and_unknown_names_are_refused`.
+
 ---
 
 ---

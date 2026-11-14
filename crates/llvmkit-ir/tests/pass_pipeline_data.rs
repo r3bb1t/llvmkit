@@ -79,14 +79,18 @@ fn optimization_level_parses_upstream_names() {
     assert_invalid_optimization_level("O4");
 }
 
-/// `llvmkit-specific`, anchored on `llvm/include/llvm/Passes/PassBuilder.h`
-/// `::PassBuilder::parsePassPipeline`'s documented textual grammar: textual
-/// names validate at the erased parser boundary before
-/// future pass resolution.
+/// `llvmkit-specific`, anchored on `llvm/lib/Passes/PassBuilder.cpp`
+/// `::parsePipelineText`: an element's name is the text up to the next `,`,
+/// `(` or `)`, so a text name may be anything without those delimiters,
+/// including empty and space-holding names, which upstream resolves later
+/// and refuses as unknown passes.
 #[test]
 fn pass_pipeline_text_name_rejects_invalid_text() -> IrResult<()> {
-    for name in ["", "bad name", "bad,name", "bad(name)", "bad\nname"] {
+    for name in ["bad,name", "bad(name)", "bad)name"] {
         assert_invalid_pipeline_name(name);
+    }
+    for name in ["", "bad name", "bad\nname"] {
+        assert_eq!(PassPipelineTextName::try_new(name)?.as_str(), name);
     }
 
     assert_eq!(
@@ -104,17 +108,20 @@ fn pass_pipeline_text_name_rejects_invalid_text() -> IrResult<()> {
     Ok(())
 }
 
-/// `llvmkit-specific`: scoped pass names use the same validation as erased
-/// pipeline text names while preserving their pass-manager layer in the type.
+/// `llvmkit-specific`: scoped pass names refuse the pipeline delimiters, as
+/// text names do, and also the empty name and whitespace, which no pass is
+/// registered under; the pass-manager layer stays in the type.
 #[test]
 fn scoped_pass_name_rejects_invalid_text() -> IrResult<()> {
     assert_eq!(
         PassName::<FunctionPassScope>::try_new("early-cse")?.as_str(),
         "early-cse"
     );
-    match PassName::<ModulePassScope>::try_new("bad,name") {
-        Err(IrError::InvalidPassPipelineName { name }) => assert_eq!(name, "bad,name"),
-        other => panic!("expected InvalidPassPipelineName, got {other:?}"),
+    for raw in ["bad,name", "", "bad name"] {
+        match PassName::<ModulePassScope>::try_new(raw) {
+            Err(IrError::InvalidPassPipelineName { name }) => assert_eq!(name, raw),
+            other => panic!("expected InvalidPassPipelineName for {raw:?}, got {other:?}"),
+        }
     }
     Ok(())
 }
@@ -145,23 +152,54 @@ fn pass_pipeline_parser_preserves_nested_shape() -> IrResult<()> {
 }
 
 /// Port of `llvm/lib/Passes/PassBuilder.cpp::parsePipelineText`: invalid
-/// nesting fails, and llvmkit deliberately rejects empty element names early.
+/// nesting fails, and an empty name is an element, as upstream's
+/// `Text.substr(0, Pos)` makes one: the empty text, a trailing comma and
+/// `()` each yield an element named `""`.
 #[test]
-fn pass_pipeline_parser_rejects_invalid_or_empty_pipelines() {
-    match parse_pass_pipeline_text("") {
-        Err(IrError::InvalidPassPipeline { pipeline }) => assert_eq!(pipeline, ""),
-        other => panic!("expected InvalidPassPipeline for empty pipeline, got {other:?}"),
-    }
-    for text in ["module(function(instcombine)", "module)function"] {
+fn pass_pipeline_parser_rejects_invalid_or_empty_pipelines() -> IrResult<()> {
+    for text in [
+        "module(function(instcombine)",
+        "module)function",
+        "a)",
+        "f(a)b",
+    ] {
         match parse_pass_pipeline_text(text) {
             Err(IrError::InvalidPassPipeline { pipeline }) => assert_eq!(pipeline, text),
             other => panic!("expected InvalidPassPipeline for {text:?}, got {other:?}"),
         }
     }
-    match parse_pass_pipeline_text("module(function())") {
-        Err(IrError::InvalidPassPipelineName { name }) => assert_eq!(name, ""),
-        other => panic!("expected InvalidPassPipelineName for empty nested name, got {other:?}"),
-    }
+
+    let empty = parse_pass_pipeline_text("")?;
+    assert_eq!(empty.len(), 1);
+    assert_eq!(empty.first().name().as_str(), "");
+    assert!(empty.first().is_leaf());
+
+    let trailing = parse_pass_pipeline_text("a,")?;
+    let names: Vec<&str> = trailing
+        .elements()
+        .iter()
+        .map(|element| element.name().as_str())
+        .collect();
+    assert_eq!(names, ["a", ""]);
+
+    let nested = parse_pass_pipeline_text("module(function())")?;
+    let function = &nested.first().inner_pipeline()[0];
+    assert_eq!(function.name().as_str(), "function");
+    assert_eq!(function.inner_pipeline().len(), 1);
+    assert_eq!(function.inner_pipeline()[0].name().as_str(), "");
+
+    // A run of `)` closes several pipelines, then `,` continues the outer.
+    let closed = parse_pass_pipeline_text("a(b(c)),d")?;
+    let outer: Vec<&str> = closed
+        .elements()
+        .iter()
+        .map(|element| element.name().as_str())
+        .collect();
+    assert_eq!(outer, ["a", "d"]);
+    let b = &closed.first().inner_pipeline()[0];
+    assert_eq!(b.name().as_str(), "b");
+    assert_eq!(b.inner_pipeline()[0].name().as_str(), "c");
+    Ok(())
 }
 
 fn assert_cleanup_recipe(

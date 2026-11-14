@@ -163,9 +163,11 @@ Not shipped yet:
   name or signature upstream's `AutoUpgrade` would rewrite is refused instead
   (gap G1 in [`docs/fixture-coverage.md`](docs/fixture-coverage.md)).
 - **Full built-in optimization transform library and pipeline builders**
-  (`PassBuilder`, loop PM, CGSCC PM, legacy PM, *runnable* textual pipelines —
-  `pass_pipeline.rs` parses a pipeline string into typed, data-only recipe
-  values, but there is no NAME → constructor registry, so nothing can run one)
+  (loop PM, CGSCC PM, legacy PM, `PassBuilder`'s default pipelines).
+  Textual pipelines over the module and function layers do run:
+  `parse_module_pass_pipeline("function(instsimplify,dce)")` builds the same
+  pipeline `opt -passes=` would, from the passes llvmkit ports, and refuses
+  any other name as an unknown pass
 
 Out of scope:
 

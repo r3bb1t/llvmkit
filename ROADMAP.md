@@ -68,12 +68,15 @@ Hard gaps for replacing more LLVM/Inkwell workflows:
 - ~~Ordinary `clang` output does not parse.~~ **Closed 2026-07-31** (Milestone
   0). `clang -O0` / `-O2` output parses, verifies, and round-trips; a guard over
   the vendored `Attributes.td` keeps the keyword table from drifting again.
-- No runnable pass pipeline. `pass_pipeline.rs` parses
-  `"cleanup-lift,instcombine"` into an erased AST (`PassPipeline`), and nothing
-  consumes it: there is no NAME→pass-constructor registry, so a parsed recipe
-  cannot be run (Milestone 8). The shipped transform inventory is `DcePass`,
-  `InstSimplifyPass` and `SimplifyDemandedBitsPass`, over the analyses
+- ~~No runnable pass pipeline.~~ **Closed 2026-11-14.** `pass_builder.rs`
+  resolves a textual pipeline into a runnable `DynModulePipeline` /
+  `DynFunctionPipeline`, a port of `PassBuilder::parsePassPipeline`. The
+  registry (`RegisteredModulePass`, `RegisteredFunctionPass`) holds the
+  passes that ship: `no-op-module`, `no-op-function`, `dce` and
+  `instsimplify`. `SimplifyDemandedBitsPass` is not registered, since
+  upstream registers no pass by that name. The analyses are
   `DominatorTreeAnalysis`, `KnownBitsAnalysis` and `DemandedBitsAnalysis`.
+  What is still missing is passes, not plumbing.
 - Public API documentation is incomplete. `missing_docs` is denied per-module
   in `llvmkit-ir`'s `analysis`, `cfg_update`, `error`, `pass_access`,
   `pass_context`, `pass_manager` and `worklist` modules, so the ratchet has
@@ -92,9 +95,9 @@ Hard gaps for replacing more LLVM/Inkwell workflows:
   fixed-vector, and intrinsic-fact subset — entry-point coverage is not arm
   coverage, and `computeKnownFPClass` is the clearest case: it counts as one
   modeled entry point while its opcode dispatch is deliberately partial.
-- No pass-builder or pipeline *execution* engine yet: the named recipes and a
-  text parser ship (`pass_pipeline.rs`), but running a parsed pipeline still
-  needs a NAME→pass-constructor registry.
+- The named recipes (`cleanup-min`, `cleanup-lift`, `llvmkit-default<O1>`, …)
+  do not resolve: most of their passes are not ported, so they stay data
+  until those passes exist.
 - No loop PM / CGSCC PM.
 - No alias analysis, MemorySSA, ScalarEvolution, LazyValueInfo, or post-dominance.
 - No bitcode reader/writer.
@@ -759,9 +762,9 @@ let verified = unverified.verify()?;
 > the recipes as typed data, the parser's output as an erased AST
 > (`PassPipeline`). The names are scope-typed: `CLEANUP_MIN` /
 > `CLEANUP_LIFT` / `CLEANUP_O1_ISH` are `PipelineName<FunctionPipelineScope>`,
-> `DEFAULT_O0` / `DEFAULT_O1` are `PipelineName<ModulePipelineScope>`. What
-> remains is the `PassBuilder` and an execution engine — a NAME→pass-constructor
-> registry that turns a parsed recipe into a runnable pipeline.
+> `DEFAULT_O0` / `DEFAULT_O1` are `PipelineName<ModulePipelineScope>`. The
+> name→pass registry and the textual `PassBuilder` ship (`pass_builder.rs`).
+> What remains is resolving the recipe names, which waits on their passes.
 
 Named pipelines (the first three ship as recipe *names* today; the last two do
 not exist yet):
@@ -1017,9 +1020,9 @@ because every later stage is worth more once real-world IR can get in.
 - ConcreteImageLoadFoldPass.
 - NarrowLoadFromTruncPass.
 - PseudoStackPromotionPass.
-- `cleanup-lift` named pipeline — and the NAME→constructor registry that makes
-  a parsed pipeline runnable, since a recipe nobody can execute is not a
-  feature.
+- `cleanup-lift` named pipeline, resolvable through the shipped registry
+  (`pass_builder.rs`) once its passes exist, since a recipe nobody can
+  execute is not a feature.
 
 ### Stage 4: Memory and SSA promotion
 

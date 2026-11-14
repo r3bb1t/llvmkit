@@ -16,7 +16,7 @@
 //! ```
 //!
 //! and its CHECK line records what `-passes=instcombine` folds `%res` to.
-//! llvmkit has no runnable pass pipeline (see `CLAUDE.md`), but that fold is a
+//! llvmkit has no `instcombine` to run (see `CLAUDE.md`), but that fold is a
 //! known-bits question: InstCombine replaces `%res` with a constant exactly
 //! when `%res` has no unknown bits left. So the oracle here is the CHECK line
 //! verbatim — `compute_known_bits` of the fixture's own `%res`, compared

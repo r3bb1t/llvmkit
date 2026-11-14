@@ -2617,12 +2617,31 @@ The `feature-4/pass-api-v2` branch shipped the capability-graded pass API
 static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
 `#[function_pass]`/`#[module_pass]` sugar). What it deliberately scoped out:
 
-- **Executable textual / string pipelines** -- `pass_pipeline.rs` parses
-  opt-style pipeline strings into names and recipes
-  (`parse_pass_pipeline_text`, `PassPipelineRecipe`, `PassPipelineTextName`),
-  but there is no `NAME`->pass-constructor registry, so a parsed pipeline
-  cannot yet be *run*. A registry mapping each pass's `NAME` to a boxed-pass
-  constructor would let a textual pipeline drive the `Dyn` containers.
+- ~~**Executable textual / string pipelines**~~ -- **closed 2026-11-14.**
+  `pass_builder.rs` ports `PassBuilder::parsePassPipeline` (module and
+  function overloads), `parseModulePass` and `parseFunctionPass` over a
+  closed registry (`RegisteredModulePass`, `RegisteredFunctionPass`), and
+  builds the `Dyn` containers. The containers gained nested pipelines and
+  the module-to-function adaptor, with its `eager-inv` parameter
+  (`push_pipeline`, `push_function_pipeline`). `parse_pass_pipeline_text`
+  was rewritten as a port of `parsePipelineText`: an empty element name is
+  now an element, as upstream's is, and no longer a parse error. Guarded by
+  `crates/llvmkit-asmparser/tests/pass_pipeline_parsing.rs`, the port of
+  `test/Other/pass-pipeline-parsing.ll`. What remains:
+  - **The named recipes do not resolve.** `cleanup-min`, `cleanup-lift`,
+    `cleanup-o1-ish` and `llvmkit-default<O0/O1>` stay data. All but
+    `llvmkit-default<O0>` name passes that are not ported, and that one
+    alone is not worth a resolution path.
+  - **`SimplifyDemandedBitsPass` is not registered.** Upstream registers no
+    pass by its name (`simplify-demanded-bits`; `rg -n
+    '"simplify-demanded-bits"' llvm/lib/Passes/PassRegistry.def` in the
+    vendored tree prints nothing), so registering it would invent a name.
+  - **No analysis pseudo-passes.** `require<…>` and `invalidate<…>` resolve
+    upstream through the analysis rows of `PassRegistry.def`. llvmkit's
+    analyses carry no registry names, so those spellings are unknown passes
+    here.
+  - **The `-debug-pass-manager` trace** that most of
+    `pass-pipeline-parsing.ll` checks needs the instrumentation below.
 - **Per-function analyses in `ModRewrite::patch_functions` /
   `reshape_functions`** -- the module->function iterators (`pass_context.rs`)
   build each per-function mutator with empty results `()`, so a

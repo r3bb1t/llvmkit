@@ -1,7 +1,10 @@
-//! Data-only pass-pipeline names, parser AST, and built-in recipe metadata.
+//! Pass-pipeline names, the textual-pipeline parser and its AST, and the
+//! built-in recipe metadata.
 //!
-//! This mirrors LLVM's textual-pipeline shape without adding a public
-//! `PassBuilder` or constructing any optimization pass.
+//! This is the syntax half of LLVM's textual pipelines: nothing here resolves
+//! a name or constructs a pass. `pass_builder.rs` resolves a parsed pipeline
+//! into a runnable one ([`crate::parse_module_pass_pipeline`],
+//! [`crate::parse_function_pass_pipeline`]).
 
 use core::marker::PhantomData;
 use core::str::FromStr;
@@ -91,8 +94,17 @@ impl<S: PassScope> PassName<S> {
         }
     }
 
-    /// Validates a user-provided static pass name for scoped insertion.
+    /// Validates a user-provided static pass name for scoped insertion: not
+    /// empty, and free of whitespace and of the pipeline delimiters `,`, `(`
+    /// and `)`. Stricter than a textual element ([`PassPipelineTextName`]),
+    /// which may be anything without a delimiter, as upstream's are: a pass
+    /// is never registered under an empty or space-holding name.
     pub fn try_new(raw: &'static str) -> IrResult<Self> {
+        if raw.is_empty() || raw.bytes().any(|byte| byte.is_ascii_whitespace()) {
+            return Err(IrError::InvalidPassPipelineName {
+                name: raw.to_owned(),
+            });
+        }
         validate_pipeline_name(raw)?;
         Ok(Self::new(raw))
     }
@@ -135,6 +147,10 @@ pub const BDCE: PassName<FunctionPassScope> = PassName::new("bdce");
 pub const EARLY_CSE: PassName<FunctionPassScope> = PassName::new("early-cse");
 /// Built-in function pass name: `gvn-lite`.
 pub const GVN_LITE: PassName<FunctionPassScope> = PassName::new("gvn-lite");
+/// Built-in function pass name: `no-op-function` (`NoOpFunctionPass`).
+pub const NO_OP_FUNCTION: PassName<FunctionPassScope> = PassName::new("no-op-function");
+/// Built-in module pass name: `no-op-module` (`NoOpModulePass`).
+pub const NO_OP_MODULE: PassName<ModulePassScope> = PassName::new("no-op-module");
 
 /// Owned validated name at the erased textual parser boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -143,7 +159,11 @@ pub struct PassPipelineTextName {
 }
 
 impl PassPipelineTextName {
-    /// Validates a pass-pipeline element name.
+    /// Validates a pass-pipeline element name: any text without the
+    /// delimiters `,`, `(` and `)`, the text `parsePipelineText` can cut out
+    /// of a pipeline as one element's `Name`. That includes the empty name
+    /// (`a,,b`, `f()`) and names holding spaces, which upstream resolves
+    /// later and refuses as unknown passes.
     pub fn try_new<Name: Into<String>>(name: Name) -> IrResult<Self> {
         let text = name.into();
         validate_pipeline_name(&text)?;
@@ -170,11 +190,7 @@ impl FromStr for PassPipelineTextName {
 }
 
 fn validate_pipeline_name(name: &str) -> IrResult<()> {
-    if name.is_empty()
-        || name
-            .bytes()
-            .any(|byte| byte.is_ascii_whitespace() || matches!(byte, b',' | b'(' | b')'))
-    {
+    if name.bytes().any(|byte| matches!(byte, b',' | b'(' | b')')) {
         Err(IrError::InvalidPassPipelineName {
             name: name.to_owned(),
         })
@@ -259,139 +275,89 @@ impl PassPipelineElement {
 
 /// Parses textual pass-pipeline syntax into an erased AST.
 ///
-/// Mirrors `PassBuilder.cpp::parsePipelineText` delimiter nesting while keeping
-/// name resolution and pass construction out of scope.
+/// Mirrors `PassBuilder::parsePipelineText` (`PassBuilder.cpp`): the text up
+/// to each `,`, `(` or `)` is one element's name, `(` opens that element's
+/// inner pipeline, and a run of `)` closes inner pipelines, after which only
+/// `,` or the end may follow. Names are not resolved here, and an empty name
+/// is an element like any other (`""` parses as one element named `""`), as
+/// upstream's are: [`crate::parse_module_pass_pipeline`] and
+/// [`crate::parse_function_pass_pipeline`] refuse it as an unknown pass.
+/// Unbalanced parentheses, and a closed inner pipeline followed by anything
+/// but `,`, are [`IrError::InvalidPassPipeline`], upstream's `std::nullopt`.
 pub fn parse_pass_pipeline_text(text: &str) -> IrResult<PassPipeline> {
-    if text.is_empty() {
-        return Err(IrError::InvalidPassPipeline {
-            pipeline: text.to_owned(),
-        });
-    }
-
-    let mut parser = PipelineParser::new(text);
-    let elements = parser.parse_pipeline(false)?;
-    if parser.is_at_end() {
-        let pipeline = PassPipeline { elements };
-        if pipeline.is_empty() {
-            Err(IrError::InvalidPassPipeline {
-                pipeline: text.to_owned(),
-            })
-        } else {
-            Ok(pipeline)
-        }
-    } else {
-        Err(IrError::InvalidPassPipeline {
-            pipeline: text.to_owned(),
-        })
-    }
-}
-
-struct PipelineParser<'a> {
-    text: &'a str,
-    pos: usize,
-}
-
-impl<'a> PipelineParser<'a> {
-    fn new(text: &'a str) -> Self {
-        Self { text, pos: 0 }
-    }
-
-    fn is_at_end(&self) -> bool {
-        self.pos == self.text.len()
-    }
-
-    fn parse_pipeline(&mut self, allow_close: bool) -> IrResult<Vec<PassPipelineElement>> {
-        let mut elements = Vec::new();
-        loop {
-            if self.is_at_end() {
-                return if allow_close {
-                    Err(self.invalid_pipeline())
-                } else {
-                    Ok(elements)
-                };
+    let invalid = || IrError::InvalidPassPipeline {
+        pipeline: text.to_owned(),
+    };
+    // Upstream keeps a stack of pointers to the pipelines being filled, the
+    // outermost at the bottom. Here the outermost is `root`, and each open
+    // element, with its inner pipeline so far, sits on `open` until its `)`
+    // adds it to the pipeline below. Nothing else is added below it while it
+    // is open, so each element keeps the place it was named at.
+    let mut root = Vec::new();
+    let mut open: Vec<(PassPipelineTextName, Vec<PassPipelineElement>)> = Vec::new();
+    let mut rest = text;
+    loop {
+        let position = rest.find([',', '(', ')']);
+        let (name, separator) = match position {
+            Some(position) => (&rest[..position], rest[position..].chars().next()),
+            None => (rest, None),
+        };
+        // No delimiter can be in the text before the first delimiter.
+        let name = PassPipelineTextName {
+            text: name.to_owned(),
+        };
+        let Some(separator) = separator else {
+            // A single terminating name: done.
+            filling(&mut root, &mut open).push(PassPipelineElement::new(name, Vec::new()));
+            break;
+        };
+        rest = &rest[name.text.len() + separator.len_utf8()..];
+        match separator {
+            ',' => {
+                // Just a name ending in a comma: continue.
+                filling(&mut root, &mut open).push(PassPipelineElement::new(name, Vec::new()));
             }
-
-            let element = self.parse_element(allow_close)?;
-            elements.push(element);
-
-            if self.is_at_end() {
-                return if allow_close {
-                    Err(self.invalid_pipeline())
-                } else {
-                    Ok(elements)
-                };
+            '(' => {
+                // Continue in the element's inner pipeline.
+                open.push((name, Vec::new()));
             }
-
-            match self.peek_char() {
-                Some(',') => {
-                    self.consume_char();
-                    if self.is_at_end() {
-                        return PassPipelineTextName::try_new("").map(|_| elements);
+            _ => {
+                filling(&mut root, &mut open).push(PassPipelineElement::new(name, Vec::new()));
+                // Close inner pipelines greedily, to avoid empty names
+                // between the parentheses. Closing the outermost pipeline is
+                // unbalanced.
+                loop {
+                    let (name, inner) = open.pop().ok_or_else(invalid)?;
+                    filling(&mut root, &mut open).push(PassPipelineElement::new(name, inner));
+                    match rest.strip_prefix(')') {
+                        Some(after) => rest = after,
+                        None => break,
                     }
                 }
-                Some(')') if allow_close => {
-                    self.consume_char();
-                    return Ok(elements);
+                if rest.is_empty() {
+                    break;
                 }
-                Some(')') => return Err(self.invalid_pipeline()),
-                Some(_) | None => return Err(self.invalid_pipeline()),
+                // The end of an inner pipeline is always followed by a comma.
+                rest = rest.strip_prefix(',').ok_or_else(invalid)?;
             }
         }
     }
-
-    fn parse_element(&mut self, allow_close: bool) -> IrResult<PassPipelineElement> {
-        let start = self.pos;
-        match self.next_delimiter() {
-            Some((delimiter_pos, '(')) => {
-                let name = PassPipelineTextName::try_new(&self.text[start..delimiter_pos])?;
-                self.pos = delimiter_pos + '('.len_utf8();
-                let inner_pipeline = self.parse_pipeline(true)?;
-                Ok(PassPipelineElement::new(name, inner_pipeline))
-            }
-            Some((delimiter_pos, ',')) => {
-                let name = PassPipelineTextName::try_new(&self.text[start..delimiter_pos])?;
-                self.pos = delimiter_pos;
-                Ok(PassPipelineElement::new(name, Vec::new()))
-            }
-            Some((delimiter_pos, ')')) if allow_close => {
-                let name = PassPipelineTextName::try_new(&self.text[start..delimiter_pos])?;
-                self.pos = delimiter_pos;
-                Ok(PassPipelineElement::new(name, Vec::new()))
-            }
-            Some(_) => Err(self.invalid_pipeline()),
-            None if allow_close => Err(self.invalid_pipeline()),
-            None => {
-                let name = PassPipelineTextName::try_new(&self.text[start..])?;
-                self.pos = self.text.len();
-                Ok(PassPipelineElement::new(name, Vec::new()))
-            }
-        }
+    if !open.is_empty() {
+        // Unbalanced parentheses.
+        return Err(invalid());
     }
+    Ok(PassPipeline { elements: root })
+}
 
-    fn next_delimiter(&self) -> Option<(usize, char)> {
-        self.text[self.pos..]
-            .char_indices()
-            .find(|(_, ch)| matches!(ch, ',' | '(' | ')'))
-            .map(|(offset, ch)| (self.pos + offset, ch))
-    }
-
-    fn peek_char(&self) -> Option<char> {
-        self.text[self.pos..].chars().next()
-    }
-
-    fn consume_char(&mut self) {
-        match self.peek_char() {
-            Some(ch) => {
-                self.pos += ch.len_utf8();
-            }
-            None => unreachable!("parser consume requires a current character"),
-        }
-    }
-
-    fn invalid_pipeline(&self) -> IrError {
-        IrError::InvalidPassPipeline {
-            pipeline: self.text.to_owned(),
-        }
+/// The pipeline being filled: the innermost open element's, or the
+/// outermost.
+fn filling<'a>(
+    root: &'a mut Vec<PassPipelineElement>,
+    open: &'a mut [(PassPipelineTextName, Vec<PassPipelineElement>)],
+) -> &'a mut Vec<PassPipelineElement> {
+    match open.last_mut() {
+        Some((_, inner)) => inner,
+        None => root,
     }
 }
 
