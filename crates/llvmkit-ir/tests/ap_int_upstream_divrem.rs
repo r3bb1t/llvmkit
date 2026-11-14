@@ -3,10 +3,10 @@
 //!
 //! Upstream's `testDiv` helpers check `(a * b + c) / a` through every div/rem
 //! entry point; the rows that follow are chosen to drive the rare branches of
-//! upstream's Knuth algorithm D. llvmkit's `udivrem` is a schoolbook
-//! bit-at-a-time long division rather than Knuth D, so the rows do not exercise
-//! the *same internal steps* — they do assert the same answers at the same
-//! magnitudes, which is what the fixture is for.
+//! upstream's Knuth algorithm D. llvmkit's `udivrem` ports `APInt::udivrem`,
+//! `APInt::divide` and `KnuthDiv`, so the rows drive the same internal steps:
+//! the D6 add-back of `divrem_big1` / `divrem_big2` and the short division of
+//! a one-digit divisor among them.
 //!
 //! Two spelling differences, neither of which changes the logic:
 //!

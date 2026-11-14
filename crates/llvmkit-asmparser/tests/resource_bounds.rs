@@ -9,7 +9,7 @@
 //! binary, and, where a count can say more than a clock, as a failed count.
 
 use llvmkit_asmparser::parser;
-use llvmkit_ir::{DataLayout, DynBrand, IrError, Module, SizedType, Unverified};
+use llvmkit_ir::{ApInt, DataLayout, DynBrand, IrError, Module, SizedType, Unverified};
 
 pub mod support;
 
@@ -79,6 +79,47 @@ fn the_widest_integer_literal_is_built_in_linear_time() {
         assert!(
             printed.contains("@a = global i8388608 -1\n"),
             "the literal prints back:\n{printed}"
+        );
+    });
+}
+
+/// Division at the widest integer type, `i8388608`: a small value by a small
+/// value, every bit set by a one-digit divisor (short division), and every bit
+/// set by 2^64 (Knuth's Algorithm D, with a normalizing shift of 31).
+///
+/// **No upstream counterpart.** Upstream's `APInt::udivrem` (`APInt.cpp`)
+/// divides a one-word dividend natively and otherwise runs `APInt::divide`,
+/// whose cost follows the operands' significant digits. llvmkit's `udivrem`
+/// was a bit-at-a-time long division that shifted the whole remainder once
+/// per bit of width, so any division at this width cost the width times its
+/// words — 2^23 shifts of 2^17 words, even for `100 / 7`. With that loop
+/// restored, this test exits on its deadline.
+#[test]
+fn division_at_the_widest_integer_follows_the_significant_digits() {
+    support::deadline::within_a_minute("division walks every bit of the width", || {
+        const WIDTH: u32 = 1 << 23;
+        let small = ApInt::from_words(WIDTH, &[100])
+            .udivrem(&ApInt::from_words(WIDTH, &[7]))
+            .expect("non-zero divisor");
+        assert_eq!(small.quotient(), &ApInt::from_words(WIDTH, &[14]));
+        assert_eq!(small.remainder(), &ApInt::from_words(WIDTH, &[2]));
+
+        let all_ones = ApInt::all_ones(WIDTH);
+        // 2^WIDTH - 1 is divisible by 3 at an even width: 0x5555... remains.
+        let by_three = all_ones
+            .udivrem(&ApInt::from_words(WIDTH, &[3]))
+            .expect("non-zero divisor");
+        let fives = vec![0x5555_5555_5555_5555_u64; 1 << 17];
+        assert_eq!(by_three.quotient(), &ApInt::from_words(WIDTH, &fives));
+        assert!(by_three.remainder().is_zero());
+
+        let by_two_to_the_64 = all_ones
+            .udivrem(&ApInt::from_words(WIDTH, &[0, 1]))
+            .expect("non-zero divisor");
+        assert_eq!(by_two_to_the_64.quotient(), &all_ones.lshr(64));
+        assert_eq!(
+            by_two_to_the_64.remainder(),
+            &ApInt::from_words(WIDTH, &[u64::MAX])
         );
     });
 }

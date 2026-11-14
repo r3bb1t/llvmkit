@@ -981,6 +981,64 @@ Closing it means
 a mask type that can say "every lane is `k`" without listing the lanes, threaded
 through every reader of the mask.
 
+## ~~Division of a wide integer walks every bit of its width~~ — closed (found 2026-11-13, resource-bounds review; closed 2026-11-14)
+
+**Closed.** `ApInt::udivrem` (`ap_int.rs`) was a bit-at-a-time long
+division that shifted the whole remainder once per bit, so every `udiv`,
+`sdiv`, `urem` and `srem` fold cost the width times its words whatever the
+values: at `i8388608` (2^23 bits, 2^17 words), `100 / 7` ran past a minute.
+It now ports `APInt::udivrem`, `APInt::divide` and `KnuthDiv` (`APInt.cpp`)
+with the same arms in the same order (single-word native division, the
+degenerate cases, a native one-word dividend, short division by one 32-bit
+digit, Algorithm D otherwise), so the cost follows the operands'
+significant digits as upstream's does. A wide dividend over a wide divisor
+still costs their digit counts multiplied, as upstream's does.
+
+**Guarded by:**
+`crates/llvmkit-asmparser/tests/resource_bounds.rs::division_at_the_widest_integer_follows_the_significant_digits`.
+It exits on its one-minute deadline with the bit-at-a-time loop restored,
+checked on `69736e00` with this change applied. The D6 add-back step is
+reached by the ported `divrem_big1`, `divrem_big2`, `divrem_big6` and
+`divrem_big7` (`crates/llvmkit-ir/tests/ap_int_upstream_divrem.rs`). With the
+add-back disabled, those four failed and the other five passed, on the same
+tree.
+
+## Value tracking builds a demanded-lanes `ApInt` of one bit per lane (found 2026-11-13, resource-bounds review)
+
+`demanded_elements_for` (`value_tracking.rs`), `demanded_lanes`
+(`known_fp_class.rs`), `possibly_demanded_elements_in_mask`
+(`vector_utils.rs`), and the known-bits entries for fixed vectors build their
+default demanded set as `ApInt::all_ones(lanes)`. `ApInt` stores every word
+below its highest set bit, so `<4294967295 x i8>` costs 2^26 words (512 MiB)
+per set built. `demanded_elements_for` also clones the query's set on each
+call. This is upstream's cost too: `computeKnownBits`,
+`computeKnownFPClass` and `isKnownNonZero` each start from
+`APInt::getAllOnes(FVTy->getNumElements())` (`ValueTracking.cpp`). So it is
+not a divergence, and nothing here differs from upstream's answers.
+
+**Reach.** Only a caller that runs a value-tracking analysis on such a
+vector reaches it, through the analysis entries, `InstSimplifyPass` or the
+`constant_folding.rs` entries. Parsing, verifying, printing and building do
+not reach it.
+`rg -n 'compute_known_bits|compute_known_fp_class|known_fp_class\(|is_known_never|num_sign_bits|is_known_non_zero' crates/llvmkit-ir/src/verifier*.rs crates/llvmkit-ir/src/asm_writer*.rs crates/llvmkit-asmparser/src crates/llvmkit-ir/src/constant_fold*.rs crates/llvmkit-ir/src/ir_builder`
+printed nothing on `69736e00`. On the same tree,
+`rg -n 'inst_simplify::|simplify_instruction\(' crates/llvmkit-ir/src crates/llvmkit-asmparser/src`
+found only `inst_simplify.rs` itself and `lib.rs`'s re-export, and
+`rg -n 'constant_folding::' crates/llvmkit-ir/src crates/llvmkit-asmparser/src`
+found no caller in the parser, verifier, printer or builder.
+
+**Why it is open.** A bound has two forms, and neither is free:
+
+- A cap answers "unknown" past a lane limit, as D40 does for constant folds.
+  That is a new divergence: upstream answers there.
+- A demanded set that can say "every lane" without listing them keeps
+  upstream's answers, but replaces `ApInt` in public signatures that port
+  upstream's (`ValueTrackingQuery::with_demanded_elements`,
+  `shuffle_demanded_elements`, `possibly_demanded_elements_in_mask`), and
+  every per-lane reader must learn it.
+
+Which one, if either, is a design decision that has not been made.
+
 ## ~~Erasing many users of one value is quadratic~~ — closed (found 2026-11-13, resource-bounds Phase 0; closed the same day)
 
 **Closed.** A value's use list is now `UseList` (`use_list.rs`): edges

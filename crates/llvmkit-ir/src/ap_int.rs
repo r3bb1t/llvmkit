@@ -1425,27 +1425,83 @@ impl ApInt {
         self.sdivrem(rhs).map(|qr| qr.remainder)
     }
 
+    /// Unsigned quotient and remainder.
+    ///
+    /// Mirrors `APInt::udivrem(const APInt &, const APInt &, APInt &, APInt &)`
+    /// (APInt.cpp): native division for a single-word width, the degenerate
+    /// cases, native division for a one-word dividend, and otherwise
+    /// `APInt::divide` — Knuth's Algorithm D over 32-bit digits. The cost
+    /// follows the operands' significant words, never the bit width, so a
+    /// small value at a wide width divides as fast as it does at `i128`.
+    /// Upstream asserts on a zero divisor and on mismatched widths; both are
+    /// `None` here.
     pub fn udivrem(&self, rhs: &ApInt) -> Option<ApIntDivRem> {
         if self.bit_width != rhs.bit_width || rhs.is_zero() {
             return None;
         }
-        let mut quotient = Self::zero(self.bit_width);
-        let mut remainder = Self::zero(self.bit_width);
-        let mut i = self.bit_width;
-        while i > 0 {
-            i -= 1;
-            remainder = remainder.shl_truncating(1);
-            if self.bit(i) {
-                remainder.set_bit(0);
-            }
-            if remainder.uge(rhs) {
-                remainder = remainder.wrapping_sub(rhs);
-                quotient.set_bit(i);
-            }
+        let bit_width = self.bit_width;
+        let native = |lhs: u64, rhs: u64| ApIntDivRem {
+            quotient: Self::from_words(bit_width, &[lhs / rhs]),
+            remainder: Self::from_words(bit_width, &[lhs % rhs]),
+        };
+
+        // First, deal with the easy case. `rhs` is non-zero: checked above.
+        if bit_width <= WORD_BITS {
+            return Some(native(
+                word_at(&self.words, 0, bit_width),
+                word_at(&rhs.words, 0, bit_width),
+            ));
         }
+
+        // Get some size facts about the dividend and divisor.
+        let lhs_words = words_for_bits_usize(self.active_bits());
+        let rhs_bits = rhs.active_bits();
+        let rhs_words = words_for_bits_usize(rhs_bits);
+
+        // Check the degenerate cases.
+        if lhs_words == 0 {
+            // 0 / Y ===> 0, 0 % Y ===> 0
+            return Some(ApIntDivRem {
+                quotient: Self::zero(bit_width),
+                remainder: Self::zero(bit_width),
+            });
+        }
+
+        // Upstream's `rhsBits == 1` arm (X / 1 ===> X) assigns both results
+        // without returning, and every path below assigns both again, so the
+        // assignment is dead there and is not ported: X / 1 reaches the arms
+        // below exactly as it does upstream, with the same answer.
+
+        if lhs_words < rhs_words || self.ult(rhs) {
+            // X % Y ===> X, X / Y ===> 0, iff X < Y
+            return Some(ApIntDivRem {
+                quotient: Self::zero(bit_width),
+                remainder: self.clone(),
+            });
+        }
+
+        if self.eq_ap_int(rhs) {
+            // X / X ===> 1, X % X ===> 0
+            return Some(ApIntDivRem {
+                quotient: Self::from_words(bit_width, &[1]),
+                remainder: Self::zero(bit_width),
+            });
+        }
+
+        if lhs_words == 1 {
+            // rhs_words is 1 if lhs_words is 1: use the native versions.
+            return Some(native(
+                word_at(&self.words, 0, bit_width),
+                word_at(&rhs.words, 0, bit_width),
+            ));
+        }
+
+        // Okay, lets do it the long way. The words past `lhs_words` and
+        // `rhs_words` are zero, as upstream's closing `memset`s make them.
+        let (quotient, remainder) = divide(&self.words, lhs_words, &rhs.words, rhs_words);
         Some(ApIntDivRem {
-            quotient,
-            remainder,
+            quotient: Self::from_words(bit_width, &quotient),
+            remainder: Self::from_words(bit_width, &remainder),
         })
     }
 
@@ -2358,6 +2414,207 @@ fn word_at(words: &[u64], idx: usize, bit_width: u32) -> u64 {
     } else {
         word
     }
+}
+
+/// `Lo_32` (MathExtras.h): the low 32 bits.
+fn lo_32(value: u64) -> u32 {
+    match u32::try_from(value & u64::from(u32::MAX)) {
+        Ok(v) => v,
+        Err(_) => unreachable!("masked low 32 bits fit in u32"),
+    }
+}
+
+/// `Hi_32` (MathExtras.h): the high 32 bits.
+fn hi_32(value: u64) -> u32 {
+    lo_32(value >> 32)
+}
+
+/// `Make_64` (MathExtras.h): `high` above `low`.
+fn make_64(high: u32, low: u32) -> u64 {
+    (u64::from(high) << 32) | u64::from(low)
+}
+
+/// Mirrors `KnuthDiv` (APInt.cpp): Knuth's Algorithm D, "Art of Computer
+/// Programming, Volume 2", section 4.3.1, over base-2^32 digits. `u` holds
+/// `m + n + 1` digits of dividend (the last is spill), `v` the `n > 1` digits
+/// of divisor with a non-zero top digit, `q` receives `m + 1` quotient digits
+/// and `r` the `n` remainder digits. Upstream's `r` may be null when only the
+/// quotient is wanted; [`ApInt::udivrem`] always wants both, so it is not
+/// optional here.
+///
+/// The arithmetic is spelled with the wrapping operations wherever the C++
+/// is unsigned 32- or 64-bit arithmetic, which wraps; the signed `borrow`
+/// keeps upstream's `int64_t` and its conversions.
+fn knuth_div(u: &mut [u32], v: &mut [u32], q: &mut [u32], r: &mut [u32], m: usize, n: usize) {
+    // b denotes the base of the number system. In our case b is 2^32.
+    const B: u64 = 1 << 32;
+
+    // D1. [Normalize.] Shift u and v left by the divisor's leading zeros so
+    // the divisor's top digit has its high bit set; u may grow into its spill
+    // digit.
+    let shift = v[n - 1].leading_zeros();
+    let mut v_carry: u32 = 0;
+    let mut u_carry: u32 = 0;
+    if shift != 0 {
+        for digit in u.iter_mut().take(m + n) {
+            let u_tmp = *digit >> (32 - shift);
+            *digit = (*digit << shift) | u_carry;
+            u_carry = u_tmp;
+        }
+        for digit in v.iter_mut().take(n) {
+            let v_tmp = *digit >> (32 - shift);
+            *digit = (*digit << shift) | v_carry;
+            v_carry = v_tmp;
+        }
+    }
+    u[m + n] = u_carry;
+
+    // D2. [Initialize j.] Set j to m. This is the loop counter over the places.
+    for j in (0..=m).rev() {
+        // D3. [Calculate q'.] qp = (u[j+n]*b + u[j+n-1]) / v[n-1] and
+        // rp = (u[j+n]*b + u[j+n-1]) % v[n-1]; decrease qp while it is b or
+        // qp*v[n-2] > b*rp + u[j+n-2], at most twice.
+        let dividend = make_64(u[j + n], u[j + n - 1]);
+        let divisor_top = u64::from(v[n - 1]);
+        let mut qp = dividend / divisor_top;
+        let mut rp = dividend % divisor_top;
+        let too_large = |qp: u64, rp: u64| {
+            qp == B
+                || qp.wrapping_mul(u64::from(v[n - 2]))
+                    > B.wrapping_mul(rp).wrapping_add(u64::from(u[j + n - 2]))
+        };
+        if too_large(qp, rp) {
+            qp = qp.wrapping_sub(1);
+            rp = rp.wrapping_add(divisor_top);
+            if rp < B && too_large(qp, rp) {
+                qp = qp.wrapping_sub(1);
+            }
+        }
+
+        // D4. [Multiply and subtract.] Replace (u[j+n]...u[j]) with
+        // (u[j+n]...u[j]) - qp * (v[n-1]...v[0]), remembering a borrow.
+        let mut borrow: i64 = 0;
+        for i in 0..n {
+            let p = qp.wrapping_mul(u64::from(v[i]));
+            let subres = i64::from(u[j + i])
+                .wrapping_sub(borrow)
+                .wrapping_sub(i64::from(lo_32(p)));
+            u[j + i] = lo_32(subres.cast_unsigned());
+            // `Hi_32(p) - Hi_32(subres)` is `uint32_t` arithmetic before it
+            // widens into the `int64_t` borrow.
+            borrow = i64::from(hi_32(p).wrapping_sub(hi_32(subres.cast_unsigned())));
+        }
+        let is_negative = i64::from(u[j + n]) < borrow;
+        u[j + n] = u[j + n].wrapping_sub(lo_32(borrow.cast_unsigned()));
+
+        // D5. [Test remainder.] Set q[j] = qp. If the result of step D4 was
+        // negative, go to step D6; otherwise go on to step D7.
+        q[j] = lo_32(qp);
+        if is_negative {
+            // D6. [Add back.] Decrease q[j] by 1 and add (0v[n-1]...v[0]) to
+            // (u[j+n]...u[j]); the carry out of u[j+n] cancels the borrow
+            // from D4 and is ignored.
+            q[j] = q[j].wrapping_sub(1);
+            let mut carry = false;
+            for i in 0..n {
+                let limit = u[j + i].min(v[i]);
+                u[j + i] = u[j + i].wrapping_add(v[i]).wrapping_add(u32::from(carry));
+                carry = u[j + i] < limit || (carry && u[j + i] == limit);
+            }
+            u[j + n] = u[j + n].wrapping_add(u32::from(carry));
+        }
+        // D7. [Loop on j.]
+    }
+
+    // D8. [Unnormalize.] The remainder is u shifted back right by `shift`.
+    if shift != 0 {
+        let mut carry: u32 = 0;
+        for i in (0..n).rev() {
+            r[i] = (u[i] >> shift) | carry;
+            carry = u[i] << (32 - shift);
+        }
+    } else {
+        r[..n].copy_from_slice(&u[..n]);
+    }
+}
+
+/// Mirrors `APInt::divide` (APInt.cpp) with both outputs requested: splits
+/// the `lhs_words` and `rhs_words` significant words into 32-bit digits,
+/// trims the zero digits, runs short division when one divisor digit is
+/// left and [`knuth_div`] otherwise, and joins the digits back into
+/// `lhs_words` quotient words and `rhs_words` remainder words. The caller
+/// has already handled `lhs_words < rhs_words` (upstream asserts it away).
+fn divide(lhs: &[u64], lhs_words: usize, rhs: &[u64], rhs_words: usize) -> (Vec<u64>, Vec<u64>) {
+    let mut n = rhs_words * 2;
+    let mut m = lhs_words * 2 - n;
+
+    // Initialize the dividend, with one extra digit for the Knuth "spill".
+    let mut u = vec![0u32; m + n + 1];
+    for (i, word) in lhs.iter().take(lhs_words).enumerate() {
+        u[i * 2] = lo_32(*word);
+        u[i * 2 + 1] = hi_32(*word);
+    }
+    // Initialize the divisor.
+    let mut v = vec![0u32; n];
+    for (i, word) in rhs.iter().take(rhs_words).enumerate() {
+        v[i * 2] = lo_32(*word);
+        v[i * 2 + 1] = hi_32(*word);
+    }
+    // Initialize the quotient and remainder.
+    let mut q = vec![0u32; m + n];
+    let mut r = vec![0u32; n];
+
+    // Adjust m and n for the Knuth division: neither length may count a
+    // zero top digit.
+    let mut i = n;
+    while i > 0 && v[i - 1] == 0 {
+        n -= 1;
+        m += 1;
+        i -= 1;
+    }
+    let mut i = m + n;
+    while i > 0 && u[i - 1] == 0 {
+        m -= 1;
+        i -= 1;
+    }
+
+    // With a single divisor digit Knuth does not apply: short division, a
+    // 64-by-32-bit step per digit.
+    if n == 1 {
+        let divisor = v[0];
+        let mut remainder: u32 = 0;
+        for i in (0..=m).rev() {
+            let partial_dividend = make_64(remainder, u[i]);
+            if partial_dividend == 0 {
+                q[i] = 0;
+                remainder = 0;
+            } else if partial_dividend < u64::from(divisor) {
+                q[i] = 0;
+                remainder = lo_32(partial_dividend);
+            } else if partial_dividend == u64::from(divisor) {
+                q[i] = 1;
+                remainder = 0;
+            } else {
+                q[i] = lo_32(partial_dividend / u64::from(divisor));
+                // `Q[i] * divisor` is `uint32_t` arithmetic upstream.
+                remainder =
+                    lo_32(partial_dividend.wrapping_sub(u64::from(q[i].wrapping_mul(divisor))));
+            }
+        }
+        r[0] = remainder;
+    } else {
+        // Now we're ready to invoke the Knuth classical divide algorithm. In
+        // this case n > 1.
+        knuth_div(&mut u, &mut v, &mut q, &mut r, m, n);
+    }
+
+    let quotient = (0..lhs_words)
+        .map(|i| make_64(q[i * 2 + 1], q[i * 2]))
+        .collect();
+    let remainder = (0..rhs_words)
+        .map(|i| make_64(r[i * 2 + 1], r[i * 2]))
+        .collect();
+    (quotient, remainder)
 }
 
 fn words_for_bits_usize(bit_width: u32) -> usize {
