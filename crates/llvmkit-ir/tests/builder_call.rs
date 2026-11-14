@@ -713,9 +713,9 @@ fn call_erased_refuses_fast_math_flags_on_a_call_that_is_not_floating_point() ->
     assert!(
         matches!(
             refused,
-            Err(IrError::InvalidOperation {
-                message: "fast-math-flags specified for call without floating-point scalar or vector return type"
-            })
+            Err(IrError::Builder(
+                llvmkit_ir::BuilderError::CallFastMathNotFloatingPoint
+            ))
         ),
         "fast-math flags on an `i32` call must be refused; got {refused:?}"
     );

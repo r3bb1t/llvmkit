@@ -6,7 +6,7 @@
 //! counterpart to port.
 
 use llvmkit_ir::ShuffleMaskElem::{Lane, Poison};
-use llvmkit_ir::{ArrayType, VectorType, lanes};
+use llvmkit_ir::{AggregateInstruction, ArrayType, BuilderError, VectorType, lanes};
 use llvmkit_ir::{
     Dyn, DynBrand, IntValue, IrBuilder, IrError, Linkage, Module, ShuffleVectorInst, module_new,
 };
@@ -116,9 +116,9 @@ fn extract_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
         .expect_err("empty extractvalue indices must be rejected");
     assert_eq!(
         err,
-        IrError::InvalidOperation {
-            message: "extractvalue indices must not be empty",
-        }
+        IrError::from(BuilderError::EmptyAggregateIndices {
+            instruction: AggregateInstruction::ExtractValue,
+        })
     );
     assert_eq!(b.insert_block().instructions().len(), 0);
     b.ret_void()?;
@@ -263,9 +263,9 @@ fn insert_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
         .expect_err("empty insertvalue indices must be rejected");
     assert_eq!(
         err,
-        IrError::InvalidOperation {
-            message: "insertvalue indices must not be empty",
-        }
+        IrError::from(BuilderError::EmptyAggregateIndices {
+            instruction: AggregateInstruction::InsertValue,
+        })
     );
     assert_eq!(b.insert_block().instructions().len(), 0);
     b.ret_void()?;
@@ -489,9 +489,7 @@ fn shuffle_vector_scalable_rejects_a_non_splat_mask() -> Result<(), IrError> {
         assert!(
             matches!(
                 b.shuffle_vector(v0, v1, &mask, ""),
-                Err(IrError::InvalidOperation {
-                    message: "invalid shufflevector operands"
-                })
+                Err(IrError::Builder(BuilderError::InvalidShuffleVectorOperands))
             ),
             "{mask:?}"
         );
@@ -524,9 +522,7 @@ fn shuffle_vector_rejects_an_out_of_range_mask_lane() -> Result<(), IrError> {
     assert!(b.shuffle_vector(v0, v1, &[Lane(3), Lane(0)], "ok").is_ok());
     assert!(matches!(
         b.shuffle_vector(v0, v1, &[Lane(4), Lane(0)], ""),
-        Err(IrError::InvalidOperation {
-            message: "invalid shufflevector operands"
-        })
+        Err(IrError::Builder(BuilderError::InvalidShuffleVectorOperands))
     ));
     Ok(())
 }
