@@ -21,8 +21,8 @@ use std::rc::Rc;
 use llvmkit_ir::{
     Analyses, DominatorTreeAnalysis, Dyn, FnCx, FnPatch, FnReport, FunctionId, FunctionPass,
     InstructionView, IrBuilder, IrError, IrResult, LayoutToken, Linkage, ModCx, ModReport, Module,
-    ModuleBrand, ModulePass, NoFolder, PatchBody, ReadOnly, RewriteModule, Unverified, Verified,
-    function_pass, module_new, module_pass, run_function_pass, run_module_pass,
+    ModuleBrand, ModulePass, NoFolder, PatchBody, ReadOnly, RewriteModule, UniqueBrand, Unverified,
+    Verified, function_pass, module_new, module_pass, run_function_pass, run_module_pass,
 };
 
 // ==========================================================================
@@ -32,7 +32,7 @@ use llvmkit_ir::{
 /// `i32 @f()` with one unused `add` named `dead` before the terminator. Built
 /// with [`NoFolder`] so the constant add survives to be a real trivially-dead
 /// instruction (mirrors `tests/pipeline_basic.rs`).
-fn build_dead_add<'ctx, B: ModuleBrand + 'ctx>(
+fn build_dead_add<'ctx, B: UniqueBrand + 'ctx>(
     key: &mut LayoutToken<'ctx, B>,
 ) -> Result<FunctionId<Dyn, B>, IrError> {
     let m = key.module();
@@ -48,7 +48,7 @@ fn build_dead_add<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// `i32 @f()` whose entry just returns a constant — no dead instruction.
-fn build_ret_i32<'ctx, B: ModuleBrand + 'ctx>(
+fn build_ret_i32<'ctx, B: UniqueBrand + 'ctx>(
     key: &mut LayoutToken<'ctx, B>,
 ) -> Result<FunctionId<Dyn, B>, IrError> {
     let m = key.module();

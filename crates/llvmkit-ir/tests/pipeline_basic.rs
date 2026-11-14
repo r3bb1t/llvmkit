@@ -19,8 +19,8 @@ use std::rc::Rc;
 use llvmkit_ir::{
     Analyses, DcePass, DominatorTreeAnalysis, Dyn, FnCx, FnReport, FunctionId, FunctionPass,
     FunctionView, Inspect, IrBuilder, IrError, IrResult, LayoutToken, Linkage, ModCx, ModReport,
-    Module, ModuleBrand, ModulePass, NoFolder, PatchBody, ReshapeCfg, RewriteModule, Unverified,
-    Verified, for_each_function, function_pipeline, module_new, module_pipeline,
+    Module, ModuleBrand, ModulePass, NoFolder, PatchBody, ReshapeCfg, RewriteModule, UniqueBrand,
+    Unverified, Verified, for_each_function, function_pipeline, module_new, module_pipeline,
 };
 
 // ==========================================================================
@@ -28,7 +28,7 @@ use llvmkit_ir::{
 // ==========================================================================
 
 /// Single-block `i32 @<name>()` whose entry just returns a constant.
-fn build_ret_i32_named<'ctx, B: ModuleBrand + 'ctx>(
+fn build_ret_i32_named<'ctx, B: UniqueBrand + 'ctx>(
     key: &mut LayoutToken<'ctx, B>,
     name: &str,
 ) -> Result<FunctionId<Dyn, B>, IrError> {
@@ -45,7 +45,7 @@ fn build_ret_i32_named<'ctx, B: ModuleBrand + 'ctx>(
 /// `i32 @<name>()` with one unused `add` named `dead` before the terminator.
 /// Built with [`NoFolder`] so the constant add is not folded away, giving
 /// `DcePass` a real trivially-dead instruction to erase.
-fn build_dead_add_named<'ctx, B: ModuleBrand + 'ctx>(
+fn build_dead_add_named<'ctx, B: UniqueBrand + 'ctx>(
     key: &mut LayoutToken<'ctx, B>,
     name: &str,
 ) -> Result<FunctionId<Dyn, B>, IrError> {

@@ -81,7 +81,9 @@ impl Fixture {
         let m = key.module();
         let test = m.function_dyn("test").expect("declared in `set_up`");
         let block = m.view(test).append_basic_block(m, "");
-        IrBuilder::new_for::<Dyn>(key).position_at_end(block)
+        IrBuilder::new_for::<Dyn>(key)
+            .try_position_at_end(block)
+            .expect("the block is the builder's module's")
     }
 
     /// `Constant::getNullValue` of `ty`, a vector of `element`.

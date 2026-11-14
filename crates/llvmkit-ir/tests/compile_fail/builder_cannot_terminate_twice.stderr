@@ -1,7 +1,7 @@
 error[E0382]: use of moved value: `b`
   --> tests/compile_fail/builder_cannot_terminate_twice.rs:31:28
    |
-27 |     let b = IrBuilder::new_for::<()>(&mut key).position_at_end(entry);
+27 |     let b = IrBuilder::new_for::<()>(&mut key).try_position_at_end(entry).unwrap();
    |         - move occurs because `b` has type `IrBuilder<'_, '_, DynBrand, ConstantFolder, PositionedAtEnd, ()>`, which does not implement the `Copy` trait
 28 |     let (_terminated_bb, _term) = b.ret_void();
    |                                     ---------- `b` moved due to this method call

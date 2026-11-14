@@ -104,7 +104,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectEmptyEdge<B> {
 ///           %u = add %p, 1 ; ret %u
 /// other:    ret 0
 /// ```
-fn build_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
+fn build_single_pred_phi<'ctx, B: crate::UniqueBrand + 'ctx>(
     key: &mut LayoutToken<'ctx, B>,
 ) -> IrResult<(crate::FunctionId<Dyn, B>, BlockId<Dyn, B>)> {
     let m = key.module();
@@ -199,7 +199,7 @@ fn remove_edge_emptying_phi_erases_it_with_poison() -> Result<(), IrError> {
 /// other:    ret 0
 /// new_to:   ret 1   ; no leading phi -> redirect's `phi_values` slice is empty
 /// ```
-fn build_redirect_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
+fn build_redirect_single_pred_phi<'ctx, B: crate::UniqueBrand + 'ctx>(
     key: &mut LayoutToken<'ctx, B>,
 ) -> IrResult<RedirectFixture<'ctx, B>> {
     let m = key.module();

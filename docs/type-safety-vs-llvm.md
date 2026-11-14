@@ -274,7 +274,7 @@ let function = right
     .unwrap()
     .as_function();
 let entry = right.view(function).append_basic_block(right, "entry");
-let builder = IrBuilder::new_for::<i64>(&mut right_key).position_at_end(entry);
+let builder = IrBuilder::new_for::<i64>(&mut right_key).try_position_at_end(entry).unwrap();
 
 let _ = builder.int_add(left_value, left_value, "bad");
 ```
@@ -365,7 +365,7 @@ let f = right
     .unwrap()
     .as_function();
 let entry = right.view(f).append_basic_block(right, "entry");
-let builder = IrBuilder::new_for::<()>(&mut right_key).position_at_end(entry);
+let builder = IrBuilder::new_for::<()>(&mut right_key).try_position_at_end(entry).unwrap();
 
 let _ = builder.br(left_target);
 ```
@@ -574,26 +574,22 @@ where
     V: IntoReturnValue<'ctx, R, B>,
 ```
 
-The two positioned states are split by where the builder inserts.
-`PositionedAtEnd` appends, and nothing about the end of a block can go stale, so
-a build with nothing else to refuse is infallible there. `PositionedBefore`
-inserts before an anchor instruction, and the builder holds `&Module`, so the
-anchor can be erased or moved after positioning. Every build in that state
-therefore returns `IrResult` and refuses a stale anchor with
-`BlockError::AnchorNotInBlock`. `ret void` shows the split. Both states share
-one fallible core, and the at-end form unwraps it through a provably dead arm:
+The two positioned states are split by where the builder inserts:
+`PositionedAtEnd` appends, `PositionedBefore` inserts before an anchor
+instruction. Upstream's `IRBuilder` keeps a raw iterator, undefined once its
+instruction is erased or moved. Here the builder holds its module's
+`LayoutToken` `&mut` for as long as it lives, and every edit that takes an
+instruction out of its block needs that token, so the anchor cannot leave
+while the builder exists. A build with nothing else to refuse is therefore
+infallible in both states, and is one method for both:
 
 ```rust
-// IrBuilder<'m, 'ctx, B, F, PositionedAtEnd, ()>
-pub fn ret_void(self) -> VoidReturnInst<'ctx, B> {
-    at_end_infallible(self.ret_void_at_point())
-}
-
-// IrBuilder<'m, 'ctx, B, F, PositionedBefore, ()>
-pub fn ret_void(self) -> IrResult<VoidReturnInst<'ctx, B>> {
-    self.ret_void_at_point()
-}
+// IrBuilder<'m, 'ctx, B, F, S, ()>, S: Terminating
+pub fn ret_void(self) -> VoidReturnInst<'ctx, B>
 ```
+
+`Terminating` is every positioned state but a `PatchBody` pass's lent builder
+(`InPass<PatchBody, _>`), whose rung reports the CFG preserved.
 
 (`VoidReturnInst<'ctx, B>` is an alias for `TerminatedBlockInst<'ctx, (), B>`,
 itself a `(BasicBlock, Instruction)` pair — the terminator builders return

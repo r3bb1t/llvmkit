@@ -33,7 +33,8 @@ fn main() {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let x = m.view(f).param(0).expect("x");
     IrBuilder::new_for::<Dyn>(&mut key)
-        .position_at_end(entry)
+        .try_position_at_end(entry)
+        .expect("position")
         .ret(x.as_erased())
         .expect("ret");
     let m = module.verify().expect("verifies");

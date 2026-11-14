@@ -2152,6 +2152,36 @@ which call `set_global_value_name`), `crates/llvmkit-ir/src/function.rs`
   the global creators already return `IrResult` — and give the builders'
   dropped `void` name the same answer.
 
+### 145. The verifier has no "Referring to an argument / instruction in another function!" arms
+
+**Severity:** accepts-invalid (derived by reading; no fixture exhibits it — a
+hypothesis until one does)
+**Where:** `crates/llvmkit-ir/src/verifier.rs` — the per-instruction operand
+walk (`Verifier::check_dominates_uses` and its siblings).
+
+- **LLVM:** `Verifier::visitInstruction`'s operand loop checks an `Argument`
+  operand with `OpArg->getParent() == BB->getParent()` ("Referring to an
+  argument in another function!") and an `Instruction` operand with
+  `OpInst->getFunction() == BB->getParent()` ("Referring to an instruction in
+  another function!") before `verifyDominatesUse`.
+- **llvmkit:** neither arm exists. At `95febe47`,
+  `grep -n "in another function" crates/llvmkit-ir/src/verifier.rs` finds
+  five lines, all the basic-block form: four diagnostics ("Referring to a
+  basic block in another function!" for switch default / case, indirectbr
+  and invoke) and one doc comment naming it. Whether
+  `check_dominates_uses` refuses such an operand incidentally is
+  unmeasured.
+- **Reachable:** the builder admits an operand by module, not by function
+  (`slot_in(module.id())`), so a builder over one function accepts another
+  function's argument or instruction of the same module; so does a function
+  pass's lent builder (`docs/design/layout-token-design.md` decision 8).
+- **Found:** 2026-11-14, the review of `95febe47`, checking a design-note
+  sentence that claimed the verifier refuses such a use.
+- **Fix:** port the two arms in `visitInstruction`'s order, with the fixture
+  `unittests/IR/VerifierTest.cpp` or `test/Verifier` names for them, and
+  refuse the operand at build time in a function pass's lent builder (the
+  function-pass sandbox).
+
 ## Different diagnostic text
 
 Same verdict, different wording. Upstream's text is contractual, including its own inconsistencies.

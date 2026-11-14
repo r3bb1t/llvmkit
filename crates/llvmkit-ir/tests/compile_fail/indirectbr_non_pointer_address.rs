@@ -29,7 +29,7 @@ fn main() {
     // A typed non-pointer value handle: the `i32` function parameter
     // narrowed to `IntValue<i32>`.
     let addr: IntValue<i32, _> = m.view(f).param(0).unwrap().try_into().unwrap();
-    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&mut key).position_at_end(entry);
+    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&mut key).try_position_at_end(entry).unwrap();
 
     // `IntValue<'_, i32, _>` does not implement `IntoPointerValue`, so it
     // cannot be an `indirectbr` address: `indirectbr` does not

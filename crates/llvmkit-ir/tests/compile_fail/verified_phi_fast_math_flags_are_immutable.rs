@@ -25,12 +25,14 @@ fn main() {
         .expect("join");
     let join_label = join.id();
     IrBuilder::new_for::<Dyn>(&mut key)
-        .position_at_end(entry)
+        .try_position_at_end(entry)
+        .expect("position")
         .br_with_args(join_label, &[f32_ty.const_float(1.0_f32).as_erased()])
         .expect("br");
     let parameter = params[0].id();
     IrBuilder::new_for::<Dyn>(&mut key)
-        .position_at_end(join)
+        .try_position_at_end(join)
+        .expect("position")
         .ret(m.view(parameter))
         .expect("ret");
     let Some(InstructionKind::Phi(PhiKind::Fp(phi))) = InstructionView::try_from(m.view(parameter))

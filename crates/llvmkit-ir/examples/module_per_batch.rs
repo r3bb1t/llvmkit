@@ -44,7 +44,7 @@ impl UniqueBrand for Jit {}
 ///
 /// Takes the module **by value** and returns it by value: the whole batch is
 /// one ownership hop, with no borrow escaping.
-pub fn compile_batch<B: ModuleBrand>(
+pub fn compile_batch<B: UniqueBrand>(
     mut module: Module<B, Unverified>,
     n: i32,
 ) -> Result<Module<B, Verified>, IrError> {

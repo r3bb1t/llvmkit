@@ -600,7 +600,7 @@ fn a_stale_id_is_refused_by_try_build() -> Result<(), IrError> {
     let second = second_key.module();
     let f = second.add_typed_function::<Point, (), _>("make", Linkage::External)?;
     let entry = second.view(f).append_basic_block(second, "entry");
-    let b = IrBuilder::with_folder(&mut second_key, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut second_key, NoFolder).try_position_at_end(entry)?;
     let point = second.get_or_insert_struct_of::<Point>()?;
     assert_eq!(
         point.try_build(&b, stale, 7_i32, "p").map(|_| ()),
@@ -702,7 +702,7 @@ fn a_dynamic_module_reads_with_try() -> Result<(), IrError> {
     let m = key.module();
     let f = m.add_typed_function::<i32, (Point,), _>("first", Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).try_position_at_end(entry)?;
     let (p,) = m.view(f).params();
     let x: IntValue<'_, i32, _> = p.try_x(&b)?;
     b.ret(x)?;

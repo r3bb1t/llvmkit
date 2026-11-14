@@ -43,6 +43,7 @@ pub mod no_folder;
 
 use crate::Branded;
 use crate::CrateOnly;
+use crate::pass_access::{PatchBody, ReshapeCfg};
 use core::marker::PhantomData;
 use core::num::NonZeroU32;
 
@@ -297,6 +298,24 @@ where
     AtEnd(IrBuilder<'m, 'ctx, B, F, PositionedAtEnd, R>),
 }
 
+/// Type-state marker: a positioned builder a function pass's context lent,
+/// inserting at `P` ([`PositionedAtEnd`] or [`PositionedBefore`]) for a pass
+/// at rung `Rung` ([`PatchBody`] or [`ReshapeCfg`]).
+///
+/// The context checked that the builder's block is in the pass's own
+/// function, and a lent builder keeps it there: it is not
+/// [`Repositionable`], so it has no `position_*`, `restore_insert_point`,
+/// `unposition`, `into_insert_block` or `append_block_*`. At [`PatchBody`] it
+/// is not [`Terminating`] either, so it cannot emit a terminator and change
+/// the CFG the rung reports preserved. Never constructed: it exists only as
+/// the builder's state parameter. Mint one with
+/// [`FnPatch::builder_before`](crate::FnPatch::builder_before) /
+/// [`builder_at`](crate::FnPatch::builder_at) or their
+/// [`FnReshape`](crate::FnReshape) twins.
+pub struct InPass<Rung, P> {
+    _marker: PhantomData<fn() -> (Rung, P)>,
+}
+
 /// Sealed marker for the type-state generic so external crates cannot
 /// invent new states.
 mod state_sealed {
@@ -304,11 +323,14 @@ mod state_sealed {
     impl Sealed for super::Unpositioned {}
     impl Sealed for super::PositionedAtEnd {}
     impl Sealed for super::PositionedBefore {}
+    impl<P: super::InsertionPlace> Sealed for super::InPass<super::PatchBody, P> {}
+    impl<P: super::InsertionPlace> Sealed for super::InPass<super::ReshapeCfg, P> {}
 }
 
 /// Sealed marker trait for the [`IrBuilder`] positioning typestate.
-/// The implementors are [`Unpositioned`], [`PositionedAtEnd`] and
-/// [`PositionedBefore`]; external crates cannot invent new states. Public so
+/// The implementors are [`Unpositioned`], [`PositionedAtEnd`],
+/// [`PositionedBefore`] and a pass's lent [`InPass`] builder; external crates
+/// cannot invent new states. Public so
 /// a caller writing its own state-generic wrapper over an `IrBuilder` field
 /// can name the bound. (The in-crate Braun-SSA
 /// [`SsaBuilder`](crate::SsaBuilder) used to be such a caller; since 0.0.4
@@ -319,13 +341,67 @@ pub trait BuilderPositionState: state_sealed::Sealed + 'static {}
 impl BuilderPositionState for Unpositioned {}
 impl BuilderPositionState for PositionedAtEnd {}
 impl BuilderPositionState for PositionedBefore {}
+impl<P: InsertionPlace> BuilderPositionState for InPass<PatchBody, P> {}
+impl<P: InsertionPlace> BuilderPositionState for InPass<ReshapeCfg, P> {}
 
-/// The two positioned states, [`PositionedAtEnd`] and [`PositionedBefore`]:
-/// the bound of every build an [`IrBuilder`] can make in either. Sealed.
-pub trait Positioning: BuilderPositionState {}
+/// The positioned states: [`PositionedAtEnd`], [`PositionedBefore`] and a
+/// pass's lent [`InPass`] builder. The bound of every build an [`IrBuilder`]
+/// can make in any of them. Sealed.
+pub trait Positioning: BuilderPositionState {
+    /// Where the builder inserts, without a pass's scope: the state an
+    /// [`InsertPoint`] saved from it restores to.
+    type Place: InsertionPlace;
+}
 
-impl Positioning for PositionedAtEnd {}
-impl Positioning for PositionedBefore {}
+impl Positioning for PositionedAtEnd {
+    type Place = PositionedAtEnd;
+}
+impl Positioning for PositionedBefore {
+    type Place = PositionedBefore;
+}
+impl<P: InsertionPlace> Positioning for InPass<PatchBody, P> {
+    type Place = P;
+}
+impl<P: InsertionPlace> Positioning for InPass<ReshapeCfg, P> {
+    type Place = P;
+}
+
+/// The states a builder can be moved from: [`Unpositioned`],
+/// [`PositionedAtEnd`] and [`PositionedBefore`], every state but a pass's
+/// lent [`InPass`] builder. The bound of `position_*`,
+/// `restore_insert_point`, `unposition`, `into_insert_block` and the
+/// `append_block_*` family. Sealed.
+#[diagnostic::on_unimplemented(
+    message = "a builder a pass's context lent cannot be repositioned",
+    note = "a function pass builds only into its own function: ask the context for \
+            another builder with `builder_before` or `builder_at`"
+)]
+pub trait Repositionable: BuilderPositionState {}
+
+impl Repositionable for Unpositioned {}
+impl Repositionable for PositionedAtEnd {}
+impl Repositionable for PositionedBefore {}
+
+/// The two places a builder inserts at, [`PositionedAtEnd`] and
+/// [`PositionedBefore`], free of a pass's scope. Sealed.
+pub trait InsertionPlace: Positioning + Repositionable {}
+
+impl InsertionPlace for PositionedAtEnd {}
+impl InsertionPlace for PositionedBefore {}
+
+/// The positioned states that may emit a terminator: every one but a
+/// [`PatchBody`] pass's lent builder, whose rung reports the CFG preserved.
+/// The bound of every terminator build. Sealed.
+#[diagnostic::on_unimplemented(
+    message = "a `PatchBody` pass's builder cannot emit a terminator",
+    note = "a terminator changes the CFG, which the `PatchBody` rung reports preserved; \
+            a pass that rewires the CFG declares `type Access = ReshapeCfg`"
+)]
+pub trait Terminating: Positioning {}
+
+impl Terminating for PositionedAtEnd {}
+impl Terminating for PositionedBefore {}
+impl<P: InsertionPlace> Terminating for InPass<ReshapeCfg, P> {}
 
 /// Snapshot of a positioned [`IrBuilder`]'s insertion location. Mirrors
 /// `IRBuilderBase::InsertPoint` in `IRBuilder.h`.
@@ -782,7 +858,8 @@ where
         Params: BlockParams,
     {
         key.admit(bb.module_ref().id())?;
-        Ok(IrBuilder::new_for_unkeyed::<R>(key.module()).position_at_end(bb))
+        // Internal: `bb`'s module was compared with the token's just above.
+        Ok(IrBuilder::new_for_unkeyed::<R>(key.module()).position_at_end_trusting_same_module(bb))
     }
 }
 
@@ -810,34 +887,6 @@ where
     /// holding `key` `&mut` for as long as it lives ([`LayoutToken`]).
     pub fn with_folder(key: &'m mut LayoutToken<'ctx, B>, folder: F) -> Self {
         Self::with_folder_unkeyed(key.module(), folder)
-    }
-
-    /// Position the builder at the end of `bb`. Mirrors
-    /// `IRBuilder::SetInsertPoint(BasicBlock*)`. The block's
-    /// [`ReturnMarker`] must match the builder's.
-    ///
-    /// Accepts a block carrying any parameter schema `Params` — including a
-    /// typed block from
-    /// [`append_block_typed`](Self::append_block_typed) — so a typed
-    /// [`BlockCall`] target can be given a body. The parameter marker is
-    /// irrelevant to insertion (it constrains only branch edges), so it is
-    /// erased at the insertion point.
-    pub fn position_at_end<Params>(
-        self,
-        bb: BasicBlock<'ctx, R, Unterminated, B, Params>,
-    ) -> IrBuilder<'m, 'ctx, B, F, PositionedAtEnd, R>
-    where
-        Params: BlockParams,
-    {
-        IrBuilder {
-            module: self.module,
-            _key: PhantomData,
-            insert_block: Some(bb.retag_params::<BlockParamsDyn>()),
-            insert_before: None,
-            folder: self.folder,
-            fmf: self.fmf,
-            _state: PhantomData,
-        }
     }
 }
 
@@ -978,6 +1027,7 @@ where
     ) -> IrResult<IrBuilder<'m, 'ctx, B, F, PositionedAtEnd, R>>
     where
         Params: BlockParams,
+        S: Repositionable,
     {
         let module_ref = self.mutable_ref();
         let label = block
@@ -1001,6 +1051,82 @@ where
         })
     }
 
+    /// Position the builder at the end of `bb`, from any state. Mirrors
+    /// `IRBuilder::SetInsertPoint(BasicBlock*)`. The block's
+    /// [`ReturnMarker`] must match the builder's.
+    ///
+    /// Accepts a block carrying any parameter schema `Params` — including a
+    /// typed block from
+    /// [`append_block_typed`](Self::append_block_typed) — so a typed
+    /// [`BlockCall`] target can be given a body. The parameter marker is
+    /// irrelevant to insertion (it constrains only branch edges), so it is
+    /// erased at the insertion point.
+    ///
+    /// Nothing is checked, because nothing can be wrong (D7): the builder and
+    /// `bb` each borrow a live module of brand `B`, and a
+    /// [`UniqueBrand`](crate::UniqueBrand) names at most one live module, so
+    /// `bb` is the builder's own. Two `Module::dynamic` modules share
+    /// [`DynBrand`], which is not a `UniqueBrand`; position
+    /// those with [`try_position_at_end`](Self::try_position_at_end), which
+    /// compares the modules.
+    pub fn position_at_end<Params>(
+        self,
+        bb: BasicBlock<'ctx, R, Unterminated, B, Params>,
+    ) -> IrBuilder<'m, 'ctx, B, F, PositionedAtEnd, R>
+    where
+        Params: BlockParams,
+        B: crate::UniqueBrand,
+        S: Repositionable,
+    {
+        self.position_at_end_trusting_same_module(bb)
+    }
+
+    /// The checked form of [`position_at_end`](Self::position_at_end), for any
+    /// brand — the one a `Module::dynamic` builder uses.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::ForeignLayoutToken`] if `bb` belongs to another module than
+    /// the builder's, whose [`LayoutToken`] the builder holds. Two modules of
+    /// one shared brand have blocks of one type, so only the module tag tells
+    /// them apart.
+    pub fn try_position_at_end<Params>(
+        self,
+        bb: BasicBlock<'ctx, R, Unterminated, B, Params>,
+    ) -> IrResult<IrBuilder<'m, 'ctx, B, F, PositionedAtEnd, R>>
+    where
+        Params: BlockParams,
+        S: Repositionable,
+    {
+        if bb.module_ref().id() != self.module.id() {
+            return Err(IrError::ForeignLayoutToken);
+        }
+        Ok(self.position_at_end_trusting_same_module(bb))
+    }
+
+    /// [`position_at_end`](Self::position_at_end) without the brand bound or
+    /// the module comparison, for crate code whose `bb` is provably of the
+    /// builder's module: a block it just created, or one read from the
+    /// builder's own function. Each caller says why at the call.
+    pub(crate) fn position_at_end_trusting_same_module<Params>(
+        self,
+        bb: BasicBlock<'ctx, R, Unterminated, B, Params>,
+    ) -> IrBuilder<'m, 'ctx, B, F, PositionedAtEnd, R>
+    where
+        Params: BlockParams,
+        S: Repositionable,
+    {
+        IrBuilder {
+            module: self.module,
+            _key: PhantomData,
+            insert_block: Some(bb.retag_params::<BlockParamsDyn>()),
+            insert_before: None,
+            folder: self.folder,
+            fmf: self.fmf,
+            _state: PhantomData,
+        }
+    }
+
     /// Re-anchor the builder *before* the given attached instruction.
     /// New instructions land between the prior instruction and `anchor`.
     /// Mirrors `IRBuilder::SetInsertPoint(Instruction *I)` in `IRBuilder.h`,
@@ -1020,7 +1146,10 @@ where
     pub fn position_before<C2: Capability>(
         self,
         anchor: PlacedInstruction<'ctx, B, C2>,
-    ) -> IrResult<IrBuilder<'m, 'ctx, B, F, PositionedBefore, R>> {
+    ) -> IrResult<IrBuilder<'m, 'ctx, B, F, PositionedBefore, R>>
+    where
+        S: Repositionable,
+    {
         let anchor = anchor.instruction();
         // Boundary: the caller's anchor, admitted before its block is read.
         let anchor_id = anchor.slot_in(self.module.id())?;
@@ -1067,7 +1196,10 @@ where
     pub fn position_past_allocas<C: Capability>(
         self,
         f: FunctionValue<'ctx, R, B, C>,
-    ) -> IrResult<PastAllocas<'m, 'ctx, B, F, R>> {
+    ) -> IrResult<PastAllocas<'m, 'ctx, B, F, R>>
+    where
+        S: Repositionable,
+    {
         let module = self.mutable_ref();
         // Boundary: the caller's function, admitted against this builder's
         // module before any of its blocks or instructions is read.
@@ -1133,7 +1265,7 @@ where
     /// Only a positioned builder has a location to save, and the snapshot
     /// keeps its state, so [`restore_insert_point`](Self::restore_insert_point)
     /// gives back a builder of the same state.
-    pub fn save_insert_point(&self) -> InsertPoint<'static, R, B, S>
+    pub fn save_insert_point(&self) -> InsertPoint<'static, R, B, S::Place>
     where
         S: Positioning,
     {
@@ -1158,10 +1290,13 @@ where
     /// - [`BlockError::AnchorNotInBlock`] for a snapshot positioned before an
     ///   instruction that has since left the block, refused here rather than
     ///   at the first build.
-    pub fn restore_insert_point<Saved: Positioning>(
+    pub fn restore_insert_point<Saved: InsertionPlace>(
         self,
         ip: InsertPoint<'ctx, R, B, Saved>,
-    ) -> IrResult<IrBuilder<'m, 'ctx, B, F, Saved, R>> {
+    ) -> IrResult<IrBuilder<'m, 'ctx, B, F, Saved, R>>
+    where
+        S: Repositionable,
+    {
         let module_ref = self.mutable_ref();
         // Boundary: a snapshot from another module's builder carries that
         // module's tag, compared here before the arena is read.
@@ -1373,6 +1508,7 @@ where
     ) -> IrResult<BlockWithParams<'ctx, R, B>>
     where
         Name: Into<String>,
+        S: Repositionable,
     {
         // Boundary: the caller's function and parameter types, admitted
         // before the block is appended; the function is re-minted at the
@@ -1423,6 +1559,7 @@ where
         Params: IntoIterator<Item = (Type<'ctx, B, TypeCapability>, ParamName)>,
         ParamName: Into<String>,
         Name: Into<String>,
+        S: Repositionable,
     {
         // Boundary: the caller's function and parameter types, admitted
         // before the block is appended; the function is re-minted at the
@@ -1479,6 +1616,7 @@ where
     where
         Params: FunctionParamList + BlockParams,
         Name: Into<String>,
+        S: Repositionable,
     {
         // Boundary: the caller's function, admitted before the block is
         // appended and re-minted at the builder's reference, so one of either
@@ -1515,28 +1653,12 @@ where
     S: Positioning,
     R: ReturnMarker,
 {
-    /// Re-position the builder at the end of `bb`. Accepts any parameter
-    /// schema `Params` (including a typed block from
-    /// [`append_block_typed`](Self::append_block_typed)); the marker is erased
-    /// at the insertion point, which does not constrain block parameters.
-    pub fn position_at_end<Params>(self, bb: BasicBlock<'ctx, R, Unterminated, B, Params>) -> Self
-    where
-        Params: BlockParams,
-    {
-        Self {
-            module: self.module,
-            _key: PhantomData,
-            insert_block: Some(bb.retag_params::<BlockParamsDyn>()),
-            insert_before: None,
-            folder: self.folder,
-            fmf: self.fmf,
-            _state: PhantomData,
-        }
-    }
-
     /// Drop the insertion point. Mirrors
     /// `IRBuilder::ClearInsertionPoint`.
-    pub fn unposition(self) -> IrBuilder<'m, 'ctx, B, F, Unpositioned, R> {
+    pub fn unposition(self) -> IrBuilder<'m, 'ctx, B, F, Unpositioned, R>
+    where
+        S: Repositionable,
+    {
         IrBuilder {
             module: self.module,
             _key: PhantomData,
@@ -1583,10 +1705,51 @@ where
     /// returning its unterminated insertion block for cursor-driven mutation
     /// or later repositioning.
     #[inline]
-    pub fn into_insert_block(self) -> BasicBlock<'ctx, R, Unterminated, B> {
+    pub fn into_insert_block(self) -> BasicBlock<'ctx, R, Unterminated, B>
+    where
+        S: Repositionable,
+    {
+        self.take_insert_block()
+    }
+
+    /// The insertion block a terminator build closes: the one route by which
+    /// a terminator build takes the block from its builder, so every
+    /// terminator carries the `S: Terminating` bound it needs.
+    #[inline]
+    fn into_block_to_terminate(self) -> BasicBlock<'ctx, R, Unterminated, B>
+    where
+        S: Terminating,
+    {
+        self.take_insert_block()
+    }
+
+    /// The insertion block, for the two bounded doors above only.
+    #[inline]
+    fn take_insert_block(self) -> BasicBlock<'ctx, R, Unterminated, B> {
         match self.insert_block {
             Some(bb) => bb,
             None => unreachable!("a positioned builder always has an insertion block (invariant)"),
+        }
+    }
+
+    /// This builder, lent to a function pass at rung `Rung`: the same
+    /// position, in the [`InPass`] state that neither repositions nor, at
+    /// [`PatchBody`], terminates. The pass context checks the block is in its
+    /// function before calling this.
+    #[inline]
+    pub(crate) fn lent_to_pass<Rung>(self) -> IrBuilder<'m, 'ctx, B, F, InPass<Rung, S>, R>
+    where
+        S: InsertionPlace,
+        InPass<Rung, S>: Positioning,
+    {
+        IrBuilder {
+            module: self.module,
+            _key: PhantomData,
+            insert_block: self.insert_block,
+            insert_before: self.insert_before,
+            folder: self.folder,
+            fmf: self.fmf,
+            _state: PhantomData,
         }
     }
 
@@ -8548,7 +8711,22 @@ where
             inst.to_erased().slot_trusting_same_module(),
         ))
     }
+}
 
+// --------------------------------------------------------------------------
+// Terminator builds (and the edge helpers only they use): every positioned
+// state but a `PatchBody` pass's lent builder, whose rung reports the CFG
+// preserved. Each takes its block through `into_block_to_terminate`, which
+// requires `Terminating`, so a terminator outside these impls fails to build.
+// --------------------------------------------------------------------------
+
+impl<'m, 'ctx, B, F, S, R> IrBuilder<'m, 'ctx, B, F, S, R>
+where
+    B: ModuleBrand + 'ctx,
+    F: IrBuilderFolder<'ctx, B>,
+    S: Terminating,
+    R: ReturnMarker,
+{
     // ---- Branch / Unreachable ----
 
     /// Resolve a branch target for an edge that carries **no** block
@@ -8641,7 +8819,7 @@ where
             .as_type()
             .slot_trusting_same_module();
         let inst = self.append_instruction(void_ty, InstructionKindData::Br(payload), "");
-        let bb = self.into_insert_block();
+        let bb = self.into_block_to_terminate();
         (bb.retag_termination::<Terminated>(), inst)
     }
 
@@ -8704,7 +8882,7 @@ where
             .as_type()
             .slot_trusting_same_module();
         let inst = self.append_instruction(void_ty, InstructionKindData::Br(payload), "");
-        let bb = self.into_insert_block();
+        let bb = self.into_block_to_terminate();
         Ok((bb.retag_termination::<Terminated>(), inst))
     }
 
@@ -9037,7 +9215,7 @@ where
             .slot_trusting_same_module();
         let payload = SwitchInstData::new(cond_id, default_target.slot_trusting_same_module());
         let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
-        let bb = self.into_insert_block();
+        let bb = self.into_block_to_terminate();
         Ok((
             bb.retag_termination::<Terminated>(),
             SwitchInst::<Open, B, W>::from_raw(
@@ -9274,7 +9452,7 @@ where
         let payload = IndirectBrInstData::new(addr_v.slot_trusting_same_module());
         let inst = self.append_instruction(void_ty, InstructionKindData::IndirectBr(payload), name);
         let module_ref = self.mutable_ref();
-        let bb = self.into_insert_block();
+        let bb = self.into_block_to_terminate();
         Ok((
             bb.retag_termination::<Terminated>(),
             IndirectBrInst::<Open, B>::from_raw(
@@ -9447,7 +9625,7 @@ where
         let ret_ty = f.return_type().slot_trusting_same_module();
         let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
         let module_ref = self.mutable_ref();
-        let bb = self.into_insert_block();
+        let bb = self.into_block_to_terminate();
         Ok((
             bb.retag_termination::<Terminated>(),
             InvokeInst::<Dyn, B>::from_raw(
@@ -9624,7 +9802,7 @@ where
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
         let module_ref = self.mutable_ref();
-        let bb = self.into_insert_block();
+        let bb = self.into_block_to_terminate();
         Ok((
             bb.retag_termination::<Terminated>(),
             InvokeInst::<Dyn, B>::from_raw(
@@ -9696,7 +9874,7 @@ where
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
         let module_ref = self.mutable_ref();
-        let bb = self.into_insert_block();
+        let bb = self.into_block_to_terminate();
         Ok((
             bb.retag_termination::<Terminated>(),
             InvokeInst::<Dyn, B>::from_raw(
@@ -9787,7 +9965,7 @@ where
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
         let module_ref = self.mutable_ref();
-        let bb = self.into_insert_block();
+        let bb = self.into_block_to_terminate();
         Ok((
             bb.retag_termination::<Terminated>(),
             InvokeInst::<Dyn, B>::from_raw(
@@ -9885,7 +10063,7 @@ where
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), name);
         let module_ref = self.mutable_ref();
-        let bb = self.into_insert_block();
+        let bb = self.into_block_to_terminate();
         Ok((
             bb.retag_termination::<Terminated>(),
             CallBrInst::<B>::from_raw(
@@ -9966,7 +10144,7 @@ where
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), name);
         let module_ref = self.mutable_ref();
-        let bb = self.into_insert_block();
+        let bb = self.into_block_to_terminate();
         Ok((
             bb.retag_termination::<Terminated>(),
             CallBrInst::<B>::from_raw(
@@ -10063,7 +10241,7 @@ where
         );
         let inst = self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), name);
         let module_ref = self.mutable_ref();
-        let bb = self.into_insert_block();
+        let bb = self.into_block_to_terminate();
         Ok((
             bb.retag_termination::<Terminated>(),
             CallBrInst::<B>::from_raw(
@@ -10073,10 +10251,17 @@ where
             ),
         ))
     }
+}
 
-    /// Produce `unreachable`. Mirrors `IRBuilder::CreateUnreachable`.
-    ///
-    /// Consumes `self`; infallible (no operands, no brand check).
+// The exception-handling pads are no terminators, so every positioned state
+// builds them.
+impl<'m, 'ctx, B, F, S, R> IrBuilder<'m, 'ctx, B, F, S, R>
+where
+    B: ModuleBrand + 'ctx,
+    F: IrBuilderFolder<'ctx, B>,
+    S: Positioning,
+    R: ReturnMarker,
+{
     /// Produce `landingpad <ty>`. Mirrors `IRBuilder::CreateLandingPad`.
     /// Returns an [`Open`]-typestate
     /// handle; the caller adds clauses with `add_catch_clause` /
@@ -10101,7 +10286,15 @@ where
             result_slot,
         ))
     }
+}
 
+impl<'m, 'ctx, B, F, S, R> IrBuilder<'m, 'ctx, B, F, S, R>
+where
+    B: ModuleBrand + 'ctx,
+    F: IrBuilderFolder<'ctx, B>,
+    S: Terminating,
+    R: ReturnMarker,
+{
     /// Produce `resume <ty> <value>`. Mirrors `IRBuilder::CreateResume`.
     /// The `value` is typically a previously-built `landingpad` result.
     pub fn resume<V, Name>(self, value: V, name: Name) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
@@ -10117,10 +10310,18 @@ where
             .slot_trusting_same_module();
         let payload = ResumeInstData::new(v.slot_trusting_same_module());
         let inst = self.append_instruction(void_ty, InstructionKindData::Resume(payload), name);
-        let bb = self.into_insert_block();
+        let bb = self.into_block_to_terminate();
         Ok((bb.retag_termination::<Terminated>(), inst))
     }
+}
 
+impl<'m, 'ctx, B, F, S, R> IrBuilder<'m, 'ctx, B, F, S, R>
+where
+    B: ModuleBrand + 'ctx,
+    F: IrBuilderFolder<'ctx, B>,
+    S: Positioning,
+    R: ReturnMarker,
+{
     /// Produce `cleanuppad within <parent> [<args>]`. Mirrors
     /// `IRBuilder::CreateCleanupPad`.
     pub fn cleanup_pad<I, V, Pad, Name>(
@@ -10223,7 +10424,15 @@ where
             token_ty,
         ))
     }
+}
 
+impl<'m, 'ctx, B, F, S, R> IrBuilder<'m, 'ctx, B, F, S, R>
+where
+    B: ModuleBrand + 'ctx,
+    F: IrBuilderFolder<'ctx, B>,
+    S: Terminating,
+    R: ReturnMarker,
+{
     /// Produce `catchret from <catchpad> to label <bb>`. Mirrors
     /// `IRBuilder::CreateCatchRet`.
     pub fn catch_ret<Target, Pad, Name>(
@@ -10250,7 +10459,7 @@ where
         );
         let inst =
             self.append_instruction(void_ty, InstructionKindData::CatchReturn(payload), name);
-        let bb = self.into_insert_block();
+        let bb = self.into_block_to_terminate();
         Ok((bb.retag_termination::<Terminated>(), inst))
     }
 
@@ -10308,7 +10517,7 @@ where
         let payload = CleanupReturnInstData::new(cleanup_pad_id, unwind_id);
         let inst =
             self.append_instruction(void_ty, InstructionKindData::CleanupReturn(payload), name);
-        let bb = self.into_insert_block();
+        let bb = self.into_block_to_terminate();
         (bb.retag_termination::<Terminated>(), inst)
     }
 
@@ -10396,7 +10605,7 @@ where
         let inst =
             self.append_instruction(token_ty, InstructionKindData::CatchSwitch(payload), name);
         let module_ref = self.mutable_ref();
-        let bb = self.into_insert_block();
+        let bb = self.into_block_to_terminate();
         (
             bb.retag_termination::<Terminated>(),
             CatchSwitchInst::<Open, B>::from_raw(
@@ -10417,10 +10626,18 @@ where
             .as_type()
             .slot_trusting_same_module();
         let inst = self.append_instruction(void_ty, InstructionKindData::Unreachable(payload), "");
-        let bb = self.into_insert_block();
+        let bb = self.into_block_to_terminate();
         (bb.retag_termination::<Terminated>(), inst)
     }
+}
 
+impl<'m, 'ctx, B, F, S, R> IrBuilder<'m, 'ctx, B, F, S, R>
+where
+    B: ModuleBrand + 'ctx,
+    F: IrBuilderFolder<'ctx, B>,
+    S: Positioning,
+    R: ReturnMarker,
+{
     // ---- Internal helpers ----
 
     /// Crate-internal: append a freshly-built instruction to the
@@ -10925,7 +11142,7 @@ impl<'m, 'ctx, B, F, S, R> IrBuilder<'m, 'ctx, B, F, S, R>
 where
     B: ModuleBrand + 'ctx,
     F: IrBuilderFolder<'ctx, B>,
-    S: Positioning,
+    S: Terminating,
     R: ReturnMarker,
 {
     /// Produce `ret <value>` against the function's declared return
@@ -10953,7 +11170,7 @@ where
             }
         }
         let inst = self.append_ret(Some(v));
-        let bb = self.into_insert_block();
+        let bb = self.into_block_to_terminate();
         Ok((bb.retag_termination::<Terminated>(), inst))
     }
 
@@ -10977,7 +11194,7 @@ impl<'m, 'ctx, B, F, S> IrBuilder<'m, 'ctx, B, F, S, ()>
 where
     B: ModuleBrand + 'ctx,
     F: IrBuilderFolder<'ctx, B>,
-    S: Positioning,
+    S: Terminating,
 {
     /// Produce `ret void`. Mirrors `IRBuilder::CreateRetVoid`. The
     /// `()` builder does not expose `ret(value)` at all (no
@@ -10987,7 +11204,7 @@ where
     /// `&mut`, so its insertion point cannot go stale.
     pub fn ret_void(self) -> VoidReturnInst<'ctx, B> {
         let inst = self.append_ret(None);
-        let bb = self.into_insert_block();
+        let bb = self.into_block_to_terminate();
         (bb.retag_termination::<Terminated>(), inst)
     }
 }
@@ -10996,7 +11213,7 @@ impl<'m, 'ctx, B, F, S> IrBuilder<'m, 'ctx, B, F, S, Dyn>
 where
     B: ModuleBrand + 'ctx,
     F: IrBuilderFolder<'ctx, B>,
-    S: Positioning,
+    S: Terminating,
 {
     /// Produce `ret void`. Errors with
     /// [`IrError::ReturnTypeMismatch`] if the parent function does
@@ -11013,7 +11230,7 @@ where
             });
         }
         let inst = self.append_ret(None);
-        let bb = self.into_insert_block();
+        let bb = self.into_block_to_terminate();
         Ok((bb.retag_termination::<Terminated>(), inst))
     }
 }

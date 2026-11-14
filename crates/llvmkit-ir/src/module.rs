@@ -4276,7 +4276,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     /// let entry = m.view(f).append_basic_block(m, "entry");
     ///
-    /// let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
+    /// let b = IrBuilder::new_for::<Dyn>(&mut key).try_position_at_end(entry)?;
     /// let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     /// let sum = b.int_add(n, 1_i32, "sum")?;
     /// b.ret(m.view(sum))?;

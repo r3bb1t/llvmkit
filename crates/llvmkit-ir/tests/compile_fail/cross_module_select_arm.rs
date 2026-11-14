@@ -27,7 +27,7 @@ fn main() {
         .unwrap()
         .as_function();
     let entry = left.view(f).append_basic_block(&left, "entry");
-    let left_builder = IrBuilder::new_for::<i32>(&mut left_key).position_at_end(entry);
+    let left_builder = IrBuilder::new_for::<i32>(&mut left_key).try_position_at_end(entry).unwrap();
     let left_arm = left_builder.view(
         left_builder
             .int_add(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "left")
@@ -43,7 +43,7 @@ fn main() {
         .unwrap()
         .as_function();
     let entry = right.view(f).append_basic_block(&right, "entry");
-    let builder = IrBuilder::new_for::<i32>(&mut right_key).position_at_end(entry);
+    let builder = IrBuilder::new_for::<i32>(&mut right_key).try_position_at_end(entry).unwrap();
     let right_arm = builder
         .int_add(i32_ty.const_int(3_i32), i32_ty.const_int(4_i32), "right")
         .unwrap();

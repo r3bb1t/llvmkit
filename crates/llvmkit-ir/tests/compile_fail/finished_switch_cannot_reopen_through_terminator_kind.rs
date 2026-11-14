@@ -15,7 +15,7 @@ fn main() {
     let dest = m.view(f).append_basic_block(&m, "dest");
     let dest_label = dest.id();
     let cond = m.view(f).param(0).unwrap();
-    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&mut key).position_at_end(entry);
+    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&mut key).try_position_at_end(entry).unwrap();
     let (sealed, switch) = b.switch_dyn(cond, dest_label, "").unwrap();
     let _closed = switch.finish();
 

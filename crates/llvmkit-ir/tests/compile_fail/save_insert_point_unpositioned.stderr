@@ -1,21 +1,13 @@
-error[E0277]: the trait bound `Unpositioned: Positioning` is not satisfied
-  --> tests/compile_fail/save_insert_point_unpositioned.rs:15:54
+error[E0599]: the method `save_insert_point` exists for struct `IrBuilder<'_, '_, DynBrand, ConstantFolder, Unpositioned, Dyn>`, but its trait bounds were not satisfied
+  --> tests/compile_fail/save_insert_point_unpositioned.rs:16:54
    |
-15 |     let _empty = IrBuilder::new_for::<Dyn>(&mut key).save_insert_point();
-   |                                                      ^^^^^^^^^^^^^^^^^ the trait `Positioning` is not implemented for `Unpositioned`
+16 |     let _empty = IrBuilder::new_for::<Dyn>(&mut key).save_insert_point();
+   |                                                      ^^^^^^^^^^^^^^^^^
    |
-help: the following other types implement trait `Positioning`
-  --> src/ir_builder.rs
+  ::: src/ir_builder.rs
    |
-   | impl Positioning for PositionedAtEnd {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `PositionedAtEnd`
-   | impl Positioning for PositionedBefore {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `PositionedBefore`
-note: required by a bound in `IrBuilder::<'m, 'ctx, B, F, S, R>::save_insert_point`
-  --> src/ir_builder.rs
+   | pub struct Unpositioned;
+   | ----------------------- doesn't satisfy `Unpositioned: Positioning`
    |
-   |     pub fn save_insert_point(&self) -> InsertPoint<'static, R, B, S>
-   |            ----------------- required by a bound in this associated function
-   |     where
-   |         S: Positioning,
-   |            ^^^^^^^^^^^ required by this bound in `IrBuilder::<'m, 'ctx, B, F, S, R>::save_insert_point`
+   = note: the following trait bounds were not satisfied:
+           `Unpositioned: Positioning`

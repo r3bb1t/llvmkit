@@ -520,7 +520,8 @@ fn a_refused_operand_mints_no_part_of_a_schema() -> Result<(), IrError> {
     let other = other_key.module();
     let g = other.add_typed_function::<(), (), _>("g", Linkage::External)?;
     let other_entry = other.view(g).append_basic_block(other, "entry");
-    let other_builder = IrBuilder::new_for::<()>(&mut other_key).position_at_end(other_entry);
+    let other_builder =
+        IrBuilder::new_for::<()>(&mut other_key).try_position_at_end(other_entry)?;
     let foreign = other_builder.typed_alloca::<i32, _>("p")?;
     let foreign_int = other.i32_type().const_int(1_i32);
 
@@ -529,7 +530,7 @@ fn a_refused_operand_mints_no_part_of_a_schema() -> Result<(), IrError> {
     let m = key.module();
     let f = m.add_typed_function::<(), (), _>("f", Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::new_for::<()>(&mut key).position_at_end(entry);
+    let b = IrBuilder::new_for::<()>(&mut key).try_position_at_end(entry)?;
     let slot = b.typed_alloca::<i32, _>("slot")?;
     let before = format!("{m}");
 

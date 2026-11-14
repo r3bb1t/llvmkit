@@ -32,7 +32,7 @@ fn main() {
 
     // `W` is inferred as `i32` from the typed condition.
     let cond: IntValue<i32, _> = m.view(f).param(0).unwrap().try_into().unwrap();
-    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).try_position_at_end(entry).unwrap();
     let (_sealed, switch) = b.switch(cond, dest_label, "").unwrap();
 
     // A typed `i64` *value handle* (not a literal): the second parameter

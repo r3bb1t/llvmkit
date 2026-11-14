@@ -104,7 +104,7 @@ type SwitchMergeBuild<B> = IrResult<(
 /// `entry → merge` edge must drop the phi's `entry` incoming to stay coherent.
 /// `dflt` is the switch default and ends in a plain `br` (a non-switch `from`);
 /// `other` is the case-1 target — both feed the edge-op guard negatives below.
-fn build_switch_merge<'ctx, B: crate::ModuleBrand + 'ctx>(
+fn build_switch_merge<'ctx, B: crate::UniqueBrand + 'ctx>(
     key: &mut LayoutToken<'ctx, B>,
 ) -> SwitchMergeBuild<B> {
     let m = key.module();
@@ -288,7 +288,7 @@ type SwitchDefaultParallelBuild<B> =
 /// Redirecting the case-0 edge (`redirect_successor(shared, new)`) leaves the
 /// DEFAULT still targeting `shared`, so `entry` survives as a predecessor of
 /// `shared` through the default — `shared`'s phi must keep one `entry` incoming.
-fn build_switch_default_parallel<'ctx, B: crate::ModuleBrand + 'ctx>(
+fn build_switch_default_parallel<'ctx, B: crate::UniqueBrand + 'ctx>(
     key: &mut LayoutToken<'ctx, B>,
 ) -> SwitchDefaultParallelBuild<B> {
     let m = key.module();

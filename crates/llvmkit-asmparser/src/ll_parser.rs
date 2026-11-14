@@ -12288,7 +12288,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                  type or a constant, never a block (invariant)"
             );
         };
-        let builder = IrBuilder::with_folder(&mut layout, NoFolder).position_at_end(bb);
+        // The parser's module may be a `Module::dynamic` one, so the block is
+        // positioned through the checked form.
+        let builder = match IrBuilder::with_folder(&mut layout, NoFolder).try_position_at_end(bb) {
+            Ok(builder) => builder,
+            Err(_) => unreachable!(
+                "the parser appends every block to a function of its own module, the one its \
+                 layout token is for (invariant)"
+            ),
+        };
         let parsed = self.parse_basic_block_instructions(state, Some(builder), bb_value);
         self.layout = Some(layout);
         parsed?;

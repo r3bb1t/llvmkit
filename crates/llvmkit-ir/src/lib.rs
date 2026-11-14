@@ -325,9 +325,9 @@ pub use ir_builder::constant_folder::ConstantFolder;
 pub use ir_builder::folder::{IrBuilderFolder, TrustedFolder};
 pub use ir_builder::no_folder::NoFolder;
 pub use ir_builder::{
-    AllocaBuilder, BuilderPositionState, CallBuilder, CallSiteConfig, InsertPoint, IrBuilder,
-    LoadBuilder, PastAllocas, PositionedAtEnd, PositionedBefore, Positioning, SelectArm,
-    SelectNarrow, StoreBuilder, Unpositioned,
+    AllocaBuilder, BuilderPositionState, CallBuilder, CallSiteConfig, InPass, InsertPoint,
+    InsertionPlace, IrBuilder, LoadBuilder, PastAllocas, PositionedAtEnd, PositionedBefore,
+    Positioning, Repositionable, SelectArm, SelectNarrow, StoreBuilder, Terminating, Unpositioned,
 };
 pub use known_bits::{AddSubOperation, KnownBits, ShiftAmountKnowledge};
 pub use layout_token::LayoutToken;

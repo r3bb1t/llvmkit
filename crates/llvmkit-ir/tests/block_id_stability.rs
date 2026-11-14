@@ -26,7 +26,8 @@
 
 use llvmkit_ir::{
     Analyses, BlockId, Dyn, FnCx, FnReport, FunctionId, FunctionPass, IntPredicate, IntValue,
-    IrBuilder, IrError, IrResult, LayoutToken, Linkage, ModuleBrand, ReshapeCfg, module_new,
+    IrBuilder, IrError, IrResult, LayoutToken, Linkage, ModuleBrand, ReshapeCfg, UniqueBrand,
+    module_new,
 };
 
 /// Everything the fixture hands back: the function plus the four block ids a
@@ -50,7 +51,7 @@ struct Fixture<B: ModuleBrand> {
 ///
 /// `old` has two predecessors and `new` has none, so redirecting both `br`s is
 /// exactly a block replace-all-uses of `old` by `new`.
-fn build<'ctx, B: ModuleBrand + 'ctx>(key: &mut LayoutToken<'ctx, B>) -> IrResult<Fixture<B>> {
+fn build<'ctx, B: UniqueBrand + 'ctx>(key: &mut LayoutToken<'ctx, B>) -> IrResult<Fixture<B>> {
     let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;

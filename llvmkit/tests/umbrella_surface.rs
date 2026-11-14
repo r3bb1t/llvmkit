@@ -23,7 +23,7 @@ fn umbrella_reexports_build_print_and_reparse() -> Result<(), Box<dyn std::error
     let function_type = m.function_type_no_parameters(void_type)?;
     let f = m.add_function_dyn("f", function_type, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let builder = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
+    let builder = IrBuilder::new_for::<Dyn>(&mut key).try_position_at_end(entry)?;
     let _terminated = builder.ret_void()?;
 
     let module = module.verify()?;

@@ -28,7 +28,7 @@ fn main() {
         .add_typed_function::<i32, (f64,), _>("caller", Linkage::External)
         .unwrap();
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&mut key).try_position_at_end(entry).unwrap();
     let (x,) = m.view(caller).params();
     // `x` is `FloatValue<f64>`; `callee`'s single parameter schema is
     // `i32`. `FloatValue<f64>` does not implement

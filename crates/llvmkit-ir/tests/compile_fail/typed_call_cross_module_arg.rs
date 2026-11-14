@@ -35,7 +35,7 @@ fn main() {
         .add_typed_function::<i32, (), _>("caller", Linkage::External)
         .unwrap();
     let entry = right.view(caller).append_basic_block(&right, "entry");
-    let builder = IrBuilder::new_for::<i32>(&mut right_key).position_at_end(entry);
+    let builder = IrBuilder::new_for::<i32>(&mut right_key).try_position_at_end(entry).unwrap();
     // `left_value` carries brand `Left`; `builder` is positioned in the
     // `Right`-branded module. Filling `callee`'s call-argument slot with a
     // foreign-module value is rejected.

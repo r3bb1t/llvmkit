@@ -33,6 +33,6 @@ fn main() {
         .unwrap()
         .as_function();
     let entry = right.view(f).append_basic_block(&right, "entry");
-    let builder = IrBuilder::new_for::<()>(&mut right_key).position_at_end(entry);
+    let builder = IrBuilder::new_for::<()>(&mut right_key).try_position_at_end(entry).unwrap();
     let _ = builder.br(left_target);
 }

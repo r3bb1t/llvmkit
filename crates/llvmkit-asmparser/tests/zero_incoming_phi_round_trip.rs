@@ -85,18 +85,18 @@ fn build_and_empty_phi() -> IrResult<String> {
     let other_lbl = other.id();
 
     // entry: %c = icmp eq %a, 0 ; br %c ? to(%a) : other()
-    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).try_position_at_end(entry)?;
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let c = b.icmp_eq(a, 0_i32, "c")?;
     b.cond_br_with_args(c, to_lbl, &[a.as_erased()], other_lbl, &[])?;
 
     // to: ret %p
-    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(to_bb);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).try_position_at_end(to_bb)?;
     let p: IntValue<'_, i32, _> = to_params[0].try_into()?;
     b.ret(p)?;
 
     // other: ret 0
-    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(other);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).try_position_at_end(other)?;
     b.ret(i32_ty.const_int(0_u32))?;
 
     let verified = module.verify()?;

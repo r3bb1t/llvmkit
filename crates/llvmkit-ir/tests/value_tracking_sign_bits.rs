@@ -46,7 +46,7 @@ where
     let fn_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()])?;
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).try_position_at_end(entry)?;
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     body(m, &b, a)
 }
@@ -267,7 +267,7 @@ fn sext_and_trunc_arms_never_over_report() -> Result<(), IrError> {
     let fn_ty = m.function_type_no_parameters(i32_ty.as_type())?;
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).try_position_at_end(entry)?;
 
     // sext i8 -8 to i32 == -8; an i8 -8 has 5 sign bits, the i32 has 29.
     let narrow: IntValue<'_, i8, _> = i8_ty.const_int(-8_i8).as_constant().try_into()?;

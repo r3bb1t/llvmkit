@@ -7,7 +7,7 @@ fn main() -> IrResult<()> {
     let function = module.view(module.add_function_dyn("f", fn_ty, Linkage::External)?);
     let entry = function.append_basic_block(&module, "entry");
     IrBuilder::new_for::<Dyn>(&mut key)
-        .position_at_end(entry)
+        .try_position_at_end(entry)?
         .ret_void()?;
 
     let _verified = owned.verify()?;

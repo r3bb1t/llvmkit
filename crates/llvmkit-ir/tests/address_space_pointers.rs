@@ -127,7 +127,9 @@ fn upstream_ir_builder_create_global_string() {
         .add_function_dyn("", signature, Linkage::External)
         .expect("an unnamed function");
     let bb = m.view(f).append_basic_block(m, "");
-    let builder = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(bb);
+    let builder = IrBuilder::new_for::<Dyn>(&mut key)
+        .try_position_at_end(bb)
+        .expect("the block is the builder's module's");
 
     let string1a = builder
         .global_string("TestString", "String1a", AddressSpace::DEFAULT)
@@ -164,7 +166,9 @@ fn a_global_string_is_a_private_constant_byte_array() {
         .add_function_dyn("f", signature, Linkage::External)
         .expect("a fresh name");
     let bb = m.view(f).append_basic_block(m, "");
-    let builder = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(bb);
+    let builder = IrBuilder::new_for::<Dyn>(&mut key)
+        .try_position_at_end(bb)
+        .expect("the block is the builder's module's");
 
     let string = builder
         .global_string("Hi", "s", AddressSpace::DEFAULT)

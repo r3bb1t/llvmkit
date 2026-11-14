@@ -68,7 +68,9 @@ fn builder<'k, 'm>(
     name: &str,
 ) -> PositionedBuilder<'k, 'm> {
     let block = open_block(key.module(), name);
-    IrBuilder::new_for::<Dyn>(key).position_at_end(block)
+    IrBuilder::new_for::<Dyn>(key)
+        .try_position_at_end(block)
+        .expect("the block is the builder's module's")
 }
 
 /// A builder positioned in a fresh block of `i32 f(i32, i64, float, double,
@@ -108,7 +110,9 @@ fn builder_with_parameters<'k, 'm>(
     ];
     let block = function.append_basic_block(module, "entry");
     (
-        IrBuilder::new_for::<Dyn>(key).position_at_end(block),
+        IrBuilder::new_for::<Dyn>(key)
+            .try_position_at_end(block)
+            .expect("the block is the builder's module's"),
         parameters,
     )
 }
@@ -122,7 +126,9 @@ fn builder_with_targets<'k, 'm>(
 ) -> (PositionedBuilder<'k, 'm>, OpenBlock<'m>, OpenBlock<'m>) {
     let (entry, first, second) = blocks_with_targets(key.module(), name);
     (
-        IrBuilder::new_for::<Dyn>(key).position_at_end(entry),
+        IrBuilder::new_for::<Dyn>(key)
+            .try_position_at_end(entry)
+            .expect("the block is the builder's module's"),
         first,
         second,
     )
@@ -153,7 +159,9 @@ fn at_end<'k, 'm>(
     key: &'k mut LayoutToken<'m, DynBrand>,
     block: OpenBlock<'m>,
 ) -> PositionedBuilder<'k, 'm> {
-    IrBuilder::new_for::<Dyn>(key).position_at_end(block)
+    IrBuilder::new_for::<Dyn>(key)
+        .try_position_at_end(block)
+        .expect("the block is the builder's module's")
 }
 
 /// The labels of the outcomes that are not the refusal each expects, so one
@@ -474,21 +482,24 @@ fn a_branch_target_rejects_a_block_from_another_module() {
     let before = format!("{home}");
 
     let from_label = IrBuilder::new_for::<Dyn>(&mut home_key)
-        .position_at_end(label_block)
+        .try_position_at_end(label_block)
+        .expect("the block is the builder's module's")
         .br(foreign.view(foreign_block.id()));
     assert!(
         matches!(from_label, Err(IrError::ForeignValueId)),
         "{from_label:?}"
     );
     let from_borrowed = IrBuilder::new_for::<Dyn>(&mut home_key)
-        .position_at_end(borrowed_block)
+        .try_position_at_end(borrowed_block)
+        .expect("the block is the builder's module's")
         .br(&foreign_block);
     assert!(
         matches!(from_borrowed, Err(IrError::ForeignValueId)),
         "{from_borrowed:?}"
     );
     let from_owned = IrBuilder::new_for::<Dyn>(&mut home_key)
-        .position_at_end(owned_block)
+        .try_position_at_end(owned_block)
+        .expect("the block is the builder's module's")
         .br(foreign_block);
     assert!(
         matches!(from_owned, Err(IrError::ForeignValueId)),
@@ -585,7 +596,9 @@ fn a_struct_schema_operand_rejects_a_value_from_another_module() {
     let nest = home.get_or_insert_struct_of::<Nest>().expect("%Nest");
 
     let before = format!("{home}");
-    let b = IrBuilder::new_for::<Dyn>(&mut home_key).position_at_end(f_block);
+    let b = IrBuilder::new_for::<Dyn>(&mut home_key)
+        .try_position_at_end(f_block)
+        .expect("the block is the builder's module's");
     let field = b.extract_field::<Pair, i32, _, _>(foreign_pair, 0, "first");
     assert!(matches!(field, Err(IrError::ForeignValueId)), "{field:?}");
     let call = b.call(home.view(h), (foreign_pair,), "r");
@@ -594,7 +607,9 @@ fn a_struct_schema_operand_rejects_a_value_from_another_module() {
     assert!(matches!(nested, Err(IrError::ForeignValueId)), "{nested:?}");
     let call = b.call(home.view(h), (foreign_pair_value,), "r");
     assert!(matches!(call, Err(IrError::ForeignValueId)), "{call:?}");
-    let refusing = IrBuilder::new_for::<Dyn>(&mut home_key).position_at_end(refusing_block);
+    let refusing = IrBuilder::new_for::<Dyn>(&mut home_key)
+        .try_position_at_end(refusing_block)
+        .expect("the block is the builder's module's");
     let ret = refusing.ret(foreign_pair_value);
     assert!(matches!(ret, Err(IrError::ForeignValueId)), "{ret:?}");
     assert_eq!(
@@ -605,7 +620,9 @@ fn a_struct_schema_operand_rejects_a_value_from_another_module() {
 
     // Positive control: the same two lifts accept a value of the home module.
     let (accepting_block, home_pair_value) = returning("accepting");
-    let accepting = IrBuilder::new_for::<Dyn>(&mut home_key).position_at_end(accepting_block);
+    let accepting = IrBuilder::new_for::<Dyn>(&mut home_key)
+        .try_position_at_end(accepting_block)
+        .expect("the block is the builder's module's");
     let accepted = accepting.call(home.view(h), (home_pair_value,), "r");
     assert!(accepted.is_ok(), "{accepted:?}");
     let accepted = accepting.ret(home_pair_value);
@@ -2861,11 +2878,13 @@ fn restore_insert_point_rejects_an_insert_point_from_another_module() {
     );
 }
 
-/// A block-argument edge refuses an argument, and a predecessor, from another
-/// module before any incoming is recorded. The target has two parameters, so
-/// an argument admitted only while recording would already have seeded the
-/// first; the predecessor comes from a builder positioned at another module's
-/// block, which `position_at_end` cannot refuse.
+/// A block-argument edge refuses an argument from another module before any
+/// incoming is recorded. The target has two parameters, so an argument
+/// admitted only while recording would already have seeded the first. A
+/// predecessor from another module needs a builder positioned at that
+/// module's block, and that positioning is itself refused: the `predecessor`
+/// case pins `try_position_at_end` refusing it with
+/// [`IrError::ForeignLayoutToken`], so no such edge can be started.
 ///
 /// No upstream counterpart: llvmkit's block-argument edges have none;
 /// `PHINode::addIncoming` (`IR/Instructions.h`) takes a `Value *` and a
@@ -2883,7 +2902,9 @@ fn a_block_argument_edge_rejects_a_value_or_predecessor_from_another_module() {
         .add_function_dyn("f", fn_ty, Linkage::External)
         .expect("f");
     let entry = home.view(f).append_basic_block(home, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&mut home_key).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut home_key)
+        .try_position_at_end(entry)
+        .expect("the block is the builder's module's");
     let i32_ty = home.i32_type().as_type();
     let (target, _) = b
         .append_block_with_params(home.view(f), &[i32_ty, i32_ty], "target")
@@ -2906,10 +2927,10 @@ fn a_block_argument_edge_rejects_a_value_or_predecessor_from_another_module() {
         ),
         (
             "predecessor",
-            IrError::ForeignValueId,
+            IrError::ForeignLayoutToken,
             IrBuilder::new_for::<Dyn>(&mut home_key)
-                .position_at_end(elsewhere)
-                .br_with_args(target, &[home_one, home_two])
+                .try_position_at_end(elsewhere)
+                .and_then(|b| b.br_with_args(target, &[home_one, home_two]))
                 .map(|_| ()),
         ),
     ];
@@ -3212,7 +3233,9 @@ fn function_with_an_add(
         .add_function_dyn(name, fn_ty, Linkage::External)
         .expect("function");
     let entry = module.view(f).append_basic_block(module, "entry");
-    let b = IrBuilder::new_for::<Dyn>(key).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(key)
+        .try_position_at_end(entry)
+        .expect("the block is the builder's module's");
     let parameter = module.view(f).param(0).expect("parameter").as_erased();
     let a: IntValue<'_, i32, DynBrand> = parameter.try_into().expect("an i32");
     let x = b.int_add(a, 1i32, "x").expect("add");
@@ -4412,7 +4435,9 @@ fn folding_builder<'k, 'm, F: IrBuilderFolder<'m, DynBrand>>(
     block: OpenBlock<'m>,
     folder: F,
 ) -> FoldingBuilder<'k, 'm, F> {
-    IrBuilder::with_folder(key, folder).position_at_end(block)
+    IrBuilder::with_folder(key, folder)
+        .try_position_at_end(block)
+        .expect("the block is the builder's module's")
 }
 
 /// A fold result a custom folder hands back is refused when another module

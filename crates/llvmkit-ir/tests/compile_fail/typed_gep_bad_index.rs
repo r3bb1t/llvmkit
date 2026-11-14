@@ -15,7 +15,7 @@ fn main() -> Result<(), IrError> {
     let mut module = Module::dynamic("m"); let mut key = module.layout_token(); let m = key.module();
     let f = m.add_typed_function::<i64, (), _>("f", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = m.view(f).builder(&mut key).position_at_end(entry);
+    let b = m.view(f).builder(&mut key).try_position_at_end(entry)?;
     let cpu = b.typed_alloca::<CpuState, _>("cpu")?;
     let _bad = b.field_gep::<CpuState, _, 7, _>(cpu, "x")?;
     Ok(())

@@ -24,7 +24,7 @@ fn main() {
         .unwrap()
         .as_function();
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<()>(&mut key).position_at_end(entry);
+    let b = IrBuilder::new_for::<()>(&mut key).try_position_at_end(entry).unwrap();
     let (_terminated_bb, _term) = b.ret_void();
     // `ret_void` took `b` by value: there is no builder left to terminate
     // a second time.

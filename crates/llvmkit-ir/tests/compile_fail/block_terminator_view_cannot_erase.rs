@@ -11,7 +11,7 @@ fn main() {
     let fn_ty = m.function_type(void_ty, Vec::<llvmkit_ir::Type<_>>::new()).expect("valid function type");
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&mut key).position_at_end(entry);
+    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&mut key).try_position_at_end(entry).unwrap();
     let (sealed, _ret) = b.ret_void().unwrap();
     let term = sealed.terminator().unwrap();
 

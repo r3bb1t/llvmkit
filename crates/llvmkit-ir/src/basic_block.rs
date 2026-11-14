@@ -613,12 +613,12 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     /// is exactly [`IrBuilder::at_end(&mut key, bb)`](crate::IrBuilder::at_end)
     /// — the return marker `R` is inferred from the block, so no turbofish is
     /// needed. Reads better when `bb` is already in hand.
-    #[inline]
     ///
     /// # Errors
     ///
     /// [`IrError::ForeignLayoutToken`] if this block is not in `key`'s
     /// module, as [`IrBuilder::at_end`](crate::IrBuilder::at_end) refuses.
+    #[inline]
     pub fn builder<'m>(
         self,
         key: &'m mut LayoutToken<'ctx, B>,
@@ -1495,10 +1495,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
         }
 
         // BranchInst *BI = BranchInst::Create(New, this);
+        // Internal: the block being split, re-minted in its own module.
         let (_, branch) = IrBuilder::new_for_unkeyed::<R>(module_token)
-            .position_at_end(BasicBlock::<'ctx, R, Unterminated, B>::from_parts(
-                self.id, own, self.ty,
-            ))
+            .position_at_end_trusting_same_module(
+                BasicBlock::<'ctx, R, Unterminated, B>::from_parts(self.id, own, self.ty),
+            )
             .br_to_slot_unchecked(new_id);
         // The splice left `I`'s records at this block's end, and inserting the
         // branch there adopts them (`Instruction::insertBefore`).
@@ -1629,8 +1630,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
         }
 
         // BranchInst *BI = BranchInst::Create(this, New);
+        // Internal: `new_block` was created in the token's module above.
         let (_, branch) = IrBuilder::new_for::<R>(key)
-            .position_at_end(new_block)
+            .position_at_end_trusting_same_module(new_block)
             .br_to_slot_unchecked(self.id);
         // The splice moved `I`'s records to the new block's end, and inserting
         // the branch there adopts them (`Instruction::insertBefore`).

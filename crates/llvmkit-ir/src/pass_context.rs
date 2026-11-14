@@ -77,7 +77,9 @@ use super::instruction::{
     Instruction, InstructionView, NonTerminator, PlacedInstruction, TerminatorKind, state,
 };
 use super::ir_builder::constant_folder::ConstantFolder;
-use super::ir_builder::{InsertPoint, IrBuilder, PositionedBefore, Positioning};
+use super::ir_builder::{
+    InPass, InsertPoint, InsertionPlace, IrBuilder, PositionedBefore, Positioning,
+};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::pass_access::{
@@ -925,6 +927,10 @@ where
     /// on the function while it lives. Its return marker is [`Dyn`]: this
     /// context sees the function erased, so `ret` checks the type at run time.
     ///
+    /// The builder is lent in the [`InPass`] state, which keeps it in this
+    /// function: it cannot be repositioned, and at this rung it cannot emit a
+    /// terminator, which would change the CFG the rung reports preserved.
+    ///
     /// Witnesses the dirty flag on success, for [`Self::builder_at`]'s reason.
     ///
     /// # Errors
@@ -937,15 +943,45 @@ where
     pub fn builder_before<C2: Capability>(
         &mut self,
         anchor: PlacedInstruction<'m, B, C2>,
-    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, PositionedBefore, Dyn>> {
+    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, InPass<PatchBody, PositionedBefore>, Dyn>>
+    {
+        self.builder_before_for::<PatchBody, C2>(anchor)
+    }
+
+    /// [`Self::builder_before`] for a context at rung `Rung`: the one body
+    /// the [`FnReshape`] twin shares.
+    #[inline]
+    pub(crate) fn builder_before_for<Rung, C2: Capability>(
+        &mut self,
+        anchor: PlacedInstruction<'m, B, C2>,
+    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, InPass<Rung, PositionedBefore>, Dyn>>
+    where
+        InPass<Rung, PositionedBefore>: Positioning,
+    {
         let builder = IrBuilder::new_for_unkeyed::<Dyn>(self.module).position_before(anchor)?;
+        self.lend(builder)
+    }
+
+    /// Lend `builder`, positioned by the caller over this context's module:
+    /// refuse it unless it inserts into this function, witness the dirty
+    /// flag, and scope it to `Rung` ([`InPass`]) so it stays in the function.
+    /// The one check behind every builder a function-pass context hands out.
+    fn lend<'s, Rung, P, R2>(
+        &'s mut self,
+        builder: IrBuilder<'s, 'm, B, ConstantFolder, P, R2>,
+    ) -> IrResult<IrBuilder<'s, 'm, B, ConstantFolder, InPass<Rung, P>, R2>>
+    where
+        P: InsertionPlace,
+        R2: ReturnMarker,
+        InPass<Rung, P>: Positioning,
+    {
         // Internal: the pass's own function, read in its own module.
         let own_function = self.function.as_function().slot_trusting_same_module();
         if builder.insert_block().parent_id() != Some(own_function) {
             return Err(BlockError::BlockNotInFunction.into());
         }
         self.dirty.set(true);
-        Ok(builder)
+        Ok(builder.lent_to_pass::<Rung>())
     }
 
     /// A builder restored at a previously saved [`InsertPoint`], anchored in
@@ -972,21 +1008,30 @@ where
     pub fn builder_at<R2, Saved>(
         &mut self,
         ip: InsertPoint<'m, R2, B, Saved>,
-    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, Saved, R2>>
+    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, InPass<PatchBody, Saved>, R2>>
     where
         R2: ReturnMarker,
-        Saved: Positioning,
+        Saved: InsertionPlace,
+    {
+        self.builder_at_for::<PatchBody, R2, Saved>(ip)
+    }
+
+    /// [`Self::builder_at`] for a context at rung `Rung`: the one body the
+    /// [`FnReshape`] twin shares.
+    #[inline]
+    pub(crate) fn builder_at_for<Rung, R2, Saved>(
+        &mut self,
+        ip: InsertPoint<'m, R2, B, Saved>,
+    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, InPass<Rung, Saved>, R2>>
+    where
+        R2: ReturnMarker,
+        Saved: InsertionPlace,
+        InPass<Rung, Saved>: Positioning,
     {
         // The builder's key borrow is this `&mut self`: while it lives, no
         // other context edit, and no second builder, can run on the function.
         let builder = IrBuilder::new_for_unkeyed::<R2>(self.module).restore_insert_point(ip)?;
-        // Internal: the pass's own function, read in its own module.
-        let own_function = self.function.as_function().slot_trusting_same_module();
-        if builder.insert_block().parent_id() != Some(own_function) {
-            return Err(BlockError::BlockNotInFunction.into());
-        }
-        self.dirty.set(true);
-        Ok(builder)
+        self.lend(builder)
     }
 
     /// Erase a non-terminator instruction from its parent block, deregistering
@@ -1345,15 +1390,17 @@ where
         self.patch.module()
     }
 
-    /// A builder positioned before `anchor`, an instruction of this function.
-    /// Delegated from the inner [`FnPatch::builder_before`], with the same
-    /// refusals.
+    /// A builder positioned before `anchor`, an instruction of this function,
+    /// with [`FnPatch::builder_before`]'s refusals. Lent at this rung, so it
+    /// may emit a terminator (this rung rewires the CFG) but, like the
+    /// [`FnPatch`] one, cannot be repositioned out of the function.
     #[inline]
     pub fn builder_before<C2: Capability>(
         &mut self,
         anchor: PlacedInstruction<'m, B, C2>,
-    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, PositionedBefore, Dyn>> {
-        self.patch.builder_before(anchor)
+    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, InPass<ReshapeCfg, PositionedBefore>, Dyn>>
+    {
+        self.patch.builder_before_for::<ReshapeCfg, C2>(anchor)
     }
 
     /// A builder restored at a previously saved [`InsertPoint`]. Delegated from
@@ -1364,12 +1411,12 @@ where
     pub fn builder_at<R2, Saved>(
         &mut self,
         ip: InsertPoint<'m, R2, B, Saved>,
-    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, Saved, R2>>
+    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, InPass<ReshapeCfg, Saved>, R2>>
     where
         R2: ReturnMarker,
-        Saved: Positioning,
+        Saved: InsertionPlace,
     {
-        self.patch.builder_at(ip)
+        self.patch.builder_at_for::<ReshapeCfg, R2, Saved>(ip)
     }
 
     // NB: no `module_mut` delegate. `FnPatch::module_mut` is `pub(crate)`
@@ -3712,6 +3759,54 @@ mod tests {
         // …so `done()` reports the rung floor, never everything-preserved —
         // even though the pass has not (yet) inserted anything.
         assert!(!patch.done().into_parts().0.are_all_preserved());
+        Ok(())
+    }
+
+    /// [`super::FnPatch::builder_before`] — the `PatchBody` implementation the
+    /// [`super::FnReshape`] twin shares — builds in front of one of the
+    /// function's own instructions, and witnesses the dirty flag as
+    /// [`super::FnPatch::builder_at`] does, so a `PatchBody` pass that builds
+    /// through it cannot `done()` an everything-preserved report. Mirrors
+    /// constructing `IRBuilder<> B(I)` inside a pass. llvmkit-specific
+    /// capability-context lock.
+    #[test]
+    fn patchbody_builder_before_builds_in_front_and_witnesses_dirty() -> Result<(), IrError> {
+        let mut owned = crate::module_new!("patch-builder-before")?;
+        let mut key = owned.layout_token();
+        let m = key.module();
+        let i32_ty = m.i32_type();
+        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+        IrBuilder::new_for::<Dyn>(&mut key)
+            .position_at_end(entry)
+            .ret(x)?;
+
+        let function = FunctionView::from(m.view(f));
+        let mut fam = FunctionAnalysisManager::new();
+        Reqs::prefetch(&mut fam, function)?;
+        let results = Reqs::collect(&fam, function)?;
+
+        let cx: FnCx<'_, '_, '_, _, PatchBody, Reqs> = FnCx::new(m, function, results);
+        let mut patch = cx.mutate();
+        let terminator = patch
+            .function()
+            .entry_block()
+            .expect("definition has entry")
+            .placed_instructions()
+            .last()
+            .expect("the entry block ends in its terminator");
+
+        assert!(!patch.is_dirty());
+        patch.builder_before(terminator)?.alloca(i32_ty, "slot")?;
+        assert!(patch.is_dirty());
+        assert!(!patch.done().into_parts().0.are_all_preserved());
+        let printed = format!("{owned}");
+        assert!(
+            printed.contains("entry:\n  %slot = alloca i32, align 4\n  ret i32 %0"),
+            "{printed}"
+        );
         Ok(())
     }
 

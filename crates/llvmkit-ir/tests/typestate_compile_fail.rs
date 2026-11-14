@@ -44,8 +44,27 @@ fn typestate_compile_fail() {
     // cannot hold two (each could hand out a builder). Primary error is
     // rustc's stable `E0499`.
     t.compile_fail("tests/compile_fail/module_pass_holds_one_function_mutator.rs");
+    // `position_at_end` is unchecked only on a `UniqueBrand` module, so a
+    // `Module::dynamic` builder cannot take a block unchecked. Primary error
+    // is `E0277` with `UniqueBrand`'s own `on_unimplemented` message.
+    t.compile_fail("tests/compile_fail/position_at_end_needs_a_unique_brand.rs");
+    // The reshape cursor lends one mutator at a time too. Primary error is
+    // rustc's stable `E0499`.
+    t.compile_fail("tests/compile_fail/module_pass_holds_one_reshape_mutator.rs");
+    // A `PatchBody` pass's lent builder is not `Terminating`, so the
+    // terminator builds are absent. Primary error is rustc's stable `E0599`.
+    t.compile_fail("tests/compile_fail/patchbody_builder_cannot_terminate.rs");
+    // A pass's lent builder is not `Repositionable`, at any rung. Primary
+    // error is `E0277` with `Repositionable`'s own `on_unimplemented` message.
+    t.compile_fail("tests/compile_fail/pass_builder_cannot_reposition.rs");
+    // A pass's lent builder borrows its context `&mut`, so the context
+    // cannot erase its anchor under it. Primary error is rustc's stable
+    // `E0502`.
+    t.compile_fail("tests/compile_fail/pass_builder_holds_its_context.rs");
     // An unpositioned builder has no insert point to save, so a snapshot
-    // always names a block. Primary error is rustc's stable `E0277`.
+    // always names a block. Primary error is rustc's stable `E0599`: the
+    // snapshot's state is `S::Place`, so the unmet `S: Positioning` makes the
+    // method absent rather than a failed bound.
     t.compile_fail("tests/compile_fail/save_insert_point_unpositioned.rs");
     t.compile_fail("tests/compile_fail/retained_unterminated_block_cannot_reposition.rs");
     t.compile_fail("tests/compile_fail/terminated_block_cannot_start_cursor.rs");

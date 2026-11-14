@@ -20,7 +20,7 @@ fn main() {
         .unwrap()
         .as_function();
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let (_, ret) = IrBuilder::new_for::<()>(&mut key).position_at_end(entry).ret_void();
+    let (_, ret) = IrBuilder::new_for::<()>(&mut key).try_position_at_end(entry).unwrap().ret_void();
     let before = IrBuilder::new_for::<()>(&mut key).position_before(ret.placed()).unwrap();
     // `before` still holds `key`: its anchor cannot be erased under it.
     ret.erase_from_parent(&mut key).unwrap();

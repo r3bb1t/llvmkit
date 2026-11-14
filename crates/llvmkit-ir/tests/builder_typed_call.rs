@@ -19,8 +19,8 @@
 //! own upstream citation per Doctrine D11.
 
 use llvmkit_ir::{
-    CallSiteConfig, Dyn, IntValue, IrBuilder, IrError, LayoutToken, Linkage, ModuleBrand,
-    PointerValue, Ptr, TypeKindLabel, module_new,
+    CallSiteConfig, Dyn, IntValue, IrBuilder, IrError, LayoutToken, Linkage, PointerValue, Ptr,
+    TypeKindLabel, UniqueBrand, module_new,
 };
 
 // --------------------------------------------------------------------------
@@ -264,7 +264,7 @@ fn build_varargs_call_printf_shape_two_fixed_args_and_int_tail() -> Result<(), I
 /// CallInst)` (both paths port the same operand-wiring assertions).
 #[test]
 fn typed_call_full_module_print_equals_dyn_call_full_module_print() -> Result<(), IrError> {
-    fn build_typed<'ctx, B: ModuleBrand + 'ctx>(
+    fn build_typed<'ctx, B: UniqueBrand + 'ctx>(
         key: &mut LayoutToken<'ctx, B>,
     ) -> Result<(), IrError> {
         let m = key.module();
@@ -278,7 +278,7 @@ fn typed_call_full_module_print_equals_dyn_call_full_module_print() -> Result<()
         b.ret(ret_val)?;
         Ok(())
     }
-    fn build_dyn<'ctx, B: ModuleBrand + 'ctx>(
+    fn build_dyn<'ctx, B: UniqueBrand + 'ctx>(
         key: &mut LayoutToken<'ctx, B>,
     ) -> Result<(), IrError> {
         let m = key.module();
@@ -332,7 +332,7 @@ fn typed_call_full_module_print_equals_dyn_call_full_module_print() -> Result<()
 #[test]
 fn typed_indirect_call_full_module_print_equals_dyn_indirect_call_full_module_print()
 -> Result<(), IrError> {
-    fn build_typed<'ctx, B: ModuleBrand + 'ctx>(
+    fn build_typed<'ctx, B: UniqueBrand + 'ctx>(
         key: &mut LayoutToken<'ctx, B>,
     ) -> Result<(), IrError> {
         let m = key.module();
@@ -350,7 +350,7 @@ fn typed_indirect_call_full_module_print_equals_dyn_indirect_call_full_module_pr
         b.ret(ret_val)?;
         Ok(())
     }
-    fn build_dyn<'ctx, B: ModuleBrand + 'ctx>(
+    fn build_dyn<'ctx, B: UniqueBrand + 'ctx>(
         key: &mut LayoutToken<'ctx, B>,
     ) -> Result<(), IrError> {
         let m = key.module();

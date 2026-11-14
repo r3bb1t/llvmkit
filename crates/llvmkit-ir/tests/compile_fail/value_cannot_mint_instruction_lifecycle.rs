@@ -11,7 +11,7 @@ fn main() {
     let fn_ty = m.function_type(i32_ty, Vec::<llvmkit_ir::Type<_>>::new()).expect("valid function type");
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).try_position_at_end(entry).unwrap();
     let add = b
         .int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "sum")
         .unwrap();

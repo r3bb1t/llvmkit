@@ -21,7 +21,7 @@ fn module_for(op: &str) -> Result<String, IrError> {
     let fn_ty = m.function_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()])?;
     let f = m.add_function_dyn(op, fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).try_position_at_end(entry)?;
     let x: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let y: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
     let r = match op {

@@ -350,7 +350,8 @@ fn a_same_typed_definition_holding_an_intrinsic_name_is_returned() {
         .expect("@body");
     let entry = m.view(body).append_basic_block(m, "entry");
     IrBuilder::new_for::<Dyn>(&mut key)
-        .position_at_end(entry)
+        .try_position_at_end(entry)
+        .expect("the block is the builder's module's")
         .ret_void()
         .expect("ret void");
     m.view(body)
@@ -513,7 +514,7 @@ fn a_void_value_refuses_a_name() -> Result<(), IrError> {
         Linkage::External,
     )?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).try_position_at_end(entry)?;
     let v: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(1)?.try_into()?;
     let sum = b.int_add(v, 1_i32, "")?;
@@ -612,7 +613,7 @@ fn declaring_an_intrinsic_over_a_same_typed_definition_leaves_its_arguments_alon
     m.view(f).param(1)?.set_name(m, "mode")?;
     let entry = m.view(f).append_basic_block(m, "entry");
     IrBuilder::new_for::<Dyn>(&mut key)
-        .position_at_end(entry)
+        .try_position_at_end(entry)?
         .ret_void()?;
     m.view(f)
         .set_name(m, "llvm.nvvm.tensormap.replace.fill.mode.p0")?;

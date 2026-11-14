@@ -1867,8 +1867,9 @@ where
             // proved.
             let open = BasicBlock::<Dyn, Unterminated, B>::from_parts(block, module, label_ty);
             let positioned: super::ir_builder::IrBuilder<'_, 'ctx, B, F, PositionedAtEnd, Dyn> =
+                // Internal: `open` is re-minted from a block slot of this module.
                 super::ir_builder::IrBuilder::with_folder_unkeyed(self.module, self.folder.clone())
-                    .position_at_end(open);
+                    .position_at_end_trusting_same_module(open);
             build_typed_phi(&positioned, var_category, var_ty, module, &var_name)?
         };
         self.state.created_phis.insert(inst);

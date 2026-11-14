@@ -22,7 +22,7 @@ fn build_eq_module() -> Result<String, IrError> {
     let fn_ty = m.function_type(bool_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("is_zero", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).try_position_at_end(entry)?;
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let r = b.int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "r")?;
     b.ret(r)?;

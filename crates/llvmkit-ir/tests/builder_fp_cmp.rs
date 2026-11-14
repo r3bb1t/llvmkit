@@ -24,7 +24,7 @@ fn module_with_pred(pred: FloatPredicate, name: &str) -> Result<String, IrError>
     let fn_ty = m.function_type(bool_ty, [f64_ty.as_type(), f64_ty.as_type()])?;
     let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).try_position_at_end(entry)?;
     let lhs: FloatValue<'_, f64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: FloatValue<'_, f64, _> = m.view(f).param(1)?.try_into()?;
     let r = b.fp_cmp(pred, lhs, rhs, "r")?;

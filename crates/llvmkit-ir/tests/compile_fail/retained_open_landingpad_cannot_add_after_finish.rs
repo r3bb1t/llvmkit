@@ -14,7 +14,7 @@ fn main() {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
     let entry = m.view(f).append_basic_block(&m, "entry");
     let null_ptr = ptr_ty.const_null();
-    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).try_position_at_end(entry).unwrap();
     let lp = b.landingpad(i32_ty.as_type(), true, "lp").unwrap();
 
     let _closed = lp.finish();

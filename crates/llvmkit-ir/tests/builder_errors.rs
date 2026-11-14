@@ -425,7 +425,7 @@ fn position_past_allocas_refuses_another_modules_function() -> Result<(), IrErro
     let f = other.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = other.view(f).append_basic_block(other, "entry");
     IrBuilder::new_for::<Dyn>(&mut other_key)
-        .position_at_end(entry)
+        .try_position_at_end(entry)?
         .ret_void()?;
     let err = refusal(
         IrBuilder::new_for::<Dyn>(&mut builder_key).position_past_allocas(other.view(f)),

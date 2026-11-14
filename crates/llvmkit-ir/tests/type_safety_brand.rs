@@ -6,10 +6,10 @@ use std::collections::HashMap;
 
 use llvmkit_ir::{
     AttrIndex, AttrKind, Attribute, AttributeStorage, Dyn, DynBrand, FunctionValue, IntValue,
-    IrBuilder, IrResult, Linkage, Module, ModuleBrand, Unverified, Value, module_new,
+    IrBuilder, IrResult, Linkage, Module, ModuleBrand, UniqueBrand, Unverified, Value, module_new,
 };
 
-fn exercise_tables<'ctx, B: ModuleBrand + 'ctx>(mut module: Module<B, Unverified>) -> IrResult<()> {
+fn exercise_tables<'ctx, B: UniqueBrand + 'ctx>(mut module: Module<B, Unverified>) -> IrResult<()> {
     let mut key = module.layout_token();
     let m = key.module();
     let i64_ty = m.i64_type();

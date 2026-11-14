@@ -284,10 +284,22 @@ the function.
      `reshape_functions` are lending cursors. `step` lends one mutator
      borrowing the cursor, which borrows the rewrite context `&mut`. Before
      this, two mutators over one function could be alive at once, and one's
-     edit could invalidate the other's builder. That route was the last that
-     could make a live builder's anchor stale, so the run-time stale-anchor
-     check is gone and before-anchor builds are infallible where nothing
-     else can refuse.
+     edit could invalidate the other's builder. With that route closed, the
+     run-time stale-anchor check is gone and before-anchor builds are
+     infallible where nothing else can refuse. The routes that take an
+     instruction out of its block were enumerated at `95febe47` with
+     `grep -rn "\.remove_instruction(\|split_at_in(\|\.splice_into(\|erase_from_parent_in(" crates/llvmkit-ir/src crates/llvmkit-asmparser/src --include=*.rs | grep -v "///\|phi_raw_tests\|fn "`
+     (12 call sites). `remove_instruction`'s four callers are
+     `erase_from_parent_in`, `detach_from_parent`, `move_before` and
+     `move_after`; `split_at_in`'s two are the keyed `split_at` and
+     `FnReshape::split_block`; `splice_into` takes the token. Of
+     `erase_from_parent_in`'s five, one is the keyed `erase_from_parent`,
+     one `FnPatch::erase` (`&self`, so not while its lent builder borrows
+     the context `&mut`), one `demanded_bits` (through a shared borrow of the
+     `FnPatch`, likewise), and two `SsaBuilder` (which holds the token
+     `&mut`). So each needs the token or its pass context, which no live
+     builder leaves free. A new caller of one of those primitives reopens
+     the question.
    - **`builder_before`.** `FnPatch` / `FnReshape::builder_before(anchor)` is
      how a pass starts a builder at one of its own instructions; before it,
      a pass could only restore an `InsertPoint` saved outside.
@@ -296,9 +308,33 @@ the function.
      (`ForeignLayoutToken`). Before this design they took the module from
      the block; taking it from the token without a check would have written
      into the wrong arena.
-   - **Remaining gap.** `position_at_end(bb)` is still infallible and does not
-     compare `bb`'s module with the builder's. It is one of the counted F1
-     boundaries (`docs/leftover-api-rewrite-work.md` §6, Task 26), whose fix
-     is a `Result` per site. Under a shared brand, a builder over one module
-     positioned at another module's block is outside the token's guarantee
-     until that task lands.
+   - **Remaining gap (closed by decision 8).** `position_at_end(bb)` was
+     infallible and did not compare `bb`'s module with the builder's.
+8. **Review of `95febe47`.**
+   - **`position_at_end` needs a `UniqueBrand`.** A `UniqueBrand` names at
+     most one live module, and the builder and `bb` each borrow a live
+     module of brand `B`, so `bb` is the builder's own and nothing is
+     checked (D7). `DynBrand` is not one; a `Module::dynamic` builder uses
+     `try_position_at_end`, which compares the modules and refuses with
+     `ForeignLayoutToken`. Making `position_at_end` fallible everywhere was
+     the alternative, rejected for the named-brand callers who can never see
+     the error. Fixture `position_at_end_needs_a_unique_brand.rs`.
+   - **A pass's builder is lent in the `InPass<Rung, P>` state.** Before,
+     `builder_at` / `builder_before` checked once that the block was in the
+     pass's function and handed back a free builder, which could then be
+     repositioned anywhere, and which at `PatchBody` could emit a
+     terminator while `done()` reported the CFG preserved. `InPass` is not
+     `Repositionable` (no `position_*`, `restore_insert_point`,
+     `unposition`, `into_insert_block`, `append_block_*`), and
+     `InPass<PatchBody, _>` is not `Terminating` (every terminator build
+     sits in an impl bounded `S: Terminating`, and takes its block through
+     `into_block_to_terminate`, which requires it). Fixtures
+     `pass_builder_cannot_reposition.rs`,
+     `patchbody_builder_cannot_terminate.rs` and
+     `pass_builder_holds_its_context.rs`.
+   - **What a lent builder still reaches.** Its operands are admitted by
+     module, not by function: a value of another function in the same
+     module is accepted. Upstream's verifier refuses such a use
+     (`Verifier::visitInstruction`); llvmkit's has neither arm, recorded as
+     `docs/divergences.md` finding 145. Refusing it at build time in a lent
+     builder is the function-pass sandbox, the next step.

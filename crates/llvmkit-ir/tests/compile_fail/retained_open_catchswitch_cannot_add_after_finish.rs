@@ -13,7 +13,7 @@ fn main() {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let handler = m.view(f).append_basic_block(&m, "handler");
     let handler_label = handler.id();
-    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).try_position_at_end(entry).unwrap();
     let (_sealed, cs) = b.catch_switch_within_none_to_caller("cs");
 
     let _closed = cs.finish();

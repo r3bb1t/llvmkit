@@ -17,7 +17,7 @@ fn main() -> Result<(), IrError> {
     let fn_ty = m.function_type(ppc_ty, [fp128_ty.as_type()])?;
     let f = m.add_function_dyn("ext", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = llvmkit_ir::IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&mut key).position_at_end(entry);
+    let b = llvmkit_ir::IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&mut key).try_position_at_end(entry)?;
     let arg: llvmkit_ir::FloatValue<llvmkit_ir::Fp128, _> = m.view(f).param(0)?.try_into()?;
     let _bad = b.fp_ext(arg, ppc_ty, "y")?;
     Ok(())

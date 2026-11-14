@@ -15,7 +15,7 @@ fn main() {
         .add_function_dyn("f", fn_ty, Linkage::External)
         .expect("function");
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let builder = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
+    let builder = IrBuilder::new_for::<Dyn>(&mut key).try_position_at_end(entry).expect("position");
     let (_block, ret) = builder.ret(i32_ty.const_zero()).expect("ret");
     let view = ret.as_view();
     let _ = IrBuilder::new_for::<Dyn>(&mut key).position_before(&view);

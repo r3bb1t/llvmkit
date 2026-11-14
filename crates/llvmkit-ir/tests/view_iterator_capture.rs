@@ -24,8 +24,8 @@
 //! the file stops compiling rather than failing an assertion.
 
 use llvmkit_ir::{
-    Dyn, InstructionKind, InstructionView, IntValue, IrBuilder, IrError, Linkage, ModuleBrand,
-    NoFolder, ReadOnly, Value, module_new,
+    Dyn, InstructionKind, InstructionView, IntValue, IrBuilder, IrError, Linkage, NoFolder,
+    ReadOnly, UniqueBrand, Value, module_new,
 };
 
 /// Build `@f` with two blocks and a phi, so there is something to walk:
@@ -39,7 +39,7 @@ use llvmkit_ir::{
 ///
 /// Returns the module plus the instruction names in program order — the phi
 /// is `join`'s block parameter, so it heads the second block.
-fn two_block_function<B: ModuleBrand>(
+fn two_block_function<B: UniqueBrand>(
     key: &mut llvmkit_ir::LayoutToken<'_, B>,
 ) -> Result<Vec<String>, IrError> {
     let m = key.module();

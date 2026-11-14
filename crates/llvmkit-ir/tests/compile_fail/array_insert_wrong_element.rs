@@ -19,7 +19,7 @@ fn main() {
         [arr_i32.as_type(), f32_ty.as_type()]).expect("valid function type");
     let f = m.add_function_dyn("g", fn_ty, Linkage::External).unwrap();
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&mut key).position_at_end(entry);
+    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&mut key).try_position_at_end(entry).unwrap();
 
     let arr: ArrayValue<'_, i32, ArrLen<4>, _> =
         m.view(f).param(0).unwrap().as_erased().try_into().unwrap();

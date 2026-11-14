@@ -11,8 +11,8 @@
 use llvmkit_ir::{
     Analyses, BlockId, DominatorTree, DominatorTreeAnalysis, Dyn, FnCx, FnReport, FunctionPass,
     FunctionView, GlobalId, IntPredicate, IntValue, IntValueId, IrBuilder, IrError, IrResult,
-    LayoutToken, Linkage, ModuleBrand, ReshapeCfg, ValueCategoryLabel, ValueId, module_new,
-    run_function_pass,
+    LayoutToken, Linkage, ModuleBrand, ReshapeCfg, UniqueBrand, ValueCategoryLabel, ValueId,
+    module_new, run_function_pass,
 };
 
 /// A `ReshapeCfg` pass that requires the dominator tree and splits the entry
@@ -334,7 +334,7 @@ type DiamondBuild<B> = IrResult<(
 /// `merge` initially just `ret 0` (no phi yet — a pass inserts one). Returns the
 /// function plus the two arm values and the two arm labels the pass will feed as
 /// phi incomings.
-fn build_diamond<'ctx, B: ModuleBrand + 'ctx>(key: &mut LayoutToken<'ctx, B>) -> DiamondBuild<B> {
+fn build_diamond<'ctx, B: UniqueBrand + 'ctx>(key: &mut LayoutToken<'ctx, B>) -> DiamondBuild<B> {
     let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m
@@ -723,7 +723,7 @@ type SwitchRedirectBuild<B> = IrResult<(
 ///
 /// `redirect_edge(entry, old, new, [%ev])` retargets the case-0 edge onto `new`
 /// and adds `[ %ev, %entry ]` to `new`'s phi.
-fn build_switch_redirect<'ctx, B: ModuleBrand + 'ctx>(
+fn build_switch_redirect<'ctx, B: UniqueBrand + 'ctx>(
     key: &mut LayoutToken<'ctx, B>,
 ) -> SwitchRedirectBuild<B> {
     let m = key.module();
@@ -1229,7 +1229,7 @@ type CondBrPairBuild<B> = IrResult<(
 /// Builds `entry: br %c ? t : e` with the two arms pointed at `t_name`/`e_name`,
 /// plus a spare `new` block — the shared skeleton for the branch-edge rejection
 /// guards below. Returns the function and the `Dyn` labels for `old`/`new`.
-fn build_cond_br_pair<'ctx, B: ModuleBrand + 'ctx>(
+fn build_cond_br_pair<'ctx, B: UniqueBrand + 'ctx>(
     key: &mut LayoutToken<'ctx, B>,
     then_is_new: bool,
 ) -> CondBrPairBuild<B> {
@@ -1372,7 +1372,7 @@ fn redirect_edge_rejects_cond_br_already_reaching_new() -> Result<(), IrError> {
 ///
 /// Returns the function plus `new`'s `Dyn` label (a spare, phi-less block for the
 /// redirect test — a redirect onto it seeds an empty `phi_values`).
-fn build_cond_br_both_arms_phi<'ctx, B: ModuleBrand + 'ctx>(
+fn build_cond_br_both_arms_phi<'ctx, B: UniqueBrand + 'ctx>(
     key: &mut LayoutToken<'ctx, B>,
 ) -> IrResult<(llvmkit_ir::FunctionId<Dyn, B>, BlockId<Dyn, B>)> {
     let m = key.module();

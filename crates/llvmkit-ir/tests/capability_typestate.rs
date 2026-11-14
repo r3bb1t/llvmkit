@@ -70,7 +70,9 @@ fn a_verified_modules_values_are_read_only() {
         )
         .expect("f");
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut key, NoFolder)
+        .try_position_at_end(entry)
+        .expect("the block is the builder's module's");
     let sum = b
         .int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "s")
         .expect("add");
@@ -102,7 +104,9 @@ fn a_builder_admits_a_read_only_operand_and_refuses_a_foreign_one() {
         )
         .expect("f");
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut key, NoFolder)
+        .try_position_at_end(entry)
+        .expect("the block is the builder's module's");
     let read_only = m.as_view().i32_type().const_int(1_i32);
     assert_eq!(capability(read_only), TypeId::of::<ReadOnly>());
     let other = Module::dynamic("other");
@@ -168,7 +172,8 @@ fn a_verified_modules_globals_functions_and_comdats_are_read_only() {
         .expect("resolver");
     let resolver_entry = m.view(resolver).append_basic_block(m, "entry");
     IrBuilder::with_folder(&mut key, NoFolder)
-        .position_at_end(resolver_entry)
+        .try_position_at_end(resolver_entry)
+        .expect("the block is the builder's module's")
         .ret(m.ptr_type_in::<0>().const_null())
         .expect("ret");
     let ifunc = m
@@ -353,7 +358,9 @@ fn a_builder_admits_a_read_only_callee_and_refuses_a_foreign_one() {
         )
         .expect("f");
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut key, NoFolder)
+        .try_position_at_end(entry)
+        .expect("the block is the builder's module's");
     let read_only = m.view(callee).read_only();
     assert_eq!(capability(read_only), TypeId::of::<ReadOnly>());
     let other = Module::dynamic("other");
@@ -553,7 +560,7 @@ fn a_verified_modules_blocks_and_instructions_are_read_only() -> Result<(), IrEr
         "join",
     )?;
     let block = join.id();
-    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).try_position_at_end(entry)?;
     let pointer: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let call = b.call_dyn(callee.as_function(), Vec::<Value<'_, _>>::new(), "c")?;
     let typed_call = b.call(callee, (), "t")?;
@@ -596,7 +603,7 @@ fn a_verified_modules_blocks_and_instructions_are_read_only() -> Result<(), IrEr
         ],
     )?;
     IrBuilder::new_for::<Dyn>(&mut key)
-        .position_at_end(join)
+        .try_position_at_end(join)?
         .ret_void()?;
     let phi = |index: usize| {
         InstructionView::try_from(params[index])
@@ -729,7 +736,7 @@ fn read_only_predicates_take_each_operand_at_its_own_capability() -> Result<(), 
         Linkage::External,
     )?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).try_position_at_end(entry)?;
     let lhs: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let sum = b.int_add_with_flags(lhs, rhs, AddFlags::new().nuw(), "sum")?;
@@ -787,20 +794,20 @@ fn the_function_analyses_read_a_function_of_either_capability() -> Result<(), Ir
         dead.id(),
     ];
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).try_position_at_end(entry)?;
     let cond = b.int_cmp(IntPredicate::Eq, x, 0_i32, "cond")?;
     b.cond_br(cond, blocks[1], blocks[2])?;
     IrBuilder::new_for::<Dyn>(&mut key)
-        .position_at_end(then_block)
+        .try_position_at_end(then_block)?
         .br(blocks[3])?;
     IrBuilder::new_for::<Dyn>(&mut key)
-        .position_at_end(else_block)
+        .try_position_at_end(else_block)?
         .br(blocks[3])?;
     IrBuilder::new_for::<Dyn>(&mut key)
-        .position_at_end(join)
+        .try_position_at_end(join)?
         .ret(x)?;
     IrBuilder::new_for::<Dyn>(&mut key)
-        .position_at_end(dead)
+        .try_position_at_end(dead)?
         .ret(x)?;
 
     let mutable_tree = DominatorTree::new(m.view(f));
@@ -918,7 +925,9 @@ fn an_inspect_pass_sees_only_read_only_instruction_views() {
         )
         .expect("f");
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut key, NoFolder)
+        .try_position_at_end(entry)
+        .expect("the block is the builder's module's");
     let sum = b
         .int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "s")
         .expect("add");
@@ -999,7 +1008,7 @@ fn the_value_tracking_analyses_read_values_of_either_capability() -> Result<(), 
         Linkage::External,
     )?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).try_position_at_end(entry)?;
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let y: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     // `%masked = and i32 %x, 255`: its top 24 bits are known zero.
@@ -1072,7 +1081,7 @@ fn typed_values_keep_the_capability_and_authoring_entries_take_either() -> Resul
     let callee = m.add_typed_function::<i32, (i32, i32), _>("callee", Linkage::External)?;
     let caller = m.add_typed_function::<i32, (i32,), _>("caller", Linkage::External)?;
     let entry = m.view(caller).append_basic_block(m, "entry");
-    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&mut key).try_position_at_end(entry)?;
     let (x,) = m.view(caller).params();
     assert_eq!(capability(x), TypeId::of::<Mutable>());
     let call = b.call(callee, (x, m.i32_type().const_int(1_i32)), "r")?;
@@ -1093,7 +1102,7 @@ fn typed_values_keep_the_capability_and_authoring_entries_take_either() -> Resul
     )?;
     let address = m.block_address(g_read_only, &body)?;
     IrBuilder::new_for::<()>(&mut key)
-        .position_at_end(body)
+        .try_position_at_end(body)?
         .ret_void();
     let _past_allocas = IrBuilder::new_for::<()>(&mut key).position_past_allocas(g_read_only)?;
     assert!(
@@ -1111,7 +1120,7 @@ fn typed_values_keep_the_capability_and_authoring_entries_take_either() -> Resul
     let (k_body, ()) = IrBuilder::new_for::<()>(&mut key)
         .append_block_typed::<(), _, _>(m.view(k).as_function().read_only(), "body")?;
     IrBuilder::new_for::<()>(&mut key)
-        .position_at_end(k_body)
+        .try_position_at_end(k_body)?
         .ret_void();
     let h = m.add_typed_function::<(), (), _>("h", Linkage::External)?;
     SsaState::for_function(m, m.view(h).as_function().read_only())?;
@@ -1226,7 +1235,7 @@ fn a_patch_body_pass_builds_with_a_type_read_through_its_view() -> Result<(), Ir
     let parameter: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let (_, ret) = IrBuilder::new_for::<Dyn>(&mut key)
-        .position_at_end(entry)
+        .try_position_at_end(entry)?
         .ret(parameter)?;
     let builder = IrBuilder::new_for::<Dyn>(&mut key).position_before(ret.placed())?;
     // A type of another module is refused before anything is built.

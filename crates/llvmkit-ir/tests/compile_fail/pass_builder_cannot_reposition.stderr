@@ -1,0 +1,24 @@
+error[E0277]: a builder a pass's context lent cannot be repositioned
+  --> tests/compile_fail/pass_builder_cannot_reposition.rs:32:48
+   |
+32 |         let _ = reshape.builder_before(first)?.position_before(last);
+   |                                                ^^^^^^^^^^^^^^^ the trait `Repositionable` is not implemented for `InPass<ReshapeCfg, PositionedBefore>`
+   |
+   = note: a function pass builds only into its own function: ask the context for another builder with `builder_before` or `builder_at`
+help: the following other types implement trait `Repositionable`
+  --> src/ir_builder.rs
+   |
+   | impl Repositionable for Unpositioned {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Unpositioned`
+   | impl Repositionable for PositionedAtEnd {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `PositionedAtEnd`
+   | impl Repositionable for PositionedBefore {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `PositionedBefore`
+note: required by a bound in `IrBuilder::<'m, 'ctx, B, F, S, R>::position_before`
+  --> src/ir_builder.rs
+   |
+   |     pub fn position_before<C2: Capability>(
+   |            --------------- required by a bound in this associated function
+...
+   |         S: Repositionable,
+   |            ^^^^^^^^^^^^^^ required by this bound in `IrBuilder::<'m, 'ctx, B, F, S, R>::position_before`

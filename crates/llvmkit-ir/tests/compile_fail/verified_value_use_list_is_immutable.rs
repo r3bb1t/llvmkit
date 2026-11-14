@@ -19,7 +19,7 @@ fn main() {
         .add_function_dyn("f", m.function_type_no_parameters(i32_ty).expect("valid function type"), Linkage::External)
         .expect("f");
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).try_position_at_end(entry).expect("position");
     let one = i32_ty.const_int(1_i32);
     let sum = b.int_add::<i32, _, _, _>(one, one, "s").expect("add");
     b.ret(m.view(sum)).expect("ret");

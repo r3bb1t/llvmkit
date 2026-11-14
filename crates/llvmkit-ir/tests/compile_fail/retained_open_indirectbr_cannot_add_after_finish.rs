@@ -20,7 +20,7 @@ fn main() {
     // operand typing.
     let addr: PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(f).param(0).unwrap().try_into().unwrap();
-    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).try_position_at_end(entry).unwrap();
     let (_sealed, ibr) = b.indirectbr(addr, "").unwrap();
 
     let _closed = ibr.finish();

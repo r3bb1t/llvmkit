@@ -1,0 +1,9 @@
+error[E0502]: cannot borrow `patch` as immutable because it is also borrowed as mutable
+  --> tests/compile_fail/pass_builder_holds_its_context.rs:39:9
+   |
+38 |         let builder = patch.builder_before(anchor)?;
+   |                       ----- mutable borrow occurs here
+39 |         patch.erase(&doomed);
+   |         ^^^^^ immutable borrow occurs here
+40 |         let _ = builder.fence(AtomicOrdering::SequentiallyConsistent, SyncScope::System, "");
+   |                 ------- mutable borrow later used here

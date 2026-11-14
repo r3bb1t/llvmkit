@@ -507,7 +507,7 @@ fn a_metadata_id_from_another_module_is_refused_everywhere() -> Result<(), IrErr
     let fn_ty = b.function_type_no_parameters(void_ty)?;
     let f = b.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = b.view(f).append_basic_block(b, "entry");
-    let builder = IrBuilder::with_folder(&mut b_key, NoFolder).position_at_end(entry);
+    let builder = IrBuilder::with_folder(&mut b_key, NoFolder).try_position_at_end(entry)?;
     let sum =
         builder.int_add::<i8, _, _, _>(i8_ty.const_int(1_u8), i8_ty.const_int(2_u8), "sum")?;
     builder.ret_void()?;
@@ -535,7 +535,7 @@ fn a_metadata_id_from_another_module_is_refused_everywhere() -> Result<(), IrErr
     let a_fn_ty = a.function_type_no_parameters(a_void_ty)?;
     let a_fn = a.add_function_dyn("a_fn", a_fn_ty, Linkage::External)?;
     let a_entry = a.view(a_fn).append_basic_block(a, "entry");
-    let a_builder = IrBuilder::with_folder(&mut a_key, NoFolder).position_at_end(a_entry);
+    let a_builder = IrBuilder::with_folder(&mut a_key, NoFolder).try_position_at_end(a_entry)?;
     let a_i8 = a.i8_type();
     let a_sum =
         a_builder.int_add::<i8, _, _, _>(a_i8.const_int(1_u8), a_i8.const_int(2_u8), "sum")?;

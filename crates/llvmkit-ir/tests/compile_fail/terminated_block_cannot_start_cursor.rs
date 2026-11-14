@@ -12,7 +12,7 @@ fn main() {
         .unwrap()
         .as_function();
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<()>(&mut key).position_at_end(entry);
+    let b = IrBuilder::new_for::<()>(&mut key).try_position_at_end(entry).unwrap();
     let (terminated, _ret) = b.ret_void();
 
     let _cursor = BlockCursor::at_start(terminated);

@@ -378,7 +378,7 @@ fn operand_lifts_reject_a_foreign_tag() -> Result<(), IrError> {
     let b_fn_ty = b.function_type(b_i32, [b_i32.as_type()])?;
     let b_f = b.add_function_dyn("f", b_fn_ty, Linkage::External)?;
     let b_entry = b.view(b_f).append_basic_block(b, "entry");
-    let builder = IrBuilder::new_for::<Dyn>(&mut b_key).position_at_end(b_entry);
+    let builder = IrBuilder::new_for::<Dyn>(&mut b_key).try_position_at_end(b_entry)?;
 
     let err = builder
         .int_add(foreign, 1_i32, "bad")

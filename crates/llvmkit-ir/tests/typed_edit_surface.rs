@@ -15,7 +15,7 @@ use llvmkit_ir::{
     Analyses, BasicBlock, BasicBlockLabel, BlockId, CfgEditError, Dyn, EditedTerminator, FnCx,
     FnReport, FunctionId, FunctionPass, InsertPoint, IntPredicate, IntValue, IrBuilder, IrError,
     IrResult, LayoutToken, Linkage, Module, ModuleBrand, PositionedBefore, ReshapeCfg, TermEdit,
-    Value, ValueId, module_new, run_function_pass,
+    UniqueBrand, Value, ValueId, module_new, run_function_pass,
 };
 
 // Fixture return-type aliases. These keep the the emitters helper signatures under
@@ -94,7 +94,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectInvokeEdge<B> {
 /// Build `void @caller()` with an `invoke void @callee() to label %normal
 /// unwind label %unwind`, plus an unreferenced `%new` block that a redirect can
 /// aim at. Returns the caller and the `%new` `Dyn` label.
-fn build_invoke_caller<'ctx, B: ModuleBrand + 'ctx>(
+fn build_invoke_caller<'ctx, B: UniqueBrand + 'ctx>(
     key: &mut LayoutToken<'ctx, B>,
 ) -> IrResult<InvokeCallerFixture<B>> {
     let m = key.module();
@@ -264,7 +264,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectCallBrEdge<B> {
 /// supports asm-goto and selected intrinsics")` — a `callbr` to an ordinary
 /// function is not IR upstream accepts, and these tests re-verify their output.
 /// One `!i` label constraint matches the one indirect destination.
-fn build_callbr_caller<'ctx, B: ModuleBrand + 'ctx>(
+fn build_callbr_caller<'ctx, B: UniqueBrand + 'ctx>(
     key: &mut LayoutToken<'ctx, B>,
 ) -> IrResult<CallerFixture<B>> {
     let m = key.module();
@@ -551,7 +551,7 @@ struct TwoFunctionFixture<B: ModuleBrand> {
     orphan: BlockId<Dyn, B>,
 }
 
-fn build_two_functions<'ctx, B: ModuleBrand + 'ctx>(
+fn build_two_functions<'ctx, B: UniqueBrand + 'ctx>(
     key: &mut LayoutToken<'ctx, B>,
 ) -> IrResult<TwoFunctionFixture<B>> {
     let m = key.module();
@@ -786,7 +786,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RemoveCondBrArm {
 }
 
 /// Build `i32 @f(i32 %a)` whose entry is `cond_br (%a == 0) ? then : else`.
-fn build_cond_br_fn<'ctx, B: ModuleBrand + 'ctx>(
+fn build_cond_br_fn<'ctx, B: UniqueBrand + 'ctx>(
     key: &mut LayoutToken<'ctx, B>,
 ) -> IrResult<FunctionId<i32, B>> {
     let m = key.module();
@@ -901,7 +901,7 @@ impl<B: ModuleBrand> FunctionPass<B> for SwitchCaseOp<B> {
 /// Build `i32 @f(i32 %a)` whose entry is `switch %a, default %dflt [ 0 ->
 /// case0, 1 -> case1 ]`, plus an unreferenced `%new` block. Returns the
 /// function and the `case0`/`new` `Dyn` labels.
-fn build_switch_fn<'ctx, B: ModuleBrand + 'ctx>(
+fn build_switch_fn<'ctx, B: UniqueBrand + 'ctx>(
     key: &mut LayoutToken<'ctx, B>,
 ) -> IrResult<SwitchFixture<B>> {
     let m = key.module();
@@ -1044,7 +1044,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectSwitchSuccessor<B> {
 /// naming it must be rejected. `new` carries a head-phi (arity 1) so a pre-fix
 /// `redirect_successor(bogus, new, [ev])` would pass phi validation and corrupt
 /// `new`'s phi; `%ev` (defined in `entry`) is a valid seed for it.
-fn build_switch_bogus_fn<'ctx, B: ModuleBrand + 'ctx>(
+fn build_switch_bogus_fn<'ctx, B: UniqueBrand + 'ctx>(
     key: &mut LayoutToken<'ctx, B>,
 ) -> IrResult<SwitchBogusFixture<B>> {
     let m = key.module();

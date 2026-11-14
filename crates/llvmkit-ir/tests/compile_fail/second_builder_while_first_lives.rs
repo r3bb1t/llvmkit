@@ -18,7 +18,7 @@ fn main() {
         .unwrap()
         .as_function();
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let first = IrBuilder::new_for::<()>(&mut key).position_at_end(entry);
+    let first = IrBuilder::new_for::<()>(&mut key).try_position_at_end(entry).unwrap();
     // `first` still holds `key`: a second builder cannot borrow it.
     let second = IrBuilder::new_for::<()>(&mut key);
     let _ = first.ret_void();

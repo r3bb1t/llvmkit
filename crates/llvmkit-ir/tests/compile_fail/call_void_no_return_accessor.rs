@@ -19,7 +19,7 @@ fn main() {
     let caller_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<_>>::new()).expect("valid function type");
     let caller = m.add_function_dyn("c", caller_ty, Linkage::External).unwrap();
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&mut key).position_at_end(entry);
+    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&mut key).try_position_at_end(entry).unwrap();
     let inst = b
         .call_dyn(callee, Vec::<llvmkit_ir::Value<_>>::new(), "")
         .unwrap();

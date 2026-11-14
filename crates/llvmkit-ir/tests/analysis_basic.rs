@@ -462,7 +462,7 @@ where
         .as_function();
 
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::new_for::<()>(&mut key).position_at_end(entry);
+    let b = IrBuilder::new_for::<()>(&mut key).try_position_at_end(entry)?;
     b.call_dyn(g, Vec::<Value<'_, _>>::new(), "")?;
     b.call_dyn(h, Vec::<Value<'_, _>>::new(), "")?;
     b.ret_void();
@@ -470,7 +470,7 @@ where
     for function in [g, h] {
         let entry = m.view(function).append_basic_block(m, "entry");
         IrBuilder::new_for::<()>(&mut key)
-            .position_at_end(entry)
+            .try_position_at_end(entry)?
             .ret_void();
     }
     run(module)

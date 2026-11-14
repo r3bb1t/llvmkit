@@ -21,7 +21,7 @@ fn main() {
         .add_function_dyn("f", a.function_type_no_parameters(i32_ty).expect("valid function type"), Linkage::External)
         .expect("f");
     let entry = a.view(f).append_basic_block(&a, "entry");
-    let b0 = IrBuilder::with_folder(&mut a_key, NoFolder).position_at_end(entry);
+    let b0 = IrBuilder::with_folder(&mut a_key, NoFolder).try_position_at_end(entry).expect("position");
     let sum = b0
         .int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "s")
         .expect("add");

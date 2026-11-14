@@ -39,14 +39,15 @@ fn main() {
         .expect("g");
     let g_entry = m.view(g).append_basic_block(&m, "entry");
     IrBuilder::new_for::<Dyn>(&mut key)
-        .position_at_end(g_entry)
+        .try_position_at_end(g_entry)
+        .expect("position")
         .ret(f32_ty.const_float(1.0_f32))
         .expect("ret");
     let f = m
         .add_function_dyn("f", m.function_type_no_parameters(f32_ty).expect("valid function type"), Linkage::External)
         .expect("f");
     let f_entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(f_entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).try_position_at_end(f_entry).expect("position");
     let call = b
         .call_dyn(g, Vec::<Value<'_, _>>::new(), "r")
         .expect("call");
