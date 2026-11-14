@@ -532,9 +532,7 @@ fn split_at_refuses_an_instruction_of_another_block_without_mutating() -> Result
     assert!(
         matches!(
             result,
-            Err(IrError::InvalidOperation {
-                message: "split instruction is not in this block"
-            })
+            Err(IrError::Block(llvmkit_ir::BlockError::SplitPointNotInBlock))
         ),
         "split_at must refuse a split point outside the block"
     );
@@ -573,9 +571,9 @@ fn split_at_refuses_a_block_without_a_terminator_without_mutating() -> Result<()
     assert!(
         matches!(
             result,
-            Err(IrError::InvalidOperation {
-                message: "Can't use splitBasicBlock on degenerate BB!"
-            })
+            Err(IrError::Block(llvmkit_ir::BlockError::DegenerateSplit {
+                split: llvmkit_ir::BlockSplit::At
+            }))
         ),
         "split_at must refuse a block without a terminator"
     );
@@ -613,9 +611,9 @@ fn split_before_refuses_a_block_without_a_terminator_without_mutating() -> Resul
     assert!(
         matches!(
             result,
-            Err(IrError::InvalidOperation {
-                message: "Can't use splitBasicBlockBefore on degenerate BB!"
-            })
+            Err(IrError::Block(llvmkit_ir::BlockError::DegenerateSplit {
+                split: llvmkit_ir::BlockSplit::Before
+            }))
         ),
         "split_before must refuse a block without a terminator"
     );

@@ -28,19 +28,42 @@ use std::path::{Path, PathBuf};
 const ERROR_RS: &str = include_str!("../src/error.rs");
 
 /// The enums held to the rule, by name.
-const ENUMS: [&str; 5] = [
+const ENUMS: [&str; 7] = [
     "ConstantError",
     "PtrAuthRequirement",
     "ConstantExprError",
     "GepConstantError",
     "BuilderError",
+    "BlockError",
+    "CfgEditError",
 ];
 
 /// Variants a test need not name, each with the reason: one no public entry
-/// reaches, or a wrapper whose payload enum is itself in [`ENUMS`]. A variant
+/// reaches (an llvmkit invariant, whose `blame()` is `LlvmkitInvariant`), or
+/// a wrapper whose payload enum is itself in [`ENUMS`]. A variant
 /// here that a test also names is reported, so the exemption is removed once
 /// it is no longer needed.
-const EXEMPT: [(&str, &str, &str); 2] = [
+const EXEMPT: [(&str, &str, &str); 6] = [
+    (
+        "BlockError",
+        "AnchorNotInBlock",
+        "an llvmkit invariant: every caller reads the block from the anchor's own parent",
+    ),
+    (
+        "BlockError",
+        "ParentListMissingBlock",
+        "an llvmkit invariant: a block's parent and its function's block list are kept together",
+    ),
+    (
+        "CfgEditError",
+        "NoTerminator",
+        "an llvmkit invariant: a pass runs on a verified module and erases only a NonTerminator",
+    ),
+    (
+        "CfgEditError",
+        "LastInstructionNotTerminator",
+        "an llvmkit invariant: a pass runs on a verified module and erases only a NonTerminator",
+    ),
     (
         "BuilderError",
         "SplatLaneCountTooWide",
@@ -93,7 +116,8 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The text of every test file in the workspace crates but this one.
+/// The text of every test file in the workspace crates but this one: each
+/// crate's `tests/`, and each `src/*_tests/` test-module directory.
 fn test_sources() -> String {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut files = Vec::new();
@@ -102,6 +126,22 @@ fn test_sources() -> String {
     };
     for entry in entries.flatten() {
         rust_files(&entry.path().join("tests"), &mut files);
+        // The in-crate test modules under `src/` that live in a directory of
+        // their own (`src/phi_raw_tests/`): the rest of `src/` raises the
+        // variants, so it cannot count as asserting them.
+        let Ok(src_entries) = std::fs::read_dir(entry.path().join("src")) else {
+            continue;
+        };
+        for src_entry in src_entries.flatten() {
+            let path = src_entry.path();
+            if path.is_dir()
+                && path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().ends_with("_tests"))
+            {
+                rust_files(&path, &mut files);
+            }
+        }
     }
     files
         .iter()

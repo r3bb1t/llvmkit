@@ -58,7 +58,7 @@ impl Pattern {
 /// them: first on `33b2aaaf` with the rule added, and again in each commit
 /// that lowered one. Lower one whenever its count falls; never raise one.
 const CEILINGS: [(Pattern, usize); 4] = [
-    (Pattern::InvalidOperationSite, 70),
+    (Pattern::InvalidOperationSite, 42),
     (Pattern::StringParseDiagnostic, 504),
     (Pattern::PublicTupleReturn, 47),
     (Pattern::PublicBoolParameter, 43),

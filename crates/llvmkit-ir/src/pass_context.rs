@@ -69,7 +69,7 @@ use super::block_state::Terminated;
 use super::capability::{Capability, Mutable, ReadOnly};
 use super::cfg_update::CfgUpdate;
 use super::dominator_tree::DominatorTreeAnalysis;
-use super::error::IrError;
+use super::error::{CfgEditError, EditedTerminator, IrError, SwitchSuccessorEdit};
 use super::function::{FunctionBasicBlocks, FunctionValue};
 use super::instr_types::BranchKind;
 use super::instruction::InstructionKindData;
@@ -1761,9 +1761,7 @@ where
         // every redirect path — legacy and typed — shares it at the same error
         // priority.
         if crate::cfg::successor_ids(&from_block).contains(&new_id) {
-            return Err(IrError::InvalidOperation {
-                message: "redirect: `from` already reaches `new_to`",
-            });
+            return Err(CfgEditError::AlreadyReaches.into());
         }
 
         // Collect `new_to`'s leading phis (its block parameters) and validate
@@ -1898,9 +1896,12 @@ where
                 // Bounds-check the caller-supplied index before mutating: an
                 // out-of-range index is rejected here, before the dest cell or
                 // any phi is touched, so a bad index leaves the IR untouched.
-                let cell = callbr.indirect_dests.get(idx).ok_or(IrError::InvalidOperation {
-                    message: "redirect_indirect: `callbr` indirect destination index out of range",
-                })?;
+                let cell = callbr.indirect_dests.get(idx).ok_or(
+                    CfgEditError::IndirectDestinationOutOfRange {
+                        index: idx,
+                        count: callbr.indirect_dests.len(),
+                    },
+                )?;
                 let old = cell.get();
                 cell.set(new_id);
                 old
@@ -2009,7 +2010,8 @@ where
     /// [`BasicBlockView::id`].
     ///
     /// Errors: [`IrError::ForeignValueId`] if `from` is not from this module;
-    /// [`IrError::InvalidOperation`] if `from` has no terminator.
+    /// [`CfgEditError::NoTerminator`] / [`CfgEditError::LastInstructionNotTerminator`]
+    /// if `from` has no terminator.
     #[inline]
     pub fn edit_terminator<'e>(
         &'e self,
@@ -2017,14 +2019,12 @@ where
     ) -> IrResult<TermEdit<'e, 'm, 'r, 'ctx, B, R>> {
         let from_block = self.resolve_basic_block(from)?;
         let from_view = BasicBlockView::new(from_block.copy_handle());
-        let term = from_block.terminator().ok_or(IrError::InvalidOperation {
-            message: "edit_terminator: `from` has no terminator",
-        })?;
+        let term = from_block.terminator().ok_or(CfgEditError::NoTerminator)?;
         // Internal: the terminator of a block resolved against this module.
         let term_id = term.slot_trusting_same_module();
-        let kind = term.terminator_kind().ok_or(IrError::InvalidOperation {
-            message: "edit_terminator: `from`'s last instruction is not a terminator",
-        })?;
+        let kind = term
+            .terminator_kind()
+            .ok_or(CfgEditError::LastInstructionNotTerminator)?;
         Ok(match kind {
             TerminatorKind::Br(branch) => {
                 if branch.is_conditional() {
@@ -2069,8 +2069,9 @@ where
     /// `dyn_cast`-style narrow to a [`SwitchEdit`]: `Err` if `from`'s
     /// terminator is not a `switch`.
     ///
-    /// Errors: [`IrError::InvalidOperation`] if `from` has no terminator or its
-    /// terminator is not a `switch`.
+    /// Errors: as [`Self::edit_terminator`], or
+    /// [`CfgEditError::TerminatorKindMismatch`] if its terminator is not a
+    /// `switch`.
     #[inline]
     pub fn edit_switch<'e>(
         &'e self,
@@ -2078,17 +2079,19 @@ where
     ) -> IrResult<SwitchEdit<'e, 'm, 'r, 'ctx, B, R>> {
         match self.edit_terminator(from)? {
             TermEdit::Switch(edit) => Ok(edit),
-            _ => Err(IrError::InvalidOperation {
-                message: "edit_switch: `from`'s terminator is not a `switch`",
-            }),
+            _ => Err(CfgEditError::TerminatorKindMismatch {
+                expected: EditedTerminator::Switch,
+            }
+            .into()),
         }
     }
 
     /// `dyn_cast`-style narrow to a [`CondBrEdit`]: `Err` if `from`'s
     /// terminator is not a conditional `br`.
     ///
-    /// Errors: [`IrError::InvalidOperation`] if `from` has no terminator or its
-    /// terminator is not a `cond_br`.
+    /// Errors: as [`Self::edit_terminator`], or
+    /// [`CfgEditError::TerminatorKindMismatch`] if its terminator is not a
+    /// `cond_br`.
     #[inline]
     pub fn edit_cond_br<'e>(
         &'e self,
@@ -2096,9 +2099,10 @@ where
     ) -> IrResult<CondBrEdit<'e, 'm, 'r, 'ctx, B, R>> {
         match self.edit_terminator(from)? {
             TermEdit::CondBr(edit) => Ok(edit),
-            _ => Err(IrError::InvalidOperation {
-                message: "edit_cond_br: `from`'s terminator is not a `cond_br`",
-            }),
+            _ => Err(CfgEditError::TerminatorKindMismatch {
+                expected: EditedTerminator::ConditionalBranch,
+            }
+            .into()),
         }
     }
 
@@ -2106,8 +2110,9 @@ where
     /// not an *unconditional* `br` (a `cond_br` is rejected — narrow it with
     /// [`Self::edit_cond_br`] instead).
     ///
-    /// Errors: [`IrError::InvalidOperation`] if `from` has no terminator or its
-    /// terminator is not an unconditional `br`.
+    /// Errors: as [`Self::edit_terminator`], or
+    /// [`CfgEditError::TerminatorKindMismatch`] if its terminator is not an
+    /// unconditional `br`.
     #[inline]
     pub fn edit_br<'e>(
         &'e self,
@@ -2115,17 +2120,19 @@ where
     ) -> IrResult<BrEdit<'e, 'm, 'r, 'ctx, B, R>> {
         match self.edit_terminator(from)? {
             TermEdit::Br(edit) => Ok(edit),
-            _ => Err(IrError::InvalidOperation {
-                message: "edit_br: `from`'s terminator is not an unconditional `br`",
-            }),
+            _ => Err(CfgEditError::TerminatorKindMismatch {
+                expected: EditedTerminator::Branch,
+            }
+            .into()),
         }
     }
 
     /// `dyn_cast`-style narrow to an [`InvokeEdit`]: `Err` if `from`'s
     /// terminator is not an `invoke`.
     ///
-    /// Errors: [`IrError::InvalidOperation`] if `from` has no terminator or its
-    /// terminator is not an `invoke`.
+    /// Errors: as [`Self::edit_terminator`], or
+    /// [`CfgEditError::TerminatorKindMismatch`] if its terminator is not an
+    /// `invoke`.
     #[inline]
     pub fn edit_invoke<'e>(
         &'e self,
@@ -2133,17 +2140,19 @@ where
     ) -> IrResult<InvokeEdit<'e, 'm, 'r, 'ctx, B, R>> {
         match self.edit_terminator(from)? {
             TermEdit::Invoke(edit) => Ok(edit),
-            _ => Err(IrError::InvalidOperation {
-                message: "edit_invoke: `from`'s terminator is not an `invoke`",
-            }),
+            _ => Err(CfgEditError::TerminatorKindMismatch {
+                expected: EditedTerminator::Invoke,
+            }
+            .into()),
         }
     }
 
     /// `dyn_cast`-style narrow to a [`CallBrEdit`]: `Err` if `from`'s
     /// terminator is not a `callbr`.
     ///
-    /// Errors: [`IrError::InvalidOperation`] if `from` has no terminator or its
-    /// terminator is not a `callbr`.
+    /// Errors: as [`Self::edit_terminator`], or
+    /// [`CfgEditError::TerminatorKindMismatch`] if its terminator is not a
+    /// `callbr`.
     #[inline]
     pub fn edit_callbr<'e>(
         &'e self,
@@ -2151,9 +2160,10 @@ where
     ) -> IrResult<CallBrEdit<'e, 'm, 'r, 'ctx, B, R>> {
         match self.edit_terminator(from)? {
             TermEdit::CallBr(edit) => Ok(edit),
-            _ => Err(IrError::InvalidOperation {
-                message: "edit_callbr: `from`'s terminator is not a `callbr`",
-            }),
+            _ => Err(CfgEditError::TerminatorKindMismatch {
+                expected: EditedTerminator::CallBr,
+            }
+            .into()),
         }
     }
 
@@ -2182,7 +2192,7 @@ where
     /// a zero-incoming phi has no type to give — use [`Self::insert_phi_dyn`] for
     /// that degenerate case.
     ///
-    /// Errors: `IrError::InvalidOperation` if `incomings` is empty;
+    /// Errors: [`CfgEditError::PhiWithoutIncoming`] if `incomings` is empty;
     /// [`IrError::ForeignValueId`] if an incoming id is not from this module;
     /// otherwise the same errors as [`Self::insert_phi_dyn`] (dominance /
     /// coherence).
@@ -2212,10 +2222,7 @@ where
         R: AnalysisSelector<'ctx, B, DominatorTreeAnalysis, I>,
     {
         let module_ref = self.patch.module_mut().capability_ref();
-        let (first, _) = *incomings.first().ok_or(IrError::InvalidOperation {
-            message: "insert_phi: needs at least one typed incoming to derive the \
-                      result type; use insert_phi_dyn for the zero-incoming case",
-        })?;
+        let (first, _) = *incomings.first().ok_or(CfgEditError::PhiWithoutIncoming)?;
         // Resolve each incoming id to its ephemeral handle (tag-checked) and
         // widen; a foreign id is rejected before any arena work.
         let mut erased: Vec<(Value<'m, B>, BlockId<Dyn, B>)> = Vec::with_capacity(incomings.len());
@@ -2671,7 +2678,7 @@ where
     ///
     /// Records a [`CfgUpdate`] delete + insert pair and marks the mutator dirty.
     ///
-    /// Errors: [`IrError::InvalidOperation`] if `old_to` is not a case successor
+    /// Errors: [`CfgEditError::NotACaseSuccessor`] / [`CfgEditError::AlreadyReaches`] if `old_to` is not a case successor
     /// of this switch or `from` already reaches `new_to`;
     /// [`IrError::PhiArgArityMismatch`] / [`IrError::TypeMismatch`] for a
     /// mis-sized or mistyped `phi_values`.
@@ -2692,9 +2699,10 @@ where
         // also rejects `old_to == default` (the default is not a case; edit it
         // with [`Self::redirect_default`]).
         if !self.reshape.switch_has_case_successor(self.term_id, old_id) {
-            return Err(IrError::InvalidOperation {
-                message: "redirect_successor: `old_to` is not a case successor of this switch",
-            });
+            return Err(CfgEditError::NotACaseSuccessor {
+                edit: SwitchSuccessorEdit::Redirect,
+            }
+            .into());
         }
         self.reshape.redirect_slot(
             &self.from,
@@ -2739,8 +2747,9 @@ where
     ///
     /// Records a [`CfgUpdate`] delete and marks the mutator dirty.
     ///
-    /// Errors: [`IrError::InvalidOperation`] if `old_to` is the switch's default
-    /// edge (a `switch` must keep its default) or is not a case successor.
+    /// Errors: [`CfgEditError::RemoveSwitchDefault`] if `old_to` is the
+    /// switch's default edge (a `switch` must keep its default), or
+    /// [`CfgEditError::NotACaseSuccessor`] if it is not a case successor.
     #[inline]
     pub fn remove_successor(&self, old_to: BlockId<Dyn, B>) -> IrResult<()> {
         let old_id = old_to
@@ -2748,17 +2757,16 @@ where
             // Internal: admitted by `into_basic_block_label` just above.
             .slot_trusting_same_module();
         if self.reshape.switch_default_dest(self.term_id) == old_id {
-            return Err(IrError::InvalidOperation {
-                message: "remove_successor: cannot remove a `switch`'s default edge",
-            });
+            return Err(CfgEditError::RemoveSwitchDefault.into());
         }
         // `old_to` is target-based: witness it names a live case before
         // delegating, else `remove_slot` drops zero cases yet still logs a
         // spurious `CfgUpdate::delete` that corrupts incremental CFG analysis.
         if !self.reshape.switch_has_case_successor(self.term_id, old_id) {
-            return Err(IrError::InvalidOperation {
-                message: "remove_successor: `old_to` is not a case successor of this switch",
-            });
+            return Err(CfgEditError::NotACaseSuccessor {
+                edit: SwitchSuccessorEdit::Remove,
+            }
+            .into());
         }
         self.reshape
             .remove_slot(&self.from, self.term_id, EditSlot::SwitchCase(old_id))
@@ -2870,7 +2878,7 @@ where
 
     /// Retarget the `index`-th indirect edge onto `new_to`, seeding `new_to`'s
     /// leading phis with `phi_values`. An out-of-range `index` is rejected with
-    /// [`IrError::InvalidOperation`]. See [`SwitchEdit::redirect_successor`] for
+    /// [`CfgEditError::IndirectDestinationOutOfRange`]. See [`SwitchEdit::redirect_successor`] for
     /// the phi-values contract.
     #[inline]
     pub fn redirect_indirect(

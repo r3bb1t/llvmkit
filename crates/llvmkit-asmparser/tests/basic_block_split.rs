@@ -473,9 +473,9 @@ bb3:
     assert!(
         matches!(
             result,
-            Err(IrError::InvalidOperation {
-                message: "cannot split on multi incoming phis"
-            })
+            Err(IrError::Block(
+                llvmkit_ir::BlockError::SplitBeforeMultiIncomingPhis
+            ))
         ),
         "split_before must refuse a phi with several predecessors"
     );

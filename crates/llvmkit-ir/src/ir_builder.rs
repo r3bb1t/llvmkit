@@ -10814,7 +10814,7 @@ where
         let v = value.into_return_value(self.mutable_ref())?;
         // Runtime-check for the fully-erased `Dyn` marker.
         if R::expected_kind() == ExpectedRetKind::Dyn {
-            let parent_fn = self.parent_function_dyn();
+            let parent_fn = self.parent_function_dyn()?;
             let expected = parent_fn.return_type();
             if v.ty() != expected {
                 return Err(IrError::ReturnTypeMismatch {
@@ -10830,13 +10830,17 @@ where
 
     /// Owning function of the current insertion block, in its
     /// runtime-checked form. Used by the `Dyn`-marker fall-back inside
-    /// [`Self::ret`].
-    fn parent_function_dyn(&self) -> FunctionValue<'ctx, Dyn, B> {
-        let bb = self.insert_block();
-        let parent_id = bb.parent_id().unwrap_or_else(|| {
-            unreachable!("Positioned builder block always has a parent function")
-        });
-        FunctionValue::<Dyn, B>::from_parts_unchecked(parent_id, self.mutable_ref())
+    /// [`Self::ret`]. A builder positioned in an orphan block
+    /// ([`BasicBlock::create_orphan`]) has none, so this refuses.
+    fn parent_function_dyn(&self) -> IrResult<FunctionValue<'ctx, Dyn, B>> {
+        let parent_id = self
+            .insert_block()
+            .parent_id()
+            .ok_or(BuilderError::ReturnOutsideFunction)?;
+        Ok(FunctionValue::<Dyn, B>::from_parts_unchecked(
+            parent_id,
+            self.mutable_ref(),
+        ))
     }
 }
 
@@ -10863,13 +10867,11 @@ where
 {
     /// Produce `ret void`. Errors with
     /// [`IrError::ReturnTypeMismatch`] if the parent function does
-    /// not actually return `void`.
+    /// not actually return `void`, and with
+    /// [`BuilderError::ReturnOutsideFunction`] in a block that belongs to no
+    /// function.
     pub fn ret_void(self) -> IrResult<TerminatedBlockInst<'ctx, Dyn, B>> {
-        let parent_id = self.insert_block().parent_id().unwrap_or_else(|| {
-            unreachable!("Positioned builder block always has a parent function")
-        });
-        let parent_fn =
-            FunctionValue::<Dyn, B>::from_parts_unchecked(parent_id, self.mutable_ref());
+        let parent_fn = self.parent_function_dyn()?;
         let expected = parent_fn.return_type();
         if !expected.is_void() {
             return Err(IrError::ReturnTypeMismatch {

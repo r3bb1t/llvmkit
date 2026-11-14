@@ -48,7 +48,7 @@ use super::constant::{Constant, IsConstant};
 use super::denormal_mode::DenormalMode;
 use super::derived_types::FunctionType;
 use super::derived_types::{FloatType, IntType};
-use super::error::{IrError, IrResult, ValueCategoryLabel};
+use super::error::{BlockError, IrError, IrResult, ValueCategoryLabel};
 use super::float_kind::FloatKind;
 use super::function_signature::{
     FunctionParamList, FunctionReturn, FunctionSignature, TypedFunctionValue,
@@ -1203,16 +1203,14 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
             });
         };
         if *data.parent.borrow() != Some(self.id) {
-            return Err(IrError::InvalidOperation {
-                message: "block does not belong to function",
-            });
+            return Err(BlockError::BlockNotInFunction.into());
         }
         let mut blocks = self.data().basic_blocks.borrow_mut();
         // Constant time, as upstream's splice is, wherever the block sits.
+        // The parent was checked above, so a block missing here is a block
+        // list out of step with its parents.
         if !blocks.contains(block_id) {
-            return Err(IrError::InvalidOperation {
-                message: "block does not belong to function",
-            });
+            return Err(BlockError::ParentListMissingBlock.into());
         }
         blocks.push_back(block_id);
         Ok(())
@@ -1299,9 +1297,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
             });
         };
         if *data.parent.borrow() != Some(self.id) {
-            return Err(IrError::InvalidOperation {
-                message: "block does not belong to function",
-            });
+            return Err(BlockError::BlockNotInFunction.into());
         }
         let block = BasicBlock::from_parts(
             block_id,
@@ -1309,9 +1305,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, C: Capability> FunctionValue<
             value.ty().slot_trusting_same_module(),
         );
         if block.terminator().is_some_and(|inst| inst.is_terminator()) {
-            return Err(IrError::InvalidOperation {
-                message: "cannot create insertion handle for terminated block",
-            });
+            return Err(BlockError::InsertionIntoTerminatedBlock.into());
         }
         Ok(block)
     }

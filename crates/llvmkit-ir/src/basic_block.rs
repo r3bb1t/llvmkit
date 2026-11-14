@@ -22,7 +22,7 @@ use super::asm_writer::SlotTracker;
 use super::block_params::{BlockParams, BlockParamsDyn};
 use super::block_state::{BlockTerminationState, Terminated, Unterminated};
 use super::capability::{CanMutate, Capability, CapabilityOf, Mutable};
-use super::error::ValueCategoryLabel;
+use super::error::{BlockError, BlockSplit, ValueCategoryLabel};
 use super::function::FunctionValue;
 use super::function_signature::{CallArgs, FunctionParamList};
 use super::instruction::{
@@ -1017,7 +1017,7 @@ impl<
     }
 
     /// Insert `instr` immediately before `before` in this block's
-    /// instruction list. Errors with [`IrError::InvalidOperation`] if
+    /// instruction list. Errors with [`BlockError::AnchorNotInBlock`] if
     /// `before` is not present in this block. Crate-internal: lifecycle
     /// primitives in [`crate::instruction`] reach for this.
     ///
@@ -1039,14 +1039,12 @@ impl<
         {
             Ok(())
         } else {
-            Err(IrError::InvalidOperation {
-                message: "instruction anchor is not in this block",
-            })
+            Err(BlockError::AnchorNotInBlock.into())
         }
     }
 
     /// Insert `instr` immediately after `after` in this block's
-    /// instruction list. Errors with [`IrError::InvalidOperation`] if
+    /// instruction list. Errors with [`BlockError::AnchorNotInBlock`] if
     /// `after` is not present in this block.
     pub(super) fn insert_instruction_after(
         &self,
@@ -1064,9 +1062,7 @@ impl<
         {
             Ok(())
         } else {
-            Err(IrError::InvalidOperation {
-                message: "instruction anchor is not in this block",
-            })
+            Err(BlockError::AnchorNotInBlock.into())
         }
     }
 
@@ -1297,9 +1293,7 @@ impl<
         if self.data().instructions.borrow().contains(instruction) {
             Ok(instruction)
         } else {
-            Err(IrError::InvalidOperation {
-                message: "split instruction is not in this block",
-            })
+            Err(BlockError::SplitPointNotInBlock.into())
         }
     }
 
@@ -1310,9 +1304,7 @@ impl<
     where
         C: CanMutate,
     {
-        let parent_fn_id = self.parent_id().ok_or(IrError::InvalidOperation {
-            message: "cannot split an orphan basic block",
-        })?;
+        let parent_fn_id = self.parent_id().ok_or(BlockError::SplitOrphanBlock)?;
         let parent_fn = FunctionValue::<'ctx, R, B>::from_parts_unchecked(
             parent_fn_id,
             self.module.proven_mutable(),
@@ -1320,9 +1312,9 @@ impl<
         if parent_fn.data().basic_blocks.borrow().contains(self.id) {
             Ok(parent_fn)
         } else {
-            Err(IrError::InvalidOperation {
-                message: "block does not belong to function",
-            })
+            // The parent was read off this block, so its list lacking the
+            // block is a block list out of step with its parents.
+            Err(BlockError::ParentListMissingBlock.into())
         }
     }
 
@@ -1403,8 +1395,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
     /// Every refusal happens before anything is created, moved or rewritten:
     ///
     /// - [`IrError::ForeignValueId`] if `before` belongs to another module.
-    /// - [`IrError::InvalidOperation`] if this block has no terminator
-    ///   (upstream's `assert(getTerminator())`; a `Terminated` handle is not
+    /// - [`BlockError`] (inside [`IrError::Block`]) if this block has no
+    ///   terminator (upstream's `assert(getTerminator())`; a `Terminated` handle is not
     ///   proof on its own, because [`FunctionValue::basic_blocks`] hands one
     ///   out for every block), if `before` is not one of its instructions, or
     ///   if this block has no parent function or is missing from its block
@@ -1426,9 +1418,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
         let split_id = before.slot_in(self.module.id())?;
         // assert(getTerminator() && "Can't use splitBasicBlock on degenerate BB!");
         if self.terminator_slot().is_none() {
-            return Err(IrError::InvalidOperation {
-                message: "Can't use splitBasicBlock on degenerate BB!",
-            });
+            return Err(BlockError::DegenerateSplit {
+                split: BlockSplit::At,
+            }
+            .into());
         }
         // assert(I != InstList.end() && "Trying to get me to create degenerate
         // basic block!"): an `InstructionView` always names an instruction.
@@ -1501,8 +1494,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
     /// Every refusal happens before anything is created, moved or retargeted:
     ///
     /// - [`IrError::ForeignValueId`] if `before` belongs to another module.
-    /// - [`IrError::InvalidOperation`] if this block has no terminator
-    ///   (upstream's `assert(getTerminator())`, which a `Terminated` handle does
+    /// - [`BlockError`] (inside [`IrError::Block`]) if this block has no
+    ///   terminator (upstream's `assert(getTerminator())`, which a `Terminated` handle does
     ///   not prove on its own), if `before` is not one of its instructions, if
     ///   `before` is a phi and this block does not have exactly one predecessor
     ///   edge (upstream's `assert(!isa<PHINode>(*I) || getSinglePredecessor())`),
@@ -1528,9 +1521,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
         let split_id = before.slot_in(self.module.id())?;
         // assert(getTerminator() && "Can't use splitBasicBlockBefore on degenerate BB!");
         if self.terminator_slot().is_none() {
-            return Err(IrError::InvalidOperation {
-                message: "Can't use splitBasicBlockBefore on degenerate BB!",
-            });
+            return Err(BlockError::DegenerateSplit {
+                split: BlockSplit::Before,
+            }
+            .into());
         }
         // assert(I != InstList.end() && "Trying to get me to create degenerate
         // basic block!"): an `InstructionView` always names an instruction.
@@ -1542,9 +1536,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
             ValueKindData::Instruction(data) if matches!(data.kind, InstructionKindData::Phi(_))
         );
         if split_point_is_phi && crate::cfg::single_predecessor(self.to_erased()).is_none() {
-            return Err(IrError::InvalidOperation {
-                message: "cannot split on multi incoming phis",
-            });
+            return Err(BlockError::SplitBeforeMultiIncomingPhis.into());
         }
         let parent_fn = self.parent_holding_this()?;
         // DebugLoc Loc = I->getDebugLoc(); if (Loc) Loc = Loc->getWithoutAtom();

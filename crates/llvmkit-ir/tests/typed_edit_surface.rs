@@ -295,6 +295,62 @@ fn callbr_redirect_default_retargets_default_edge() -> Result<(), IrError> {
     Ok(())
 }
 
+/// A `ReshapeCfg` pass that retargets the entry block's `callbr` indirect
+/// edge `index` onto `new_to`.
+struct RedirectCallBrIndirect<B: ModuleBrand> {
+    index: usize,
+    new_to: BlockId<Dyn, B>,
+}
+
+impl<B: ModuleBrand> FunctionPass<B> for RedirectCallBrIndirect<B> {
+    type Access = ReshapeCfg;
+    type Requires = ();
+    const NAME: &'static str = "redirect-callbr-indirect";
+
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
+        let reshape = cx.mutate();
+        let entry = reshape
+            .function()
+            .entry_block()
+            .expect("definition has entry");
+        reshape
+            .edit_callbr(entry.id())?
+            .redirect_indirect(self.index, self.new_to, &[])?;
+        Ok(reshape.done())
+    }
+}
+
+/// `redirect_indirect` past the end of the `callbr`'s indirect destinations is
+/// refused with the index and the count, before any edge is touched.
+///
+/// **No upstream counterpart**: `CallBrInst::setIndirectDest` asserts its
+/// index; llvmkit's typed refusal carries it.
+#[test]
+fn callbr_redirect_indirect_refuses_an_index_past_the_destinations() -> Result<(), IrError> {
+    let m = module_new!("callbr-redirect-indirect-out-of-range")?;
+    let (caller, new_dyn) = build_callbr_caller(&m)?;
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    let pass = RedirectCallBrIndirect {
+        index: 1,
+        new_to: new_dyn,
+    };
+    let err = run_function_pass(pass, verified, caller, &mut analyses)
+        .expect_err("index 1 of a callbr with one indirect destination must be refused");
+    assert_eq!(
+        err,
+        IrError::from(llvmkit_ir::CfgEditError::IndirectDestinationOutOfRange {
+            index: 1,
+            count: 1,
+        })
+    );
+    Ok(())
+}
+
 /// `edit_callbr(..).redirect_indirect(0, new, [])` retargets indirect edge 0.
 #[test]
 fn callbr_redirect_indirect_retargets_indirect_edge() -> Result<(), IrError> {
@@ -677,9 +733,11 @@ fn switch_redirect_successor_rejects_non_case_target() -> Result<(), IrError> {
     };
     let err = run_function_pass(pass, verified, f, &mut analyses)
         .expect_err("a non-case `old_to` must be rejected");
-    assert!(
-        matches!(err, IrError::InvalidOperation { message } if message.contains("not a case successor")),
-        "expected InvalidOperation about a non-case successor, got: {err:?}"
+    assert_eq!(
+        err,
+        IrError::from(llvmkit_ir::CfgEditError::NotACaseSuccessor {
+            edit: llvmkit_ir::SwitchSuccessorEdit::Redirect,
+        })
     );
     Ok(())
 }
@@ -701,9 +759,11 @@ fn switch_remove_successor_rejects_non_case_target() -> Result<(), IrError> {
     };
     let err = run_function_pass(pass, verified, f, &mut analyses)
         .expect_err("a non-case `old_to` must be rejected");
-    assert!(
-        matches!(err, IrError::InvalidOperation { message } if message.contains("not a case successor")),
-        "expected InvalidOperation about a non-case successor, got: {err:?}"
+    assert_eq!(
+        err,
+        IrError::from(llvmkit_ir::CfgEditError::NotACaseSuccessor {
+            edit: llvmkit_ir::SwitchSuccessorEdit::Remove,
+        })
     );
     Ok(())
 }

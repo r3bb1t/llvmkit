@@ -257,9 +257,7 @@ fn split_block_refuses_an_instruction_of_another_block_without_mutating() -> Res
     assert!(
         matches!(
             refusal,
-            Some(IrError::InvalidOperation {
-                message: "split instruction is not in this block"
-            })
+            Some(IrError::Block(llvmkit_ir::BlockError::SplitPointNotInBlock))
         ),
         "split_block must refuse a split point outside the block"
     );
@@ -499,9 +497,9 @@ fn insert_phi_typed_rejects_empty_incomings() -> Result<(), IrError> {
     };
     let err = run_function_pass(pass, verified, f, &mut analyses)
         .expect_err("typed insert_phi must reject empty incomings");
-    assert!(
-        matches!(err, IrError::InvalidOperation { .. }),
-        "expected InvalidOperation for empty incomings, got: {err:?}"
+    assert_eq!(
+        err,
+        IrError::from(llvmkit_ir::CfgEditError::PhiWithoutIncoming)
     );
     Ok(())
 }
@@ -1310,10 +1308,7 @@ fn redirect_edge_rejects_cond_br_already_reaching_new() -> Result<(), IrError> {
     };
     let err = run_function_pass(pass, verified, f, &mut analyses)
         .expect_err("an already-reached new_to must be rejected");
-    assert!(
-        matches!(err, IrError::InvalidOperation { message } if message.contains("already reaches")),
-        "expected InvalidOperation about already reaching new_to, got: {err:?}"
-    );
+    assert_eq!(err, IrError::from(llvmkit_ir::CfgEditError::AlreadyReaches));
     Ok(())
 }
 

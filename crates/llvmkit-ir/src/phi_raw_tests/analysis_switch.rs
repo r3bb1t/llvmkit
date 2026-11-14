@@ -212,9 +212,11 @@ fn edit_switch_rejects_non_switch_from() -> Result<(), IrError> {
     };
     let err = run_function_pass(pass, verified, f, &mut analyses)
         .expect_err("edit_switch must reject a non-switch `from`");
-    assert!(
-        matches!(err, IrError::InvalidOperation { .. }),
-        "expected InvalidOperation for a non-switch `from`, got: {err:?}"
+    assert_eq!(
+        err,
+        IrError::from(crate::CfgEditError::TerminatorKindMismatch {
+            expected: crate::EditedTerminator::Switch,
+        })
     );
     Ok(())
 }
@@ -235,10 +237,7 @@ fn remove_edge_rejects_default_edge() -> Result<(), IrError> {
     };
     let err = run_function_pass(pass, verified, f, &mut analyses)
         .expect_err("remove_successor must reject dropping the switch default edge");
-    assert!(
-        matches!(err, IrError::InvalidOperation { .. }),
-        "expected InvalidOperation for the switch default edge, got: {err:?}"
-    );
+    assert_eq!(err, IrError::from(crate::CfgEditError::RemoveSwitchDefault));
     Ok(())
 }
 
@@ -264,10 +263,7 @@ fn redirect_edge_rejects_already_reaches_new() -> Result<(), IrError> {
     };
     let err = run_function_pass(pass, verified, f, &mut analyses)
         .expect_err("redirect_successor must reject a `new_to` already reached by `from`");
-    assert!(
-        matches!(err, IrError::InvalidOperation { .. }),
-        "expected InvalidOperation when `from` already reaches `new_to`, got: {err:?}"
-    );
+    assert_eq!(err, IrError::from(crate::CfgEditError::AlreadyReaches));
     Ok(())
 }
 

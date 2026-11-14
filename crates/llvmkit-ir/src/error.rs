@@ -2263,6 +2263,13 @@ pub enum IrError {
     /// [`BuilderError`].
     #[error(transparent)]
     Builder(#[from] BuilderError),
+    /// A basic-block operation refused for where its block or instruction is;
+    /// see [`BlockError`].
+    #[error(transparent)]
+    Block(#[from] BlockError),
+    /// A CFG edit the edited terminator cannot take; see [`CfgEditError`].
+    #[error(transparent)]
+    CfgEdit(#[from] CfgEditError),
 }
 
 impl IrError {
@@ -2425,6 +2432,8 @@ impl IrError {
             // Every builder refusal rejects operands or a position the caller
             // supplied.
             Self::Builder(_) => Blame::UsageError,
+            Self::Block(error) => error.blame(),
+            Self::CfgEdit(error) => error.blame(),
         }
     }
 }
@@ -2711,6 +2720,13 @@ pub enum BuilderError {
     /// A vector splat whose lane count does not fit the platform's `usize`.
     #[error("vector splat lane count exceeds the platform address range")]
     SplatLaneCountTooWide,
+    /// A `ret` from a `Dyn`-marker builder positioned in a block that belongs
+    /// to no function: the builder checks a return against its function's
+    /// return type, and an orphan block has none to check against. Upstream's
+    /// `ReturnInst` checks no type; the typed markers carry theirs statically
+    /// and need no parent.
+    #[error("cannot check a `ret` in a block that belongs to no function")]
+    ReturnOutsideFunction,
 }
 
 /// The operation an operand-type check in [`BuilderError`] belongs to.
@@ -2783,6 +2799,212 @@ impl AggregateInstruction {
         match self {
             Self::ExtractValue => "extractvalue",
             Self::InsertValue => "insertvalue",
+        }
+    }
+}
+
+/// A basic-block operation refused for where its block or instruction is:
+/// upstream's `BasicBlock::splitBasicBlock*` and `Function` block-list
+/// asserts, and llvmkit's insertion-handle rules. Each variant's `Display` is
+/// the text the condition was reported with, upstream's own where one exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum BlockError {
+    /// An instruction used as an insertion anchor is not in the block. Every
+    /// caller reads the block from the anchor's own parent, so this is an
+    /// llvmkit bug, not the caller's.
+    #[error("instruction anchor is not in this block")]
+    AnchorNotInBlock,
+    /// The instruction a block is split at is not in the block.
+    #[error("split instruction is not in this block")]
+    SplitPointNotInBlock,
+    /// A block that belongs to no function was asked to split.
+    #[error("cannot split an orphan basic block")]
+    SplitOrphanBlock,
+    /// A block named as one of a function's belongs to another function, or
+    /// to none.
+    #[error("block does not belong to function")]
+    BlockNotInFunction,
+    /// A block whose parent is the function but which the function's block
+    /// list does not hold: the two are kept together, so this is an llvmkit
+    /// bug, not the caller's.
+    #[error("block does not belong to function")]
+    ParentListMissingBlock,
+    /// A split of a block that has no terminator (upstream's
+    /// `assert(getTerminator() && "Can't use splitBasicBlock on degenerate BB!")`).
+    #[error("Can't use {} on degenerate BB!", split.upstream_name())]
+    DegenerateSplit {
+        /// Which split was asked for.
+        split: BlockSplit,
+    },
+    /// `split_before` at a block whose successor phis have more than one
+    /// incoming from it (`BasicBlock::splitBasicBlockBefore`'s assert).
+    #[error("cannot split on multi incoming phis")]
+    SplitBeforeMultiIncomingPhis,
+    /// An insertion handle asked for a block that already has a terminator.
+    #[error("cannot create insertion handle for terminated block")]
+    InsertionIntoTerminatedBlock,
+}
+
+impl BlockError {
+    /// Who the refusal blames: the caller, for a block or instruction it
+    /// named that breaks the rule, or llvmkit, for a broken invariant.
+    pub fn blame(self) -> Blame {
+        match self {
+            Self::AnchorNotInBlock | Self::ParentListMissingBlock => Blame::LlvmkitInvariant,
+            Self::SplitPointNotInBlock
+            | Self::SplitOrphanBlock
+            | Self::BlockNotInFunction
+            | Self::DegenerateSplit { .. }
+            | Self::SplitBeforeMultiIncomingPhis
+            | Self::InsertionIntoTerminatedBlock => Blame::UsageError,
+        }
+    }
+}
+
+/// The two ways a block is split, by upstream's routine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BlockSplit {
+    /// `split_at`: the instructions from the split point on move to the new
+    /// block (`BasicBlock::splitBasicBlock`).
+    At,
+    /// `split_before`: the instructions before the split point move to the
+    /// new block (`BasicBlock::splitBasicBlockBefore`).
+    Before,
+}
+
+impl BlockSplit {
+    /// Upstream's name for the split.
+    fn upstream_name(self) -> &'static str {
+        match self {
+            Self::At => "splitBasicBlock",
+            Self::Before => "splitBasicBlockBefore",
+        }
+    }
+}
+
+/// A CFG edit a pass asked for that the edited terminator cannot take. Each
+/// variant's `Display` is the text the condition was reported with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum CfgEditError {
+    /// `redirect` to a block the source already branches to.
+    #[error("redirect: `from` already reaches `new_to`")]
+    AlreadyReaches,
+    /// `redirect_indirect` past the end of a `callbr`'s indirect
+    /// destinations.
+    #[error("redirect_indirect: `callbr` indirect destination index out of range")]
+    IndirectDestinationOutOfRange {
+        /// The index asked for.
+        index: usize,
+        /// How many indirect destinations the `callbr` has.
+        count: usize,
+    },
+    /// An edit of a block that has no last instruction. A pass runs on a
+    /// verified module and can erase only a `NonTerminator`, so this is an
+    /// llvmkit bug, not the caller's.
+    #[error("edit_terminator: `from` has no terminator")]
+    NoTerminator,
+    /// An edit of a block whose last instruction is not a terminator; an
+    /// llvmkit bug for the same reason as [`Self::NoTerminator`].
+    #[error("edit_terminator: `from`'s last instruction is not a terminator")]
+    LastInstructionNotTerminator,
+    /// A typed edit of a terminator of another kind.
+    #[error(
+        "edit_{}: `from`'s terminator is not {}",
+        expected.edit_name(),
+        expected.described()
+    )]
+    TerminatorKindMismatch {
+        /// The kind the edit expected.
+        expected: EditedTerminator,
+    },
+    /// `insert_phi` with no incoming to read the result type from.
+    #[error(
+        "insert_phi: needs at least one typed incoming to derive the result type; use \
+         insert_phi_dyn for the zero-incoming case"
+    )]
+    PhiWithoutIncoming,
+    /// A `switch` edit of a block that is no case successor.
+    #[error("{}: `old_to` is not a case successor of this switch", edit.name())]
+    NotACaseSuccessor {
+        /// The edit asked for.
+        edit: SwitchSuccessorEdit,
+    },
+    /// `remove_successor` of a `switch`'s default edge, which a `switch`
+    /// always has.
+    #[error("remove_successor: cannot remove a `switch`'s default edge")]
+    RemoveSwitchDefault,
+}
+
+impl CfgEditError {
+    /// Who the refusal blames: the caller, for an edit the terminator cannot
+    /// take, or llvmkit, for a broken invariant.
+    pub fn blame(self) -> Blame {
+        match self {
+            Self::NoTerminator | Self::LastInstructionNotTerminator => Blame::LlvmkitInvariant,
+            Self::AlreadyReaches
+            | Self::IndirectDestinationOutOfRange { .. }
+            | Self::TerminatorKindMismatch { .. }
+            | Self::PhiWithoutIncoming
+            | Self::NotACaseSuccessor { .. }
+            | Self::RemoveSwitchDefault => Blame::UsageError,
+        }
+    }
+}
+
+/// The terminator kinds a typed CFG edit narrows to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EditedTerminator {
+    /// `switch`.
+    Switch,
+    /// A conditional `br`.
+    ConditionalBranch,
+    /// An unconditional `br`.
+    Branch,
+    /// `invoke`.
+    Invoke,
+    /// `callbr`.
+    CallBr,
+}
+
+impl EditedTerminator {
+    /// The suffix of the edit entry's name (`edit_switch`, ...).
+    fn edit_name(self) -> &'static str {
+        match self {
+            Self::Switch => "switch",
+            Self::ConditionalBranch => "cond_br",
+            Self::Branch => "br",
+            Self::Invoke => "invoke",
+            Self::CallBr => "callbr",
+        }
+    }
+
+    /// The kind with its article, as the diagnostic names it.
+    fn described(self) -> &'static str {
+        match self {
+            Self::Switch => "a `switch`",
+            Self::ConditionalBranch => "a `cond_br`",
+            Self::Branch => "an unconditional `br`",
+            Self::Invoke => "an `invoke`",
+            Self::CallBr => "a `callbr`",
+        }
+    }
+}
+
+/// The `switch` successor edits that name a case successor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitchSuccessorEdit {
+    /// `redirect_successor`.
+    Redirect,
+    /// `remove_successor`.
+    Remove,
+}
+
+impl SwitchSuccessorEdit {
+    /// The edit entry's name.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Redirect => "redirect_successor",
+            Self::Remove => "remove_successor",
         }
     }
 }
