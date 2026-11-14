@@ -14,12 +14,14 @@ use llvmkit_ir::{
 /// Mirrors `test/Assembler/flags.ll` for `shl` print form.
 #[test]
 fn shl_plain() -> Result<(), IrError> {
-    let m = module_new!("shifts")?;
+    let mut module = module_new!("shifts")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()])?;
     let f = m.add_function_dyn("shl_plain", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
     let r = b.int_shl(lhs, rhs, "z")?;
@@ -32,12 +34,14 @@ fn shl_plain() -> Result<(), IrError> {
 /// Mirrors `test/Assembler/flags.ll` for `lshr` print form.
 #[test]
 fn lshr_plain() -> Result<(), IrError> {
-    let m = module_new!("shifts")?;
+    let mut module = module_new!("shifts")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()])?;
     let f = m.add_function_dyn("lshr_plain", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
     let r = b.int_lshr(lhs, rhs, "z")?;
@@ -50,12 +54,14 @@ fn lshr_plain() -> Result<(), IrError> {
 /// Mirrors `test/Assembler/flags.ll` for `ashr` print form.
 #[test]
 fn ashr_plain() -> Result<(), IrError> {
-    let m = module_new!("shifts")?;
+    let mut module = module_new!("shifts")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()])?;
     let f = m.add_function_dyn("ashr_plain", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
     let r = b.int_ashr(lhs, rhs, "z")?;
@@ -69,12 +75,14 @@ fn ashr_plain() -> Result<(), IrError> {
 /// for the `Builder.CreateShl(..., NUW=true, NSW=true)` case.
 #[test]
 fn shl_nuw_nsw() -> Result<(), IrError> {
-    let m = module_new!("shifts")?;
+    let mut module = module_new!("shifts")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()])?;
     let f = m.add_function_dyn("shl_both", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
     let r = b.int_shl_with_flags(lhs, rhs, ShlFlags::new().nuw().nsw(), "z")?;
@@ -87,12 +95,14 @@ fn shl_nuw_nsw() -> Result<(), IrError> {
 /// Mirrors `test/Assembler/flags.ll` for the `lshr exact` variant.
 #[test]
 fn lshr_exact() -> Result<(), IrError> {
-    let m = module_new!("shifts")?;
+    let mut module = module_new!("shifts")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()])?;
     let f = m.add_function_dyn("lshr_exact", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
     let r = b.int_lshr_with_flags(lhs, rhs, LshrFlags::new().exact(), "z")?;
@@ -105,12 +115,14 @@ fn lshr_exact() -> Result<(), IrError> {
 /// Mirrors `test/Assembler/flags.ll` for the `ashr exact` variant.
 #[test]
 fn ashr_exact() -> Result<(), IrError> {
-    let m = module_new!("shifts")?;
+    let mut module = module_new!("shifts")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()])?;
     let f = m.add_function_dyn("ashr_exact", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
     let r = b.int_ashr_with_flags(lhs, rhs, AshrFlags::new().exact(), "z")?;

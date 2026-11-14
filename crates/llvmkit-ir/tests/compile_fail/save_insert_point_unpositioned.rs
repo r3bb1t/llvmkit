@@ -11,6 +11,6 @@
 use llvmkit_ir::{Dyn, IrBuilder, Module};
 
 fn main() {
-    let m = Module::dynamic("c");
-    let _empty = IrBuilder::new_for::<Dyn>(&m).save_insert_point();
+    let mut module = Module::dynamic("c"); let mut key = module.layout_token();
+    let _empty = IrBuilder::new_for::<Dyn>(&mut key).save_insert_point();
 }

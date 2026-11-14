@@ -78,14 +78,16 @@ fn a_custom_folder_sees_try_builds_and_its_wrong_fold_is_refused() -> Result<(),
     let Point { x, y } = Point { x: 1, y: 2 };
     let _ = x + y;
 
-    let m = module_new!("custom_folder_builds")?;
+    let mut module = module_new!("custom_folder_builds")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let point = m.get_or_insert_struct_of::<Point>()?;
 
     let f = m.add_typed_function::<(), (i32,), _>("build", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
     let writes = Cell::new(0);
     let b = IrBuilder::with_folder(
-        &m,
+        &mut key,
         WriteFolder {
             writes: &writes,
             answer: None,
@@ -98,10 +100,10 @@ fn a_custom_folder_sees_try_builds_and_its_wrong_fold_is_refused() -> Result<(),
     b.ret_void();
 
     let g = m.add_typed_function::<(), (i32,), _>("build_wrong", Linkage::External)?;
-    let entry = m.view(g).append_basic_block(&m, "entry");
+    let entry = m.view(g).append_basic_block(m, "entry");
     let wrong_writes = Cell::new(0);
     let wrong = IrBuilder::with_folder(
-        &m,
+        &mut key,
         WriteFolder {
             writes: &wrong_writes,
             answer: Some(m.i64_type().const_int(7_i64).as_erased()),
@@ -132,12 +134,14 @@ fn a_wrong_fold_of_a_float_field_is_refused_with_both_types() -> Result<(), IrEr
     let Ratio { value } = Ratio { value: 0.5 };
     let _ = value;
 
-    let m = module_new!("custom_folder_float_read")?;
+    let mut module = module_new!("custom_folder_float_read")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<(), (Ratio,), _>("read", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
     let reads = Cell::new(0);
     let wrong = IrBuilder::with_folder(
-        &m,
+        &mut key,
         CountingFolder {
             reads: &reads,
             answer: Some(m.i64_type().const_int(7_i64).as_erased()),
@@ -168,12 +172,14 @@ fn a_custom_folder_sees_try_reads_and_its_wrong_fold_is_refused() -> Result<(), 
     let Point { x, y } = Point { x: 1, y: 2 };
     let _ = x + y;
 
-    let m = module_new!("custom_folder_reads")?;
+    let mut module = module_new!("custom_folder_reads")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<(), (Point,), _>("read", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
     let reads = Cell::new(0);
     let b = IrBuilder::with_folder(
-        &m,
+        &mut key,
         CountingFolder {
             reads: &reads,
             answer: None,
@@ -187,10 +193,10 @@ fn a_custom_folder_sees_try_reads_and_its_wrong_fold_is_refused() -> Result<(), 
     b.ret_void();
 
     let g = m.add_typed_function::<(), (Point,), _>("read_wrong", Linkage::External)?;
-    let entry = m.view(g).append_basic_block(&m, "entry");
+    let entry = m.view(g).append_basic_block(m, "entry");
     let wrong_reads = Cell::new(0);
     let wrong = IrBuilder::with_folder(
-        &m,
+        &mut key,
         CountingFolder {
             reads: &wrong_reads,
             answer: Some(m.i64_type().const_int(7_i64).as_erased()),

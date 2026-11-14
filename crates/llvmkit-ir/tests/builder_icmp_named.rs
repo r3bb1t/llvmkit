@@ -10,13 +10,15 @@ use llvmkit_ir::{Dyn, IntValue, IrBuilder, IrError, Linkage, module_new};
 /// emits `icmp eq i32 %b, %a`).
 #[test]
 fn build_icmp_eq_emits_icmp_eq() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let bool_ty = m.bool_type();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(bool_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let bv: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let r = b.icmp_eq::<i32, _, _, _>(a, bv, "r")?;
@@ -31,13 +33,15 @@ fn build_icmp_eq_emits_icmp_eq() -> Result<(), IrError> {
 /// fixture but the IR pattern is identical.
 #[test]
 fn build_icmp_ne_emits_icmp_ne() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let bool_ty = m.bool_type();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(bool_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let z: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let r = b.icmp_ne::<i32, _, _, _>(z, 0_i32, "r")?;
     b.ret(r)?;
@@ -50,13 +54,15 @@ fn build_icmp_ne_emits_icmp_ne() -> Result<(), IrError> {
 /// (`icmp slt i32 %inc.2, 0`).
 #[test]
 fn build_icmp_slt_emits_icmp_slt() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let bool_ty = m.bool_type();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(bool_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let r = b.icmp_slt::<i32, _, _, _>(n, 0_i32, "r")?;
     b.ret(r)?;
@@ -69,13 +75,15 @@ fn build_icmp_slt_emits_icmp_slt() -> Result<(), IrError> {
 /// (`icmp sge i32 %a, 0`).
 #[test]
 fn build_icmp_sge_emits_icmp_sge() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let bool_ty = m.bool_type();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(bool_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let r = b.icmp_sge::<i32, _, _, _>(a, 0_i32, "r")?;
     b.ret(r)?;

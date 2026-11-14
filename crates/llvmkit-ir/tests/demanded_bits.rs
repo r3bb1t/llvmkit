@@ -12,14 +12,16 @@ fn bits(value: ApInt) -> String {
 /// Port of `llvm/test/Analysis/DemandedBits/basic.ll::test_mul`.
 #[test]
 fn demanded_bits_basic_trunc_zext_chain() -> Result<(), IrError> {
-    let m = module_new!("demanded-basic")?;
+    let mut module = module_new!("demanded-basic")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i1_ty = m.bool_type();
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i8_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("test_mul", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let b_arg: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
 
@@ -69,7 +71,9 @@ fn demanded_bits_basic_trunc_zext_chain() -> Result<(), IrError> {
 /// Port of `llvm/test/Analysis/DemandedBits/add.ll::test_add`.
 #[test]
 fn demanded_bits_add_and_or_carry_propagation() -> Result<(), IrError> {
-    let m = module_new!("demanded-add")?;
+    let mut module = module_new!("demanded-add")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(
         i32_ty,
@@ -81,8 +85,8 @@ fn demanded_bits_add_and_or_carry_propagation() -> Result<(), IrError> {
         ],
     )?;
     let f = m.add_function_dyn("test_add", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let b_arg: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let c: IntValue<'_, i32, _> = m.view(f).param(2)?.try_into()?;
@@ -147,7 +151,9 @@ fn demanded_bits_add_and_or_carry_propagation() -> Result<(), IrError> {
 /// masks (including modulo amounts), and all represented min/max variants.
 #[test]
 fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError> {
-    let m = module_new!("demanded-intrinsics")?;
+    let mut module = module_new!("demanded-intrinsics")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i8_ty = m.i8_type();
     let i16_ty = m.i16_type();
     let i128_ty = m.i128_type();
@@ -155,8 +161,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
     let rev_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.bitreverse.i8")?;
     let rev_host_ty = m.function_type(i8_ty, [i8_ty.as_type()])?;
     let rev_host = m.add_function_dyn("rev_host", rev_host_ty, Linkage::External)?;
-    let rev_entry = m.view(rev_host).append_basic_block(&m, "entry");
-    let rev_b = IrBuilder::with_folder(&m, NoFolder).position_at_end(rev_entry);
+    let rev_entry = m.view(rev_host).append_basic_block(m, "entry");
+    let rev_b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(rev_entry);
     let rev_x: IntValue<'_, i8, _> = m.view(rev_host).param(0)?.try_into()?;
     let rev_call = rev_b
         .call_builder(m.view(rev_fn))
@@ -174,8 +180,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
     let swap_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.bswap.i16")?;
     let swap_host_ty = m.function_type(i16_ty, [i16_ty.as_type()])?;
     let swap_host = m.add_function_dyn("swap_host", swap_host_ty, Linkage::External)?;
-    let swap_entry = m.view(swap_host).append_basic_block(&m, "entry");
-    let swap_b = IrBuilder::with_folder(&m, NoFolder).position_at_end(swap_entry);
+    let swap_entry = m.view(swap_host).append_basic_block(m, "entry");
+    let swap_b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(swap_entry);
     let swap_x: IntValue<'_, i16, _> = m.view(swap_host).param(0)?.try_into()?;
     let swap_call = swap_b
         .call_builder(m.view(swap_fn))
@@ -193,8 +199,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
     let fshl_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.fshl.i8")?;
     let fshl_host_ty = m.function_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()])?;
     let fshl_host = m.add_function_dyn("fshl_host", fshl_host_ty, Linkage::External)?;
-    let fshl_entry = m.view(fshl_host).append_basic_block(&m, "entry");
-    let fshl_b = IrBuilder::with_folder(&m, NoFolder).position_at_end(fshl_entry);
+    let fshl_entry = m.view(fshl_host).append_basic_block(m, "entry");
+    let fshl_b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(fshl_entry);
     let fshl_x: IntValue<'_, i8, _> = m.view(fshl_host).param(0)?.try_into()?;
     let fshl_y: IntValue<'_, i8, _> = m.view(fshl_host).param(1)?.try_into()?;
     let fshl_call = fshl_b
@@ -215,8 +221,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
     let fshr_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.fshr.i8")?;
     let fshr_host_ty = m.function_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()])?;
     let fshr_host = m.add_function_dyn("fshr_host", fshr_host_ty, Linkage::External)?;
-    let fshr_entry = m.view(fshr_host).append_basic_block(&m, "entry");
-    let fshr_b = IrBuilder::with_folder(&m, NoFolder).position_at_end(fshr_entry);
+    let fshr_entry = m.view(fshr_host).append_basic_block(m, "entry");
+    let fshr_b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(fshr_entry);
     let fshr_x: IntValue<'_, i8, _> = m.view(fshr_host).param(0)?.try_into()?;
     let fshr_y: IntValue<'_, i8, _> = m.view(fshr_host).param(1)?.try_into()?;
     let fshr_call = fshr_b
@@ -237,8 +243,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
     let fshr_zero_host_ty = m.function_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()])?;
     let fshr_zero_host =
         m.add_function_dyn("fshr_zero_host", fshr_zero_host_ty, Linkage::External)?;
-    let fshr_zero_entry = m.view(fshr_zero_host).append_basic_block(&m, "entry");
-    let fshr_zero_b = IrBuilder::with_folder(&m, NoFolder).position_at_end(fshr_zero_entry);
+    let fshr_zero_entry = m.view(fshr_zero_host).append_basic_block(m, "entry");
+    let fshr_zero_b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(fshr_zero_entry);
     let fshr_zero_x: IntValue<'_, i8, _> = m.view(fshr_zero_host).param(0)?.try_into()?;
     let fshr_zero_y: IntValue<'_, i8, _> = m.view(fshr_zero_host).param(1)?.try_into()?;
     let fshr_zero_call = fshr_zero_b
@@ -261,8 +267,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
     let wide_fshl_host_ty = m.function_type(i128_ty, [i128_ty.as_type(), i128_ty.as_type()])?;
     let wide_fshl_host =
         m.add_function_dyn("wide_fshl_host", wide_fshl_host_ty, Linkage::External)?;
-    let wide_fshl_entry = m.view(wide_fshl_host).append_basic_block(&m, "entry");
-    let wide_fshl_b = IrBuilder::with_folder(&m, NoFolder).position_at_end(wide_fshl_entry);
+    let wide_fshl_entry = m.view(wide_fshl_host).append_basic_block(m, "entry");
+    let wide_fshl_b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(wide_fshl_entry);
     let wide_fshl_x: IntValue<'_, i128, _> = m.view(wide_fshl_host).param(0)?.try_into()?;
     let wide_fshl_y: IntValue<'_, i128, _> = m.view(wide_fshl_host).param(1)?.try_into()?;
     let wide_fshl_amount = i128_ty.const_ap_int(&ApInt::from_words(128, &[1, 1]))?;
@@ -286,8 +292,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
     let umax_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.umax.i8")?;
     let umax_host_ty = m.function_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()])?;
     let umax_host = m.add_function_dyn("umax_host", umax_host_ty, Linkage::External)?;
-    let umax_entry = m.view(umax_host).append_basic_block(&m, "entry");
-    let umax_b = IrBuilder::with_folder(&m, NoFolder).position_at_end(umax_entry);
+    let umax_entry = m.view(umax_host).append_basic_block(m, "entry");
+    let umax_b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(umax_entry);
     let umax_x: IntValue<'_, i8, _> = m.view(umax_host).param(0)?.try_into()?;
     let umax_y: IntValue<'_, i8, _> = m.view(umax_host).param(1)?.try_into()?;
     let umax_call = umax_b
@@ -307,8 +313,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
     let umin_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.umin.i8")?;
     let umin_host_ty = m.function_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()])?;
     let umin_host = m.add_function_dyn("umin_host", umin_host_ty, Linkage::External)?;
-    let umin_entry = m.view(umin_host).append_basic_block(&m, "entry");
-    let umin_b = IrBuilder::with_folder(&m, NoFolder).position_at_end(umin_entry);
+    let umin_entry = m.view(umin_host).append_basic_block(m, "entry");
+    let umin_b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(umin_entry);
     let umin_x: IntValue<'_, i8, _> = m.view(umin_host).param(0)?.try_into()?;
     let umin_y: IntValue<'_, i8, _> = m.view(umin_host).param(1)?.try_into()?;
     let umin_call = umin_b
@@ -328,8 +334,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
     let smax_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.smax.i8")?;
     let smax_host_ty = m.function_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()])?;
     let smax_host = m.add_function_dyn("smax_host", smax_host_ty, Linkage::External)?;
-    let smax_entry = m.view(smax_host).append_basic_block(&m, "entry");
-    let smax_b = IrBuilder::with_folder(&m, NoFolder).position_at_end(smax_entry);
+    let smax_entry = m.view(smax_host).append_basic_block(m, "entry");
+    let smax_b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(smax_entry);
     let smax_x: IntValue<'_, i8, _> = m.view(smax_host).param(0)?.try_into()?;
     let smax_y: IntValue<'_, i8, _> = m.view(smax_host).param(1)?.try_into()?;
     let smax_call = smax_b
@@ -349,8 +355,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
     let smin_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.smin.i8")?;
     let smin_host_ty = m.function_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()])?;
     let smin_host = m.add_function_dyn("smin_host", smin_host_ty, Linkage::External)?;
-    let smin_entry = m.view(smin_host).append_basic_block(&m, "entry");
-    let smin_b = IrBuilder::with_folder(&m, NoFolder).position_at_end(smin_entry);
+    let smin_entry = m.view(smin_host).append_basic_block(m, "entry");
+    let smin_b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(smin_entry);
     let smin_x: IntValue<'_, i8, _> = m.view(smin_host).param(0)?.try_into()?;
     let smin_y: IntValue<'_, i8, _> = m.view(smin_host).param(1)?.try_into()?;
     let smin_call = smin_b
@@ -486,14 +492,16 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
 /// lookalike functions stay conservative.
 #[test]
 fn demanded_bits_ignore_mismatched_intrinsic_declarations() -> Result<(), IrError> {
-    let m = module_new!("demanded-intrinsic-mismatch")?;
+    let mut module = module_new!("demanded-intrinsic-mismatch")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i16_ty = m.i16_type();
     let fn_ty = m.function_type(i16_ty, [i16_ty.as_type()])?;
     let malformed = m.add_function_dyn("not.llvm.bitreverse.i8", fn_ty, Linkage::External)?;
     let host_ty = m.function_type(i16_ty, [i16_ty.as_type()])?;
     let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
-    let entry = m.view(host).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(host).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let x: IntValue<'_, i16, _> = m.view(host).param(0)?.try_into()?;
     let call_call = b
         .call_builder(m.view(malformed))
@@ -522,12 +530,14 @@ fn demanded_bits_ignore_mismatched_intrinsic_declarations() -> Result<(), IrErro
 /// unreachable dead integer users have no demanded bits.
 #[test]
 fn operands_of_dead_integer_instruction_are_dead() -> Result<(), IrError> {
-    let m = module_new!("demanded-dead-use")?;
+    let mut module = module_new!("demanded-dead-use")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("dead", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let dead = b.int_and::<i32, _, _, _>(a, i32_ty.const_int(15_u32), "dead")?;
     b.ret(i32_ty.const_int(0_u32))?;
@@ -550,13 +560,15 @@ fn operands_of_dead_integer_instruction_are_dead() -> Result<(), IrError> {
 /// the demanded mask is narrower than the full scalar width.
 #[test]
 fn simplify_demanded_bits_replaces_known_demanded_low_bits() -> Result<(), IrError> {
-    let m = module_new!("demanded-simplify")?;
+    let mut module = module_new!("demanded-simplify")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i8_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let lhs = i32_ty.const_int(0xffff_0000_u32);
     let high = b.int_and::<i32, _, _, _>(lhs, i32_ty.const_int(0x0000_00ff_u32), "high")?;
     let lo = b.trunc(high, i8_ty, "lo")?;
@@ -597,19 +609,21 @@ fn simplify_demanded_bits_replaces_known_demanded_low_bits() -> Result<(), IrErr
 /// as a real function transform: proven demanded constants are RAUW'd and erased.
 #[test]
 fn simplify_demanded_bits_pass_folds_known_demanded_low_bits() -> Result<(), IrError> {
-    let m = module_new!("demanded-pass")?;
+    let mut module = module_new!("demanded-pass")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i8_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let lhs = i32_ty.const_int(0xffff_0000_u32);
     let high = b.int_and::<i32, _, _, _>(lhs, i32_ty.const_int(0x0000_00ff_u32), "high")?;
     let lo = b.trunc(high, i8_ty, "lo")?;
     b.ret(lo)?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let unverified = run_function_pass(SimplifyDemandedBitsPass, verified, f, &mut analyses)?;
     let reverified = unverified.verify()?;
@@ -626,13 +640,15 @@ fn simplify_demanded_bits_pass_folds_known_demanded_low_bits() -> Result<(), IrE
 /// SimplifyDemandedBits / ShrinkDemandedConstant.
 #[test]
 fn simplify_demanded_bits_pass_ports_and_zext_and() -> Result<(), IrError> {
-    let m = module_new!("assoc-cast-assoc")?;
+    let mut module = module_new!("assoc-cast-assoc")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i3_ty = m.int_type_n::<3>();
     let i5_ty = m.int_type_n::<5>();
     let fn_ty = m.function_type(i5_ty, [i3_ty.as_type()])?;
     let f = m.add_function_dyn("AndZextAnd", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let a: IntValue<'_, Width<3>, _> = m.view(f).param(0)?.try_into()?;
     let op1_rhs = i3_ty.const_ap_int(&ApInt::from_words(3, &[3]))?;
     let op2_rhs = i5_ty.const_ap_int(&ApInt::from_words(5, &[14]))?;
@@ -645,7 +661,7 @@ fn simplify_demanded_bits_pass_ports_and_zext_and() -> Result<(), IrError> {
     assert!(before.contains("%op1 = and i3 %0, 3"), "{before}");
     assert!(before.contains("%op2 = and i5 %cast, 14"), "{before}");
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let unverified = run_function_pass(SimplifyDemandedBitsPass, verified, f, &mut analyses)?;
     let reverified = unverified.verify()?;
@@ -674,13 +690,15 @@ fn simplify_demanded_bits_pass_ports_and_zext_and() -> Result<(), IrError> {
 #[test]
 fn simplify_demanded_bits_pass_drops_stale_zext_nneg_after_operand_replacement()
 -> Result<(), IrError> {
-    let m = module_new!("demanded-zext-nneg")?;
+    let mut module = module_new!("demanded-zext-nneg")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i3_ty = m.int_type_n::<3>();
     let i5_ty = m.int_type_n::<5>();
     let fn_ty = m.function_type(i5_ty, [i3_ty.as_type()])?;
     let f = m.add_function_dyn("DropStaleZextNNeg", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let a: IntValue<'_, Width<3>, _> = m.view(f).param(0)?.try_into()?;
     let proof_mask = i3_ty.const_ap_int(&ApInt::from_words(3, &[3]))?;
     let proof = b.int_and::<Width<3>, _, _, _>(a, proof_mask, "proof")?;
@@ -697,8 +715,8 @@ fn simplify_demanded_bits_pass_drops_stale_zext_nneg_after_operand_replacement()
     let mutate_fn_ty = m.function_type(i5_ty, [i3_ty.as_type()])?;
     let mutate_f =
         m.add_function_dyn("DropStaleZextNNegMutate", mutate_fn_ty, Linkage::External)?;
-    let mutate_entry = m.view(mutate_f).append_basic_block(&m, "entry");
-    let mutate_b = IrBuilder::with_folder(&m, NoFolder).position_at_end(mutate_entry);
+    let mutate_entry = m.view(mutate_f).append_basic_block(m, "entry");
+    let mutate_b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(mutate_entry);
     let mutate_arg: IntValue<'_, Width<3>, _> = m.view(mutate_f).param(0)?.try_into()?;
     let sign_bit = i3_ty.const_ap_int(&ApInt::from_words(3, &[4]))?;
     let sign_mut = mutate_b.int_or::<Width<3>, _, _, _>(mutate_arg, sign_bit, "sign.mut")?;
@@ -735,7 +753,7 @@ fn simplify_demanded_bits_pass_drops_stale_zext_nneg_after_operand_replacement()
 
     // Both functions are named by **id**, so nothing borrows the module
     // across the `verify` move.
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     // The module has two definitions; the retired adaptor visited both, so
     // the single-pass driver runs over each in module order, re-verifying
     // between (a mutating pass downgrades the module).
@@ -764,18 +782,20 @@ fn simplify_demanded_bits_pass_drops_stale_zext_nneg_after_operand_replacement()
 /// transform.
 #[test]
 fn simplify_demanded_bits_pass_erases_dead_integer_chain() -> Result<(), IrError> {
-    let m = module_new!("demanded-pass-dead")?;
+    let mut module = module_new!("demanded-pass-dead")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let dead0 = b.int_and::<i32, _, _, _>(x, i32_ty.const_int(15_u32), "dead0")?;
     let _dead1 = b.int_xor::<i32, _, _, _>(dead0, i32_ty.const_int(3_u32), "dead1")?;
     b.ret(i32_ty.const_int(0_u32))?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let unverified = run_function_pass(SimplifyDemandedBitsPass, verified, f, &mut analyses)?;
     let reverified = unverified.verify()?;
@@ -791,13 +811,15 @@ fn simplify_demanded_bits_pass_erases_dead_integer_chain() -> Result<(), IrError
 /// every source bit that may move into a demanded result bit.
 #[test]
 fn variable_lshr_demands_source_bits_that_can_reach_low_result() -> Result<(), IrError> {
-    let m = module_new!("demanded-variable-shift")?;
+    let mut module = module_new!("demanded-variable-shift")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i1_ty = m.bool_type();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i1_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let amount: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let masked = b.int_and::<i32, _, _, _>(a, i32_ty.const_int(256_u32), "masked")?;
@@ -813,7 +835,7 @@ fn variable_lshr_demands_source_bits_that_can_reach_low_result() -> Result<(), I
         "11111111111111111111111111111111"
     );
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let unverified = run_function_pass(SimplifyDemandedBitsPass, verified, f, &mut analyses)?;
     let reverified = unverified.verify()?;
@@ -829,13 +851,15 @@ fn variable_lshr_demands_source_bits_that_can_reach_low_result() -> Result<(), I
 /// bits.
 #[test]
 fn variable_lshr_with_known_amount_range_demands_reachable_source_bits() -> Result<(), IrError> {
-    let m = module_new!("demanded-variable-shift-range")?;
+    let mut module = module_new!("demanded-variable-shift-range")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i1_ty = m.bool_type();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i1_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let amount: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let amount_range =
@@ -860,7 +884,9 @@ fn variable_lshr_with_known_amount_range_demands_reachable_source_bits() -> Resu
 /// width of the whole vector, and not at a scalable vector's known minimum.
 #[test]
 fn a_vector_of_floats_is_demanded_at_its_scalar_width() -> Result<(), IrError> {
-    let m = module_new!("demanded-scalar-width")?;
+    let mut module = module_new!("demanded-scalar-width")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f32_ty = m.f32_type();
     let fixed = VectorType::of(f32_ty, lanes::<4>());
     let scalable = VectorType::scalable_of(f32_ty, lanes::<4>());
@@ -869,8 +895,8 @@ fn a_vector_of_floats_is_demanded_at_its_scalar_width() -> Result<(), IrError> {
         [fixed.as_type(), scalable.as_type(), f32_ty.as_type()],
     )?;
     let f = m.add_function_dyn("floats", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     b.ret_void()?;
 
     let mut fam = FunctionAnalysisManager::new();
@@ -901,7 +927,9 @@ fn a_vector_of_floats_is_demanded_at_its_scalar_width() -> Result<(), IrError> {
 /// reads demands all 32 bits.
 #[test]
 fn a_value_with_no_bit_width_is_refused_with_its_reason() -> Result<(), IrError> {
-    let m = module_new!("demanded-no-width")?;
+    let mut module = module_new!("demanded-no-width")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let scalable = VectorType::scalable_of(i32_ty, lanes::<4>()).as_type();
     let tuple = m.struct_type([scalable, scalable])?.as_type();
@@ -912,8 +940,8 @@ fn a_value_with_no_bit_width_is_refused_with_its_reason() -> Result<(), IrError>
         [i32_ty.as_type(), ptr_ty.as_type(), tuple, wide],
     )?;
     let f = m.add_function_dyn("no_width", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let p: PointerValue<'_, SpaceDyn, _> = m.view(f).param(1)?.try_into()?;
     let sum = b.int_add::<i32, _, _, _>(x, i32_ty.const_int(1_u32), "sum")?;

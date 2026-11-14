@@ -218,7 +218,9 @@ fn verifier_accepts_extra_valid_intrinsic_declaration_attribute() -> Result<(), 
 /// operands must be integer or floating immediate constants.
 #[test]
 fn verifier_rejects_nonconstant_immarg_operand() -> Result<(), IrError> {
-    let m = module_new!("intrinsic-immarg")?;
+    let mut module = module_new!("intrinsic-immarg")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i1_ty = m.bool_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
@@ -226,8 +228,8 @@ fn verifier_rejects_nonconstant_immarg_operand() -> Result<(), IrError> {
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let descriptor = IntrinsicDescriptor::new(IntrinsicId::ABS, [i32_ty.as_type()])?;
     let abs = m.get_or_insert_intrinsic_declaration(&descriptor)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
     let is_poison: IntValue<'_, bool, _> = m.view(caller).param(1)?.try_into()?;
     b.call_builder(m.view(abs))
@@ -252,14 +254,16 @@ fn verifier_rejects_nonconstant_immarg_operand() -> Result<(), IrError> {
 /// canonical intrinsic declaration can be viewed as an intrinsic call.
 #[test]
 fn descriptor_call_builder_returns_intrinsic_view() -> Result<(), IrError> {
-    let m = module_new!("intrinsic-call-view")?;
+    let mut module = module_new!("intrinsic-call-view")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i1_ty = m.bool_type();
     let i32_ty = m.i32_type();
     let descriptor = IntrinsicDescriptor::new(IntrinsicId::ABS, [i32_ty.as_type()])?;
     let caller_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
     let view = b
         .intrinsic_call_builder(&descriptor)?
@@ -280,7 +284,9 @@ fn descriptor_call_builder_returns_intrinsic_view() -> Result<(), IrError> {
 /// `llvm.memcpy` call can be narrowed to `MemIntrinsic`.
 #[test]
 fn mem_intrinsic_wrapper_narrows_generated_memory_call() -> Result<(), IrError> {
-    let m = module_new!("intrinsic-mem-wrapper")?;
+    let mut module = module_new!("intrinsic-mem-wrapper")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let i1_ty = m.bool_type();
     let i64_ty = m.i64_type();
@@ -293,8 +299,8 @@ fn mem_intrinsic_wrapper_narrows_generated_memory_call() -> Result<(), IrError> 
         [ptr_ty.as_type(), ptr_ty.as_type(), i64_ty.as_type()],
     )?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let dst: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(caller).param(0)?.try_into()?;
     let src: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(caller).param(1)?.try_into()?;
     let len: IntValue<'_, i64, _> = m.view(caller).param(2)?.try_into()?;
@@ -322,7 +328,9 @@ fn mem_intrinsic_wrapper_narrows_generated_memory_call() -> Result<(), IrError> 
 /// memory intrinsics are memory intrinsics too.
 #[test]
 fn mem_intrinsic_wrapper_narrows_generated_inline_memory_calls() -> Result<(), IrError> {
-    let m = module_new!("intrinsic-inline-mem-wrapper")?;
+    let mut module = module_new!("intrinsic-inline-mem-wrapper")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let i1_ty = m.bool_type();
     let i8_ty = m.i8_type();
@@ -332,8 +340,8 @@ fn mem_intrinsic_wrapper_narrows_generated_inline_memory_calls() -> Result<(), I
         [ptr_ty.as_type(), ptr_ty.as_type(), i64_ty.as_type()],
     )?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let dst: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(caller).param(0)?.try_into()?;
     let src: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(caller).param(1)?.try_into()?;
     let len: IntValue<'_, i64, _> = m.view(caller).param(2)?.try_into()?;
@@ -381,13 +389,15 @@ fn mem_intrinsic_wrapper_narrows_generated_inline_memory_calls() -> Result<(), I
 /// `llvm.lifetime.start` call can be narrowed to `LifetimeIntrinsic`.
 #[test]
 fn lifetime_intrinsic_wrapper_narrows_generated_lifetime_call() -> Result<(), IrError> {
-    let m = module_new!("intrinsic-lifetime-wrapper")?;
+    let mut module = module_new!("intrinsic-lifetime-wrapper")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let descriptor = IntrinsicDescriptor::new(IntrinsicId::LIFETIME_START, [ptr_ty.as_type()])?;
     let caller_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let ptr: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(caller).param(0)?.try_into()?;
     let view = b.intrinsic_call(&descriptor, &[ptr.as_erased()], "")?;
 
@@ -404,13 +414,15 @@ fn lifetime_intrinsic_wrapper_narrows_generated_lifetime_call() -> Result<(), Ir
 /// intrinsic builders reject missing operands before mutating the block.
 #[test]
 fn descriptor_call_builder_rejects_wrong_argument_count() -> Result<(), IrError> {
-    let m = module_new!("intrinsic-call-arity")?;
+    let mut module = module_new!("intrinsic-call-arity")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let descriptor = IntrinsicDescriptor::new(IntrinsicId::ABS, [i32_ty.as_type()])?;
     let caller_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
     let err = b
         .intrinsic_call(&descriptor, &[x.as_erased()], "bad")
@@ -627,7 +639,9 @@ fn same_vec_width_nested_vector_element_signature_matches() -> Result<(), IrErro
 /// comments before intrinsic immediate operands.
 #[test]
 fn asm_writer_prints_generated_intrinsic_immediate_argument_comments() -> Result<(), IrError> {
-    let m = module_new!("intrinsic-pretty-immarg")?;
+    let mut module = module_new!("intrinsic-pretty-immarg")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let i32_ty = m.i32_type();
     let id = IntrinsicId::lookup("llvm.nvvm.tensormap.replace.fill.mode")
@@ -635,8 +649,8 @@ fn asm_writer_prints_generated_intrinsic_immediate_argument_comments() -> Result
     let descriptor = IntrinsicDescriptor::new(id, [ptr_ty.as_type()])?;
     let caller_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let ptr: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(caller).param(0)?.try_into()?;
     b.intrinsic_call(
         &descriptor,

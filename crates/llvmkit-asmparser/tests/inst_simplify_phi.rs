@@ -21,8 +21,8 @@ use llvmkit_ir::{Analyses, InstSimplifyPass, Module, run_function_pass};
 
 /// Parse `src`, run `InstSimplifyPass` over `@<name>`, and print the module.
 fn instsimplify(src: &str, name: &str) -> String {
-    let module = Module::dynamic("instsimplify-phi");
-    Parser::new(src.as_bytes(), &module)
+    let mut module = Module::dynamic("instsimplify-phi");
+    Parser::new(src.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");

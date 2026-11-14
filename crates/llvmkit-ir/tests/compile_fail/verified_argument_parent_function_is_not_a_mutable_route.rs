@@ -21,7 +21,7 @@ use llvmkit_ir::{
 };
 
 fn main() {
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m"); let mut key = module.layout_token(); let m = key.module();
     let f32_ty = m.f32_type();
     let f = m
         .add_function_dyn(
@@ -32,11 +32,11 @@ fn main() {
         .expect("f");
     let entry = m.view(f).append_basic_block(&m, "entry");
     let x = m.view(f).param(0).expect("x");
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(entry)
         .ret(x.as_erased())
         .expect("ret");
-    let m = m.verify().expect("verifies");
+    let m = module.verify().expect("verifies");
     for instruction in m
         .view(f)
         .entry_block()

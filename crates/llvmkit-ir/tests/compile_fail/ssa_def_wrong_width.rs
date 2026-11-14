@@ -17,12 +17,12 @@
 use llvmkit_ir::{Linkage, Module, SsaState};
 
 fn main() {
-    let m = Module::dynamic("ssa-def-wrong-width");
+    let mut module = Module::dynamic("ssa-def-wrong-width"); let mut key = module.layout_token(); let m = key.module();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty, Vec::<llvmkit_ir::Type<_>>::new()).expect("valid function type");
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
     let mut state = SsaState::for_function(&m, m.view(f)).unwrap();
-    let mut b = llvmkit_ir::SsaBuilder::for_function(&m, m.view(f), &mut state).unwrap();
+    let mut b = llvmkit_ir::SsaBuilder::for_function(&mut key,m.view(f), &mut state).unwrap();
     let entry = b.create_block("entry");
 
     let x64 = b.declare_int_var::<i64, _>("x64");

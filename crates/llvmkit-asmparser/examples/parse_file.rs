@@ -42,8 +42,12 @@ fn main() -> ExitCode {
     // The module owns every arena the parse fills, so parser state dies with
     // it (mirrors upstream `LLVMContext` ownership).
     let module_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("input");
-    let module = module_new!(module_name).expect("fresh module");
-    let parser = match Parser::new(&bytes, &module) {
+    let mut module = module_new!(module_name).expect("fresh module");
+    // The parser owns the module's layout token while it runs; `m` is the
+    // module reference that outlives the parser.
+    let key = module.layout_token();
+    let m = key.module();
+    let parser = match Parser::new(&bytes, key) {
         Ok(p) => p,
         Err(err) => {
             report_error(&path, &bytes, &err);
@@ -57,7 +61,7 @@ fn main() -> ExitCode {
             // tables for follow-on `parse_type_with_slots` /
             // `parse_constant_value_with_slots` calls; this example just
             // round-trips the module.
-            print!("{module}");
+            print!("{m}");
             ExitCode::SUCCESS
         }
         Err(err) => {

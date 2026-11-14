@@ -1989,12 +1989,14 @@ mod tests {
     /// wraps (getResult caching) ports `unittests/IR/PassManagerTest.cpp`.
     #[test]
     fn analysis_list_prefetch_collect_select() -> IrResult<()> {
-        let m = crate::module_new!("analysis-list")?;
+        let mut module = crate::module_new!("analysis-list")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type_no_parameters(i32_ty)?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
         b.ret(i32_ty.const_int(0_u32))?;
         m.verify_borrowed()?;
 
@@ -2025,20 +2027,22 @@ mod tests {
     #[test]
     fn dominator_tree_repairs_to_match_recompute() -> IrResult<()> {
         use crate::CfgUpdate;
-        let m = crate::module_new!("domtree-repair")?;
+        let mut module = crate::module_new!("domtree-repair")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type_no_parameters(i32_ty)?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let next = m.view(f).append_basic_block(&m, "next");
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let next = m.view(f).append_basic_block(m, "next");
         let entry_id = entry.id().as_dyn();
         let next_id = next.id().as_dyn();
         let next_label = next.id();
 
         // entry: br next    next: ret 0
-        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
         b.br(next.id())?;
-        let b2 = IrBuilder::new_for::<Dyn>(&m).position_at_end(next);
+        let b2 = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(next);
         b2.ret(i32_ty.const_int(0_u32))?;
 
         let function: FunctionView<'_, _> = m.view(f).into();
@@ -2054,7 +2058,7 @@ mod tests {
         // `FunctionView`'s blocks are `ReadOnly` and have no `split_at`.
         let entry_bb = m.view(f).entry_block().expect("definition");
         let terminator = entry_bb.terminator().expect("terminated");
-        let new_bb = entry_bb.split_at(&m, &terminator, "entry.split")?;
+        let new_bb = entry_bb.split_at(&mut key, &terminator, "entry.split")?;
         let new_label = new_bb.id();
         let updates = [
             CfgUpdate::delete(entry_id, next_id),
@@ -2120,12 +2124,14 @@ mod tests {
     /// llvmkit-specific type-machinery lock (no upstream analog).
     #[test]
     fn requires_without_default_uses_registered_instance() -> IrResult<()> {
-        let m = crate::module_new!("requires-no-default")?;
+        let mut module = crate::module_new!("requires-no-default")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type_no_parameters(i32_ty)?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
         b.ret(i32_ty.const_int(0_u32))?;
 
         let function: FunctionView<'_, _> = m.view(f).into();

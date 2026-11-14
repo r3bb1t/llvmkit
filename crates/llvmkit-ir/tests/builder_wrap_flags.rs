@@ -20,12 +20,14 @@ use llvmkit_ir::{
 /// set and asserts both bits round-trip on the `Add` handle.
 #[test]
 fn add_nuw_nsw_flags_round_trip() -> Result<(), IrError> {
-    let m = module_new!("flags")?;
+    let mut module = module_new!("flags")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("addf", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let lhs: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let r = b.int_add_with_flags(lhs, rhs, AddFlags::new().nuw().nsw(), "r")?;
@@ -48,13 +50,15 @@ fn add_nuw_nsw_flags_round_trip() -> Result<(), IrError> {
 fn sub_mul_shl_flags_round_trip() -> Result<(), IrError> {
     // Each opcode runs its own builder call with its own flag type,
     // verifying the flags propagate to the per-opcode handle.
-    let m = module_new!("f")?;
+    let mut module = module_new!("f")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
 
     let sub_fn = m.add_function_dyn("sub_f", fn_ty, Linkage::External)?;
-    let entry = m.view(sub_fn).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(sub_fn).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let lhs: IntValue<'_, i32, _> = m.view(sub_fn).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(sub_fn).param(1)?.try_into()?;
     let r = b.int_sub_with_flags(lhs, rhs, SubFlags::new().nuw(), "r")?;
@@ -67,8 +71,8 @@ fn sub_mul_shl_flags_round_trip() -> Result<(), IrError> {
     b.ret(r)?;
 
     let mul_fn = m.add_function_dyn("mul_f", fn_ty, Linkage::External)?;
-    let entry = m.view(mul_fn).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(mul_fn).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let lhs: IntValue<'_, i32, _> = m.view(mul_fn).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(mul_fn).param(1)?.try_into()?;
     let r = b.int_mul_with_flags(lhs, rhs, MulFlags::new().nuw(), "r")?;
@@ -81,8 +85,8 @@ fn sub_mul_shl_flags_round_trip() -> Result<(), IrError> {
     b.ret(r)?;
 
     let shl_fn = m.add_function_dyn("shl_f", fn_ty, Linkage::External)?;
-    let entry = m.view(shl_fn).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(shl_fn).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let lhs: IntValue<'_, i32, _> = m.view(shl_fn).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(shl_fn).param(1)?.try_into()?;
     let r = b.int_shl_with_flags(lhs, rhs, ShlFlags::new().nuw(), "r")?;
@@ -104,13 +108,15 @@ fn sub_mul_shl_flags_round_trip() -> Result<(), IrError> {
 /// `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, WrapFlags)`.
 #[test]
 fn div_shr_exact_round_trip() -> Result<(), IrError> {
-    let m = module_new!("e")?;
+    let mut module = module_new!("e")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
 
     let udiv_fn = m.add_function_dyn("udiv_f", fn_ty, Linkage::External)?;
-    let entry = m.view(udiv_fn).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(udiv_fn).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let lhs: IntValue<'_, i32, _> = m.view(udiv_fn).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(udiv_fn).param(1)?.try_into()?;
     let r = b.int_udiv_with_flags(lhs, rhs, UdivFlags::new().exact(), "r")?;
@@ -123,8 +129,8 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
     b.ret(r)?;
 
     let sdiv_fn = m.add_function_dyn("sdiv_f", fn_ty, Linkage::External)?;
-    let entry = m.view(sdiv_fn).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(sdiv_fn).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let lhs: IntValue<'_, i32, _> = m.view(sdiv_fn).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(sdiv_fn).param(1)?.try_into()?;
     let r = b.int_sdiv_with_flags(lhs, rhs, SdivFlags::new().exact(), "r")?;
@@ -137,8 +143,8 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
     b.ret(r)?;
 
     let lshr_fn = m.add_function_dyn("lshr_f", fn_ty, Linkage::External)?;
-    let entry = m.view(lshr_fn).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(lshr_fn).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let lhs: IntValue<'_, i32, _> = m.view(lshr_fn).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(lshr_fn).param(1)?.try_into()?;
     let r = b.int_lshr_with_flags(lhs, rhs, LshrFlags::new().exact(), "r")?;
@@ -151,8 +157,8 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
     b.ret(r)?;
 
     let ashr_fn = m.add_function_dyn("ashr_f", fn_ty, Linkage::External)?;
-    let entry = m.view(ashr_fn).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(ashr_fn).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let lhs: IntValue<'_, i32, _> = m.view(ashr_fn).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(ashr_fn).param(1)?.try_into()?;
     let r = b.int_ashr_with_flags(lhs, rhs, AshrFlags::new().exact(), "r")?;

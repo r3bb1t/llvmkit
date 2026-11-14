@@ -8,15 +8,15 @@
 use llvmkit_ir::{Dyn, IrBuilder, Linkage, Module};
 
 fn main() {
-    let m = Module::dynamic("lock");
+    let mut module = Module::dynamic("lock"); let mut key = module.layout_token(); let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty).expect("valid function type");
     let f = m
         .add_function_dyn("f", fn_ty, Linkage::External)
         .expect("function");
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let builder = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let builder = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let (_block, ret) = builder.ret(i32_ty.const_zero()).expect("ret");
     let view = ret.as_view();
-    let _ = IrBuilder::new_for::<Dyn>(&m).position_before(&view);
+    let _ = IrBuilder::new_for::<Dyn>(&mut key).position_before(&view);
 }

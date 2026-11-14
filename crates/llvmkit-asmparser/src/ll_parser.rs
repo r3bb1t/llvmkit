@@ -44,7 +44,7 @@ use llvmkit_ir::metadata::{
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 
-use llvmkit_ir::{AddressSpace, ArrayType, DataLayout, FunctionValue, IsValue};
+use llvmkit_ir::{AddressSpace, ArrayType, DataLayout, FunctionValue, IsValue, LayoutToken};
 use llvmkit_ir::{
     Align, AnyTypeEnum, ApFloat, ApFloatSemantics, ApFloatSign, ApInt, AtomicOrdering,
     AtomicRmwBinOp, CallingConv, CastOperation, Constant, ConstantError, ConstantExprError,
@@ -296,6 +296,13 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
 
     /// The module token being populated.
     module: &'ctx Module<B, Unverified>,
+
+    /// The module's layout permission, owned for the parser's life. Out of
+    /// this field only while one basic block is being parsed, borrowed by
+    /// that block's builder (`parse_basic_block`); blocks do not nest.
+    /// `None` from the start for a standalone type or constant parser
+    /// (`for_standalone`), which parses no block.
+    layout: Option<LayoutToken<'ctx, B>>,
 
     /// Named struct-type table (`%foo = type {...}`).
     named_types: HashMap<String, TypeEntry<'ctx, B>>,
@@ -1178,7 +1185,29 @@ fn map_lex_error(e: LexError) -> ParseError {
 impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// Construct a parser over `src`, populating `module`. Primes the lexer
     /// once (mirrors `LLParser::Run`'s leading `Lex.Lex()`).
-    pub fn new(src: &'src [u8], module: &'ctx Module<B, Unverified>) -> ParseResult<Self> {
+    ///
+    /// The parser owns `key`, the module's [`LayoutToken`], for as long as it
+    /// lives: it is the module's one editor while it parses.
+    pub fn new(src: &'src [u8], key: LayoutToken<'ctx, B>) -> ParseResult<Self> {
+        Self::with_layout(src, key.module(), Some(key))
+    }
+
+    /// Crate-internal: a parser that holds no [`LayoutToken`], for the
+    /// standalone type and constant entries (`parse_type`,
+    /// `parse_constant_value` and their `_with_slots` and `_at_beginning`
+    /// forms). They parse no basic block, so they change no layout.
+    pub(crate) fn for_standalone(
+        src: &'src [u8],
+        module: &'ctx Module<B, Unverified>,
+    ) -> ParseResult<Self> {
+        Self::with_layout(src, module, None)
+    }
+
+    fn with_layout(
+        src: &'src [u8],
+        module: &'ctx Module<B, Unverified>,
+        layout: Option<LayoutToken<'ctx, B>>,
+    ) -> ParseResult<Self> {
         let mut lex = Lexer::new(src);
         let current = lex.next_token().map_err(map_lex_error)?;
         Ok(Self {
@@ -1189,6 +1218,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             line_starts: Vec::new(),
             parser_context: None,
             module,
+            layout,
             named_types: HashMap::new(),
             numbered_types: HashMap::new(),
             numbered_globals: NumberedValues::new(),
@@ -1224,11 +1254,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// A parser that also builds a [`ModuleSummaryIndex`] from the file's `^N`
     /// entries. Mirrors constructing `LLParser` with a non-null `Index`, which
     /// is what `parseAssemblyWithIndex` does.
-    pub fn with_summary_index(
-        src: &'src [u8],
-        module: &'ctx Module<B, Unverified>,
-    ) -> ParseResult<Self> {
-        let mut parser = Self::new(src, module)?;
+    pub fn with_summary_index(src: &'src [u8], key: LayoutToken<'ctx, B>) -> ParseResult<Self> {
+        let mut parser = Self::new(src, key)?;
         parser.summary_index = Some(ModuleSummaryIndex::new());
         Ok(parser)
     }
@@ -1236,21 +1263,35 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// A parser that builds only a [`ModuleSummaryIndex`], lexing past every
     /// module-level entity. Mirrors constructing `LLParser` with a null `M`,
     /// which is what `parseSummaryIndexAssembly` does.
-    pub fn summary_index_only(
-        src: &'src [u8],
-        module: &'ctx Module<B, Unverified>,
-    ) -> ParseResult<Self> {
-        let mut parser = Self::with_summary_index(src, module)?;
+    pub fn summary_index_only(src: &'src [u8], key: LayoutToken<'ctx, B>) -> ParseResult<Self> {
+        let mut parser = Self::with_summary_index(src, key)?;
         parser.parses_module_entities = false;
         Ok(parser)
     }
 
     pub fn with_slot_mapping(
         src: &'src [u8],
+        key: LayoutToken<'ctx, B>,
+        slots: &SlotMapping<'ctx, B>,
+    ) -> ParseResult<Self> {
+        Ok(Self::new(src, key)?.seeded_from(slots))
+    }
+
+    /// Crate-internal [`with_slot_mapping`](Self::with_slot_mapping) for the
+    /// standalone type and constant entries; see
+    /// [`for_standalone`](Self::for_standalone).
+    pub(crate) fn for_standalone_with_slots(
+        src: &'src [u8],
         module: &'ctx Module<B, Unverified>,
         slots: &SlotMapping<'ctx, B>,
     ) -> ParseResult<Self> {
-        let mut parser = Self::new(src, module)?;
+        Ok(Self::for_standalone(src, module)?.seeded_from(slots))
+    }
+
+    /// Seed the parser's numbered and named tables from a prior parse's slot
+    /// mapping.
+    fn seeded_from(self, slots: &SlotMapping<'ctx, B>) -> Self {
+        let mut parser = self;
         parser.numbered_globals = slots.global_values.clone();
         parser.numbered_attr_groups = slots.attribute_groups.clone();
         parser.named_types = slots
@@ -1293,7 +1334,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 )
             })
             .collect();
-        Ok(parser)
+        parser
     }
 
     /// A parser that also records the source range of every function, basic
@@ -1301,8 +1342,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// non-null `AsmParserContext *`, which is what `parseAssemblyString` /
     /// `parseAssembly` do when handed one; the registry comes back out through
     /// [`ParsedModule::parser_context`].
-    pub fn with_context(src: &'src [u8], module: &'ctx Module<B, Unverified>) -> ParseResult<Self> {
-        let mut parser = Self::new(src, module)?;
+    pub fn with_context(src: &'src [u8], key: LayoutToken<'ctx, B>) -> ParseResult<Self> {
+        let mut parser = Self::new(src, key)?;
         parser.parser_context = Some(AsmParserContext::new());
         parser.line_starts = line_start_offsets(src);
         Ok(parser)
@@ -12237,9 +12278,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<()> {
         let bb = state.define_basic_block(self.module, header, header_loc)?;
         let bb_value = bb.to_erased();
-        // Drive the typed builder for this block.
-        let builder = IrBuilder::with_folder(self.module, NoFolder).position_at_end(bb);
-        self.parse_basic_block_instructions(state, Some(builder), bb_value)?;
+        // Drive the typed builder for this block. It borrows the layout token
+        // taken out of `self`, so `self` stays free for the block's parse, and
+        // the token goes back before any error is propagated.
+        let Some(mut layout) = self.layout.take() else {
+            unreachable!(
+                "a parser holds its layout token except while one block is being parsed, and \
+                 blocks do not nest; a parser made without one (`for_standalone`) parses only a \
+                 type or a constant, never a block (invariant)"
+            );
+        };
+        let builder = IrBuilder::with_folder(&mut layout, NoFolder).position_at_end(bb);
+        let parsed = self.parse_basic_block_instructions(state, Some(builder), bb_value);
+        self.layout = Some(layout);
+        parsed?;
         // `ParserContext->addBlockLocation(BB, FileLocRange(BBStart,
         // Lex.getPrevTokEndLineColumnPos()))`.
         self.record_block_location(state, bb_value, header_loc.start)?;
@@ -12273,7 +12325,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_basic_block_instructions(
         &mut self,
         state: &mut PerFunctionState<'ctx, B>,
-        builder: Option<ParsedBlockBuilder<'ctx, 'ctx, B>>,
+        builder: Option<ParsedBlockBuilder<'_, 'ctx, B>>,
         bb_value: llvmkit_ir::Value<'ctx, B>,
     ) -> ParseResult<()> {
         // Emit instructions until a terminator consumes `builder`.
@@ -12713,7 +12765,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_ret(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: ParsedBlockBuilder<'_, 'ctx, B>,
     ) -> ParseResult<()> {
         self.bump()?; // eat `ret`
         // `parseRet` compares against the *enclosing function's* return type
@@ -12756,7 +12808,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_br(
         &mut self,
         state: &mut PerFunctionState<'ctx, B>,
-        b: ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: ParsedBlockBuilder<'_, 'ctx, B>,
     ) -> ParseResult<()> {
         self.bump()?; // eat `br`
         // `if (parseTypeAndValue(Op0, Loc, PFS)) return true;` — the
@@ -12807,7 +12859,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_int_binop(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         op: IntBinOp,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
@@ -12984,7 +13036,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_icmp(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         let samesign = self.eat_keyword(Keyword::Samesign)?;
@@ -13058,7 +13110,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_cast(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         operation: CastOperation,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
@@ -13085,7 +13137,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_fneg(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         let fmf = self.parse_optional_fmf()?;
@@ -13104,7 +13156,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_fp_binop(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         op: FpBinOp,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
@@ -13135,7 +13187,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_fcmp(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         let fmf = self.parse_optional_fmf()?;
@@ -13184,7 +13236,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_alloca(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         // `inalloca` / `swifterror` markers precede the type
@@ -13338,7 +13390,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_load(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         let is_atomic = self.eat_keyword(Keyword::Atomic)?;
@@ -13421,7 +13473,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_store(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
     ) -> ParseResult<()> {
         let is_atomic = self.eat_keyword(Keyword::Atomic)?;
         let volatile = self.eat_keyword(Keyword::Volatile)?;
@@ -13491,7 +13543,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_gep(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         // Upstream loops over the flag keywords in any order
@@ -13613,7 +13665,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_select(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
         opcode_loc: Span,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
@@ -13686,7 +13738,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_extractelement(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         // `ExtractElementInst::isValidOperands` is one predicate over both
@@ -13717,7 +13769,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_insertelement(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         // `InsertElementInst::isValidOperands`: a vector, an element matching
@@ -13761,7 +13813,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_shufflevector(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         // `LocTy Loc;` — `parseTypeAndValue(Op0, Loc, PFS)` records the span of
@@ -13822,7 +13874,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_extractvalue(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         let operand_loc = self.loc();
@@ -13884,7 +13936,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_insertvalue(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         let agg_loc = self.loc();
@@ -13929,7 +13981,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_phi(
         &mut self,
         state: &mut PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
         opcode_loc: Span,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
@@ -14220,7 +14272,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_call(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         let tail_kind = if self.eat_keyword(Keyword::Tail)? {
@@ -14812,7 +14864,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_vaarg(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         let list_ty = self.parse_type(false)?;
@@ -14842,7 +14894,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_freeze(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         let ty = self.parse_type(false)?;
@@ -14860,7 +14912,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_switch(
         &mut self,
         state: &mut PerFunctionState<'ctx, B>,
-        b: ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: ParsedBlockBuilder<'_, 'ctx, B>,
     ) -> ParseResult<()> {
         self.bump()?; // eat `switch`
         let cond_loc = self.loc();
@@ -14928,7 +14980,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_indirectbr(
         &mut self,
         state: &mut PerFunctionState<'ctx, B>,
-        b: ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: ParsedBlockBuilder<'_, 'ctx, B>,
     ) -> ParseResult<()> {
         self.bump()?; // eat `indirectbr`
         let addr_loc = self.loc();
@@ -14971,7 +15023,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// Mirrors `LLParser::parseFence` (LLParser.cpp ~8476).
     ///
     /// Upstream: `test/Assembler/fence.ll`.
-    fn parse_fence(&mut self, b: &ParsedBlockBuilder<'ctx, 'ctx, B>) -> ParseResult<()> {
+    fn parse_fence(&mut self, b: &ParsedBlockBuilder<'_, 'ctx, B>) -> ParseResult<()> {
         let sync_scope = self.parse_optional_syncscope()?;
         let ordering = self.parse_atomic_ordering()?;
         // `parseFence`'s two rules, both `tokError` so both anchor at the
@@ -14995,7 +15047,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_cmpxchg(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         let weak = self.eat_keyword(Keyword::Weak)?;
@@ -15061,7 +15113,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_atomicrmw(
         &mut self,
         state: &mut PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         let volatile = self.eat_keyword(Keyword::Volatile)?;
@@ -15201,7 +15253,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_landingpad(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         let result_ty = self.parse_type(false)?;
@@ -15265,7 +15317,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_cleanuppad(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         self.expect_keyword(Keyword::Within, "'within' after cleanuppad")?;
@@ -15290,7 +15342,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_catchpad(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: &ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         self.expect_keyword(Keyword::Within, "'within' after catchpad")?;
@@ -15313,7 +15365,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_resume(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-        b: ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: ParsedBlockBuilder<'_, 'ctx, B>,
     ) -> ParseResult<()> {
         let ty = self.parse_type(false)?;
         let v = self.parse_value(state, ty)?;
@@ -15328,7 +15380,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_cleanupret(
         &mut self,
         state: &mut PerFunctionState<'ctx, B>,
-        b: ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: ParsedBlockBuilder<'_, 'ctx, B>,
     ) -> ParseResult<()> {
         self.expect_keyword(Keyword::From, "'from' after cleanupret")?;
         // `parseValue(Type::getTokenTy(Context), CleanupPad, PFS)` — the pad
@@ -15361,7 +15413,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_catchret(
         &mut self,
         state: &mut PerFunctionState<'ctx, B>,
-        b: ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: ParsedBlockBuilder<'_, 'ctx, B>,
     ) -> ParseResult<()> {
         self.expect_keyword(Keyword::From, "'from' after catchret")?;
         // `parseValue(Type::getTokenTy(Context), CatchPad, PFS)` — implied type.
@@ -15383,7 +15435,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_catchswitch(
         &mut self,
         state: &mut PerFunctionState<'ctx, B>,
-        b: ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         self.bump()?; // eat `catchswitch`
@@ -15436,7 +15488,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_invoke(
         &mut self,
         state: &mut PerFunctionState<'ctx, B>,
-        b: ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<Option<llvmkit_ir::Value<'ctx, B>>> {
         // The dispatch has already eaten the `invoke` keyword, as
@@ -15560,7 +15612,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_callbr(
         &mut self,
         state: &mut PerFunctionState<'ctx, B>,
-        b: ParsedBlockBuilder<'ctx, 'ctx, B>,
+        b: ParsedBlockBuilder<'_, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<Option<llvmkit_ir::Value<'ctx, B>>> {
         self.bump()?; // eat `callbr`
@@ -16814,16 +16866,16 @@ fn live_builder_error(loc: Span) -> ParseError {
 }
 
 fn take_live_builder<'m, 'ctx, B: ModuleBrand + 'ctx>(
-    builder: &mut Option<ParsedBlockBuilder<'ctx, 'ctx, B>>,
+    builder: &mut Option<ParsedBlockBuilder<'m, 'ctx, B>>,
     loc: Span,
-) -> ParseResult<ParsedBlockBuilder<'ctx, 'ctx, B>> {
+) -> ParseResult<ParsedBlockBuilder<'m, 'ctx, B>> {
     builder.take().ok_or_else(|| live_builder_error(loc))
 }
 
 fn borrow_live_builder<'b, 'm, 'ctx, B: ModuleBrand + 'ctx>(
-    builder: &'b Option<ParsedBlockBuilder<'ctx, 'ctx, B>>,
+    builder: &'b Option<ParsedBlockBuilder<'m, 'ctx, B>>,
     loc: Span,
-) -> ParseResult<&'b ParsedBlockBuilder<'ctx, 'ctx, B>> {
+) -> ParseResult<&'b ParsedBlockBuilder<'m, 'ctx, B>> {
     builder.as_ref().ok_or_else(|| live_builder_error(loc))
 }
 
@@ -17106,8 +17158,8 @@ mod tests {
     use llvmkit_ir::{Module, module_new};
 
     fn parse(src: &str) -> ParseResult<()> {
-        let m = Module::dynamic("parse_test");
-        let p = Parser::new(src.as_bytes(), &m)?;
+        let mut m = Module::dynamic("parse_test");
+        let p = Parser::new(src.as_bytes(), m.layout_token())?;
         let _ = p.parse_module()?;
         Ok(())
     }
@@ -17117,8 +17169,8 @@ mod tests {
     #[test]
     fn parses_target_datalayout() {
         let src = "target datalayout = \"e-m:e-i64:64\"\n";
-        let m = module_new!("dl").expect("fresh module");
-        Parser::new(src.as_bytes(), &m)
+        let mut m = module_new!("dl").expect("fresh module");
+        Parser::new(src.as_bytes(), m.layout_token())
             .unwrap()
             .parse_module()
             .unwrap();
@@ -17130,8 +17182,8 @@ mod tests {
     #[test]
     fn parses_target_triple() {
         let src = "target triple = \"x86_64-pc-linux-gnu\"\n";
-        let m = module_new!("triple").expect("fresh module");
-        Parser::new(src.as_bytes(), &m)
+        let mut m = module_new!("triple").expect("fresh module");
+        Parser::new(src.as_bytes(), m.layout_token())
             .unwrap()
             .parse_module()
             .unwrap();
@@ -17142,8 +17194,8 @@ mod tests {
     #[test]
     fn parses_module_asm() {
         let src = "module asm \"hello\"\nmodule asm \"world\"\n";
-        let m = module_new!("masm").expect("fresh module");
-        Parser::new(src.as_bytes(), &m)
+        let mut m = module_new!("masm").expect("fresh module");
+        Parser::new(src.as_bytes(), m.layout_token())
             .unwrap()
             .parse_module()
             .unwrap();

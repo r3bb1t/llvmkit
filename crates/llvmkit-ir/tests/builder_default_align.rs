@@ -11,11 +11,13 @@ use llvmkit_ir::{DataLayout, IrBuilder, IrError, Linkage, NoFolder, PointerValue
 /// falls to the largest integer spec, i64:64).
 #[test]
 fn alloca_materialises_preferred_align() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let fn_ty = m.function_type_no_parameters(m.void_type().as_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     b.alloca(m.i32_type(), "a32")?;
     b.alloca(m.i64_type(), "a64")?;
     b.alloca(m.f64_type(), "af64")?;
@@ -39,12 +41,14 @@ fn alloca_materialises_preferred_align() -> Result<(), IrError> {
 /// (preferred) is `align 8`. ptr->8, f32->4.
 #[test]
 fn load_store_materialise_abi_align() -> Result<(), IrError> {
-    let m = module_new!("ls")?;
+    let mut module = module_new!("ls")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     b.load(m.i64_type(), p, "l64")?;
     b.load(m.ptr_type_in::<0>(), p, "lptr")?;
@@ -75,12 +79,14 @@ fn load_store_materialise_abi_align() -> Result<(), IrError> {
 /// the alignment.
 #[test]
 fn alloca_uses_datalayout_alloca_address_space() -> Result<(), IrError> {
-    let m = module_new!("as")?;
+    let mut module = module_new!("as")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     m.set_data_layout(DataLayout::parse("A5")?);
     let fn_ty = m.function_type_no_parameters(m.void_type().as_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let p = b.alloca(m.i32_type(), "p")?;
     assert_eq!(b.view(p).ty().address_space(), 5);
     b.ret_void()?;

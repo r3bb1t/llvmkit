@@ -474,12 +474,12 @@ where
     #[inline]
     pub fn builder<'m>(
         self,
-        module: &'ctx Module<B, Unverified>,
+        key: &'m mut crate::LayoutToken<'ctx, B>,
     ) -> IrBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, Ret::Marker>
     where
         C: CanMutate,
     {
-        IrBuilder::new_for::<Ret::Marker>(module)
+        IrBuilder::new_for::<Ret::Marker>(key)
     }
 }
 
@@ -677,12 +677,12 @@ where
     #[inline]
     pub fn builder<'m>(
         self,
-        module: &'ctx Module<B, Unverified>,
+        key: &'m mut crate::LayoutToken<'ctx, B>,
     ) -> IrBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, Ret::Marker>
     where
         C: CanMutate,
     {
-        IrBuilder::new_for::<Ret::Marker>(module)
+        IrBuilder::new_for::<Ret::Marker>(key)
     }
 }
 
@@ -1804,14 +1804,16 @@ mod tests {
     /// so it cannot be called from an integration test.
     #[test]
     fn call_args_lowers_tuple_to_value_ids() -> Result<(), IrError> {
-        let m = crate::module_new!("call_args")?;
+        let mut module = crate::module_new!("call_args")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(entry);
         let (x, _rhs) = m.view(f).params();
 
         let ids =
-            <(_, _) as CallArgs<'_, (i32, i32), _>>::lower((5_i32, x), (&m).into(), CrateOnly(()))?;
+            <(_, _) as CallArgs<'_, (i32, i32), _>>::lower((5_i32, x), m.into(), CrateOnly(()))?;
 
         assert_eq!(ids.len(), 2, "expected two lowered call-argument ids");
         b.ret(0_i32)?;

@@ -27,9 +27,9 @@ use llvmkit_ir::metadata::{
 };
 use llvmkit_ir::{
     BlockId, BrandError, Dyn, DynBrand, FunctionId, InstructionView, IntValue, IrBuilder, IrError,
-    Linkage, MetadataAttachmentKind, MetadataField, MetadataFieldValue, MetadataKind, Module,
-    ModuleBrand, NamedMetadataName, NoFolder, SpecializedMetadataKind, SpecializedMetadataNode,
-    Unverified, Verified, module_new,
+    LayoutToken, Linkage, MetadataAttachmentKind, MetadataField, MetadataFieldValue, MetadataKind,
+    Module, ModuleBrand, NamedMetadataName, NoFolder, SpecializedMetadataKind,
+    SpecializedMetadataNode, Unverified, Verified, module_new,
 };
 
 /// Declare a brand type exactly as a user would.
@@ -112,7 +112,7 @@ fn a_module_under_a_not_send_brand_still_crosses_a_thread() -> Result<(), IrErro
 fn a_half_authored_module_is_finished_on_another_thread() -> Result<(), IrError> {
     brand!(Handoff);
 
-    let module = Module::branded::<Handoff, _>("handoff")?;
+    let mut module = Module::branded::<Handoff, _>("handoff")?;
 
     // --- thread A: declare, open a block, emit part of the body ---
     let i32_ty = module.i32_type();
@@ -121,8 +121,10 @@ fn a_half_authored_module_is_finished_on_another_thread() -> Result<(), IrError>
     let entry: BlockId<Dyn, Handoff> = module.view(f).append_basic_block(&module, "entry").id();
 
     {
-        let builder = IrBuilder::new_for::<Dyn>(&module).position_at_end_dyn(entry)?;
-        let n: IntValue<'_, i32, _> = module.view(f).param(0)?.try_into()?;
+        let mut key = module.layout_token();
+        let m = key.module();
+        let builder = IrBuilder::new_for::<Dyn>(&mut key).position_at_end_dyn(entry)?;
+        let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         builder.int_add(n, 1_i32, "sum")?;
         // Deliberately no terminator yet: the module is unfinished, and an
         // unfinished module is exactly what could not previously be moved.
@@ -131,8 +133,10 @@ fn a_half_authored_module_is_finished_on_another_thread() -> Result<(), IrError>
     // --- the move ---
     let printed = thread::spawn(move || -> Result<String, IrError> {
         // thread B: reopen the same block through the id and finish the body.
-        let builder = IrBuilder::new_for::<Dyn>(&module).position_at_end_dyn(entry)?;
-        let sum: IntValue<'_, i32, _> = module
+        let mut key = module.layout_token();
+        let m = key.module();
+        let builder = IrBuilder::new_for::<Dyn>(&mut key).position_at_end_dyn(entry)?;
+        let sum: IntValue<'_, i32, _> = m
             .view(f)
             .basic_blocks()
             .next()
@@ -165,23 +169,25 @@ fn splitting_authoring_across_threads_emits_identical_ir() -> Result<(), IrError
     /// The two lifetime-free ids that carry authoring state across the handoff.
     type Resume = (FunctionId<Dyn, DynBrand>, BlockId<Dyn, DynBrand>);
 
-    fn author_first_half(module: &Module<DynBrand, Unverified>) -> Result<Resume, IrError> {
+    fn author_first_half(key: &mut LayoutToken<'_, DynBrand>) -> Result<Resume, IrError> {
+        let module = key.module();
         let i32_ty = module.i32_type();
         let fn_ty = module.function_type(i32_ty, [i32_ty.as_type()])?;
         let f = module.add_function_dyn("split", fn_ty, Linkage::External)?;
         let entry = module.view(f).append_basic_block(module, "entry").id();
-        let builder = IrBuilder::new_for::<Dyn>(module).position_at_end_dyn(entry)?;
+        let builder = IrBuilder::new_for::<Dyn>(key).position_at_end_dyn(entry)?;
         let n: IntValue<'_, i32, _> = module.view(f).param(0)?.try_into()?;
         builder.int_add(n, 7_i32, "sum")?;
         Ok((f, entry))
     }
 
     fn author_second_half(
-        module: &Module<DynBrand, Unverified>,
+        key: &mut LayoutToken<'_, DynBrand>,
         f: FunctionId<Dyn, DynBrand>,
         entry: BlockId<Dyn, DynBrand>,
     ) -> Result<(), IrError> {
-        let builder = IrBuilder::new_for::<Dyn>(module).position_at_end_dyn(entry)?;
+        let module = key.module();
+        let builder = IrBuilder::new_for::<Dyn>(key).position_at_end_dyn(entry)?;
         let sum: IntValue<'_, i32, _> = module
             .view(f)
             .basic_blocks()
@@ -196,15 +202,15 @@ fn splitting_authoring_across_threads_emits_identical_ir() -> Result<(), IrError
         Ok(())
     }
 
-    let single = Module::dynamic("split");
-    let (f, entry) = author_first_half(&single)?;
-    author_second_half(&single, f, entry)?;
+    let mut single = Module::dynamic("split");
+    let (f, entry) = author_first_half(&mut single.layout_token())?;
+    author_second_half(&mut single.layout_token(), f, entry)?;
     let on_one_thread = format!("{}", single.verify()?);
 
-    let crossing = Module::dynamic("split");
-    let (f, entry) = author_first_half(&crossing)?;
+    let mut crossing = Module::dynamic("split");
+    let (f, entry) = author_first_half(&mut crossing.layout_token())?;
     let on_two_threads = thread::spawn(move || -> Result<String, IrError> {
-        author_second_half(&crossing, f, entry)?;
+        author_second_half(&mut crossing.layout_token(), f, entry)?;
         Ok(format!("{}", crossing.verify()?))
     })
     .join()
@@ -331,7 +337,7 @@ fn a_stale_id_from_a_dead_generation_is_refused_by_its_successor() -> Result<(),
     };
 
     // --- generation 2: same brand, fresh storage ---
-    let gen2 = Module::branded::<Generation, _>("gen2")?;
+    let mut gen2 = Module::branded::<Generation, _>("gen2")?;
     // Occupy the same arena slot shape, so a tag-blind resolver would find
     // *something* plausible rather than an empty slot.
     let void_ty = gen2.void_type();
@@ -352,7 +358,7 @@ fn a_stale_id_from_a_dead_generation_is_refused_by_its_successor() -> Result<(),
     // The fallible id-consuming surfaces report it as a foreign id rather than
     // reopening whatever block now sits at that index.
     assert!(matches!(
-        IrBuilder::new_for::<Dyn>(&gen2).position_at_end_dyn(stale_block),
+        IrBuilder::new_for::<Dyn>(&mut gen2.layout_token()).position_at_end_dyn(stale_block),
         Err(IrError::ForeignValueId)
     ));
     Ok(())
@@ -426,8 +432,12 @@ fn branded_once_retires_the_brand_so_no_successor_can_exist() -> Result<(), IrEr
 /// instead — `tests/compile_fail/cross_module_metadata_attachment.rs`.)
 #[test]
 fn a_metadata_id_from_another_module_is_refused_everywhere() -> Result<(), IrError> {
-    let a = Module::dynamic("a");
-    let b = Module::dynamic("b");
+    let mut a_module = Module::dynamic("a");
+    let mut a_key = a_module.layout_token();
+    let a = a_key.module();
+    let mut b_module = Module::dynamic("b");
+    let mut b_key = b_module.layout_token();
+    let b = b_key.module();
 
     // Same shape in both, so the foreign slot is in range in the target.
     let a_node = a.metadata_tuple([a.metadata_string("from-a")])?;
@@ -488,7 +498,7 @@ fn a_metadata_id_from_another_module_is_refused_everywhere() -> Result<(), IrErr
     let g = b.add_global("g", i8_ty.const_zero())?;
     assert!(matches!(
         b.view(g)
-            .set_metadata(&b, MetadataAttachmentKind::AbsoluteSymbol, a_node),
+            .set_metadata(b, MetadataAttachmentKind::AbsoluteSymbol, a_node),
         Err(IrError::ForeignMetadataId)
     ));
 
@@ -496,20 +506,20 @@ fn a_metadata_id_from_another_module_is_refused_everywhere() -> Result<(), IrErr
     let void_ty = b.void_type();
     let fn_ty = b.function_type_no_parameters(void_ty)?;
     let f = b.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = b.view(f).append_basic_block(&b, "entry");
-    let builder = IrBuilder::with_folder(&b, NoFolder).position_at_end(entry);
+    let entry = b.view(f).append_basic_block(b, "entry");
+    let builder = IrBuilder::with_folder(&mut b_key, NoFolder).position_at_end(entry);
     let sum =
         builder.int_add::<i8, _, _, _>(i8_ty.const_int(1_u8), i8_ty.const_int(2_u8), "sum")?;
     builder.ret_void()?;
     let inst = InstructionView::try_from(b.view(sum).as_erased())?;
 
     assert!(matches!(
-        inst.set_metadata(&b, MetadataAttachmentKind::Prof, a_node),
+        inst.set_metadata(b, MetadataAttachmentKind::Prof, a_node),
         Err(IrError::ForeignMetadataId)
     ));
     assert!(matches!(
         inst.push_debug_record(
-            &b,
+            b,
             DebugRecord::Variable(DebugVariableRecord::new(
                 DebugVariableRecordKind::Value,
                 DebugMetadataOperand::Metadata(a_node),
@@ -524,15 +534,15 @@ fn a_metadata_id_from_another_module_is_refused_everywhere() -> Result<(), IrErr
     let a_void_ty = a.void_type();
     let a_fn_ty = a.function_type_no_parameters(a_void_ty)?;
     let a_fn = a.add_function_dyn("a_fn", a_fn_ty, Linkage::External)?;
-    let a_entry = a.view(a_fn).append_basic_block(&a, "entry");
-    let a_builder = IrBuilder::with_folder(&a, NoFolder).position_at_end(a_entry);
+    let a_entry = a.view(a_fn).append_basic_block(a, "entry");
+    let a_builder = IrBuilder::with_folder(&mut a_key, NoFolder).position_at_end(a_entry);
     let a_i8 = a.i8_type();
     let a_sum =
         a_builder.int_add::<i8, _, _, _>(a_i8.const_int(1_u8), a_i8.const_int(2_u8), "sum")?;
     a_builder.ret_void()?;
     assert!(matches!(
         inst.push_debug_record(
-            &b,
+            b,
             DebugRecord::Variable(DebugVariableRecord::new(
                 DebugVariableRecordKind::Value,
                 DebugMetadataOperand::Value(a.view(a_sum).as_erased().id()),

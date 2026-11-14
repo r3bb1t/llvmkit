@@ -18,10 +18,10 @@ fn expects_pointer<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx>(
 }
 
 fn main() -> Result<(), IrError> {
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m"); let mut key = module.layout_token(); let m = key.module();
     let f = m.add_typed_function::<(), (Point,), _>("f", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<()>(&mut key).position_at_end(entry);
     let (point,) = m.view(f).params();
     expects_pointer(point.try_x(&b)?);
     b.ret_void();

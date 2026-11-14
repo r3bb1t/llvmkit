@@ -14,13 +14,15 @@ use llvmkit_ir::{Dyn, IrBuilder, IrError, Linkage, module_new};
 /// `test/Assembler/2002-08-15-CastAmbiguity.ll`.
 #[test]
 fn ptrtoint_emits_canonical_form() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(i64_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("p2i", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let arg: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(f).param(0)?.try_into()?;
     let r = b.ptr_to_int(arg, i64_ty, "y")?;
@@ -34,13 +36,15 @@ fn ptrtoint_emits_canonical_form() -> Result<(), IrError> {
 /// (the `IntToPtrInst` case).
 #[test]
 fn inttoptr_emits_canonical_form() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(ptr_ty.as_type(), [i64_ty.as_type()])?;
     let f = m.add_function_dyn("i2p", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let arg: llvmkit_ir::IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let r = b.int_to_ptr(arg, ptr_ty, "y")?;
     b.ret(r)?;
@@ -56,13 +60,15 @@ fn inttoptr_emits_canonical_form() -> Result<(), IrError> {
 /// (the `AddrSpaceCastInst` case).
 #[test]
 fn addrspacecast_emits_canonical_form() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr0 = m.ptr_type_in::<0>();
     let ptr1 = m.ptr_type_in::<1>();
     let fn_ty = m.function_type(ptr1.as_type(), [ptr0.as_type()])?;
     let f = m.add_function_dyn("ac", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let arg: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(f).param(0)?.try_into()?;
     let r = b.addrspace_cast(arg, ptr1, "y")?;

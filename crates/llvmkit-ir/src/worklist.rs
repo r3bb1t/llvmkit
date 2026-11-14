@@ -151,12 +151,14 @@ mod tests {
     // Helper closes over `m` so tests can pop against a live module.
     #[test]
     fn push_dedups_and_pop_is_lifo() -> Result<(), IrError> {
-        let m = crate::module_new!("wl-basic")?;
+        let mut owned = crate::module_new!("wl-basic")?;
+        let mut key = owned.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let a = b.int_add(x, 1_i32, "a")?;
         let c = b.int_add(x, 2_i32, "c")?;
@@ -186,12 +188,14 @@ mod tests {
 
     #[test]
     fn remove_pulls_from_stack_and_set() -> Result<(), IrError> {
-        let m = crate::module_new!("wl-remove")?;
+        let mut owned = crate::module_new!("wl-remove")?;
+        let mut key = owned.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let a = b.int_add(x, 1_i32, "a")?;
         let c = b.int_add(x, 2_i32, "c")?;
@@ -215,12 +219,14 @@ mod tests {
     // must skip such an id, not panic on the instruction-payload kind check.
     #[test]
     fn pop_skips_non_instruction_id_without_panicking() -> Result<(), IrError> {
-        let m = crate::module_new!("wl-non-inst")?;
+        let mut owned = crate::module_new!("wl-non-inst")?;
+        let mut key = owned.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let a = b.int_add(x, 1_i32, "a")?;
         b.ret(x)?;
@@ -260,12 +266,14 @@ mod tests {
     // the non-instruction case above.
     #[test]
     fn pop_skips_terminator_id() -> Result<(), IrError> {
-        let m = crate::module_new!("wl-term")?;
+        let mut owned = crate::module_new!("wl-term")?;
+        let mut key = owned.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let a = b.int_add(x, 1_i32, "a")?;
         b.ret(x)?;

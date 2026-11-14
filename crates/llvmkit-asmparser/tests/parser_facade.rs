@@ -542,7 +542,7 @@ fn the_summary_index_scaffold_module_keeps_its_own_name() {
     const PARSER_RS: &str = include_str!("../src/parser.rs");
 
     assert!(
-        PARSER_RS.contains(r#"let module = Module::dynamic("summary");"#),
+        PARSER_RS.contains(r#"let mut module = Module::dynamic("summary");"#),
         "parse_summary_index_assembly's scaffold module must keep its own name: \
          upstream's parseSummaryIndexAssembly builds no Module at all, so there \
          is no identifier to match and routing this site through the \

@@ -9,8 +9,8 @@ use llvmkit_asmparser::parse_error::ParseError;
 use llvmkit_ir::Module;
 
 fn parse_and_render(src: &str) -> String {
-    let module = Module::dynamic("phi_real_incomings");
-    Parser::new(src.as_bytes(), &module)
+    let mut module = Module::dynamic("phi_real_incomings");
+    Parser::new(src.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
@@ -20,8 +20,8 @@ fn parse_and_render(src: &str) -> String {
 /// Parse, then verify the produced IR, then render — proving the parsed phi
 /// is not merely printable but structurally coherent.
 fn parse_verify_render(src: &str) -> String {
-    let module = Module::dynamic("phi_real_incomings");
-    Parser::new(src.as_bytes(), &module)
+    let mut module = Module::dynamic("phi_real_incomings");
+    Parser::new(src.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
@@ -30,8 +30,8 @@ fn parse_verify_render(src: &str) -> String {
 }
 
 fn parse_err(src: &str) -> ParseError {
-    let module = Module::dynamic("phi_real_incomings");
-    Parser::new(src.as_bytes(), &module)
+    let mut module = Module::dynamic("phi_real_incomings");
+    Parser::new(src.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect_err("parser rejects malformed input")

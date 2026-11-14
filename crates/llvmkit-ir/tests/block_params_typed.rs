@@ -18,14 +18,16 @@ use llvmkit_ir::{
 /// handles are the block's leading head-phis, typed i32 / ptr in order.
 #[test]
 fn append_block_typed_yields_typed_params_from_head_phis() -> Result<(), IrError> {
-    let m = module_new!("block_params_typed")?;
+    let mut module = module_new!("block_params_typed")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let f = m
         .add_typed_function::<(), (), _>("f", Linkage::External)?
         .as_function();
 
-    let b = IrBuilder::new_for::<()>(&m);
+    let b = IrBuilder::new_for::<()>(&mut key);
 
     // Compile-time assertion: the returned block is stamped with the
     // `(i32, Ptr)` schema and the values are that schema's typed handles.
@@ -67,13 +69,15 @@ fn append_block_typed_yields_typed_params_from_head_phis() -> Result<(), IrError
 /// `Vec<Value>` of untyped head-phi results — unchanged by this slice.
 #[test]
 fn append_block_with_params_stays_erased() -> Result<(), IrError> {
-    let m = module_new!("block_params_erased")?;
+    let mut module = module_new!("block_params_erased")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let f = m
         .add_typed_function::<(), (), _>("f", Linkage::External)?
         .as_function();
 
-    let b = IrBuilder::new_for::<()>(&m);
+    let b = IrBuilder::new_for::<()>(&mut key);
 
     // Compile-time assertion: the erased sibling yields a `BlockParamsDyn`
     // block and an untyped `Vec<Value>`, exactly as before.
@@ -93,12 +97,14 @@ fn append_block_with_params_stays_erased() -> Result<(), IrError> {
 /// returns the unit value tuple.
 #[test]
 fn append_block_typed_unit_params() -> Result<(), IrError> {
-    let m = module_new!("block_params_unit")?;
+    let mut module = module_new!("block_params_unit")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m
         .add_typed_function::<(), (), _>("f", Linkage::External)?
         .as_function();
 
-    let b = IrBuilder::new_for::<()>(&m);
+    let b = IrBuilder::new_for::<()>(&mut key);
 
     let (head, ()): (BasicBlock<'_, (), Unterminated, _, ()>, ()) =
         b.append_block_typed::<(), _, _>(m.view(f), "head")?;

@@ -19,13 +19,15 @@ use llvmkit_ir::{
 /// (`load_from(..).atomic(..)`), the single spelling for an atomic load.
 #[test]
 fn load_atomic_monotonic_align4() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(f).param(0)?.try_into()?;
     let ld = b
@@ -49,13 +51,15 @@ fn load_atomic_monotonic_align4() -> Result<(), IrError> {
 /// (`load_from(..).volatile().atomic(..)`).
 #[test]
 fn load_atomic_volatile_acquire_align8() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(f).param(0)?.try_into()?;
     let ld = b
@@ -80,13 +84,15 @@ fn load_atomic_volatile_acquire_align8() -> Result<(), IrError> {
 /// (`load_from(..).volatile().atomic(..).sync_scope(..)`).
 #[test]
 fn load_atomic_volatile_singlethread_seq_cst_align16() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(f).param(0)?.try_into()?;
     let ld = b
@@ -116,13 +122,15 @@ fn load_atomic_volatile_singlethread_seq_cst_align16() -> Result<(), IrError> {
 /// (`store_to(..).atomic(..)`), the single spelling for an atomic store.
 #[test]
 fn store_atomic_monotonic_align4() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(f).param(0)?.try_into()?;
     let val = i32_ty.const_int(23_i32);
@@ -147,13 +155,15 @@ fn store_atomic_monotonic_align4() -> Result<(), IrError> {
 /// (`store_to(..).volatile().atomic(..)`).
 #[test]
 fn store_atomic_volatile_monotonic_align4() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(f).param(0)?.try_into()?;
     let val = i32_ty.const_int(24_i32);
@@ -179,13 +189,15 @@ fn store_atomic_volatile_monotonic_align4() -> Result<(), IrError> {
 /// (`store_to(..).volatile().atomic(..).sync_scope(..)`).
 #[test]
 fn store_atomic_volatile_singlethread_monotonic() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(f).param(0)?.try_into()?;
     let val = i32_ty.const_int(25_i32);
@@ -213,13 +225,15 @@ fn store_atomic_volatile_singlethread_monotonic() -> Result<(), IrError> {
 /// Constructed through the [`llvmkit_ir::LoadBuilder`] chain.
 #[test]
 fn verifier_rejects_atomic_load_release_ordering() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(f).param(0)?.try_into()?;
     let ld = b
@@ -243,13 +257,15 @@ fn verifier_rejects_atomic_load_release_ordering() -> Result<(), IrError> {
 /// Constructed through the [`llvmkit_ir::StoreBuilder`] chain.
 #[test]
 fn verifier_rejects_atomic_store_acquire_ordering() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(f).param(0)?.try_into()?;
     let val = i32_ty.const_int(42_i32);
@@ -275,14 +291,16 @@ fn verifier_rejects_atomic_store_acquire_ordering() -> Result<(), IrError> {
 /// Constructed through the [`llvmkit_ir::LoadBuilder`] chain.
 #[test]
 fn verifier_rejects_atomic_load_non_power_of_two_size() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     // i17 is intentionally non-power-of-two: the marker `Width<17>` projects
     // through `StaticIntWidth::ir_type`, no separate type binding is needed.
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(f).param(0)?.try_into()?;
     // i17 → bit width 17, not power-of-two.
@@ -310,14 +328,16 @@ fn verifier_rejects_atomic_load_non_power_of_two_size() -> Result<(), IrError> {
 /// [`llvmkit_ir::LoadBuilder`] chain's erased terminal.
 #[test]
 fn verifier_rejects_atomic_load_struct_operand() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let struct_ty = m.struct_type([i32_ty.as_type()])?;
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let ptr: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(f).param(0)?.try_into()?;
     let _ = b
@@ -346,13 +366,15 @@ fn verifier_rejects_atomic_load_struct_operand() -> Result<(), IrError> {
 /// the `int -> fp` arm of `Instruction::BitCast` (`lib/IR/Instructions.cpp`).
 #[test]
 fn bitcast_int_to_fp_emits_text() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
     let fn_ty = m.function_type(f32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let bc = b.bitcast_int_to_fp(n, f32_ty, "bc")?;
     b.ret(bc)?;
@@ -370,13 +392,15 @@ fn bitcast_int_to_fp_emits_text() -> Result<(), IrError> {
 /// folder.
 #[test]
 fn default_constant_folder_folds_bitcast_int_to_fp() -> Result<(), IrError> {
-    let m = module_new!("bitcast-fold")?;
+    let mut module = module_new!("bitcast-fold")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
     let fn_ty = m.function_type(f32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let one_bits: IntValue<'_, i32, _> =
         i32_ty.const_int(0x3f80_0000_i32).as_erased().try_into()?;
     let result = b.bitcast_int_to_fp(one_bits, f32_ty, "bc")?;
@@ -391,13 +415,15 @@ fn default_constant_folder_folds_bitcast_int_to_fp() -> Result<(), IrError> {
 /// IRB.getInt64Ty())`.
 #[test]
 fn bitcast_fp_to_int_emits_text() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i64_ty = m.i64_type();
     let f64_ty = m.f64_type();
     let fn_ty = m.function_type(i64_ty, [f64_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let n: llvmkit_ir::FloatValue<'_, f64, _> = m.view(f).param(0)?.try_into()?;
     let bc = b.bitcast_fp_to_int(n, i64_ty, "bc")?;
     b.ret(bc)?;

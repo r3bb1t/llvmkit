@@ -102,14 +102,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for RecordingFolder {
 /// `IRBuilder::CreateAdd` and friends do with their defaulted flag arguments.
 #[test]
 fn flagless_typed_emitters_reach_the_opcode_s_hook() -> Result<(), IrError> {
-    let m = module_new!("folder-hook-flagless")?;
+    let mut module = module_new!("folder-hook-flagless")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
     let calls: CallLog = CallLog::default();
     let b = IrBuilder::with_folder(
-        &m,
+        &mut key,
         RecordingFolder {
             calls: Rc::clone(&calls),
         },
@@ -162,14 +164,16 @@ fn flagless_typed_emitters_reach_the_opcode_s_hook() -> Result<(), IrError> {
 /// so does `int_udiv_with_flags`, in both settings.
 #[test]
 fn exact_flag_reaches_the_exact_hook() -> Result<(), IrError> {
-    let m = module_new!("folder-hook-exact")?;
+    let mut module = module_new!("folder-hook-exact")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
     let calls: CallLog = CallLog::default();
     let b = IrBuilder::with_folder(
-        &m,
+        &mut key,
         RecordingFolder {
             calls: Rc::clone(&calls),
         },
@@ -199,14 +203,16 @@ fn exact_flag_reaches_the_exact_hook() -> Result<(), IrError> {
 /// a folder through this path even when they were set.
 #[test]
 fn erased_emitter_dispatches_on_opcode_and_forwards_flags() -> Result<(), IrError> {
-    let m = module_new!("folder-hook-erased")?;
+    let mut module = module_new!("folder-hook-erased")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
     let calls: CallLog = CallLog::default();
     let b = IrBuilder::with_folder(
-        &m,
+        &mut key,
         RecordingFolder {
             calls: Rc::clone(&calls),
         },
@@ -269,14 +275,16 @@ fn erased_emitter_dispatches_on_opcode_and_forwards_flags() -> Result<(), IrErro
 /// which is why this arm has no upstream counterpart either.
 #[test]
 fn erased_emitter_drops_flags_the_opcode_does_not_accept() -> Result<(), IrError> {
-    let m = module_new!("folder-hook-erased-drop")?;
+    let mut module = module_new!("folder-hook-erased-drop")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
     let calls: CallLog = CallLog::default();
     let b = IrBuilder::with_folder(
-        &m,
+        &mut key,
         RecordingFolder {
             calls: Rc::clone(&calls),
         },

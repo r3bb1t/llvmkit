@@ -448,26 +448,28 @@ fn with_sample_module<R, F>(run: F) -> Result<R, IrError>
 where
     F: FnOnce(Module<DynBrand, Unverified>) -> Result<R, IrError>,
 {
-    let module = Module::dynamic("analysis");
-    let f = module
+    let mut module = Module::dynamic("analysis");
+    let mut key = module.layout_token();
+    let m = key.module();
+    let f = m
         .add_typed_function::<(), (), _>("f", Linkage::External)?
         .as_function();
-    let g = module
+    let g = m
         .add_typed_function::<(), (), _>("g", Linkage::External)?
         .as_function();
-    let h = module
+    let h = m
         .add_typed_function::<(), (), _>("h", Linkage::External)?
         .as_function();
 
-    let entry = module.view(f).append_basic_block(&module, "entry");
-    let b = IrBuilder::new_for::<()>(&module).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<()>(&mut key).position_at_end(entry);
     b.call_dyn(g, Vec::<Value<'_, _>>::new(), "")?;
     b.call_dyn(h, Vec::<Value<'_, _>>::new(), "")?;
     b.ret_void();
 
     for function in [g, h] {
-        let entry = module.view(function).append_basic_block(&module, "entry");
-        IrBuilder::new_for::<()>(&module)
+        let entry = m.view(function).append_basic_block(m, "entry");
+        IrBuilder::new_for::<()>(&mut key)
             .position_at_end(entry)
             .ret_void();
     }

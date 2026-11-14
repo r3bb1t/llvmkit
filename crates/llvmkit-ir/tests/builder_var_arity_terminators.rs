@@ -15,27 +15,29 @@ use llvmkit_ir::{Dyn, IntValue, IrBuilder, IrError, IsValue, Linkage, PointerVal
 ///   i8 2, label %defaultdest.2 ]`. Locks the multi-line print form.
 #[test]
 fn switch_three_cases_print_form() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [i8_ty.as_type()])?;
     let f = m.add_function_dyn("instructions.terminators", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let default_bb = m.view(f).append_basic_block(&m, "defaultdest");
-    let case0 = m.view(f).append_basic_block(&m, "defaultdest.0");
-    let case1 = m.view(f).append_basic_block(&m, "defaultdest.1");
-    let case2 = m.view(f).append_basic_block(&m, "defaultdest.2");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let default_bb = m.view(f).append_basic_block(m, "defaultdest");
+    let case0 = m.view(f).append_basic_block(m, "defaultdest.0");
+    let case1 = m.view(f).append_basic_block(m, "defaultdest.1");
+    let case2 = m.view(f).append_basic_block(m, "defaultdest.2");
     let default_label = default_bb.id();
     let case0_label = case0.id();
     let case1_label = case1.id();
     let case2_label = case2.id();
     // Seal the case targets with `unreachable` so the verifier accepts them.
     for bb in [default_bb, case0, case1, case2] {
-        let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
+        let bb_b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(bb);
         bb_b.ret_void()?;
     }
     let val: IntValue<'_, i8, _> = m.view(f).param(0)?.try_into()?;
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let (_sealed, switch) = b.switch_dyn(val, default_label, "")?;
     let _closed = switch
         .add_case(i8_ty.const_int(0_i8), case0_label)?
@@ -68,25 +70,27 @@ fn switch_three_cases_print_form() -> Result<(), IrError> {
 /// added via `add_case`, in declaration order, on a finished switch.
 #[test]
 fn switch_cases_reader_round_trips() -> Result<(), IrError> {
-    let m = module_new!("switch_cases")?;
+    let mut module = module_new!("switch_cases")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [i8_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let default_bb = m.view(f).append_basic_block(&m, "default");
-    let a = m.view(f).append_basic_block(&m, "a");
-    let bb = m.view(f).append_basic_block(&m, "b");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let default_bb = m.view(f).append_basic_block(m, "default");
+    let a = m.view(f).append_basic_block(m, "a");
+    let bb = m.view(f).append_basic_block(m, "b");
     let default_label = default_bb.id();
     let a_label = a.id();
     let b_label = bb.id();
     for block in [default_bb, a, bb] {
-        IrBuilder::new_for::<Dyn>(&m)
+        IrBuilder::new_for::<Dyn>(&mut key)
             .position_at_end(block)
             .ret_void()?;
     }
     let val: IntValue<'_, i8, _> = m.view(f).param(0)?.try_into()?;
-    let builder = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let builder = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let (_sealed, switch) = builder.switch_dyn(val, default_label, "")?;
     let closed = switch
         .add_case(i8_ty.const_int(10_i8), a_label)?
@@ -112,20 +116,22 @@ fn switch_cases_reader_round_trips() -> Result<(), IrError> {
 /// accepts a switch with only a default destination (no cases).
 #[test]
 fn switch_no_cases_only_default() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [i32_ty.as_type()])?;
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let dest = m.view(f).append_basic_block(&m, "dest");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let dest = m.view(f).append_basic_block(m, "dest");
     let dest_label = dest.id();
     {
-        let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(dest);
+        let bb_b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(dest);
         bb_b.ret_void()?;
     }
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let (_sealed, switch) = b.switch_dyn(x, dest_label, "")?;
     let _closed = switch.finish();
     m.verify_borrowed()?;
@@ -144,25 +150,27 @@ fn switch_no_cases_only_default() -> Result<(), IrError> {
 /// compile-fail fixture (a bare `i64` case has no `IntoIntValue<i32>` impl).
 #[test]
 fn switch_typed_i32_matching_cases() -> Result<(), IrError> {
-    let m = module_new!("switch_typed")?;
+    let mut module = module_new!("switch_typed")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let default_bb = m.view(f).append_basic_block(&m, "default");
-    let a = m.view(f).append_basic_block(&m, "a");
-    let bb = m.view(f).append_basic_block(&m, "b");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let default_bb = m.view(f).append_basic_block(m, "default");
+    let a = m.view(f).append_basic_block(m, "a");
+    let bb = m.view(f).append_basic_block(m, "b");
     let default_label = default_bb.id();
     let a_label = a.id();
     let b_label = bb.id();
     for block in [default_bb, a, bb] {
-        IrBuilder::new_for::<Dyn>(&m)
+        IrBuilder::new_for::<Dyn>(&mut key)
             .position_at_end(block)
             .ret_void()?;
     }
     let val: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let builder = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let builder = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     // `W` is inferred as `i32` from `val: IntValue<i32>`.
     let (_sealed, switch) = builder.switch(val, default_label, "")?;
     let _closed = switch
@@ -192,19 +200,21 @@ fn switch_typed_i32_matching_cases() -> Result<(), IrError> {
 /// defence in depth beneath what the typed flavour lifts to compile time.
 #[test]
 fn switch_erased_dyn_wrong_width_case_is_runtime_type_mismatch() -> Result<(), IrError> {
-    let m = module_new!("switch_erased")?;
+    let mut module = module_new!("switch_erased")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let default_bb = m.view(f).append_basic_block(&m, "default");
-    let a = m.view(f).append_basic_block(&m, "a");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let default_bb = m.view(f).append_basic_block(m, "default");
+    let a = m.view(f).append_basic_block(m, "a");
     let default_label = default_bb.id();
     let a_label = a.id();
     for block in [default_bb, a] {
-        IrBuilder::new_for::<Dyn>(&m)
+        IrBuilder::new_for::<Dyn>(&mut key)
             .position_at_end(block)
             .ret_void()?;
     }
@@ -212,7 +222,7 @@ fn switch_erased_dyn_wrong_width_case_is_runtime_type_mismatch() -> Result<(), I
     // the resulting switch is `SwitchInst<IntDyn>` (compiles for any case
     // width; discipline is deferred to the runtime check below).
     let cond = m.view(f).param(0)?;
-    let builder = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let builder = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let (_sealed, switch) = builder.switch_dyn(cond, default_label, "")?;
     // A wrong-width (`i8`) case on the `i32` condition is a RUNTIME
     // `TypeMismatch`, not a compile error (`add_case` consumes `switch`).
@@ -238,20 +248,22 @@ fn switch_erased_dyn_wrong_width_case_is_runtime_type_mismatch() -> Result<(), I
 /// `indirectbr <ptr-ty> <addr>, [label %bb]` skeleton.
 #[test]
 fn indirectbr_single_destination() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let dest = m.view(f).append_basic_block(&m, "dest");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let dest = m.view(f).append_basic_block(m, "dest");
     let dest_label = dest.id();
     {
-        let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(dest);
+        let bb_b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(dest);
         bb_b.ret_void()?;
     }
     let addr: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let (_sealed, ibr) = b.indirectbr(addr, "")?;
     let _closed = ibr.add_destination(dest_label)?.finish();
     let text = format!("{m}");
@@ -269,22 +281,24 @@ fn indirectbr_single_destination() -> Result<(), IrError> {
 /// destination is intentional in the upstream fixture (a valid IR form).
 #[test]
 fn indirectbr_multiple_destinations() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let bb1 = m.view(f).append_basic_block(&m, "bb1");
-    let bb2 = m.view(f).append_basic_block(&m, "bb2");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let bb1 = m.view(f).append_basic_block(m, "bb1");
+    let bb2 = m.view(f).append_basic_block(m, "bb2");
     let bb1_label = bb1.id();
     let bb2_label = bb2.id();
     for bb in [bb1, bb2] {
-        let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
+        let bb_b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(bb);
         bb_b.ret_void()?;
     }
     let addr: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let (_sealed, ibr) = b.indirectbr(addr, "")?;
     let _closed = ibr
         .add_destination(bb1_label)?
@@ -303,21 +317,23 @@ fn indirectbr_multiple_destinations() -> Result<(), IrError> {
 /// builds, prints the `indirectbr ptr ...` skeleton, and `verify()` passes.
 #[test]
 fn indirectbr_typed_pointer_address_builds_and_verifies() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let dest = m.view(f).append_basic_block(&m, "dest");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let dest = m.view(f).append_basic_block(m, "dest");
     let dest_label = dest.id();
     {
-        let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(dest);
+        let bb_b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(dest);
         bb_b.ret_void()?;
     }
     // A typed pointer handle: accepted by the identity `IntoPointerValue`.
     let addr: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let (_sealed, ibr) = b.indirectbr(addr, "")?;
     let _closed = ibr.add_destination(dest_label)?.finish();
     let text = format!("{m}");
@@ -325,7 +341,7 @@ fn indirectbr_typed_pointer_address_builds_and_verifies() -> Result<(), IrError>
         text.contains("indirectbr ptr %0, [label %dest]"),
         "got:\n{text}"
     );
-    m.verify()?;
+    module.verify()?;
     Ok(())
 }
 
@@ -336,16 +352,18 @@ fn indirectbr_typed_pointer_address_builds_and_verifies() -> Result<(), IrError>
 /// path.
 #[test]
 fn indirectbr_erased_value_pointer_address_builds_and_verifies() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let dest = m.view(f).append_basic_block(&m, "dest");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let dest = m.view(f).append_basic_block(m, "dest");
     let dest_label = dest.id();
     {
-        let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(dest);
+        let bb_b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(dest);
         bb_b.ret_void()?;
     }
     // The strict cut removed the silent `IntoPointerValue for Value`
@@ -354,7 +372,7 @@ fn indirectbr_erased_value_pointer_address_builds_and_verifies() -> Result<(), I
     // pointer-typed `indirectbr` operand.
     let addr: PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(f).param(0)?.as_erased().try_into()?;
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let (_sealed, ibr) = b.indirectbr(addr, "")?;
     let _closed = ibr.add_destination(dest_label)?.finish();
     let text = format!("{m}");
@@ -362,6 +380,6 @@ fn indirectbr_erased_value_pointer_address_builds_and_verifies() -> Result<(), I
         text.contains("indirectbr ptr %0, [label %dest]"),
         "got:\n{text}"
     );
-    m.verify()?;
+    module.verify()?;
     Ok(())
 }

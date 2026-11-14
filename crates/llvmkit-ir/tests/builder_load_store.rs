@@ -14,13 +14,15 @@ use llvmkit_ir::{Align, Dyn, IrBuilder, IrError, Linkage, module_new};
 /// Upstream `align-inst-load.ll` is a negative alignment fixture.
 #[test]
 fn load_plain() -> Result<(), IrError> {
-    let m = module_new!("ls")?;
+    let mut module = module_new!("ls")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("ld", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(f).param(0)?.try_into()?;
     let r = b.int_load::<i32, _, _>(p, "v")?;
@@ -37,13 +39,15 @@ fn load_plain() -> Result<(), IrError> {
 /// print-form check; upstream `align-inst-load.ll` is a negative fixture.
 #[test]
 fn load_aligned() -> Result<(), IrError> {
-    let m = module_new!("ls")?;
+    let mut module = module_new!("ls")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("ld", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(f).param(0)?.try_into()?;
     let r = b.int_load_with_align::<i32, _, _>(p, Align::new(4)?, "v")?;
@@ -60,7 +64,9 @@ fn load_aligned() -> Result<(), IrError> {
 /// Upstream `align-inst-store.ll` is a negative alignment fixture.
 #[test]
 fn store_plain() -> Result<(), IrError> {
-    let m = module_new!("ls")?;
+    let mut module = module_new!("ls")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(
@@ -68,8 +74,8 @@ fn store_plain() -> Result<(), IrError> {
         [i32_ty.as_type(), ptr_ty.as_type()],
     )?;
     let f = m.add_function_dyn("st", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let v: llvmkit_ir::IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let p: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(f).param(1)?.try_into()?;
@@ -87,7 +93,9 @@ fn store_plain() -> Result<(), IrError> {
 /// print-form check; upstream `align-inst-store.ll` is a negative fixture.
 #[test]
 fn store_aligned() -> Result<(), IrError> {
-    let m = module_new!("ls")?;
+    let mut module = module_new!("ls")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(
@@ -95,8 +103,8 @@ fn store_aligned() -> Result<(), IrError> {
         [i32_ty.as_type(), ptr_ty.as_type()],
     )?;
     let f = m.add_function_dyn("st", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let v: llvmkit_ir::IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let p: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(f).param(1)?.try_into()?;
@@ -116,12 +124,14 @@ fn store_aligned() -> Result<(), IrError> {
 /// uses the same `CreateLoad` + arithmetic + ret pattern.
 #[test]
 fn load_add_store_round_trip() -> Result<(), IrError> {
-    let m = module_new!("ls")?;
+    let mut module = module_new!("ls")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("inc", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(f).param(0)?.try_into()?;
     let v = b.int_load::<i32, _, _>(p, "v")?;

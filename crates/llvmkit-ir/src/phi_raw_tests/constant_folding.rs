@@ -12,14 +12,16 @@ use crate::{DataLayout, Dyn, InstructionView, IntValue, IrBuilder, IrError, Link
 /// a PHI whose incoming values are the same constant folds to that constant.
 #[test]
 fn phi_same_constant_folds() -> Result<(), IrError> {
-    let m = crate::module_new!("analysis-phi")?;
+    let mut module = crate::module_new!("analysis-phi")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let dl = DataLayout::default();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
     let entry_label = entry.id();
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let phi = b
         .view(b.int_phi::<i32, _>("p"))
         .add_incoming(7_i32, entry_label)?
@@ -40,16 +42,18 @@ fn phi_same_constant_folds() -> Result<(), IrError> {
 /// which is the illegal refinement direction.
 #[test]
 fn phi_poison_and_undef_incomings_fold_to_undef() -> Result<(), IrError> {
-    let m = crate::module_new!("analysis-phi-poison-undef")?;
+    let mut module = crate::module_new!("analysis-phi-poison-undef")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let dl = DataLayout::default();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let other = m.view(f).append_basic_block(&m, "other");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let other = m.view(f).append_basic_block(m, "other");
     let entry_label = entry.id();
     let other_label = other.id();
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let poison = IntValue::try_from(i32_ty.as_type().poison().as_erased())?;
     let undef = IntValue::try_from(i32_ty.as_type().undef().as_erased())?;
     // Distinct predecessor blocks: a phi with two *different* values from
@@ -71,16 +75,18 @@ fn phi_poison_and_undef_incomings_fold_to_undef() -> Result<(), IrError> {
 /// undef, so the remaining concrete constant wins.
 #[test]
 fn phi_poison_beside_constant_folds_to_the_constant() -> Result<(), IrError> {
-    let m = crate::module_new!("analysis-phi-poison-const")?;
+    let mut module = crate::module_new!("analysis-phi-poison-const")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let dl = DataLayout::default();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let other = m.view(f).append_basic_block(&m, "other");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let other = m.view(f).append_basic_block(m, "other");
     let entry_label = entry.id();
     let other_label = other.id();
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let poison = IntValue::try_from(i32_ty.as_type().poison().as_erased())?;
     // Distinct predecessor blocks: two different values from one block is
     // ill-formed (AmbiguousPhi); the poison-skipping folder arm folds by

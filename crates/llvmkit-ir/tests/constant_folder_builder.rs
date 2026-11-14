@@ -87,12 +87,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ReturningFolder<'
 /// fneg is folded by the default folder and no instruction is inserted.
 #[test]
 fn constant_folder_folds_fneg_constant_without_instruction() -> Result<(), IrError> {
-    let m = module_new!("folder-fneg")?;
+    let mut module = module_new!("folder-fneg")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f32_ty = m.f32_type();
     let fn_ty = m.function_type_no_parameters(f32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
 
     let result = b.fp_neg::<f32, _, _>(f32_ty.const_float(1.0), "n")?;
 
@@ -107,12 +109,14 @@ fn constant_folder_folds_fneg_constant_without_instruction() -> Result<(), IrErr
 /// invalid integer divide folds to poison and no instruction is inserted.
 #[test]
 fn constant_folder_folds_udiv_by_zero_to_poison_without_instruction() -> Result<(), IrError> {
-    let m = module_new!("folder-udiv")?;
+    let mut module = module_new!("folder-udiv")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
 
     let result = b.int_udiv::<i32, _, _, _>(i32_ty.const_int(42_i32), i32_ty.const_zero(), "q")?;
 
@@ -130,12 +134,14 @@ fn constant_folder_folds_udiv_by_zero_to_poison_without_instruction() -> Result<
 /// inexact all-constant quotient through `ConstantFolder`.
 #[test]
 fn constant_folder_exact_udiv_inexact_constants_match_upstream_plain_fold() -> Result<(), IrError> {
-    let m = module_new!("folder-exact-udiv")?;
+    let mut module = module_new!("folder-exact-udiv")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
 
     let result = b.int_udiv_with_flags::<i32, _, _, _>(
         i32_ty.const_int(7_i32),
@@ -426,13 +432,15 @@ fn constant_folder_pointer_cast_helpers_allow_one_lane_pointer_bitcasts() -> Res
 /// inserted.
 #[test]
 fn constant_folder_folds_is_null_of_constant_null_without_instruction() -> Result<(), IrError> {
-    let m = module_new!("folder-is-null")?;
+    let mut module = module_new!("folder-is-null")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let bool_ty = m.bool_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type_no_parameters(bool_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let null =
         PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(ptr_ty.const_null().as_erased())?;
 
@@ -451,13 +459,15 @@ fn constant_folder_folds_is_null_of_constant_null_without_instruction() -> Resul
 /// default folder and no instruction is inserted.
 #[test]
 fn constant_folder_folds_is_not_null_of_constant_null_without_instruction() -> Result<(), IrError> {
-    let m = module_new!("folder-is-not-null")?;
+    let mut module = module_new!("folder-is-not-null")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let bool_ty = m.bool_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type_no_parameters(bool_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let null =
         PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(ptr_ty.const_null().as_erased())?;
 
@@ -477,7 +487,9 @@ fn constant_folder_folds_is_not_null_of_constant_null_without_instruction() -> R
 /// to `i1 true`) without materializing instructions.
 #[test]
 fn constant_folder_folds_pointer_cmp_global_vs_null_without_instruction() -> Result<(), IrError> {
-    let m = module_new!("folder-ptr-cmp-global")?;
+    let mut module = module_new!("folder-ptr-cmp-global")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let bool_ty = m.bool_type();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(llvmkit_ir::AddressSpace::DEFAULT);
@@ -487,8 +499,8 @@ fn constant_folder_folds_pointer_cmp_global_vs_null_without_instruction() -> Res
     )?;
     let fn_ty = m.function_type_no_parameters(bool_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
 
     let eq = b.pointer_cmp(IntPredicate::Eq, gp, ptr_ty.const_null(), "eq")?;
     let ne = b.pointer_cmp(IntPredicate::Ne, gp, ptr_ty.const_null(), "ne")?;
@@ -510,13 +522,15 @@ fn constant_folder_folds_pointer_cmp_global_vs_null_without_instruction() -> Res
 /// constants without materializing instructions.
 #[test]
 fn default_builder_folds_insert_extract_element_chain() -> Result<(), IrError> {
-    let m = module_new!("folder-insert-extract-element")?;
+    let mut module = module_new!("folder-insert-extract-element")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i64_ty = m.i64_type();
     let vec_ty = VectorType::of(i64_ty, lanes::<4>());
     let fn_ty = m.function_type_no_parameters(i64_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let elt1 = i64_ty.const_int(-1_i64);
     let elt2 = i64_ty.const_int(-2_i64);
 
@@ -542,14 +556,16 @@ fn default_builder_folds_insert_extract_element_chain() -> Result<(), IrError> {
 /// the plain binary hook.
 #[test]
 fn custom_folder_no_wrap_hook_receives_mul() -> Result<(), IrError> {
-    let m = module_new!("folder-nowrap-hook-mul")?;
+    let mut module = module_new!("folder-nowrap-hook-mul")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
     let folded = i32_ty.const_int(99_i32).as_erased();
     let b = IrBuilder::with_folder(
-        &m,
+        &mut key,
         ReturningFolder {
             result: FolderReturn::NoWrapCall {
                 opcode: BinaryOpcode::Mul,
@@ -578,14 +594,16 @@ fn custom_folder_no_wrap_hook_receives_mul() -> Result<(), IrError> {
 /// the plain binary hook.
 #[test]
 fn custom_folder_no_wrap_hook_receives_shl() -> Result<(), IrError> {
-    let m = module_new!("folder-nowrap-hook-shl")?;
+    let mut module = module_new!("folder-nowrap-hook-shl")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
     let folded = i32_ty.const_int(123_i32).as_erased();
     let b = IrBuilder::with_folder(
-        &m,
+        &mut key,
         ReturningFolder {
             result: FolderReturn::NoWrapCall {
                 opcode: BinaryOpcode::Shl,
@@ -613,12 +631,14 @@ fn custom_folder_no_wrap_hook_receives_shl() -> Result<(), IrError> {
 /// `NoFolder` materializes the instruction and preserves the requested name.
 #[test]
 fn no_folder_names_add_instruction_exactly() -> Result<(), IrError> {
-    let m = module_new!("nofolder-add")?;
+    let mut module = module_new!("nofolder-add")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
 
     let add = b.int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "add")?;
 
@@ -633,12 +653,14 @@ fn no_folder_names_add_instruction_exactly() -> Result<(), IrError> {
 /// invalid `udiv` operands materialize a real instruction instead of poison.
 #[test]
 fn no_folder_emits_udiv_instruction_for_constants() -> Result<(), IrError> {
-    let m = module_new!("nofolder-udiv")?;
+    let mut module = module_new!("nofolder-udiv")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let lhs = i32_ty.const_int(42_i32);
     let rhs = i32_ty.const_zero();
 
@@ -661,14 +683,16 @@ fn no_folder_emits_udiv_instruction_for_constants() -> Result<(), IrError> {
 /// `ptrtoaddr` cast, not `ptrtoint`.
 #[test]
 fn no_folder_emits_ptrtoaddr_instruction_with_address_type() -> Result<(), IrError> {
-    let m = module_new!("nofolder-ptrtoaddr")?;
+    let mut module = module_new!("nofolder-ptrtoaddr")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     m.set_data_layout(DataLayout::parse("p1:64:64:64:32")?);
     let i32_ty = m.i32_type();
     let ptr1_ty = m.ptr_type_in::<1>();
     let fn_ty = m.function_type(i32_ty, [ptr1_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let ptr: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
 
     let result = b.ptr_to_addr(ptr, "addr")?;
@@ -696,13 +720,15 @@ fn no_folder_emits_ptrtoaddr_instruction_with_address_type() -> Result<(), IrErr
 /// pointer compare still materializes a real `icmp` instruction.
 #[test]
 fn no_folder_emits_pointer_cmp_instruction_for_constant_nulls() -> Result<(), IrError> {
-    let m = module_new!("nofolder-ptr-cmp")?;
+    let mut module = module_new!("nofolder-ptr-cmp")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let bool_ty = m.bool_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type_no_parameters(bool_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let null = ptr_ty.const_null();
 
     let result = b.pointer_cmp(IntPredicate::Eq, null, null, "isn")?;
@@ -723,12 +749,14 @@ fn no_folder_emits_pointer_cmp_instruction_for_constant_nulls() -> Result<(), Ir
 /// constants only; it does not invent InstSimplify-style `x + 0` for nonconstants.
 #[test]
 fn constant_folder_does_not_simplify_nonconstant_add_zero() -> Result<(), IrError> {
-    let m = module_new!("folder-add-zero")?;
+    let mut module = module_new!("folder-add-zero")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
     let result = b.int_add(x, i32_ty.const_zero(), "sum")?;
@@ -749,15 +777,17 @@ fn constant_folder_does_not_simplify_nonconstant_add_zero() -> Result<(), IrErro
 /// not say which width was wrong (`Type::require_match`).
 #[test]
 fn custom_folder_wrong_type_is_rejected() -> Result<(), IrError> {
-    let m = module_new!("folder-wrong-type")?;
+    let mut module = module_new!("folder-wrong-type")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
     let folded = i64_ty.const_int(0_i64).as_erased();
     let b = IrBuilder::with_folder(
-        &m,
+        &mut key,
         ReturningFolder {
             result: FolderReturn::Value(folded),
         },
@@ -784,12 +814,14 @@ fn custom_folder_wrong_type_is_rejected() -> Result<(), IrError> {
 #[test]
 fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
     let typed_text = {
-        let m = module_new!("folder-typed-add")?;
+        let mut module = module_new!("folder-typed-add")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type_no_parameters(i32_ty)?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
 
         let result =
             b.int_add::<i32, _, _, _>(i32_ty.const_int(7_i32), i32_ty.const_int(9_i32), "sum")?;
@@ -803,12 +835,14 @@ fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
     };
 
     let dyn_text = {
-        let m = module_new!("folder-typed-add")?;
+        let mut module = module_new!("folder-typed-add")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type_no_parameters(i32_ty)?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
 
         let result = b.int_add_dyn(
             i32_ty.const_int(7_i32).as_erased(),
@@ -963,16 +997,18 @@ impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B>
 /// see `Type::require_match`.
 #[test]
 fn dyn_marker_fold_keeps_runtime_width_check() -> Result<(), IrError> {
-    let m = module_new!("folder-dyn-widen")?;
+    let mut module = module_new!("folder-dyn-widen")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_dyn_ty = m.custom_width_int_type(32)?;
     let i64_dyn_ty = m.custom_width_int_type(64)?;
     let fn_ty = m.function_type_no_parameters(m.i32_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
     let folder = WideningDynFolder {
         replacement: i64_dyn_ty.const_zero().as_erased(),
     };
-    let b = IrBuilder::with_folder(&m, folder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut key, folder).position_at_end(entry);
 
     let lhs = i32_dyn_ty.const_int_checked(1_i32)?;
     let rhs = i32_dyn_ty.const_int_checked(2_i32)?;
@@ -1125,17 +1161,19 @@ impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B>
 /// would let this 64-bit payload reach the IR as a 32-bit add's result.
 #[test]
 fn external_narrow_override_wrong_width_rejected_by_accept_folded_int() -> Result<(), IrError> {
-    let m = module_new!("external-narrow-folder")?;
+    let mut module = module_new!("external-narrow-folder")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_dyn_ty = m.custom_width_int_type(32)?;
     let i64_dyn_ty = m.custom_width_int_type(64)?;
     let fn_ty = m.function_type_no_parameters(m.i32_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
 
     let folder = NarrowingTypedFolder {
         replacement: i64_dyn_ty.const_zero().as_erased(),
     };
-    let b = IrBuilder::with_folder(&m, folder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut key, folder).position_at_end(entry);
 
     let lhs = i32_dyn_ty.const_int_checked(1_i32)?;
     let rhs = i32_dyn_ty.const_int_checked(2_i32)?;

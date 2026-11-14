@@ -10,8 +10,8 @@ pub mod support;
 use support::reported_line_and_column;
 
 fn parse_err(src: &str) -> ParseError {
-    let module = Module::dynamic("parser_val_id");
-    Parser::new(src.as_bytes(), &module)
+    let mut module = Module::dynamic("parser_val_id");
+    Parser::new(src.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect_err("parser rejects unsupported value form")
@@ -62,8 +62,8 @@ fn assert_diagnostic(src: &str, expected: &str, expected_loc: (u32, u32)) {
 }
 
 fn parse_ok_and_render(src: &str) -> String {
-    let module = Module::dynamic("parser_val_id");
-    Parser::new(src.as_bytes(), &module)
+    let mut module = Module::dynamic("parser_val_id");
+    Parser::new(src.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser accepts this module");

@@ -18,26 +18,28 @@ use llvmkit_ir::{
 /// `head.call(..)`.
 #[test]
 fn build_br_call_seeds_typed_head_phi_and_verifies() -> Result<(), IrError> {
-    let m = module_new!("block_call_br")?;
+    let mut module = module_new!("block_call_br")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m
         .add_typed_function::<i32, (i32,), _>("f", Linkage::External)?
         .as_function();
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
 
     // head(%p: i32): a typed one-i32-parameter block. `params` is the typed
     // `(IntValue<'_, i32>,)` head-phi handle tuple.
-    let bwp = IrBuilder::new_for::<i32>(&m);
+    let bwp = IrBuilder::new_for::<i32>(&mut key);
     let (head, (p,)) = bwp.append_block_typed::<(i32,), _, _>(m.view(f), "head")?;
 
     // entry: %x = add i32 %a, 1 ; br head(%x)
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let x = b.int_add(a, 1_i32, "x")?;
     // `.call((x,))` is compile-checked against the block's `(i32,)` schema.
     b.br_call(head.call((x,)))?;
 
     // head: ret %p (the head-phi carrying the branch argument).
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(head);
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(head);
     b.ret(p)?;
 
     let text = format!("{m}");
@@ -50,7 +52,7 @@ fn build_br_call_seeds_typed_head_phi_and_verifies() -> Result<(), IrError> {
         "expected seeded head-phi `phi i32 [ %x, %entry ]`, got:\n{text}"
     );
 
-    m.verify()?;
+    module.verify()?;
     Ok(())
 }
 
@@ -59,25 +61,27 @@ fn build_br_call_seeds_typed_head_phi_and_verifies() -> Result<(), IrError> {
 /// verifies, with both head-phis carrying their edge argument.
 #[test]
 fn block_call_convenience_two_params_verifies() -> Result<(), IrError> {
-    let m = module_new!("block_call_two")?;
+    let mut module = module_new!("block_call_two")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m
         .add_typed_function::<i32, (i32, Ptr), _>("f", Linkage::External)?
         .as_function();
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
 
     // head(%pi: i32, %pp: ptr): a typed two-parameter block.
-    let bwp = IrBuilder::new_for::<i32>(&m);
+    let bwp = IrBuilder::new_for::<i32>(&mut key);
     let (head, (pi, _pp)) = bwp.append_block_typed::<(i32, Ptr), _, _>(m.view(f), "head")?;
 
     // entry: br head(%a, %ptr) — seed both head-phis, in schema order.
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let ptr: PointerValue<'_, llvmkit_ir::Space<0>, _> = m.view(f).param(1)?.try_into()?;
     // `block.call((..))` borrows `head`, so it stays usable below.
     b.br_call(head.call((a, ptr)))?;
 
     // head: ret %pi.
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(head);
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(head);
     b.ret(pi)?;
 
     let text = format!("{m}");
@@ -89,7 +93,7 @@ fn block_call_convenience_two_params_verifies() -> Result<(), IrError> {
         text.contains("phi ptr [ %"),
         "expected a ptr head-phi seeded from entry, got:\n{text}"
     );
-    m.verify()?;
+    module.verify()?;
     Ok(())
 }
 
@@ -98,20 +102,22 @@ fn block_call_convenience_two_params_verifies() -> Result<(), IrError> {
 /// with `entry` as predecessor, so both incomings print and the module verifies.
 #[test]
 fn build_cond_br_call_two_targets_verify() -> Result<(), IrError> {
-    let m = module_new!("block_call_condbr")?;
+    let mut module = module_new!("block_call_condbr")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m
         .add_typed_function::<i32, (i32,), _>("f", Linkage::External)?
         .as_function();
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
 
     // then(%pt: i32) and else(%pe: i32): two typed one-parameter blocks.
-    let bwp = IrBuilder::new_for::<i32>(&m);
+    let bwp = IrBuilder::new_for::<i32>(&mut key);
     let (then_bb, (pt,)) = bwp.append_block_typed::<(i32,), _, _>(m.view(f), "then")?;
     let (else_bb, (pe,)) = bwp.append_block_typed::<(i32,), _, _>(m.view(f), "else")?;
 
     // entry: %x = add %a, 1 ; %y = add %a, 2 ;
     //        br (%a == 0) ? then(%x) : else(%y)
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let x = b.int_add(a, 1_i32, "x")?;
     let y = b.int_add(a, 2_i32, "y")?;
@@ -119,9 +125,9 @@ fn build_cond_br_call_two_targets_verify() -> Result<(), IrError> {
     b.cond_br_call(cond, then_bb.call((x,)), else_bb.call((y,)))?;
 
     // then: ret %pt ; else: ret %pe.
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(then_bb);
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(then_bb);
     b.ret(pt)?;
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(else_bb);
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(else_bb);
     b.ret(pe)?;
 
     let text = format!("{m}");
@@ -133,7 +139,7 @@ fn build_cond_br_call_two_targets_verify() -> Result<(), IrError> {
         text.contains("[ %y, %entry ]"),
         "expected else-edge incoming `[ %y, %entry ]`, got:\n{text}"
     );
-    m.verify()?;
+    module.verify()?;
     Ok(())
 }
 
@@ -142,28 +148,30 @@ fn build_cond_br_call_two_targets_verify() -> Result<(), IrError> {
 /// schema coexist in one call (`ThenP != ElseP`) and verify.
 #[test]
 fn build_cond_br_call_distinct_schemas_per_edge() -> Result<(), IrError> {
-    let m = module_new!("block_call_condbr_mixed")?;
+    let mut module = module_new!("block_call_condbr_mixed")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let f = m
         .add_typed_function::<i32, (i32,), _>("f", Linkage::External)?
         .as_function();
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
 
     // then(%pt: i32) is typed `(i32,)`; join() is typed `()` (no head-phis).
-    let bwp = IrBuilder::new_for::<i32>(&m);
+    let bwp = IrBuilder::new_for::<i32>(&mut key);
     let (then_bb, (pt,)) = bwp.append_block_typed::<(i32,), _, _>(m.view(f), "then")?;
     let (join_bb, ()) = bwp.append_block_typed::<(), _, _>(m.view(f), "join")?;
 
     // entry: br (%a == 0) ? then(%a) : join()
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let cond = b.int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
     b.cond_br_call(cond, then_bb.call((a,)), join_bb.call(()))?;
 
     // then: ret %pt ; join: ret 0.
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(then_bb);
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(then_bb);
     b.ret(pt)?;
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(join_bb);
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(join_bb);
     b.ret(i32_ty.const_int(0_i32))?;
 
     let text = format!("{m}");
@@ -171,7 +179,7 @@ fn build_cond_br_call_distinct_schemas_per_edge() -> Result<(), IrError> {
         text.contains("phi i32 [ %0, %entry ]"),
         "expected then-edge head-phi seeded with the function arg %0, got:\n{text}"
     );
-    m.verify()?;
+    module.verify()?;
     Ok(())
 }
 
@@ -181,23 +189,25 @@ fn build_cond_br_call_distinct_schemas_per_edge() -> Result<(), IrError> {
 /// surface.
 #[test]
 fn erased_build_br_with_args_still_works() -> Result<(), IrError> {
-    let m = module_new!("block_call_erased")?;
+    let mut module = module_new!("block_call_erased")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let f = m
         .add_typed_function::<i32, (i32,), _>("f", Linkage::External)?
         .as_function();
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
 
-    let bwp = IrBuilder::new_for::<i32>(&m);
+    let bwp = IrBuilder::new_for::<i32>(&mut key);
     let (hdr, params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "hdr")?;
     let hdr_label = hdr.id();
 
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let x = b.int_add(a, 1_i32, "x")?;
     b.br_with_args(hdr_label, &[m.view(x).as_erased()])?;
 
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(hdr);
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(hdr);
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
     b.ret(p)?;
 
@@ -206,6 +216,6 @@ fn erased_build_br_with_args_still_works() -> Result<(), IrError> {
         text.contains("phi i32 [ %x, %entry ]"),
         "expected erased head-phi `phi i32 [ %x, %entry ]`, got:\n{text}"
     );
-    m.verify()?;
+    module.verify()?;
     Ok(())
 }

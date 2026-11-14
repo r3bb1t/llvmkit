@@ -15,13 +15,15 @@ use llvmkit_ir::{
 /// exercises `Builder.CreateAlloca` at runtime.
 #[test]
 fn alloca_plain() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(ptr_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("a", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let p = b.alloca(i32_ty, "p")?;
     b.ret(p)?;
     let text = format!("{m}");
@@ -34,13 +36,15 @@ fn alloca_plain() -> Result<(), IrError> {
 /// `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, Lifetime)`.
 #[test]
 fn alloca_array_size() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(ptr_ty.as_type(), [i32_ty.as_type()])?;
     let f = m.add_function_dyn("a", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let n: llvmkit_ir::IntValue<'_, llvmkit_ir::IntDyn, _> = m.view(f).param(0)?.try_into()?;
     let p = b.array_alloca(i32_ty, n, "p")?;
     b.ret(p)?;
@@ -53,13 +57,15 @@ fn alloca_array_size() -> Result<(), IrError> {
 /// Upstream `test/Assembler/align-inst-alloca.ll` is a negative alignment fixture.
 #[test]
 fn alloca_aligned() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(ptr_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("a", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let p = b.alloca_with_align(i32_ty, Align::new(8)?, "p")?;
     b.ret(p)?;
     let text = format!("{m}");
@@ -79,13 +85,15 @@ fn alloca_aligned() -> Result<(), IrError> {
 /// does.
 #[test]
 fn alloca_load_and_store_refuse_to_guess_an_unsized_alignment() -> Result<(), IrError> {
-    let m = module_new!("unsized")?;
+    let mut module = module_new!("unsized")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let opaque = m.opaque_struct("O")?;
     let holder = m.struct_type([m.i8_type().as_type(), opaque.as_type()])?;
     let fn_ty = m.function_type(m.void_type(), [m.ptr_type_in::<0>().as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let refused = |result: Result<(), IrError>| {
         result
             == Err(IrError::UnsizedType {

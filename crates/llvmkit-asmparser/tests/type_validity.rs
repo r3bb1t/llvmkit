@@ -32,8 +32,8 @@ use core::num::NonZeroU32;
 use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_asmparser::{SlotMapping, parse_type, parse_type_at_beginning, parse_type_with_slots};
 use llvmkit_ir::{
-    AddressSpace, AnyTypeEnum, ArrayType, DynBrand, IrError, MAX_INT_BITS, Module, Type,
-    VectorType, lanes,
+    AddressSpace, AnyTypeEnum, ArrayType, DynBrand, IrError, LayoutToken, MAX_INT_BITS, Module,
+    Type, VectorType, lanes,
 };
 
 pub mod support;
@@ -103,8 +103,8 @@ fn upstream_label_parameter_is_rejected() {
 #[test]
 fn upstream_target_type_with_the_vector_property_verifies() {
     const SOURCE: &str = include_str!("fixtures/upstream/Verifier/target-ext-vector.ll");
-    let m = Module::dynamic("type_validity");
-    Parser::new(SOURCE.as_bytes(), &m)
+    let mut m = Module::dynamic("type_validity");
+    Parser::new(SOURCE.as_bytes(), m.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("fixture parses");
@@ -151,11 +151,14 @@ fn an_array_constant_of_a_non_array_element_is_refused_at_its_first_element() {
             "{source}"
         );
     }
-    let m = Module::dynamic("type_validity");
-    Parser::new(b"@g = global [2 x i32] [i32 1, i32 2]\n".as_slice(), &m)
-        .expect("lexer primes")
-        .parse_module()
-        .expect("a well-typed array constant parses");
+    let mut m = Module::dynamic("type_validity");
+    Parser::new(
+        b"@g = global [2 x i32] [i32 1, i32 2]\n".as_slice(),
+        m.layout_token(),
+    )
+    .expect("lexer primes")
+    .parse_module()
+    .expect("a well-typed array constant parses");
 }
 
 /// `llvm::parseType` and `llvm::parseTypeAtBeginning` refuse a bare `void`:
@@ -267,10 +270,10 @@ fn an_array_or_vector_type_reports_upstream_syntax_errors() {
 /// `tests/parser_type_slot_mapping.rs` ports whole.
 const GRID_SOURCE: &[u8] = b"%opaque = type opaque\n";
 
-/// Parses [`GRID_SOURCE`] into `m` and returns the `SlotMapping` every grid
-/// spelling is parsed through.
-fn grid_slots(m: &Module<DynBrand>) -> SlotMapping<'_, DynBrand> {
-    Parser::new(GRID_SOURCE, m)
+/// Parses [`GRID_SOURCE`] into the module `key` is the layout token of, and
+/// returns the `SlotMapping` every grid spelling is parsed through.
+fn grid_slots(key: LayoutToken<'_, DynBrand>) -> SlotMapping<'_, DynBrand> {
+    Parser::new(GRID_SOURCE, key)
         .expect("lexer primes")
         .parse_module()
         .expect("the grid's module parses")
@@ -492,16 +495,18 @@ impl Container {
 /// prints nothing against the vendored `llvmorg-22.1.4` tree.
 #[test]
 fn the_builder_and_the_parser_agree_on_every_derived_type() {
-    let m = Module::dynamic("agreement");
-    let slots = grid_slots(&m);
+    let mut module = Module::dynamic("agreement");
+    let key = module.layout_token();
+    let m = key.module();
+    let slots = grid_slots(key);
     let mut unexpected = Vec::new();
     for container in Container::ALL {
         for &text in ELEMENTS {
-            let element = element(&m, text).expect("every grid element builds");
+            let element = element(m, text).expect("every grid element builds");
             let spelled = container.spell(text);
             let label = container.label();
-            let built = container.build(&m, element);
-            let parsed = parse_type_with_slots(spelled.as_bytes(), &m, &slots);
+            let built = container.build(m, element);
+            let parsed = parse_type_with_slots(spelled.as_bytes(), m, &slots);
             match (built, parsed) {
                 (Ok(built), Ok(parsed)) => {
                     if built != parsed {
@@ -624,18 +629,20 @@ fn the_builder_and_the_parser_agree_at_the_numeric_limits() {
 /// ([`a_bare_void_is_refused_by_the_standalone_type_parser`]).
 #[test]
 fn each_element_spells_the_type_the_builder_builds() {
-    let m = Module::dynamic("agreement");
-    let slots = grid_slots(&m);
+    let mut module = Module::dynamic("agreement");
+    let key = module.layout_token();
+    let m = key.module();
+    let slots = grid_slots(key);
     for &text in ELEMENTS {
-        let built = element(&m, text).expect("every grid element builds");
+        let built = element(m, text).expect("every grid element builds");
         let parsed = if text == "void" {
-            let function = parse_type_with_slots(b"void ()", &m, &slots).expect("`void ()` parses");
+            let function = parse_type_with_slots(b"void ()", m, &slots).expect("`void ()` parses");
             match AnyTypeEnum::from(function) {
                 AnyTypeEnum::Function(function) => function.return_type(),
                 _ => panic!("`void ()` parses to a function type"),
             }
         } else {
-            parse_type_with_slots(text.as_bytes(), &m, &slots)
+            parse_type_with_slots(text.as_bytes(), m, &slots)
                 .unwrap_or_else(|e| panic!("`{text}`: {e}"))
         };
         assert_eq!(

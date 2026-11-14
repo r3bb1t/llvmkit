@@ -31,6 +31,7 @@ use super::instruction::{
 use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::{IrBuilder, PositionedAtEnd, at_end_infallible};
 use super::keyed_list::KeyedList;
+use super::layout_token::LayoutToken;
 use super::marker::{Dyn, ReturnMarker};
 use super::metadata::{
     MetadataAttachmentKind, MetadataField, MetadataFieldValue, MetadataId, MetadataKind,
@@ -608,13 +609,16 @@ where
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     BasicBlock<'ctx, R, Unterminated, B, Params>
 {
-    /// A builder positioned at the end of this block. `bb.builder()` is
-    /// exactly [`IrBuilder::at_end(bb)`](crate::IrBuilder::at_end) — the
-    /// return marker `R` is inferred from the block, so no turbofish is
+    /// A builder positioned at the end of this block. `bb.builder(&mut key)`
+    /// is exactly [`IrBuilder::at_end(&mut key, bb)`](crate::IrBuilder::at_end)
+    /// — the return marker `R` is inferred from the block, so no turbofish is
     /// needed. Reads better when `bb` is already in hand.
     #[inline]
-    pub fn builder(self) -> IrBuilder<'ctx, 'ctx, B, ConstantFolder, PositionedAtEnd, R> {
-        IrBuilder::at_end(self)
+    pub fn builder<'m>(
+        self,
+        key: &'m mut LayoutToken<'ctx, B>,
+    ) -> IrBuilder<'m, 'ctx, B, ConstantFolder, PositionedAtEnd, R> {
+        IrBuilder::at_end(key, self)
     }
 }
 
@@ -1233,13 +1237,13 @@ impl<
     /// `BasicBlock::splice` in `lib/IR/BasicBlock.cpp`.
     pub fn splice_into<R2: ReturnMarker, S2: BlockTerminationState>(
         self,
-        module_token: &'ctx Module<B, Unverified>,
+        key: &mut LayoutToken<'ctx, B>,
         dest: BasicBlock<'ctx, R2, S2, B>,
     ) -> IrResult<()>
     where
         C: CanMutate,
     {
-        let _ = module_token;
+        key.admit(self.module.id())?;
         let own = self.module.proven_mutable();
         // Boundary: the caller's destination block, admitted against this
         // block's module before either block is read or drained.
@@ -1408,6 +1412,24 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
     ///   list.
     pub fn split_at<Name, C2>(
         self,
+        key: &mut LayoutToken<'ctx, B>,
+        before: &InstructionView<'ctx, B, C2>,
+        name: Name,
+    ) -> IrResult<BasicBlock<'ctx, R, Terminated, B>>
+    where
+        Name: Into<String>,
+        C: CanMutate,
+        C2: Capability,
+    {
+        key.admit(self.module.id())?;
+        self.split_at_in(key.module(), before, name)
+    }
+
+    /// Crate-internal body of [`split_at`](Self::split_at), for a caller that
+    /// already holds the module's layout permission further up (a pass
+    /// context, which a pass reaches only through `&mut` borrows of it).
+    pub(crate) fn split_at_in<Name, C2>(
+        self,
         module_token: &'ctx Module<B, Unverified>,
         before: &InstructionView<'ctx, B, C2>,
         name: Name,
@@ -1463,7 +1485,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
 
         // BranchInst *BI = BranchInst::Create(New, this);
         let (_, branch) = at_end_infallible(
-            IrBuilder::new_for::<R>(module_token)
+            IrBuilder::new_for_unkeyed::<R>(module_token)
                 .position_at_end(BasicBlock::<'ctx, R, Unterminated, B>::from_parts(
                     self.id, own, self.ty,
                 ))
@@ -1513,7 +1535,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
     /// [`CanMutate`], as on [`split_at`](Self::split_at).
     pub fn split_before<Name, C2>(
         self,
-        module_token: &'ctx Module<B, Unverified>,
+        key: &mut LayoutToken<'ctx, B>,
         before: &InstructionView<'ctx, B, C2>,
         name: Name,
     ) -> IrResult<BasicBlock<'ctx, R, Terminated, B>>
@@ -1522,6 +1544,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
         C: CanMutate,
         C2: Capability,
     {
+        key.admit(self.module.id())?;
         let own = self.module.proven_mutable();
         // Boundary: the caller's split point, admitted before the block is
         // read or a new block created.
@@ -1548,8 +1571,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
         let parent_fn = self.parent_holding_this()?;
         // DebugLoc Loc = I->getDebugLoc(); if (Loc) Loc = Loc->getWithoutAtom();
         // Taken ahead of `BasicBlock::Create`, for the reason `split_at` gives.
-        let location = split_point_location(module_token, before)?;
-        let module = module_token.core_ref();
+        let location = split_point_location(key.module(), before)?;
+        let module = key.module().core_ref();
 
         // BasicBlock *New = BasicBlock::Create(getContext(), BBName, getParent(), this);
         let new_block = parent_fn
@@ -1597,7 +1620,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
 
         // BranchInst *BI = BranchInst::Create(this, New);
         let (_, branch) = at_end_infallible(
-            IrBuilder::new_for::<R>(module_token)
+            IrBuilder::new_for::<R>(key)
                 .position_at_end(new_block)
                 .br_to_slot_unchecked(self.id),
         );

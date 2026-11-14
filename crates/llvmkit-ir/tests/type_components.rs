@@ -993,12 +993,14 @@ fn a_function_type_refuses_an_invalid_result_or_parameter() {
 /// result type. A one-lane mask is the positive control.
 #[test]
 fn the_builder_refuses_a_shuffle_with_an_empty_mask() -> Result<(), IrError> {
-    let m = Module::dynamic("components");
+    let mut module = Module::dynamic("components");
+    let mut key = module.layout_token();
+    let m = key.module();
     let vec_ty = VectorType::of(m.i32_type(), lanes::<2>());
     let fn_ty = m.function_type(m.void_type(), [vec_ty.as_type(), vec_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let refused = b.shuffle_vector(m.view(f).param(0)?, m.view(f).param(1)?, &[], "");
     assert!(
         matches!(refused, Err(IrError::InvalidShuffleMaskLength { len: 0 })),
@@ -1067,11 +1069,13 @@ fn constant_folding_a_shuffle_with_an_empty_mask_does_not_fold() -> Result<(), I
 /// control.
 #[test]
 fn a_splat_of_a_non_vector_element_is_refused() -> Result<(), IrError> {
-    let m = Module::dynamic("components");
+    let mut module = Module::dynamic("components");
+    let mut key = module.layout_token();
+    let m = key.module();
     let fn_ty = m.function_type_no_parameters(m.void_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let record = m.struct_type([m.i32_type().as_type()])?.as_type().poison();
     let refused = b.vector_splat_dyn(lanes::<2>(), record, "v");
     assert!(

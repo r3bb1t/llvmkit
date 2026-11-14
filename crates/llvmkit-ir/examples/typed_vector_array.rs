@@ -32,7 +32,9 @@ use llvmkit_ir::{
 };
 
 fn build() -> Result<(), IrError> {
-    let m = module_new!("typed_vec_array")?;
+    let mut module = module_new!("typed_vec_array")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
 
     // ---- Typed vectors: `<4 x i32>` ------------------------------------
@@ -44,8 +46,8 @@ fn build() -> Result<(), IrError> {
 
     let fn_ty = m.function_type(i32_ty.as_type(), [v4i32.as_type(), v4i32.as_type()])?;
     let vadd = m.add_function_dyn("vadd", fn_ty, Linkage::External)?;
-    let entry = m.view(vadd).append_basic_block(&m, "entry");
-    let b = IrBuilder::at_end(entry);
+    let entry = m.view(vadd).append_basic_block(m, "entry");
+    let b = IrBuilder::at_end(&mut key, entry);
 
     // Narrow the erased `<4 x i32>` params into the statically typed handle.
     // `try_into` checks BOTH element (i32) and lane count (4) at run time,
@@ -85,8 +87,8 @@ fn build() -> Result<(), IrError> {
 
     let fn_ty = m.function_type(i32_ty.as_type(), [a4i32.as_type()])?;
     let apack = m.add_function_dyn("apack", fn_ty, Linkage::External)?;
-    let entry = m.view(apack).append_basic_block(&m, "entry");
-    let b = IrBuilder::at_end(entry);
+    let entry = m.view(apack).append_basic_block(m, "entry");
+    let b = IrBuilder::at_end(&mut key, entry);
 
     let arr: ArrayValue<'_, i32, ArrLen<4>, _> = m
         .view(apack)
@@ -111,7 +113,7 @@ fn build() -> Result<(), IrError> {
     let back: IntValue<'_, i32, _> = b.array_extract(updated, 1, "back")?;
     b.ret(back)?;
 
-    print!("{m}");
+    print!("{module}");
     Ok(())
 }
 

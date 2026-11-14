@@ -16,12 +16,14 @@ use llvmkit_ir::{
 /// `fneg` instruction is built and prints the canonical opcode name.
 #[test]
 fn build_fneg_round_trip() -> Result<(), IrError> {
-    let m = module_new!("u")?;
+    let mut module = module_new!("u")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f32_ty = m.f32_type();
     let fn_ty = m.function_type(f32_ty, [f32_ty.as_type()])?;
     let f = m.add_function_dyn("k", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let x: FloatValue<'_, f32, _> = m.view(f).param(0)?.try_into()?;
     let r = b.fp_neg::<f32, _, _>(x, "y")?;
     b.ret(r)?;
@@ -36,12 +38,14 @@ fn build_fneg_round_trip() -> Result<(), IrError> {
 /// `WriteOptimizationInfo` formatter byte-for-byte.
 #[test]
 fn fneg_with_fmf_prints_canonical_form() -> Result<(), IrError> {
-    let m = module_new!("u")?;
+    let mut module = module_new!("u")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f32_ty = m.f32_type();
     let fn_ty = m.function_type(f32_ty, [f32_ty.as_type()])?;
     let f = m.add_function_dyn("k", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let x: FloatValue<'_, f32, _> = m.view(f).param(0)?.try_into()?;
     let nnan_only = FastMathFlags::NO_NANS;
     let n = b.fp_neg_fmf::<f32, _, _>(x, nnan_only, "n")?;
@@ -63,13 +67,15 @@ fn fneg_with_fmf_prints_canonical_form() -> Result<(), IrError> {
 /// for an unnamed result (the void-returning function discards it).
 #[test]
 fn fneg_double_no_flags_unnamed_result() -> Result<(), IrError> {
-    let m = module_new!("u")?;
+    let mut module = module_new!("u")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f64_ty = m.f64_type();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [f64_ty.as_type()])?;
     let f = m.add_function_dyn("instructions.unops", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let x: FloatValue<'_, f64, _> = m.view(f).param(0)?.try_into()?;
     let _ = b.fp_neg::<f64, _, _>(x, "")?;
     b.ret_void()?;
@@ -84,12 +90,14 @@ fn fneg_double_no_flags_unnamed_result() -> Result<(), IrError> {
 /// materialising an instruction.
 #[test]
 fn default_constant_folder_folds_fneg_to_constant() -> Result<(), IrError> {
-    let m = module_new!("u-fold")?;
+    let mut module = module_new!("u-fold")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f64_ty = m.f64_type();
     let fn_ty = m.function_type(f64_ty, Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("neg", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let result = b.fp_neg::<f64, _, _>(f64_ty.const_double(1.25), "neg")?;
     let folded =
         ConstantFloatValue::<f64, _>::try_from(Constant::try_from(b.view(result).as_erased())?)?;
@@ -110,13 +118,15 @@ fn default_constant_folder_folds_fneg_to_constant() -> Result<(), IrError> {
 /// the AsmWriter output matches the upstream textual fixture.
 #[test]
 fn freeze_i8_round_trip() -> Result<(), IrError> {
-    let m = module_new!("u")?;
+    let mut module = module_new!("u")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [i8_ty.as_type()])?;
     let f = m.add_function_dyn("foo", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let arg: IntValue<'_, i8, _> = m.view(f).param(0)?.try_into()?;
     let _ = b.freeze(arg, "")?;
     b.ret_void()?;
@@ -133,14 +143,16 @@ fn freeze_i8_round_trip() -> Result<(), IrError> {
 /// for integer and pointer operand types.
 #[test]
 fn freeze_int_and_pointer_print_forms() -> Result<(), IrError> {
-    let m = module_new!("u")?;
+    let mut module = module_new!("u")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [i32_ty.as_type(), ptr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let iop: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let pop: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(1)?.try_into()?;
     let _ = b.freeze(iop, "")?;
@@ -159,13 +171,15 @@ fn freeze_int_and_pointer_print_forms() -> Result<(), IrError> {
 /// freeze of an integer constant.
 #[test]
 fn verifier_accepts_freeze_int() -> Result<(), IrError> {
-    let m = module_new!("u")?;
+    let mut module = module_new!("u")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("foo", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let zero = i32_ty.const_int(0_i32);
     let _ = b.freeze(zero, "")?;
     b.ret_void()?;
@@ -183,13 +197,15 @@ fn verifier_accepts_freeze_int() -> Result<(), IrError> {
 /// the closest canonical-form reference.
 #[test]
 fn va_arg_int_round_trip() -> Result<(), IrError> {
-    let m = module_new!("u")?;
+    let mut module = module_new!("u")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("get_i32", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let ap: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let v = b.va_arg(ap, i32_ty.as_type(), "tmp")?;
     let asv: IntValue<'_, i32, _> = b.view(v).to_erased().try_into()?;
@@ -206,13 +222,15 @@ fn va_arg_int_round_trip() -> Result<(), IrError> {
 /// upstream `instructions.misc.intrinsics` function.
 #[test]
 fn va_arg_print_keyword_and_destination_type() -> Result<(), IrError> {
-    let m = module_new!("u")?;
+    let mut module = module_new!("u")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("h", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let ap: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let v = b.va_arg(ap, i32_ty.as_type(), "va_arg_result")?;
     let _ = ap; // silence unused-variable lint when `pop` accessor changes.
@@ -229,14 +247,16 @@ fn va_arg_print_keyword_and_destination_type() -> Result<(), IrError> {
 /// operand is a pointer.
 #[test]
 fn verifier_accepts_va_arg_pointer_source() -> Result<(), IrError> {
-    let m = module_new!("u")?;
+    let mut module = module_new!("u")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i8_ty = m.i8_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("foo", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let ap: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let _ = b.va_arg(ap, i8_ty.as_type(), "argval")?;
     b.ret_void()?;

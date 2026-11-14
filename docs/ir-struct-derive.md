@@ -32,15 +32,19 @@ struct WindowPlacement {
 type NormalizePlacement = fn(WindowPlacement) -> WindowPlacement;
 
 fn build() -> Result<String, IrError> {
-    let m = module_new!("window")?;
+    let mut module = module_new!("window")?;
+    // The builder borrows the module's layout token; `m` reads the module
+    // through it meanwhile.
+    let mut key = module.layout_token();
+    let m = key.module();
     // `add_typed_function_of` returns a storable `TypedFunctionId`; `m.view(f)`
     // is the ephemeral borrowing facade you call methods on.
     let f = m.add_typed_function_of::<NormalizePlacement, _>(
         "normalize_window_placement",
         Linkage::External,
     )?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let (placement,) = m.view(f).params();
 
     let normal_position = placement.normal_position(&b);

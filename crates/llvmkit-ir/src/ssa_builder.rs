@@ -418,20 +418,22 @@ struct VarData {
 /// use llvmkit_ir::{Linkage, Module, SsaBuilder, SsaState};
 ///
 /// # fn main() -> Result<(), llvmkit_ir::IrError> {
-/// let m = Module::dynamic("session");
+/// let mut module = Module::dynamic("session");
+/// let mut key = module.layout_token();
+/// let m = key.module();
 /// let f = m
 ///     .add_typed_function::<(), (), _>("f", Linkage::External)?
 ///     .as_function();
 ///
 /// // The state outlives every builder minted from it.
-/// let mut state = SsaState::for_function(&m, m.view(f))?;
+/// let mut state = SsaState::for_function(m, m.view(f))?;
 ///
 /// let entry = {
-///     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut state)?;
+///     let mut b = SsaBuilder::for_function(&mut key, m.view(f), &mut state)?;
 ///     b.create_block("entry")
 /// };
 /// {
-///     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut state)?;
+///     let mut b = SsaBuilder::for_function(&mut key, m.view(f), &mut state)?;
 ///     b.switch_to_block(entry)?;
 ///     b.ret_void()?;
 ///     b.finish()?;
@@ -593,6 +595,11 @@ where
     /// [`IrBuilder`]: crate::IrBuilder
     cursor: Option<super::ir_builder::IrBuilder<'ctx, 'ctx, B, F, PositionedAtEnd, R>>,
     state: &'s mut SsaState<B>,
+    /// The borrow of the module's [`LayoutToken`](crate::LayoutToken), taken
+    /// `&'s mut` by the constructors: this session is the module's one
+    /// editor for as long as it lives, so the builders it makes internally
+    /// cannot be invalidated by an edit elsewhere.
+    _key: core::marker::PhantomData<&'s mut ()>,
 }
 
 /// Prints the session's *position*, not its contents: which function is being
@@ -621,14 +628,15 @@ impl<'s, 'ctx, B: ModuleBrand + 'ctx, R: ReturnMarker> SsaBuilder<'s, 'ctx, B, C
     /// `function` must be the one `state` was opened for
     /// ([`SsaState::for_function`]), otherwise
     /// [`IrError::SsaForeignFunction`]; a `function` of a module other than
-    /// `module` is [`IrError::ForeignValueId`]. The builder starts unpositioned;
-    /// call [`switch_to_block`](Self::switch_to_block) before emitting.
+    /// `key`'s module is [`IrError::ForeignValueId`]. The builder starts
+    /// unpositioned; call [`switch_to_block`](Self::switch_to_block) before
+    /// emitting. It holds `key` `&mut` for as long as it lives.
     pub fn for_function<C: Capability>(
-        module: &'ctx Module<B, Unverified>,
+        key: &'s mut crate::LayoutToken<'ctx, B>,
         function: FunctionValue<'ctx, R, B, C>,
         state: &'s mut SsaState<B>,
     ) -> IrResult<Self> {
-        Self::with_folder_for_function(module, function, state, ConstantFolder)
+        Self::with_folder_for_function(key, function, state, ConstantFolder)
     }
 }
 
@@ -641,11 +649,12 @@ where
     /// [`for_function`](SsaBuilder::for_function) with a caller-supplied
     /// folder.
     pub fn with_folder_for_function<C: Capability>(
-        module: &'ctx Module<B, Unverified>,
+        key: &'s mut crate::LayoutToken<'ctx, B>,
         function: FunctionValue<'ctx, R, B, C>,
         state: &'s mut SsaState<B>,
         folder: F,
     ) -> IrResult<Self> {
+        let module = key.module();
         // Boundary: the caller's function must belong to `module` — admitted
         // there and re-minted at the module's `Mutable` reference, so a
         // function of either capability names it — then it must be the
@@ -660,6 +669,7 @@ where
             folder,
             cursor: None,
             state,
+            _key: core::marker::PhantomData,
         })
     }
 }
@@ -997,7 +1007,7 @@ where
         // at every reposition rather than assumed from a token this
         // layer had been hoarding.
         self.cursor = Some(
-            super::ir_builder::IrBuilder::with_folder(self.module, self.folder.clone())
+            super::ir_builder::IrBuilder::with_folder_unkeyed(self.module, self.folder.clone())
                 .position_at_end_dyn(block.id)?,
         );
         Ok(())
@@ -1754,7 +1764,7 @@ where
         // `replace_all_uses_with` does not erase (see its doc comment in
         // instruction.rs); rediscover a fresh handle over the now-unused
         // phi and remove it from the block.
-        Instruction::<Attached, B>::from_parts(phi, module).erase_from_parent(self.module);
+        Instruction::<Attached, B>::from_parts(phi, module).erase_from_parent_in(self.module);
         self.state.resolved.borrow_mut().insert(phi, same);
         for user in users {
             if self.state.created_phis.contains(&user) {
@@ -1847,7 +1857,7 @@ where
                 BlockId::<Dyn, B>::from_raw(module.id(), block),
             );
             let builder: super::ir_builder::IrBuilder<'_, 'ctx, B, F, PositionedBefore, Dyn> =
-                super::ir_builder::IrBuilder::with_folder(self.module, self.folder.clone())
+                super::ir_builder::IrBuilder::with_folder_unkeyed(self.module, self.folder.clone())
                     .position_before(placed)?;
             build_typed_phi(&builder, var_category, var_ty, module, &var_name)?
         } else {
@@ -1857,7 +1867,7 @@ where
             // proved.
             let open = BasicBlock::<Dyn, Unterminated, B>::from_parts(block, module, label_ty);
             let positioned: super::ir_builder::IrBuilder<'_, 'ctx, B, F, PositionedAtEnd, Dyn> =
-                super::ir_builder::IrBuilder::with_folder(self.module, self.folder.clone())
+                super::ir_builder::IrBuilder::with_folder_unkeyed(self.module, self.folder.clone())
                     .position_at_end(open);
             build_typed_phi(&positioned, var_category, var_ty, module, &var_name)?
         };
@@ -1888,7 +1898,7 @@ where
             .slot_trusting_same_module();
         let pred_block = BasicBlock::<Dyn, Unterminated, B>::from_parts(pred, module, label_ty);
         let ib: super::ir_builder::IrBuilder<'_, 'ctx, B, F, super::ir_builder::Unpositioned, Dyn> =
-            super::ir_builder::IrBuilder::with_folder(self.module, self.folder.clone());
+            super::ir_builder::IrBuilder::with_folder_unkeyed(self.module, self.folder.clone());
         ib.phi_add_incoming_from_value(phi_value, operand_value, pred_block)
     }
 
@@ -2003,7 +2013,7 @@ where
                          result type, so the RAUW type check cannot fail"
                     )
                 });
-            Instruction::<Attached, B>::from_parts(phi, module).erase_from_parent(self.module);
+            Instruction::<Attached, B>::from_parts(phi, module).erase_from_parent_in(self.module);
             // Internal: minted in this module from the phi's own type.
             let resolved = poison.slot_trusting_same_module();
             self.state.resolved.borrow_mut().insert(phi, resolved);
@@ -2035,11 +2045,13 @@ mod tests {
     /// predecessors.
     #[test]
     fn first_created_block_is_auto_sealed() -> Result<(), IrError> {
-        let m = crate::module_new!("ssa-entry-seal")?;
+        let mut module = crate::module_new!("ssa-entry-seal")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut st_b = SsaState::for_function(&m, m.view(f))?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
+        let mut st_b = SsaState::for_function(m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&mut key, m.view(f), &mut st_b)?;
         let entry = b.create_block("entry");
         let entry_id = b.admit_block(&entry)?;
         assert!(b.state.sealed.contains(&entry_id));
@@ -2056,11 +2068,13 @@ mod tests {
     /// after which its predecessor set is considered final).
     #[test]
     fn seal_block_twice_errors() -> Result<(), IrError> {
-        let m = crate::module_new!("ssa-double-seal")?;
+        let mut module = crate::module_new!("ssa-double-seal")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut st_b = SsaState::for_function(&m, m.view(f))?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
+        let mut st_b = SsaState::for_function(m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&mut key, m.view(f), &mut st_b)?;
         let _entry = b.create_block("entry");
         let second = b.create_block("second"); // not entry -- unsealed
         b.seal_block(second)?;
@@ -2096,17 +2110,19 @@ mod tests {
     /// different `SsaBuilder` is a typed runtime error at `seal_block`.
     #[test]
     fn seal_block_rejects_foreign_block() -> Result<(), IrError> {
-        let m = crate::module_new!("ssa-foreign-block")?;
+        let mut module = crate::module_new!("ssa-foreign-block")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f1 = m.add_function_dyn("f1", fn_ty, Linkage::External)?;
         let f2 = m.add_function_dyn("f2", fn_ty, Linkage::External)?;
-        let mut st_b1 = SsaState::for_function(&m, m.view(f1))?;
-        let mut b1 = SsaBuilder::for_function(&m, m.view(f1), &mut st_b1)?;
+        let mut st_b1 = SsaState::for_function(m, m.view(f1))?;
+        let mut b1 = SsaBuilder::for_function(&mut key, m.view(f1), &mut st_b1)?;
         let _entry1 = b1.create_block("entry");
         let other1 = b1.create_block("other");
 
-        let mut st_b2 = SsaState::for_function(&m, m.view(f2))?;
-        let mut b2 = SsaBuilder::for_function(&m, m.view(f2), &mut st_b2)?;
+        let mut st_b2 = SsaState::for_function(m, m.view(f2))?;
+        let mut b2 = SsaBuilder::for_function(&mut key, m.view(f2), &mut st_b2)?;
         let _entry2 = b2.create_block("entry");
 
         match b2.seal_block(other1) {
@@ -2123,11 +2139,13 @@ mod tests {
     /// handle stores no `ModuleRef` to report.
     #[test]
     fn declare_var_family_reports_owner() -> Result<(), IrError> {
-        let m = crate::module_new!("ssa-declare")?;
+        let mut module = crate::module_new!("ssa-declare")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut st_b = SsaState::for_function(&m, m.view(f))?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
+        let mut st_b = SsaState::for_function(m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&mut key, m.view(f), &mut st_b)?;
         let int_var = b.declare_int_var::<i32, _>("x");
         let float_var = b.declare_float_var::<f64, _>("y");
         let ptr_var = b.declare_pointer_var("z");
@@ -2147,11 +2165,13 @@ mod tests {
     /// predecessor fast path (no PHI insertion needed).
     #[test]
     fn read_after_write_same_block_needs_no_phi() -> Result<(), IrError> {
-        let m = crate::module_new!("ssa-straight-line")?;
+        let mut module = crate::module_new!("ssa-straight-line")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut st_b = SsaState::for_function(&m, m.view(f))?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
+        let mut st_b = SsaState::for_function(m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&mut key, m.view(f), &mut st_b)?;
         let entry = b.create_block("entry");
         let entry_id = b.admit_block(&entry)?;
 
@@ -2175,11 +2195,13 @@ mod tests {
     /// is the same idea).
     #[test]
     fn incomplete_phi_completes_on_seal() -> Result<(), IrError> {
-        let m = crate::module_new!("ssa-incomplete-phi")?;
+        let mut module = crate::module_new!("ssa-incomplete-phi")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut st_b = SsaState::for_function(&m, m.view(f))?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
+        let mut st_b = SsaState::for_function(m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&mut key, m.view(f), &mut st_b)?;
         let _entry = b.create_block("entry");
         let entry_id = b.admit_block(&_entry)?;
         let loop_bb = b.create_block("loop");
@@ -2233,11 +2255,13 @@ mod tests {
     /// short-circuit (LLVM's own trivial-phi-avoidance heuristic).
     #[test]
     fn trivial_phi_is_eliminated() -> Result<(), IrError> {
-        let m = crate::module_new!("ssa-trivial-join")?;
+        let mut module = crate::module_new!("ssa-trivial-join")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut st_b = SsaState::for_function(&m, m.view(f))?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
+        let mut st_b = SsaState::for_function(m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&mut key, m.view(f), &mut st_b)?;
         let _entry = b.create_block("entry");
         let entry_id = b.admit_block(&_entry)?;
         let left = b.create_block("left");
@@ -2286,11 +2310,13 @@ mod tests {
     /// IR into existence and must reject the same case itself).
     #[test]
     fn strict_variable_undefined_read_errors() -> Result<(), IrError> {
-        let m = crate::module_new!("ssa-undefined-strict")?;
+        let mut module = crate::module_new!("ssa-undefined-strict")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut st_b = SsaState::for_function(&m, m.view(f))?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
+        let mut st_b = SsaState::for_function(m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&mut key, m.view(f), &mut st_b)?;
         let entry = b.create_block("entry");
         let entry_id = b.admit_block(&entry)?;
 
@@ -2311,11 +2337,13 @@ mod tests {
     /// uninitialized `undef`/zero-init rather than `poison`).
     #[test]
     fn poison_variable_undefined_read_yields_poison() -> Result<(), IrError> {
-        let m = crate::module_new!("ssa-undefined-poison")?;
+        let mut module = crate::module_new!("ssa-undefined-poison")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut st_b = SsaState::for_function(&m, m.view(f))?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
+        let mut st_b = SsaState::for_function(m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&mut key, m.view(f), &mut st_b)?;
         let entry = b.create_block("entry");
         let entry_id = b.admit_block(&entry)?;
 
@@ -2344,11 +2372,13 @@ mod tests {
     /// llvmkit-specific white-box check.
     #[test]
     fn read_variable_in_memoizes_single_pred_chase() -> Result<(), IrError> {
-        let m = crate::module_new!("ssa-chase-memoization")?;
+        let mut module = crate::module_new!("ssa-chase-memoization")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut st_b = SsaState::for_function(&m, m.view(f))?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
+        let mut st_b = SsaState::for_function(m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&mut key, m.view(f), &mut st_b)?;
         let entry = b.create_block("entry");
         let entry_id = b.admit_block(&entry)?;
         let b1 = b.create_block("b1");
@@ -2425,11 +2455,13 @@ mod tests {
     /// would hand back an `IntValue<'_, i32>` that is really an `i64`.
     #[test]
     fn def_int_var_rejects_forged_static_width_handle() -> Result<(), IrError> {
-        let m = crate::module_new!("ssa-forged-static-width")?;
+        let mut module = crate::module_new!("ssa-forged-static-width")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut st_b = SsaState::for_function(&m, m.view(f))?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
+        let mut st_b = SsaState::for_function(m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&mut key, m.view(f), &mut st_b)?;
         let entry = b.create_block("entry");
         let x = b.declare_int_var::<i32, _>("x");
 
@@ -2463,11 +2495,13 @@ mod tests {
     /// (`Type::require_match`).
     #[test]
     fn def_float_var_rejects_forged_static_kind_handle() -> Result<(), IrError> {
-        let m = crate::module_new!("ssa-forged-static-kind")?;
+        let mut module = crate::module_new!("ssa-forged-static-kind")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut st_b = SsaState::for_function(&m, m.view(f))?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
+        let mut st_b = SsaState::for_function(m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&mut key, m.view(f), &mut st_b)?;
         let entry = b.create_block("entry");
         let x = b.declare_float_var::<f32, _>("x");
 
@@ -2511,11 +2545,13 @@ mod tests {
     /// int twin: `SSAUpdater` carries no per-variable type to contradict.
     #[test]
     fn def_pointer_var_rejects_forged_non_pointer_handle() -> Result<(), IrError> {
-        let m = crate::module_new!("ssa-forged-pointer")?;
+        let mut module = crate::module_new!("ssa-forged-pointer")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let fn_ty = m.function_type_no_parameters(m.void_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut st_b = SsaState::for_function(&m, m.view(f))?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
+        let mut st_b = SsaState::for_function(m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&mut key, m.view(f), &mut st_b)?;
         let entry = b.create_block("entry");
         let p = b.declare_pointer_var("p");
 

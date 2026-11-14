@@ -53,11 +53,11 @@ fn run_lines(source: &str) -> Vec<RunLine<'_>> {
 /// before the parser reads a function body, which is what gives a `load` with
 /// no `align` its alignment, so the layout goes on the module first.
 fn instsimplify(source: &str, data_layout: Option<&str>) -> String {
-    let module = Module::dynamic("instsimplify");
+    let mut module = Module::dynamic("instsimplify");
     if let Some(layout) = data_layout {
         module.set_data_layout(DataLayout::parse(layout).expect("the RUN line's layout parses"));
     }
-    Parser::new(source.as_bytes(), &module)
+    Parser::new(source.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");

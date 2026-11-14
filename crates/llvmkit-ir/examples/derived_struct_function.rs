@@ -38,13 +38,15 @@ fn main() -> Result<(), IrError> {
         + rust_window.normal_position.max.y;
 
     let ir = {
-        let m = module_new!("window")?;
+        let mut module = module_new!("window")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let f = m.add_typed_function_of::<NormalizePlacement, _>(
             "normalize_window_placement",
             Linkage::External,
         )?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
         let (placement,) = m.view(f).params();
 
         let normal_position = placement.normal_position(&b);
@@ -64,7 +66,7 @@ fn main() -> Result<(), IrError> {
         let rebuilt = window.build(&b, placement.show_cmd(&b), rebuilt_rect, "placement");
         b.ret(rebuilt)?;
 
-        format!("{m}")
+        format!("{module}")
     };
 
     print!("{ir}");

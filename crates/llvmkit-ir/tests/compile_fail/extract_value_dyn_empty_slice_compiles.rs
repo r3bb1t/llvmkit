@@ -11,7 +11,7 @@
 use llvmkit_ir::{IrError, Linkage, Module};
 
 fn main() -> Result<(), IrError> {
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m"); let mut key = module.layout_token(); let m = key.module();
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
@@ -20,7 +20,7 @@ fn main() -> Result<(), IrError> {
     m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let f = m.view(m.function::<()>("g")?.expect("declared above"));
     let entry = f.append_basic_block(&m, "entry");
-    let b = llvmkit_ir::IrBuilder::new_for::<()>(&m).position_at_end(entry);
+    let b = llvmkit_ir::IrBuilder::new_for::<()>(&mut key).position_at_end(entry);
     let up = f.param(0)?;
     // Compiles fine: the empty-slice rejection is the runtime
     // `BuilderError::EmptyAggregateIndices` kept by `extract_value_dyn`,

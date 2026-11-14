@@ -27,12 +27,12 @@ fn main() -> Result<(), IrError> {
     let left_fn = left.add_typed_function::<(), (Point,), _>("left", Linkage::External)?;
     let (left_point,) = left.view(left_fn).params();
 
-    let right = Module::branded::<Right, _>("right")?;
+    let mut right_module = Module::branded::<Right, _>("right")?; let mut right_key = right_module.layout_token(); let right = right_key.module();
     let right_fn = right
         .add_typed_function::<(), (), _>("right", Linkage::External)?
         .as_function();
     let entry = right.view(right_fn).append_basic_block(&right, "entry");
-    let builder = IrBuilder::new_for::<()>(&right).position_at_end(entry);
+    let builder = IrBuilder::new_for::<()>(&mut right_key).position_at_end(entry);
     let _ = builder.insert_field::<Point, i32, _, _, _>(left_point, 1_i32, 0, "wrong_module")?;
     builder.ret_void();
 

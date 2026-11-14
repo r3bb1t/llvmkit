@@ -20,9 +20,9 @@ use std::rc::Rc;
 
 use llvmkit_ir::{
     Analyses, DominatorTreeAnalysis, Dyn, FnCx, FnPatch, FnReport, FunctionId, FunctionPass,
-    InstructionView, IrBuilder, IrError, IrResult, Linkage, ModCx, ModReport, Module, ModuleBrand,
-    ModulePass, NoFolder, PatchBody, ReadOnly, RewriteModule, Unverified, Verified, function_pass,
-    module_new, module_pass, run_function_pass, run_module_pass,
+    InstructionView, IrBuilder, IrError, IrResult, LayoutToken, Linkage, ModCx, ModReport, Module,
+    ModuleBrand, ModulePass, NoFolder, PatchBody, ReadOnly, RewriteModule, Unverified, Verified,
+    function_pass, module_new, module_pass, run_function_pass, run_module_pass,
 };
 
 // ==========================================================================
@@ -33,13 +33,14 @@ use llvmkit_ir::{
 /// with [`NoFolder`] so the constant add survives to be a real trivially-dead
 /// instruction (mirrors `tests/pipeline_basic.rs`).
 fn build_dead_add<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<B, Unverified>,
+    key: &mut LayoutToken<'ctx, B>,
 ) -> Result<FunctionId<Dyn, B>, IrError> {
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::with_folder(m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(key, NoFolder).position_at_end(entry);
     let _dead =
         b.int_add::<i32, _, _, _>(i32_ty.const_int(10_u32), i32_ty.const_int(20_u32), "dead")?;
     b.ret(i32_ty.const_int(1_u32))?;
@@ -48,13 +49,14 @@ fn build_dead_add<'ctx, B: ModuleBrand + 'ctx>(
 
 /// `i32 @f()` whose entry just returns a constant — no dead instruction.
 fn build_ret_i32<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<B, Unverified>,
+    key: &mut LayoutToken<'ctx, B>,
 ) -> Result<FunctionId<Dyn, B>, IrError> {
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(key).position_at_end(entry);
     b.ret(i32_ty.const_int(1_u32))?;
     Ok(f)
 }
@@ -144,8 +146,8 @@ fn macro_function_pass_matches_handwritten() -> Result<(), IrError> {
     // Macro-authored pass: the `PatchBody` rung downgrades the module, so the
     // explicit `Unverified` binding is the compile-time half of the lock.
     let macro_ir: String = {
-        let m = module_new!("macro-fn")?;
-        let f = build_dead_add(&m)?;
+        let mut m = module_new!("macro-fn")?;
+        let f = build_dead_add(&mut m.layout_token())?;
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
 
@@ -163,8 +165,8 @@ fn macro_function_pass_matches_handwritten() -> Result<(), IrError> {
 
     // Hand-written twin over an identical module.
     let hand_ir: String = {
-        let m = module_new!("hand-fn")?;
-        let f = build_dead_add(&m)?;
+        let mut m = module_new!("hand-fn")?;
+        let f = build_dead_add(&mut m.layout_token())?;
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
         let out: Module<_, Unverified> = run_function_pass(HandEraser, verified, f, &mut analyses)?;
@@ -211,8 +213,8 @@ impl MacroAnalysisReader {
 
 #[test]
 fn macro_function_pass_with_requires_reads_analysis_and_stays_verified() -> Result<(), IrError> {
-    let m = module_new!("macro-requires")?;
-    let f = build_ret_i32(&m)?;
+    let mut m = module_new!("macro-requires")?;
+    let f = build_ret_i32(&mut m.layout_token())?;
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
 
@@ -284,8 +286,8 @@ impl<B: ModuleBrand> ModulePass<B> for HandAddGlobal {
 #[test]
 fn macro_module_pass_matches_handwritten() -> Result<(), IrError> {
     let macro_ir: String = {
-        let m = module_new!("macro-mod")?;
-        let _f = build_ret_i32(&m)?;
+        let mut m = module_new!("macro-mod")?;
+        let _f = build_ret_i32(&mut m.layout_token())?;
         let verified = m.verify()?;
         assert_eq!(verified.globals().len(), 0);
         let mut analyses = Analyses::new();
@@ -305,8 +307,8 @@ fn macro_module_pass_matches_handwritten() -> Result<(), IrError> {
     };
 
     let hand_ir: String = {
-        let m = module_new!("hand-mod")?;
-        let _f = build_ret_i32(&m)?;
+        let mut m = module_new!("hand-mod")?;
+        let _f = build_ret_i32(&mut m.layout_token())?;
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
         let out: Module<_, Unverified> = run_module_pass(HandAddGlobal, verified, &mut analyses)?;

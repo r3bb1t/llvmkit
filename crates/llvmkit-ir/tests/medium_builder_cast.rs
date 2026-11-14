@@ -100,13 +100,15 @@ fn cast_is_valid_answers_upstreams_cast_inst_assertions() {
 /// (`Trunc` portion: i64 -> i32 narrowing produces a `trunc` instruction).
 #[test]
 fn build_trunc_emits_trunc_to_dst_type() -> Result<(), IrError> {
-    let m = module_new!("t")?;
+    let mut module = module_new!("t")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(i32_ty, [i64_ty.as_type()])?;
     let f = m.add_function_dyn("narrow", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let arg: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let truncated = b.trunc(arg, i32_ty, "narrow")?;
     b.ret(truncated)?;
@@ -137,13 +139,15 @@ fn build_trunc_emits_trunc_to_dst_type() -> Result<(), IrError> {
 fn build_trunc_dyn_runtime_check_widening_rejected() -> Result<(), IrError> {
     // The `_dyn` fallback keeps the runtime check for the path where
     // both widths are erased.
-    let m = module_new!("t")?;
+    let mut module = module_new!("t")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let dyn_i32: IntType<'_, IntDyn, _> = m.custom_width_int_type(32)?;
     let dyn_i64: IntType<'_, IntDyn, _> = m.custom_width_int_type(64)?;
     let fn_ty = m.function_type(dyn_i64.as_type(), [dyn_i32.as_type()])?;
     let f = m.add_function_dyn("bad", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let arg: IntValue<'_, IntDyn, _> = m.view(f).param(0)?.try_into()?;
     let err = b
         .trunc_dyn(arg, dyn_i64, "bad")
@@ -163,13 +167,15 @@ fn build_trunc_dyn_runtime_check_widening_rejected() -> Result<(), IrError> {
 fn build_trunc_preserves_anonymous_slot_naming() -> Result<(), IrError> {
     // Empty name -> the cast result lands as `%0`/`%1`/... per slot
     // numbering. Mirrors the `cpu_state_add` example.
-    let m = module_new!("t")?;
+    let mut module = module_new!("t")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(i32_ty, [i64_ty.as_type()])?;
     let f = m.add_function_dyn("anon", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let arg: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let t = b.trunc(arg, i32_ty, "")?;
     b.ret(t)?;
@@ -183,13 +189,15 @@ fn build_trunc_preserves_anonymous_slot_naming() -> Result<(), IrError> {
 /// (`ZExt` portion: i32 -> i64 zero-extension).
 #[test]
 fn build_zext_static_static_emits_zext() -> Result<(), IrError> {
-    let m = module_new!("z")?;
+    let mut module = module_new!("z")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(i64_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("widen", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let widened = b.zext(arg, i64_ty, "z")?;
     b.ret(widened)?;
@@ -203,13 +211,15 @@ fn build_zext_static_static_emits_zext() -> Result<(), IrError> {
 /// (`SExt` portion: i32 -> i64 sign-extension).
 #[test]
 fn build_sext_static_static_emits_sext() -> Result<(), IrError> {
-    let m = module_new!("s")?;
+    let mut module = module_new!("s")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(i64_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("widen", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let widened = b.sext(arg, i64_ty, "s")?;
     b.ret(widened)?;
@@ -224,13 +234,15 @@ fn build_sext_static_static_emits_sext() -> Result<(), IrError> {
 /// folder must fold all-constant integer casts to constants.
 #[test]
 fn default_constant_folder_folds_zext_to_constant() -> Result<(), IrError> {
-    let m = module_new!("zext-fold")?;
+    let mut module = module_new!("zext-fold")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(i64_ty, Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("widen", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let value: IntValue<'_, i32, _> = i32_ty.const_int(42_i32).as_erased().try_into()?;
     let result = b.zext(value, i64_ty, "z")?;
     let folded =
@@ -244,13 +256,15 @@ fn default_constant_folder_folds_zext_to_constant() -> Result<(), IrError> {
 /// The `Dst: WiderThan<Src>` bound is the same one `zext` uses.
 #[test]
 fn typed_zext_nneg_prints_flag() -> Result<(), IrError> {
-    let m = module_new!("z")?;
+    let mut module = module_new!("z")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(i64_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("widen", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let widened = b.zext_with_flags(arg, i64_ty, ZextFlags::new().nneg(), "res")?;
     b.ret(widened)?;
@@ -270,13 +284,15 @@ fn typed_zext_nneg_prints_flag() -> Result<(), IrError> {
 /// unspellable, so the flag-dropping case cannot arise here (D10).
 #[test]
 fn typed_trunc_nuw_nsw_prints_flags() -> Result<(), IrError> {
-    let m = module_new!("t")?;
+    let mut module = module_new!("t")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(i32_ty, [i64_ty.as_type()])?;
     let f = m.add_function_dyn("narrow", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let arg: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let truncated = b.trunc_with_flags(arg, i32_ty, TruncFlags::new().nuw().nsw(), "res")?;
     b.ret(truncated)?;
@@ -293,13 +309,15 @@ fn typed_trunc_nuw_nsw_prints_flags() -> Result<(), IrError> {
 /// flag.
 #[test]
 fn typed_uitofp_nneg_prints_flag() -> Result<(), IrError> {
-    let m = module_new!("u")?;
+    let mut module = module_new!("u")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
     let fn_ty = m.function_type(f32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("to_float", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let converted = b.ui_to_fp_with_flags(arg, f32_ty, UiToFpFlags::new().nneg(), "res")?;
     b.ret(converted)?;

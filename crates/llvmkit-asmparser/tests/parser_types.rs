@@ -11,8 +11,8 @@ pub mod support;
 use support::{Check, check_directives, rejection_at};
 
 fn parse_render(module_name: &str, src: &[u8]) -> String {
-    let module = Module::dynamic(module_name);
-    Parser::new(src, &module)
+    let mut module = Module::dynamic(module_name);
+    Parser::new(src, module.layout_token())
         .expect("parse constructor")
         .parse_module()
         .expect("parse succeeded");
@@ -20,8 +20,8 @@ fn parse_render(module_name: &str, src: &[u8]) -> String {
 }
 
 fn parse_err(src: &[u8]) -> ParseError {
-    let module = Module::dynamic("parser_types_err");
-    Parser::new(src, &module)
+    let mut module = Module::dynamic("parser_types_err");
+    Parser::new(src, module.layout_token())
         .expect("parse constructor")
         .parse_module()
         .expect_err("parse rejected")
@@ -246,12 +246,12 @@ fn an_alias_to_a_struct_defines_nothing() {
 /// `LLVMContext`, so none of them meets a taken name.
 #[test]
 fn a_definition_takes_a_new_name_beside_a_struct_of_the_module() {
-    let module = Module::dynamic("taken_name");
-    Parser::new(b"%t = type { i32 }\n", &module)
+    let mut module = Module::dynamic("taken_name");
+    Parser::new(b"%t = type { i32 }\n", module.layout_token())
         .expect("parse constructor")
         .parse_module()
         .expect("first parse");
-    Parser::new(b"%t = type { i64 }\n", &module)
+    Parser::new(b"%t = type { i64 }\n", module.layout_token())
         .expect("parse constructor")
         .parse_module()
         .expect("second parse");
@@ -640,10 +640,10 @@ fn an_address_space_wider_than_24_bits_is_rejected() {
 /// which is why the fixture exists.
 #[test]
 fn a_constant_of_the_wrong_type_is_rejected() {
-    let module = Module::dynamic("constant_type_mismatch");
+    let mut module = Module::dynamic("constant_type_mismatch");
     let err = Parser::new(
         include_bytes!("fixtures/upstream/blockaddress-addrspace/return_self_bad.ll"),
-        &module,
+        module.layout_token(),
     )
     .expect("parse constructor")
     .parse_module()
@@ -663,10 +663,10 @@ fn a_constant_of_the_wrong_type_is_rejected() {
 /// agreement is `convertValIDToValue`'s job (W4 part 1).
 #[test]
 fn an_invalid_constexpr_cast_opcode_is_rejected() {
-    let module = Module::dynamic("invalid_cast4");
+    let mut module = Module::dynamic("invalid_cast4");
     let err = Parser::new(
         include_bytes!("fixtures/upstream/invalid-cast/invalid_cast4.ll"),
-        &module,
+        module.layout_token(),
     )
     .expect("parse constructor")
     .parse_module()
@@ -721,11 +721,11 @@ fn a_ptrtoaddr_to_a_narrower_integer_parses_and_fails_verification() {
 /// finds nothing in the vendored `llvmorg-22.1.4` tree.
 #[test]
 fn a_constexpr_cast_between_fixed_and_scalable_vectors_is_rejected() {
-    let module = Module::dynamic("fixed-scalable-cast");
+    let mut module = Module::dynamic("fixed-scalable-cast");
     let err = Parser::new(
         b"@g = global <4 x ptr> addrspacecast (<vscale x 4 x ptr addrspace(1)> zeroinitializer to <4 x ptr>)\n"
             .as_slice(),
-        &module,
+        module.layout_token(),
     )
     .expect("parse constructor")
     .parse_module()

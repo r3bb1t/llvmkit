@@ -117,15 +117,17 @@ fn a_missing_global_is_declared_in_the_default_globals_address_space() {
 /// argument supplies for `String1a`.
 #[test]
 fn upstream_ir_builder_create_global_string() {
-    let m = Module::dynamic("MyModule");
+    let mut module = Module::dynamic("MyModule");
+    let mut key = module.layout_token();
+    let m = key.module();
     let signature = m
         .function_type_no_parameters(m.void_type())
         .expect("a valid signature");
     let f = m
         .add_function_dyn("", signature, Linkage::External)
         .expect("an unnamed function");
-    let bb = m.view(f).append_basic_block(&m, "");
-    let builder = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
+    let bb = m.view(f).append_basic_block(m, "");
+    let builder = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(bb);
 
     let string1a = builder
         .global_string("TestString", "String1a", AddressSpace::DEFAULT)
@@ -152,15 +154,17 @@ fn upstream_ir_builder_create_global_string() {
 /// only the address space.
 #[test]
 fn a_global_string_is_a_private_constant_byte_array() {
-    let m = Module::dynamic("spaces");
+    let mut module = Module::dynamic("spaces");
+    let mut key = module.layout_token();
+    let m = key.module();
     let signature = m
         .function_type_no_parameters(m.void_type())
         .expect("a valid signature");
     let f = m
         .add_function_dyn("f", signature, Linkage::External)
         .expect("a fresh name");
-    let bb = m.view(f).append_basic_block(&m, "");
-    let builder = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
+    let bb = m.view(f).append_basic_block(m, "");
+    let builder = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(bb);
 
     let string = builder
         .global_string("Hi", "s", AddressSpace::DEFAULT)
@@ -288,11 +292,13 @@ fn narrowing_a_dyn_pointer_checks_its_address_space() -> Result<(), IrError> {
 /// types.
 #[test]
 fn gep_select_phi_and_casts_keep_their_address_space() -> Result<(), IrError> {
-    let m = module_new!("spaces")?;
+    let mut module = module_new!("spaces")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f =
         m.add_typed_function_of::<fn(Ptr<3>, Ptr<3>, bool) -> Ptr<5>, _>("f", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let (p, q, c): (
         PointerValue<'_, Space<3>, _>,
         PointerValue<'_, Space<3>, _>,
@@ -323,10 +329,12 @@ fn gep_select_phi_and_casts_keep_their_address_space() -> Result<(), IrError> {
 /// llvmkit-specific (D3).
 #[test]
 fn a_typed_alloca_is_in_its_space_and_the_default_is_dyn() -> Result<(), IrError> {
-    let m = module_new!("spaces")?;
+    let mut module = module_new!("spaces")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function_of::<fn(), _>("f", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let d: PointerValueId<SpaceDyn, _> = b.alloca(m.i32_type(), "d")?;
     let a: PointerValueId<Space<0>, _> = b.alloca_in::<0, _, _>(m.i32_type(), "a")?;
     assert_eq!(b.view(d).ty().address_space(), 0);
@@ -338,10 +346,12 @@ fn a_typed_alloca_is_in_its_space_and_the_default_is_dyn() -> Result<(), IrError
 /// `pointer_load_in::<N>` loads a `ptr addrspace(N)`. llvmkit-specific (D4).
 #[test]
 fn pointer_load_names_the_space_it_loads() -> Result<(), IrError> {
-    let m = module_new!("spaces")?;
+    let mut module = module_new!("spaces")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function_of::<fn(), _>("f", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let slot = b.alloca_in::<0, _, _>(m.ptr_type_in::<0>(), "slot")?;
     let p: PointerValueId<Space<0>, _> = b.pointer_load(slot, "p")?;
     let q: PointerValueId<Space<1>, _> = b.pointer_load_in::<1, _, _>(slot, "q")?;
@@ -387,10 +397,12 @@ fn a_function_operand_prints_its_address_space() -> Result<(), IrError> {
 /// the positive control.
 #[test]
 fn a_pointer_compare_refuses_two_address_spaces() -> Result<(), IrError> {
-    let m = module_new!("spaces")?;
+    let mut module = module_new!("spaces")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<(), (), _>("f", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let near = m
         .view(b.alloca_in::<0, _, _>(m.i32_type(), "near")?)
         .as_dyn();
@@ -458,10 +470,12 @@ fn ptr_means_address_space_zero() -> Result<(), IrError> {
 /// — a run-time space — is `SpaceDyn`. llvmkit-specific (D4).
 #[test]
 fn casts_take_the_destination_types_address_space() -> Result<(), IrError> {
-    let m = module_new!("spaces")?;
+    let mut module = module_new!("spaces")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function_of::<fn(i64), _>("f", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let (x,) = m.view(f).params();
     let p: PointerValueId<Space<2>, _> =
         b.int_to_ptr::<i64, _, _, _>(x, m.ptr_type_in::<2>(), "p")?;
@@ -483,11 +497,13 @@ fn casts_take_the_destination_types_address_space() -> Result<(), IrError> {
 /// alike, and a `Ptr<N>` parameter is `Space<N>`. llvmkit-specific (D4).
 #[test]
 fn a_ptr_call_result_is_in_the_callees_address_space() -> Result<(), IrError> {
-    let m = module_new!("spaces")?;
+    let mut module = module_new!("spaces")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let callee = m.add_typed_function_of::<fn(Ptr<1>) -> Ptr<1>, _>("id1", Linkage::External)?;
     let f = m.add_typed_function_of::<fn(Ptr<1>), _>("f", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let (p,): (PointerValue<'_, Space<1>, _>,) = m.view(f).params();
     let call = b.call(callee, (p,), "r")?;
     let r: PointerValue<'_, Space<1>, _> = b.view(call).result();
@@ -522,10 +538,12 @@ fn a_null_constant_is_in_its_types_address_space() {
 /// operand's run-time address space. llvmkit-specific (D3).
 #[test]
 fn an_instruction_accessor_reads_a_dyn_pointer() -> Result<(), IrError> {
-    let m = module_new!("spaces")?;
+    let mut module = module_new!("spaces")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function_of::<fn(Ptr<3>), _>("f", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let (p,): (PointerValue<'_, Space<3>, _>,) = m.view(f).params();
     let loaded = b.load(m.i32_type().as_type(), p, "v")?;
     let view = InstructionView::try_from(b.view(loaded))?;
@@ -544,11 +562,13 @@ fn an_instruction_accessor_reads_a_dyn_pointer() -> Result<(), IrError> {
 /// llvmkit-specific (D3).
 #[test]
 fn a_pointer_variable_keeps_its_address_space() -> Result<(), IrError> {
-    let m = module_new!("spaces")?;
+    let mut module = module_new!("spaces")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let typed = m.add_typed_function::<(), (Ptr<2>,), _>("f", Linkage::External)?;
     let f = typed.as_function();
-    let mut state = SsaState::for_function(&m, m.view(f))?;
-    let mut b = SsaBuilder::for_function(&m, m.view(f), &mut state)?;
+    let mut state = SsaState::for_function(m, m.view(f))?;
+    let mut b = SsaBuilder::for_function(&mut key, m.view(f), &mut state)?;
     let entry = b.create_block("entry");
     let zero: PointerVariable<Space<0>, _> = b.declare_pointer_var("zero");
     let two: PointerVariable<Space<2>, _> =
@@ -568,10 +588,12 @@ fn a_pointer_variable_keeps_its_address_space() -> Result<(), IrError> {
 /// llvmkit-specific (D3).
 #[test]
 fn a_typed_pointer_keeps_its_address_space() -> Result<(), IrError> {
-    let m = module_new!("spaces")?;
+    let mut module = module_new!("spaces")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function_of::<fn(Ptr<3>), _>("f", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let (p,): (PointerValue<'_, Space<3>, _>,) = m.view(f).params();
     let typed: TypedPointerValue<'_, i32, Space<3>, _> = p.with_pointee::<i32>();
     let next: TypedPointerValue<'_, i32, Space<3>, _> =

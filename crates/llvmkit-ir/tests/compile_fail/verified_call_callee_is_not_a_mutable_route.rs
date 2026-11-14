@@ -32,13 +32,13 @@ use llvmkit_ir::{
 };
 
 fn main() {
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m"); let mut key = module.layout_token(); let m = key.module();
     let f32_ty = m.f32_type();
     let g = m
         .add_function_dyn("g", m.function_type_no_parameters(f32_ty).expect("valid function type"), Linkage::External)
         .expect("g");
     let g_entry = m.view(g).append_basic_block(&m, "entry");
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(g_entry)
         .ret(f32_ty.const_float(1.0_f32))
         .expect("ret");
@@ -46,13 +46,13 @@ fn main() {
         .add_function_dyn("f", m.function_type_no_parameters(f32_ty).expect("valid function type"), Linkage::External)
         .expect("f");
     let f_entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(f_entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(f_entry);
     let call = b
         .call_dyn(g, Vec::<Value<'_, _>>::new(), "r")
         .expect("call");
     let result = b.view(call).return_value().expect("g returns a value");
     b.ret(result).expect("ret");
-    let m = m.verify().expect("verifies");
+    let m = module.verify().expect("verifies");
     if let Callee::Direct(callee) = m.view(call).classify_callee() {
         for instruction in callee.entry_block().expect("a definition").instructions() {
             if let Some(InstructionKind::Phi(PhiKind::Fp(phi))) = instruction.kind() {

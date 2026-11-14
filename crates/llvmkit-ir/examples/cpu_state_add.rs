@@ -36,10 +36,12 @@
 //! ```
 
 use llvmkit_ir::{
-    AttrKind, IntValue, IrBuilder, IrError, Linkage, Module, ModuleBrand, UnnamedAddr, module_new,
+    AttrKind, IntValue, IrBuilder, IrError, LayoutToken, Linkage, ModuleBrand, UnnamedAddr,
+    module_new,
 };
 
-pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
+pub fn build<B: ModuleBrand>(key: &mut LayoutToken<'_, B>) -> Result<(), IrError> {
+    let m = key.module();
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
 
@@ -64,7 +66,7 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
         .build()?;
 
     let entry = m.view(add_fn).append_basic_block(m, "entry");
-    let b = IrBuilder::at_end(entry);
+    let b = IrBuilder::at_end(key, entry);
 
     let rax: IntValue<'_, i64, _> = m.view(add_fn).param(0)?.try_into()?;
     let rbx: IntValue<'_, i64, _> = m.view(add_fn).param(1)?.try_into()?;
@@ -90,7 +92,7 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
         .return_attribute(AttrKind::NoUndef)
         .build()?;
     let entry = m.view(main_fn).append_basic_block(m, "entry");
-    let b = IrBuilder::at_end(entry);
+    let b = IrBuilder::at_end(key, entry);
     let one = i32_ty.const_int(1_i32);
     let one_v = IntValue::<i32, _>::try_from(one.as_erased())?;
     b.ret(one_v)?;
@@ -102,8 +104,8 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
 /// return to: `module_new!` is fallible (its brand is a registry key) and
 /// `main` reports errors by hand.
 fn emit() -> Result<(), IrError> {
-    let m = module_new!("cpu_state_add")?;
-    build(&m)?;
+    let mut m = module_new!("cpu_state_add")?;
+    build(&mut m.layout_token())?;
     print!("{m}");
     Ok(())
 }

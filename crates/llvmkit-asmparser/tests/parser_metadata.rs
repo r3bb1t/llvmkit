@@ -23,8 +23,8 @@ impl ModuleStats {
 }
 
 fn parse_snippet(src: &str) -> (ModuleStats, String) {
-    let module = Module::dynamic("test");
-    let _ = Parser::new(src.as_bytes(), &module)
+    let mut module = Module::dynamic("test");
+    let _ = Parser::new(src.as_bytes(), module.layout_token())
         .expect("parse constructor")
         .parse_module()
         .expect("parse succeeded");
@@ -37,8 +37,8 @@ fn parse_snippet(src: &str) -> (ModuleStats, String) {
 }
 
 fn parse_fails(src: &str) -> String {
-    let module = Module::dynamic("test");
-    let err = Parser::new(src.as_bytes(), &module)
+    let mut module = Module::dynamic("test");
+    let err = Parser::new(src.as_bytes(), module.layout_token())
         .expect("parse constructor")
         .parse_module()
         .expect_err("parse should fail");
@@ -46,8 +46,8 @@ fn parse_fails(src: &str) -> String {
 }
 
 fn parse_and_verify(src: &str) -> Result<(), IrError> {
-    let module = Module::dynamic("test");
-    let _ = Parser::new(src.as_bytes(), &module)
+    let mut module = Module::dynamic("test");
+    let _ = Parser::new(src.as_bytes(), module.layout_token())
         .expect("parse constructor")
         .parse_module()
         .expect("parse succeeded");
@@ -646,8 +646,8 @@ fn inline_string_tuple_reparses() {
     // Re-parse the writer's output: it must be accepted, and re-printing
     // it must reproduce the same inline-string node (stable round-trip).
     let reparsed = {
-        let m2 = module_new!("test").expect("fresh module");
-        Parser::new(text.as_bytes(), &m2)
+        let mut m2 = module_new!("test").expect("fresh module");
+        Parser::new(text.as_bytes(), m2.layout_token())
             .expect("ctor")
             .parse_module()
             .expect("writer output must reparse");
@@ -674,8 +674,8 @@ define i64 @f() {
     // The reference and its definition agree on a single slot number, and
     // re-parsing succeeds (no dangling reference).
     {
-        let m2 = module_new!("rt").expect("fresh module");
-        Parser::new(text.as_bytes(), &m2)
+        let mut m2 = module_new!("rt").expect("fresh module");
+        Parser::new(text.as_bytes(), m2.layout_token())
             .expect("ctor")
             .parse_module()
             .expect("output must reparse with a resolvable metadata slot");
@@ -729,8 +729,8 @@ define void @f() {
 !0 = !{}
 "#;
     let err = {
-        let m = module_new!("t").expect("fresh module");
-        Parser::new(src.as_bytes(), &m)
+        let mut m = module_new!("t").expect("fresh module");
+        Parser::new(src.as_bytes(), m.layout_token())
             .expect("ctor")
             .parse_module()
             .expect_err("i64 !0 must be rejected")

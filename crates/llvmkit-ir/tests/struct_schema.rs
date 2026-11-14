@@ -268,48 +268,6 @@ fn struct_schema_reuses_matching_named_body() -> Result<(), IrError> {
     Ok(())
 }
 
-/// A schema build through a builder whose anchor was erased is refused before
-/// the schema's named struct type is minted, so the refusal adds no
-/// `%Point = type` to the module.
-///
-/// **No upstream counterpart**: `IRBuilderBase::SetInsertPoint(Instruction*)`
-/// keeps a raw iterator, undefined once the anchor is erased, and upstream has
-/// no schema layer; llvmkit refuses with `BlockError::AnchorNotInBlock`.
-#[test]
-fn a_schema_build_before_an_erased_anchor_mints_no_struct_type() -> Result<(), IrError> {
-    let m = module_new!("schema-stale-anchor")?;
-    let fn_ty = m.function_type(m.void_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
-    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let (_, ret) = IrBuilder::new_for::<Dyn>(&m)
-        .position_at_end(entry)
-        .ret_void()?;
-    let before_ret = IrBuilder::new_for::<Dyn>(&m).position_before(ret.placed())?;
-    ret.erase_from_parent(&m);
-    let printed = format!("{m}");
-    let refused = before_ret.typed_alloca::<Point, _>("p");
-    assert!(
-        matches!(
-            refused,
-            Err(IrError::Block(llvmkit_ir::BlockError::AnchorNotInBlock))
-        ),
-        "{refused:?}"
-    );
-    // The printed module alone would not show it: the writer prints a named
-    // struct only once something in the module uses it, so the type table is
-    // read directly.
-    assert!(
-        m.named_struct("Point").is_none(),
-        "a refused schema build mints no `%Point`"
-    );
-    assert_eq!(
-        format!("{m}"),
-        printed,
-        "a refused schema build adds nothing"
-    );
-    Ok(())
-}
-
 /// llvmkit-specific schema facade over LLVM named structs; closest upstream
 /// coverage is `lib/IR/LLVMContextImpl.cpp::getOrCreateNamedStruct` reuse rules.
 #[test]
@@ -409,12 +367,14 @@ fn a_refused_mint_leaves_nothing_at_any_depth() -> Result<(), IrError> {
 /// `IrBuilder::schema_ir_type`'s route and `field_gep` `schema_struct_type`'s.
 #[test]
 fn a_refused_mint_through_the_builder_leaves_nothing() -> Result<(), IrError> {
-    let m = module_new!("schema")?;
+    let mut module = module_new!("schema")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let existing = m.get_or_insert_named_struct("Existing");
     m.set_struct_body_dyn(existing, [m.i64_type()], false)?;
     let f = m.add_typed_function::<(), (), _>("f", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<()>(&mut key).position_at_end(entry);
     let slot = b.typed_alloca::<i32, _>("slot")?;
     let before = format!("{m}");
 
@@ -443,12 +403,14 @@ fn a_refused_mint_through_the_builder_leaves_nothing() -> Result<(), IrError> {
 /// function, a variadic one, a block's parameters and an indirect call.
 #[test]
 fn a_refused_signature_mints_no_part_of_it() -> Result<(), IrError> {
-    let m = module_new!("schema")?;
+    let mut module = module_new!("schema")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let existing = m.get_or_insert_named_struct("Existing");
     m.set_struct_body_dyn(existing, [m.i64_type()], false)?;
     let f = m.add_typed_function::<(), (), _>("f", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<()>(&mut key).position_at_end(entry);
     let slot = m.view(b.alloca_in::<0, _, _>(m.i32_type(), "slot")?);
     let before = format!("{m}");
 
@@ -553,17 +515,21 @@ fn a_refused_name_mints_no_part_of_a_signature() -> Result<(), IrError> {
 /// positive control: the same call with this module's operand mints it.
 #[test]
 fn a_refused_operand_mints_no_part_of_a_schema() -> Result<(), IrError> {
-    let other = Module::dynamic("other");
+    let mut other_module = Module::dynamic("other");
+    let mut other_key = other_module.layout_token();
+    let other = other_key.module();
     let g = other.add_typed_function::<(), (), _>("g", Linkage::External)?;
-    let other_entry = other.view(g).append_basic_block(&other, "entry");
-    let other_builder = IrBuilder::new_for::<()>(&other).position_at_end(other_entry);
+    let other_entry = other.view(g).append_basic_block(other, "entry");
+    let other_builder = IrBuilder::new_for::<()>(&mut other_key).position_at_end(other_entry);
     let foreign = other_builder.typed_alloca::<i32, _>("p")?;
     let foreign_int = other.i32_type().const_int(1_i32);
 
-    let m = Module::dynamic("schema");
+    let mut module = Module::dynamic("schema");
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<(), (), _>("f", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<()>(&mut key).position_at_end(entry);
     let slot = b.typed_alloca::<i32, _>("slot")?;
     let before = format!("{m}");
 
@@ -643,15 +609,17 @@ fn a_refused_check_holds_no_struct() -> Result<(), IrError> {
 /// operand passed through it, and the value it answers with says nothing of it.
 #[test]
 fn a_checked_field_read_holds_the_field_alone() -> Result<(), IrError> {
-    let m = module_new!("schema")?;
+    let mut module = module_new!("schema")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let inner = m.get_or_insert_named_struct("HoldInner");
     m.set_struct_body_dyn(inner, [m.i32_type()], false)?;
     let outer = m.get_or_insert_named_struct("HoldOuter");
     m.set_struct_body_dyn(outer, [inner.as_type(), m.i64_type().as_type()], false)?;
     let fn_ty = m.function_type(m.void_type(), [outer.as_type()])?;
     let f = m.add_function_dyn("read", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
 
     let aggregate = m.view(f).param(0)?;
     let _ = b.extract_field::<HoldOuter, HoldInner, _, _>(aggregate, 0, "field")?;
@@ -923,10 +891,12 @@ fn a_refused_schema_check_spells_the_type_the_schema_mints() -> Result<(), IrErr
 /// llvmkit-specific regression (D8).
 #[test]
 fn a_refused_field_read_mints_nothing() -> Result<(), IrError> {
-    let m = module_new!("schema")?;
+    let mut module = module_new!("schema")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<(), (Point,), _>("takes_point", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<()>(&mut key).position_at_end(entry);
     let (point,) = m.view(f).params();
     let Err(IrError::TypeIdentityMismatch { expected, .. }) =
         b.extract_field::<Point, Rect, _, _>(point, 0, "x")
@@ -972,11 +942,13 @@ fn struct_schema_try_new_rejects_wrong_schema() -> Result<(), IrError> {
 /// `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)`.
 #[test]
 fn struct_fields_unpacks_manual_schema_into_params() -> Result<(), IrError> {
-    let m = module_new!("schema")?;
+    let mut module = module_new!("schema")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f =
         m.add_typed_function::<(), StructFields<Point>, _>("take_point_fields", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<()>(&mut key).position_at_end(entry);
     let (x, y) = m.view(f).params();
     let _: IntValue<'_, i32, _> = x;
     let _: IntValue<'_, i32, _> = y;
@@ -995,12 +967,14 @@ fn struct_fields_unpacks_manual_schema_into_params() -> Result<(), IrError> {
 /// schema layered over the positional indices.
 #[test]
 fn struct_schema_extracts_and_inserts_typed_fields() -> Result<(), IrError> {
-    let m = module_new!("schema")?;
+    let mut module = module_new!("schema")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let point_ty = m.get_or_insert_struct_of::<Point>()?;
     let fn_ty = m.function_type(m.void_type(), [point_ty.as_type()])?;
     let f = m.add_function_dyn("edit", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let point = Hand::from_schema_value(SchemaValue::<Point, _>::try_new(m.view(f).param(0)?)?);
     let x = point.x(&b)?;
     let _: IntValue<'_, i32, _> = x;
@@ -1019,12 +993,14 @@ fn struct_schema_extracts_and_inserts_typed_fields() -> Result<(), IrError> {
 /// must reject mismatched field schemas before mutating the block.
 #[test]
 fn struct_schema_extract_field_mismatch_does_not_append_instruction() -> Result<(), IrError> {
-    let m = module_new!("schema")?;
+    let mut module = module_new!("schema")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let point_ty = m.get_or_insert_struct_of::<Point>()?;
     let fn_ty = m.function_type(m.void_type(), [point_ty.as_type()])?;
     let f = m.add_function_dyn("bad_extract", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let point = Hand::from_schema_value(SchemaValue::<Point, _>::try_new(m.view(f).param(0)?)?);
     let err = b
         .extract_field::<Point, i64, _, _>(point, 0, "bad")
@@ -1055,13 +1031,15 @@ fn struct_schema_extract_field_mismatch_does_not_append_instruction() -> Result<
 /// control.
 #[test]
 fn insert_field_refuses_a_lift_of_another_struct_type() -> Result<(), IrError> {
-    let m = module_new!("schema")?;
+    let mut module = module_new!("schema")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let literal = m.struct_type([m.i32_type(), m.i32_type()])?;
     let point_ty = m.get_or_insert_struct_of::<Point>()?;
     let fn_ty = m.function_type(m.void_type(), [literal.as_type()])?;
     let f = m.add_function_dyn("forged", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let forged = Forged(m.view(f).param(0)?.as_erased());
     assert_eq!(
         b.insert_field::<Point, i32, _, _, _>(forged, 7_i32, 0, "forged")
@@ -1080,10 +1058,12 @@ fn insert_field_refuses_a_lift_of_another_struct_type() -> Result<(), IrError> {
 /// return printing.
 #[test]
 fn struct_schema_can_be_function_return() -> Result<(), IrError> {
-    let m = module_new!("schema")?;
+    let mut module = module_new!("schema")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<Point, (), _>("origin", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new(&mut key).position_at_end(entry);
     let poison = m
         .get_or_insert_struct_of::<Point>()?
         .as_type()
@@ -1108,12 +1088,14 @@ fn struct_schema_can_be_function_return() -> Result<(), IrError> {
 /// `StructValue`.
 #[test]
 fn nested_struct_schema_accessors_return_nested_wrapper() -> Result<(), IrError> {
-    let m = module_new!("schema")?;
+    let mut module = module_new!("schema")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let rect_ty = m.get_or_insert_struct_of::<Rect>()?;
     let fn_ty = m.function_type(m.void_type(), [rect_ty.as_type()])?;
     let f = m.add_function_dyn("read", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let rect = Hand::from_schema_value(SchemaValue::<Rect, _>::try_new(m.view(f).param(0)?)?);
     let min = rect.min(&b)?;
     let max = rect.max(&b)?;

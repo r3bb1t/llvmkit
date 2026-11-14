@@ -15,10 +15,10 @@ struct Point {
 }
 
 fn main() -> Result<(), IrError> {
-    let m = module_new!("m")?;
+    let mut module = module_new!("m")?; let mut key = module.layout_token(); let m = key.module();
     let f = m.add_typed_function::<Point, (i32,), _>("make", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut key,NoFolder).position_at_end(entry);
     let (x,) = m.view(f).params();
     let point = m.get_or_insert_struct_of::<Point>()?;
     let _ = point.build(&b, x.id(), 7_i32, "p");

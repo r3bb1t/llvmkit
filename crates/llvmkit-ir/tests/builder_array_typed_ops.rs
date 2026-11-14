@@ -22,7 +22,9 @@ use llvmkit_ir::{ArrLen, ArrayValue, Dyn, IntValue, IrBuilder, Linkage, module_n
 /// produces.
 #[test]
 fn typed_arr_extract_returns_typed_element() {
-    let m = module_new!("aextract").expect("fresh module");
+    let mut module = module_new!("aextract").expect("fresh module");
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let arr_ty = m.array_type_n::<i32, 4>();
 
@@ -32,8 +34,8 @@ fn typed_arr_extract_returns_typed_element() {
     let f = m
         .add_function_dyn("g", fn_ty, Linkage::External)
         .expect("g");
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
 
     // Narrow the erased `[4 x i32]` param into the statically typed handle.
     let a: ArrayValue<'_, i32, ArrLen<4>, _> = m
@@ -64,7 +66,9 @@ fn typed_arr_extract_returns_typed_element() {
 /// produces.
 #[test]
 fn typed_arr_insert_round_trips() {
-    let m = module_new!("ainsert").expect("fresh module");
+    let mut module = module_new!("ainsert").expect("fresh module");
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let arr_ty = m.array_type_n::<i32, 4>();
     let void_ty = m.void_type();
@@ -75,8 +79,8 @@ fn typed_arr_insert_round_trips() {
     let f = m
         .add_function_dyn("g", fn_ty, Linkage::External)
         .expect("g");
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
 
     let a: ArrayValue<'_, i32, ArrLen<4>, _> = m
         .view(f)
@@ -119,7 +123,9 @@ fn typed_arr_insert_round_trips() {
 /// and the emitted IR is the canonical `alloca [4 x i32]`.
 #[test]
 fn typed_array_type_allocas() {
-    let m = module_new!("aalloca").expect("fresh module");
+    let mut module = module_new!("aalloca").expect("fresh module");
+    let mut key = module.layout_token();
+    let m = key.module();
     let arr_ty = m.array_type_n::<i32, 4>();
     let void_ty = m.void_type();
 
@@ -129,8 +135,8 @@ fn typed_array_type_allocas() {
     let f = m
         .add_function_dyn("g", fn_ty, Linkage::External)
         .expect("g");
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
 
     // `alloca` takes any `IrType`; the typed array handle qualifies.
     let slot = b.alloca(arr_ty, "slot").expect("alloca");

@@ -198,11 +198,15 @@ Build IR programmatically:
 use llvmkit_ir::{IrBuilder, IrError, Linkage, module_new};
 
 fn build() -> Result<(), IrError> {
-    let m = module_new!("demo")?;
+    let mut module = module_new!("demo")?;
+    // The module's layout token: a builder borrows it `&mut`, so one builder
+    // edits the module at a time. Read the module through it meanwhile.
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
 
-    let b = IrBuilder::at_end(entry);
+    let b = IrBuilder::at_end(&mut key, entry);
     let (lhs, rhs) = m.view(f).params();
     let sum = b.int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
     b.ret(sum)?;
@@ -233,17 +237,19 @@ return type with no `try_into`:
 use llvmkit_ir::{IrBuilder, IrError, Linkage, module_new};
 
 fn build_typed_call() -> Result<(), IrError> {
-    let m = module_new!("demo")?;
+    let mut module = module_new!("demo")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let callee = m.add_typed_function::<i32, (i32, i32), _>("add_inner", Linkage::External)?;
-    let entry = m.view(callee).append_basic_block(&m, "entry");
-    let b = IrBuilder::at_end(entry);
+    let entry = m.view(callee).append_basic_block(m, "entry");
+    let b = IrBuilder::at_end(&mut key, entry);
     let (lhs, rhs) = m.view(callee).params();
     let sum = b.int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
     b.ret(sum)?;
 
     let caller = m.add_typed_function::<i32, (i32, i32), _>("caller", Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::at_end(&mut key, entry);
     let (x, y) = m.view(caller).params();
 
     // `call` hands back a storable `TypedCallInstId`; `b.view(..)` reaches
@@ -300,10 +306,12 @@ struct WindowPlacement {
 
 type Normalize = fn(WindowPlacement) -> WindowPlacement;
 
-let m = module_new!("window")?;
+let mut module = module_new!("window")?;
+let mut key = module.layout_token();
+let m = key.module();
 let f = m.add_typed_function_of::<Normalize, _>("normalize", Linkage::External)?;
-let entry = m.view(f).append_basic_block(&m, "entry");
-let b = IrBuilder::new_for_return::<Normalize>(&m).position_at_end(entry);
+let entry = m.view(f).append_basic_block(m, "entry");
+let b = IrBuilder::new_for_return::<Normalize>(&mut key).position_at_end(entry);
 let (placement,) = m.view(f).params();
 // `normal_position` returns `RectValue<'ctx, B>`, and `min` returns
 // `PointValue<'ctx, B>`; nested structs keep their generated wrapper type.
@@ -381,12 +389,14 @@ and length.
 use llvmkit_ir::{IrBuilder, IrError, Len, Linkage, VectorValue, module_new};
 
 fn typed_vec() -> Result<(), IrError> {
-    let m = module_new!("demo")?;
+    let mut module = module_new!("demo")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let v4i32 = m.vector_type_n::<i32, 4>(); // VectorType<'_, i32, Len<4>>
     let fn_ty = m.function_type(m.i32_type().as_type(), [v4i32.as_type(), v4i32.as_type()])?;
     let f = m.add_function_dyn("vadd", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::at_end(&mut key, entry);
 
     // `try_into` checks element (i32) AND lane count (4) before stamping the markers.
     let a: VectorValue<'_, i32, Len<4>, _> =
@@ -705,8 +715,16 @@ llvmkit mutates through `&Module` with interior mutability, so nothing stops a
 `detach_from_parent` between the mint and the call. The five entries re-read
 the anchor's current block and refuse a stale witness with
 `IrError::InstructionHasNoParent` — which is now the only way to reach that
-variant there. Making staleness unrepresentable needs exclusive access to a
-function's layout; that design is recorded in `docs/future-work.md`, not built.
+variant there.
+
+A *builder's* position, by contrast, cannot go stale. Every builder, and every
+edit that can move a position (inserting, erasing, detaching or moving an
+instruction; splitting or splicing a block), borrows the module's
+`LayoutToken` `&mut` (`module.layout_token()`). So while a builder is
+positioned, erasing its anchor or terminating its block from a second builder
+is a borrow error (`E0499`), not a run-time refusal. Folding the token into
+the witness, so a witness proves *is placed* too, is the remaining step
+(`docs/design/layout-token-design.md`).
 
 An instruction can also be *created* in no block, as upstream's `Create` with
 no insert position makes one. `CallInst::create_detached` and
@@ -723,7 +741,7 @@ let (copy, copy_view) = call.with_operand_bundles(&m, [bundle])?;
 assert_eq!(copy_view.calling_conv(), call.calling_conv());
 // The copy is in no block until it is placed — or dropped.
 let anchor = call.as_view().placed().ok_or(IrError::InstructionHasNoParent)?;
-copy.insert_after(&m, anchor)?;
+copy.insert_after(&mut key, anchor)?;
 ```
 
 The copy keeps everything else upstream's does — arguments, tail-call kind,

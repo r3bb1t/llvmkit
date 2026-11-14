@@ -9,17 +9,19 @@ use llvmkit_ir::{
 /// replace an instruction with a constant instead of materialising new IR.
 #[test]
 fn instsimplify_pass_folds_constant_add() -> Result<(), IrError> {
-    let m = module_new!("instsimplify-pass")?;
+    let mut module = module_new!("instsimplify-pass")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let sum =
         b.int_add::<i32, _, _, _>(i32_ty.const_int(40_u32), i32_ty.const_int(2_u32), "sum")?;
     b.ret(sum)?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let unverified = run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?;
     let reverified = unverified.verify()?;
@@ -52,19 +54,21 @@ fn instsimplify_pass_folds_constant_add() -> Result<(), IrError> {
 /// diverging from the restart-scan fixpoint — this test locks the push.
 #[test]
 fn instsimplify_user_cascade_folds_dependent_add_chain() -> Result<(), IrError> {
-    let m = module_new!("instsimplify-user-cascade")?;
+    let mut module = module_new!("instsimplify-user-cascade")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     // %a = add i32 1, 2  (used only by %b)
     let a = b.int_add::<i32, _, _, _>(i32_ty.const_int(1_u32), i32_ty.const_int(2_u32), "a")?;
     // %b = add i32 %a, 10  (used only by the return) — depends on %a.
     let bb = b.int_add::<i32, _, _, _>(a, i32_ty.const_int(10_u32), "b")?;
     b.ret(bb)?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let unverified = run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?;
     let reverified = unverified.verify()?;
@@ -95,12 +99,14 @@ fn instsimplify_user_cascade_folds_dependent_add_chain() -> Result<(), IrError> 
 /// side-effect-free instructions are erased while stores remain live.
 #[test]
 fn dce_pass_erases_dead_integer_chain_and_preserves_store() -> Result<(), IrError> {
-    let m = module_new!("dce-pass")?;
+    let mut module = module_new!("dce-pass")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(m.void_type().as_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let slot = b.alloca(i32_ty, "slot")?;
     b.store(i32_ty.const_int(7_u32), slot)?;
     let dead0 =
@@ -108,7 +114,7 @@ fn dce_pass_erases_dead_integer_chain_and_preserves_store() -> Result<(), IrErro
     let _dead1 = b.int_mul::<i32, _, _, _>(dead0, i32_ty.const_int(3_u32), "dead1")?;
     b.ret_void()?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let unverified = run_function_pass(DcePass, verified, f, &mut analyses)?;
     let reverified = unverified.verify()?;
@@ -129,12 +135,14 @@ fn dce_pass_erases_dead_integer_chain_and_preserves_store() -> Result<(), IrErro
 /// downgrades the module, so it is re-verified before the next runs.
 #[test]
 fn instsimplify_and_dce_pipeline_folds_and_erases() -> Result<(), IrError> {
-    let m = module_new!("scalar-cleanup")?;
+    let mut module = module_new!("scalar-cleanup")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let folded =
         b.int_add::<i32, _, _, _>(i32_ty.const_int(40_u32), i32_ty.const_int(2_u32), "folded")?;
     let dead0 =
@@ -142,7 +150,7 @@ fn instsimplify_and_dce_pipeline_folds_and_erases() -> Result<(), IrError> {
     let _dead1 = b.int_mul::<i32, _, _, _>(dead0, i32_ty.const_int(3_u32), "dead1")?;
     b.ret(folded)?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let after_instsimplify = run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?;
     let reverified = after_instsimplify.verify()?;
@@ -164,15 +172,17 @@ fn instsimplify_and_dce_pipeline_folds_and_erases() -> Result<(), IrError> {
 /// definition still folds away.
 #[test]
 fn instsimplify_pass_keeps_load_from_interposable_constant_global() -> Result<(), IrError> {
-    let m = module_new!("instsimplify-weak-global")?;
+    let mut module = module_new!("instsimplify-weak-global")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let weak = m.add_global_constant("weak_g", i32_ty.const_int(42_i32))?;
-    m.view(weak).set_linkage(&m, Linkage::WeakAny);
+    m.view(weak).set_linkage(m, Linkage::WeakAny);
     let strong = m.add_global_constant("strong_g", i32_ty.const_int(7_i32))?;
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let weak_ptr = PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(
         m.view(weak).as_global_constant_ptr().as_erased(),
     )?;
@@ -184,7 +194,7 @@ fn instsimplify_pass_keeps_load_from_interposable_constant_global() -> Result<()
     let sum = b.int_add::<i32, _, _, _>(w, s, "sum")?;
     b.ret(sum)?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let unverified = run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?;
     let reverified = unverified.verify()?;
@@ -209,13 +219,15 @@ fn instsimplify_pass_keeps_load_from_interposable_constant_global() -> Result<()
 /// [`llvmkit_ir::LoadBuilder`] chain.
 #[test]
 fn dce_removes_unordered_atomic_load_keeps_ordered_and_volatile() -> Result<(), IrError> {
-    let m = module_new!("dce-loads")?;
+    let mut module = module_new!("dce-loads")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let _u = b
         .load_from(p)
@@ -232,7 +244,7 @@ fn dce_removes_unordered_atomic_load_keeps_ordered_and_volatile() -> Result<(), 
     let _v = b.load_from(p).volatile().erased(i32_ty, "v")?;
     b.ret_void()?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let reverified = run_function_pass(DcePass, verified, f, &mut analyses)?.verify()?;
     let text = format!("{reverified}");
@@ -256,7 +268,9 @@ fn dce_removes_unordered_atomic_load_keeps_ordered_and_volatile() -> Result<(), 
 /// are never trivially dead, matching `wouldInstructionBeTriviallyDead`.
 #[test]
 fn dce_keeps_store_fence_and_call() -> Result<(), IrError> {
-    let m = module_new!("dce-effects")?;
+    let mut module = module_new!("dce-effects")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type().as_type();
@@ -264,8 +278,8 @@ fn dce_keeps_store_fence_and_call() -> Result<(), IrError> {
     let sink = m.add_function_dyn("sink", sink_ty, Linkage::External)?;
     let fn_ty = m.function_type(void_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     b.store(i32_ty.const_int(1_u32), p)?;
     b.fence(
@@ -276,7 +290,7 @@ fn dce_keeps_store_fence_and_call() -> Result<(), IrError> {
     b.call_dyn::<Dyn, _, _, _, _>(sink, Vec::<Value<'_, _>>::new(), "")?;
     b.ret_void()?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let reverified = run_function_pass(DcePass, verified, f, &mut analyses)?.verify()?;
     let text = format!("{reverified}");
@@ -296,13 +310,15 @@ fn dce_keeps_store_fence_and_call() -> Result<(), IrError> {
 /// [`llvmkit_ir::LoadBuilder`] chain.
 #[test]
 fn instsimplify_terminates_on_ordered_atomic_load_from_constant() -> Result<(), IrError> {
-    let m = module_new!("is-atomic")?;
+    let mut module = module_new!("is-atomic")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let g = m.add_global_constant("g", i32_ty.const_int(7_i32))?;
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let gp = PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(
         m.view(g).as_global_constant_ptr().as_erased(),
     )?;
@@ -314,7 +330,7 @@ fn instsimplify_terminates_on_ordered_atomic_load_from_constant() -> Result<(), 
         .int::<i32>("s")?;
     b.ret(s)?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let reverified = run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?.verify()?;
     let text = format!("{reverified}");
@@ -340,39 +356,41 @@ fn instsimplify_terminates_on_ordered_atomic_load_from_constant() -> Result<(), 
 /// folds it, replacing the phi's uses with `%c` and erasing the phi.
 #[test]
 fn instsimplify_folds_uniform_phi() -> Result<(), IrError> {
-    let m = module_new!("is-uniform-join")?;
+    let mut module = module_new!("is-uniform-join")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let l = m.view(f).append_basic_block(&m, "l");
-    let r = m.view(f).append_basic_block(&m, "r");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let l = m.view(f).append_basic_block(m, "l");
+    let r = m.view(f).append_basic_block(m, "r");
     // m(%p: i32): the merge head-phi param carries the joined value.
-    let bwp = IrBuilder::new_for::<Dyn>(&m);
+    let bwp = IrBuilder::new_for::<Dyn>(&mut key);
     let (join, params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "m")?;
     let l_label = l.id();
     let r_label = r.id();
     let join_label = join.id();
 
-    m.view(f).param(0)?.set_name(&m, "c")?;
+    m.view(f).param(0)?.set_name(m, "c")?;
     let c: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
     // entry: cond_br -> l, r
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let cond = b.int_cmp::<i32, _, _, _>(IntPredicate::Eq, c, 0_i32, "cond")?;
     b.cond_br(cond, l_label, r_label)?;
     // l: br m(%c)
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(l);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(l);
     b.br_with_args(join_label, &[c.as_erased()])?;
     // r: br m(%c)
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(r);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(r);
     b.br_with_args(join_label, &[c.as_erased()])?;
     // m: ret %p (the head-phi param merges %c down both edges -> uniform)
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(join);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(join);
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
     b.ret(p)?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let reverified = run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?.verify()?;
     let text = format!("{reverified}");
@@ -398,35 +416,37 @@ fn instsimplify_folds_uniform_phi() -> Result<(), IrError> {
 /// erased.
 #[test]
 fn instsimplify_folds_self_referential_uniform_phi() -> Result<(), IrError> {
-    let m = module_new!("is-selfref-loop")?;
+    let mut module = module_new!("is-selfref-loop")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
     // loop(%p: i32): the loop-header head-phi param is the loop-carried value.
-    let bwp = IrBuilder::new_for::<Dyn>(&m);
+    let bwp = IrBuilder::new_for::<Dyn>(&mut key);
     let (loop_bb, params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "loop")?;
-    let exit = m.view(f).append_basic_block(&m, "exit");
+    let exit = m.view(f).append_basic_block(m, "exit");
     let loop_label = loop_bb.id();
     let exit_label = exit.id();
 
-    m.view(f).param(0)?.set_name(&m, "v0")?;
+    m.view(f).param(0)?.set_name(m, "v0")?;
     let v0: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
     // entry: br loop(%v0)
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     b.br_with_args(loop_label, &[v0.as_erased()])?;
     // loop: body; cond_br exit / loop(%p). The self-edge carries the loop
     // param itself back, reproducing `[ %v0, %entry ], [ %p, %loop ]`.
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(loop_bb);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(loop_bb);
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
     let cond = b.int_cmp::<i32, _, _, _>(IntPredicate::Eq, p, 0_i32, "cond")?;
     b.cond_br_with_args(cond, exit_label, &[], loop_label, &[params[0]])?;
     // exit: ret %p (the loop param dominates exit)
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(exit);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(exit);
     b.ret(p)?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let reverified = run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?.verify()?;
     let text = format!("{reverified}");
@@ -450,40 +470,42 @@ fn instsimplify_folds_self_referential_uniform_phi() -> Result<(), IrError> {
 /// different incomings (`%a` vs `%b`) is not uniform and must survive.
 #[test]
 fn instsimplify_keeps_non_uniform_phi() -> Result<(), IrError> {
-    let m = module_new!("is-nonuniform-join")?;
+    let mut module = module_new!("is-nonuniform-join")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let l = m.view(f).append_basic_block(&m, "l");
-    let r = m.view(f).append_basic_block(&m, "r");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let l = m.view(f).append_basic_block(m, "l");
+    let r = m.view(f).append_basic_block(m, "r");
     // m(%p: i32): merge head-phi param.
-    let bwp = IrBuilder::new_for::<Dyn>(&m);
+    let bwp = IrBuilder::new_for::<Dyn>(&mut key);
     let (join, params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "m")?;
     let l_label = l.id();
     let r_label = r.id();
     let join_label = join.id();
 
-    m.view(f).param(0)?.set_name(&m, "a")?;
-    m.view(f).param(1)?.set_name(&m, "b")?;
+    m.view(f).param(0)?.set_name(m, "a")?;
+    m.view(f).param(1)?.set_name(m, "b")?;
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let bparam: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
 
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let cond = b.int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "cond")?;
     b.cond_br(cond, l_label, r_label)?;
     // l: br m(%a)
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(l);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(l);
     b.br_with_args(join_label, &[a.as_erased()])?;
     // r: br m(%b)
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(r);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(r);
     b.br_with_args(join_label, &[bparam.as_erased()])?;
     // m: ret %p -- distinct incomings %a / %b keep the phi non-uniform.
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(join);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(join);
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
     b.ret(p)?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let reverified = run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?.verify()?;
     let text = format!("{reverified}");
@@ -504,15 +526,17 @@ fn instsimplify_keeps_non_uniform_phi() -> Result<(), IrError> {
 /// `replace_all_uses`, so this locks the cascade either way.)
 #[test]
 fn uniform_phi_fold_cascades_to_users() -> Result<(), IrError> {
-    let m = module_new!("is-cascade")?;
+    let mut module = module_new!("is-cascade")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let l = m.view(f).append_basic_block(&m, "l");
-    let r = m.view(f).append_basic_block(&m, "r");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let l = m.view(f).append_basic_block(m, "l");
+    let r = m.view(f).append_basic_block(m, "r");
     // m(%p: i32): merge head-phi param; constant 3 down both edges -> uniform.
-    let bwp = IrBuilder::new_for::<Dyn>(&m);
+    let bwp = IrBuilder::new_for::<Dyn>(&mut key);
     let (join, params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "m")?;
     let l_label = l.id();
     let r_label = r.id();
@@ -520,22 +544,22 @@ fn uniform_phi_fold_cascades_to_users() -> Result<(), IrError> {
 
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let cond = b.int_cmp::<i32, _, _, _>(IntPredicate::Eq, x, 0_i32, "cond")?;
     b.cond_br(cond, l_label, r_label)?;
     // l: br m(3)
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(l);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(l);
     b.br_with_args(join_label, &[i32_ty.const_int(3_i32).as_erased()])?;
     // r: br m(3)
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(r);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(r);
     b.br_with_args(join_label, &[i32_ty.const_int(3_i32).as_erased()])?;
     // m: %q = add %p, 4 ; ret %q -- the user reads the head-phi param.
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(join);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(join);
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
     let q = b.int_add::<i32, _, _, _>(p, 4_i32, "q")?;
     b.ret(q)?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let reverified = run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?.verify()?;
     let text = format!("{reverified}");
@@ -572,24 +596,26 @@ fn uniform_phi_fold_cascades_to_users() -> Result<(), IrError> {
 /// — the divergence was recorded (former entry 46) rather than caught.
 #[test]
 fn instsimplify_leaves_unreachable_blocks_alone() -> Result<(), IrError> {
-    let m = module_new!("instsimplify-unreachable")?;
+    let mut module = module_new!("instsimplify-unreachable")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
     // Nothing branches to `dead`, so it is not reachable from the entry block.
-    let dead = m.view(f).append_basic_block(&m, "dead");
+    let dead = m.view(f).append_basic_block(m, "dead");
 
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     b.ret(i32_ty.const_int(1_u32))?;
 
     // The same foldable `add` the reachable-block test above folds to 42.
-    let d = IrBuilder::with_folder(&m, NoFolder).position_at_end(dead);
+    let d = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(dead);
     let sum =
         d.int_add::<i32, _, _, _>(i32_ty.const_int(40_u32), i32_ty.const_int(2_u32), "sum")?;
     d.ret(sum)?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let unverified = run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?;
     let reverified = unverified.verify()?;

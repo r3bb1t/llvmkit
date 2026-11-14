@@ -19,7 +19,7 @@
 use llvmkit_ir::{IrBuilder, IntValue, Linkage, Module};
 
 fn main() {
-    let m = Module::dynamic("c");
+    let mut module = Module::dynamic("c"); let mut key = module.layout_token(); let m = key.module();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [i32_ty.as_type()]).expect("valid function type");
@@ -29,7 +29,7 @@ fn main() {
     // A typed non-pointer value handle: the `i32` function parameter
     // narrowed to `IntValue<i32>`.
     let addr: IntValue<i32, _> = m.view(f).param(0).unwrap().try_into().unwrap();
-    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&mut key).position_at_end(entry);
 
     // `IntValue<'_, i32, _>` does not implement `IntoPointerValue`, so it
     // cannot be an `indirectbr` address: `indirectbr` does not

@@ -6,7 +6,7 @@
 use llvmkit_ir::{Dyn, IrBuilder, Linkage, Module};
 
 fn main() {
-    let m = Module::dynamic("retained-switch");
+    let mut module = Module::dynamic("retained-switch"); let mut key = module.layout_token(); let m = key.module();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty, [i32_ty.as_type()]).expect("valid function type");
@@ -15,7 +15,7 @@ fn main() {
     let dest = m.view(f).append_basic_block(&m, "dest");
     let dest_label = dest.id();
     let cond = m.view(f).param(0).unwrap();
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let (_sealed, switch) = b.switch_dyn(cond, dest_label, "").unwrap();
 
     let _closed = switch.finish();

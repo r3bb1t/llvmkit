@@ -12,7 +12,7 @@
 use llvmkit_ir::{IrBuilder, Linkage, Module};
 
 fn main() {
-    let m = Module::dynamic("c");
+    let mut module = Module::dynamic("c"); let mut key = module.layout_token(); let m = key.module();
     let void_callee = m
         .add_typed_function::<(), (), _>("sink", Linkage::External)
         .unwrap();
@@ -20,7 +20,7 @@ fn main() {
         .add_typed_function::<i32, (i32,), _>("caller", Linkage::External)
         .unwrap();
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(entry);
     let (n,) = m.view(caller).params();
     let void_call = b.call(void_callee, (), "").unwrap();
     // `b.view(void_call).result()` is `()`, not an `IntoIntValue<'_, i32, _>`.

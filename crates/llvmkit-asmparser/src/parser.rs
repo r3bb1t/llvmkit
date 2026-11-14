@@ -217,9 +217,11 @@ where
     B: ModuleBrand,
     S: AsRef<[u8]>,
 {
-    // The `ParsedModule` by-product borrows `module`; dropping it here ends
-    // that borrow, which is what lets the token be returned by value.
-    Parser::new(src.as_ref(), &module)?.parse_module_with_config(config)?;
+    // The parser owns the module's layout token, and the `ParsedModule`
+    // by-product borrows the module through it; dropping both here ends the
+    // borrow, which is what lets the module be returned by value.
+    let mut module = module;
+    Parser::new(src.as_ref(), module.layout_token())?.parse_module_with_config(config)?;
     Ok(module)
 }
 
@@ -351,9 +353,11 @@ where
     S: AsRef<[u8]>,
     F: for<'ctx> FnOnce(&'ctx Module<DynBrand, Unverified>, ParsedModule<'ctx, DynBrand>) -> R,
 {
-    let module = Module::dynamic(name);
-    let parsed = Parser::new(src.as_ref(), &module)?.parse_module_with_config(config)?;
-    Ok(f(&module, parsed))
+    let mut module = Module::dynamic(name);
+    let key = module.layout_token();
+    let module = key.module();
+    let parsed = Parser::new(src.as_ref(), key)?.parse_module_with_config(config)?;
+    Ok(f(module, parsed))
 }
 
 /// Parse a complete textual IR module *and* the module summary index its `^N`
@@ -395,10 +399,11 @@ where
     S: AsRef<[u8]>,
     F: for<'ctx> FnOnce(&'ctx Module<DynBrand, Unverified>, ParsedModule<'ctx, DynBrand>) -> R,
 {
-    let module = Module::dynamic(DEFAULT_MODULE_NAME);
-    let parsed =
-        Parser::with_summary_index(src.as_ref(), &module)?.parse_module_with_config(config)?;
-    Ok(f(&module, parsed))
+    let mut module = Module::dynamic(DEFAULT_MODULE_NAME);
+    let key = module.layout_token();
+    let module = key.module();
+    let parsed = Parser::with_summary_index(src.as_ref(), key)?.parse_module_with_config(config)?;
+    Ok(f(module, parsed))
 }
 
 /// Parse a textual LLVM module summary index, reading past everything else.
@@ -410,8 +415,8 @@ pub fn parse_summary_index_assembly<S: AsRef<[u8]>>(src: S) -> ParseResult<Modul
     // The module exists only so the parser has somewhere to record the source
     // file name, which is what a local symbol's GUID is computed from. Nothing
     // is built into it, and the index does not borrow it.
-    let module = Module::dynamic("summary");
-    let parsed = Parser::summary_index_only(src.as_ref(), &module)?.parse_module()?;
+    let mut module = Module::dynamic("summary");
+    let parsed = Parser::summary_index_only(src.as_ref(), module.layout_token())?.parse_module()?;
     Ok(parsed.summary_index.unwrap_or_default())
 }
 
@@ -450,14 +455,15 @@ where
         AsmParserContext<'ctx, DynBrand>,
     ) -> R,
 {
-    let module = Module::dynamic(DEFAULT_MODULE_NAME);
-    let mut parsed =
-        Parser::with_context(src.as_ref(), &module)?.parse_module_with_config(config)?;
+    let mut module = Module::dynamic(DEFAULT_MODULE_NAME);
+    let key = module.layout_token();
+    let module = key.module();
+    let mut parsed = Parser::with_context(src.as_ref(), key)?.parse_module_with_config(config)?;
     // `Parser::with_context` installs the registry, so `parse_module` always
     // hands one back; the `unwrap_or_default` is the shape of the `Option`,
     // not a fallback anyone reaches.
     let context = parsed.parser_context.take().unwrap_or_default();
-    Ok(f(&module, parsed, context))
+    Ok(f(module, parsed, context))
 }
 
 /// Parse a single LLVM type and require end-of-input.
@@ -472,7 +478,7 @@ pub fn parse_type<'ctx, B: ModuleBrand + 'ctx, S: AsRef<[u8]>>(
     src: S,
     module: &'ctx Module<B, Unverified>,
 ) -> ParseResult<Type<'ctx, B>> {
-    Parser::new(src.as_ref(), module)?.parse_standalone_type()
+    Parser::for_standalone(src.as_ref(), module)?.parse_standalone_type()
 }
 
 /// [`parse_type`], resolving numbered/named forward references through a
@@ -482,7 +488,7 @@ pub fn parse_type_with_slots<'ctx, B: ModuleBrand + 'ctx, S: AsRef<[u8]>>(
     module: &'ctx Module<B, Unverified>,
     slots: &SlotMapping<'ctx, B>,
 ) -> ParseResult<Type<'ctx, B>> {
-    Parser::with_slot_mapping(src.as_ref(), module, slots)?.parse_standalone_type()
+    Parser::for_standalone_with_slots(src.as_ref(), module, slots)?.parse_standalone_type()
 }
 
 /// Parse one LLVM type prefix and report the number of consumed bytes.
@@ -490,7 +496,7 @@ pub fn parse_type_at_beginning<'ctx, B: ModuleBrand + 'ctx, S: AsRef<[u8]>>(
     src: S,
     module: &'ctx Module<B, Unverified>,
 ) -> ParseResult<(Type<'ctx, B>, usize)> {
-    Parser::new(src.as_ref(), module)?.parse_type_at_beginning()
+    Parser::for_standalone(src.as_ref(), module)?.parse_type_at_beginning()
 }
 
 /// [`parse_type_at_beginning`] with a caller-supplied slot mapping.
@@ -499,7 +505,7 @@ pub fn parse_type_at_beginning_with_slots<'ctx, B: ModuleBrand + 'ctx, S: AsRef<
     module: &'ctx Module<B, Unverified>,
     slots: &SlotMapping<'ctx, B>,
 ) -> ParseResult<(Type<'ctx, B>, usize)> {
-    Parser::with_slot_mapping(src.as_ref(), module, slots)?.parse_type_at_beginning()
+    Parser::for_standalone_with_slots(src.as_ref(), module, slots)?.parse_type_at_beginning()
 }
 
 /// Parse one constant value of the supplied LLVM type and require EOF.
@@ -514,7 +520,7 @@ pub fn parse_constant_value<'ctx, B: ModuleBrand + 'ctx, S: AsRef<[u8]>>(
     module: &'ctx Module<B, Unverified>,
     ty: Type<'ctx, B>,
 ) -> ParseResult<Constant<'ctx, B>> {
-    Parser::new(src.as_ref(), module)?.parse_standalone_constant_value(ty)
+    Parser::for_standalone(src.as_ref(), module)?.parse_standalone_constant_value(ty)
 }
 
 /// [`parse_constant_value`] with a caller-supplied slot mapping; `ty` is
@@ -525,7 +531,8 @@ pub fn parse_constant_value_with_slots<'ctx, B: ModuleBrand + 'ctx, S: AsRef<[u8
     ty: Type<'ctx, B>,
     slots: &SlotMapping<'ctx, B>,
 ) -> ParseResult<Constant<'ctx, B>> {
-    Parser::with_slot_mapping(src.as_ref(), module, slots)?.parse_standalone_constant_value(ty)
+    Parser::for_standalone_with_slots(src.as_ref(), module, slots)?
+        .parse_standalone_constant_value(ty)
 }
 
 // The line-scanning heuristic that used to stand in for `AsmParserContext`

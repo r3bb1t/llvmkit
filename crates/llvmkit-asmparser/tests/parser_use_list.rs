@@ -16,8 +16,8 @@ use llvmkit_ir::Module;
 
 /// Parse `src` expecting rejection, and return the rendered diagnostic.
 fn parse_err(module_name: &str, src: &[u8]) -> String {
-    let module = Module::dynamic(module_name);
-    match Parser::new(src, &module) {
+    let mut module = Module::dynamic(module_name);
+    match Parser::new(src, module.layout_token()) {
         Err(e) => e.to_string(),
         Ok(parser) => parser
             .parse_module()
@@ -28,8 +28,8 @@ fn parse_err(module_name: &str, src: &[u8]) -> String {
 
 /// Parse `src`, then print it with use-list order preserved.
 fn parse_and_print_preserving(module_name: &str, src: &[u8]) -> String {
-    let module = Module::dynamic(module_name);
-    Parser::new(src, &module)
+    let mut module = Module::dynamic(module_name);
+    Parser::new(src, module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("fixture parses");
@@ -363,8 +363,8 @@ fn global_use_list_order_round_trips() {
 fn the_upstream_uselistorder_fixture_parses_clean() {
     const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/uselistorder/uselistorder.ll");
 
-    let module = Module::dynamic("uselistorder_full");
-    Parser::new(FIXTURE, &module)
+    let mut module = Module::dynamic("uselistorder_full");
+    Parser::new(FIXTURE, module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("fixture parses");
@@ -378,8 +378,8 @@ fn the_upstream_uselistorder_fixture_parses_clean() {
 fn the_upstream_uselistorder_bb_fixture_parses_clean() {
     const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/uselistorder/uselistorder_bb.ll");
 
-    let module = Module::dynamic("uselistorder_bb");
-    Parser::new(FIXTURE, &module)
+    let mut module = Module::dynamic("uselistorder_bb");
+    Parser::new(FIXTURE, module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("fixture parses");
@@ -397,8 +397,8 @@ fn function_operands_participate_in_the_use_list() {
     const FIXTURE: &[u8] =
         include_bytes!("fixtures/upstream/uselistorder/function_operand_uselistorder.ll");
 
-    let module = Module::dynamic("function_operand_uselistorder");
-    Parser::new(FIXTURE, &module)
+    let mut module = Module::dynamic("function_operand_uselistorder");
+    Parser::new(FIXTURE, module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("fixture parses");
@@ -421,8 +421,8 @@ fn plain_display_emits_no_directives() {
     // Deliberately not named after the fixture: the module identifier is
     // printed as `; ModuleID = '<name>'`, so a name containing the word would
     // make the assertion below vacuously interesting.
-    let module = Module::dynamic("default_print");
-    Parser::new(FIXTURE, &module)
+    let mut module = Module::dynamic("default_print");
+    Parser::new(FIXTURE, module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("fixture parses");
@@ -473,8 +473,8 @@ fn function_operand_uses_survive_a_reversal_round_trip() {
         include_bytes!("fixtures/upstream/uselistorder/function_operand_uselistorder.ll");
     const NAME: &str = "function_operand_round_trip";
 
-    let module = Module::dynamic(NAME);
-    Parser::new(FIXTURE, &module)
+    let mut module = Module::dynamic(NAME);
+    Parser::new(FIXTURE, module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("fixture parses");
@@ -581,8 +581,8 @@ fn a_forward_referenced_constant_keeps_its_users_order() {
         include_bytes!("fixtures/upstream/assembler-corpus/alias-use-list-order.ll");
     const NAME: &str = "alias_use_list_order_round_trip";
 
-    let module = Module::dynamic(NAME);
-    Parser::new(FIXTURE, &module)
+    let mut module = Module::dynamic(NAME);
+    Parser::new(FIXTURE, module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("fixture parses");

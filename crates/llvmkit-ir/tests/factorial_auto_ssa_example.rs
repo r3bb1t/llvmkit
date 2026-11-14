@@ -37,10 +37,10 @@ use llvmkit_ir::{IrError, module_new};
 /// construction patterns) -- see that test's own doc comment.
 #[test]
 fn factorial_auto_ssa_example_emits_locked_ir() -> Result<(), IrError> {
-    let m = module_new!("factorial")?;
+    let mut m = module_new!("factorial")?;
     // Function-pointer coercion: marks `main` as used without running it.
     let _: fn() = factorial_auto_ssa_example::main;
-    factorial_auto_ssa_example::build(&m)?;
+    factorial_auto_ssa_example::build(&mut m.layout_token())?;
     let actual = format!("{m}");
     // Cross-reference: this literal is the SAME expected string as
     // `tests/factorial_example.rs::factorial_example_emits_locked_ir`.

@@ -7,8 +7,8 @@ use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_ir::Module;
 
 fn parse_and_render(module_name: &str, src: &[u8]) -> String {
-    let module = Module::dynamic(module_name);
-    Parser::new(src, &module)
+    let mut module = Module::dynamic(module_name);
+    Parser::new(src, module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
@@ -16,8 +16,8 @@ fn parse_and_render(module_name: &str, src: &[u8]) -> String {
 }
 
 fn parse_err(src: &[u8]) -> String {
-    let module = Module::dynamic("parser_ap_literals_error");
-    Parser::new(src, &module)
+    let mut module = Module::dynamic("parser_ap_literals_error");
+    Parser::new(src, module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect_err("literal is rejected")

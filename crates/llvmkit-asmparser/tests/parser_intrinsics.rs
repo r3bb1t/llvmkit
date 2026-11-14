@@ -4,8 +4,8 @@ use llvmkit_asmparser::{ll_parser::Parser, parse_error::ParseError};
 use llvmkit_ir::Module;
 
 fn parse_and_render(src: &str) -> String {
-    let module = Module::dynamic("parser_intrinsics");
-    Parser::new(src.as_bytes(), &module)
+    let mut module = Module::dynamic("parser_intrinsics");
+    Parser::new(src.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
@@ -13,8 +13,8 @@ fn parse_and_render(src: &str) -> String {
 }
 
 fn parse_err(src: &str) -> ParseError {
-    let module = Module::dynamic("parser_intrinsics_err");
-    Parser::new(src.as_bytes(), &module)
+    let mut module = Module::dynamic("parser_intrinsics_err");
+    Parser::new(src.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect_err("parser rejects intrinsic misuse")
@@ -191,8 +191,8 @@ fn upstream_intrinsic_addr_taken_fixture_messages_match() {
         .filter(|line| !line.contains("my.custom.intrinsic") && !line.trim().starts_with(';'))
         .collect::<Vec<_>>()
         .join("\n");
-    let module = Module::dynamic("intrinsic_addr_taken");
-    Parser::new(g1.as_bytes(), &module)
+    let mut module = Module::dynamic("intrinsic_addr_taken");
+    Parser::new(g1.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .unwrap_or_else(|e| panic!("upstream's llvm-as parses this: {e}\n{g1}"));

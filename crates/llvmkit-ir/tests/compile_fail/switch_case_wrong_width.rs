@@ -17,7 +17,7 @@
 use llvmkit_ir::{Dyn, IrBuilder, IntValue, Linkage, Module};
 
 fn main() {
-    let m = Module::dynamic("c");
+    let mut module = Module::dynamic("c"); let mut key = module.layout_token(); let m = key.module();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [i32_ty.as_type()]).expect("valid function type");
@@ -28,7 +28,7 @@ fn main() {
 
     // `W` is inferred as `i32` from the typed condition.
     let cond: IntValue<i32, _> = m.view(f).param(0).unwrap().try_into().unwrap();
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let (_sealed, switch) = b.switch(cond, dest_label, "").unwrap();
 
     // `5_i64` does not implement `IntoIntValue<'_, i32, _>`, so it cannot

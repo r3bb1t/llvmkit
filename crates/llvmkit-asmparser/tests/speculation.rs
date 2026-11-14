@@ -22,9 +22,9 @@
 
 use llvmkit_asmparser::parser;
 use llvmkit_ir::{
-    Capability, DominatorTree, Dyn, DynBrand, InstructionView, IrBuilder, Module, NoFolder,
-    TerminatorKind, Unpositioned, Unverified, User, Value, ValueTrackingQuery, VectorType,
-    can_create_poison, can_create_undef_or_poison,
+    Capability, DominatorTree, Dyn, DynBrand, InstructionView, IrBuilder, LayoutToken, Module,
+    NoFolder, TerminatorKind, Unpositioned, Unverified, User, Value, ValueTrackingQuery,
+    VectorType, can_create_poison, can_create_undef_or_poison,
     is_guaranteed_to_transfer_execution_to_successor, is_known_not_poison,
     is_known_not_undef_or_poison, lanes, program_undefined_if_poison,
     program_undefined_if_undef_or_poison,
@@ -773,12 +773,13 @@ fn a_scalable_lane_below_the_known_minimum_is_in_range() {
 /// `MaxAnalysisRecursionDepth`, which answers `false` on its first line, so the
 /// casts' operand walks fail. Only the arms after the walk, the
 /// dominating-condition loop among them, can prove a cast.
-fn xor_chain_over_a_symbol_difference(
-    module: &Module<DynBrand, Unverified>,
+fn xor_chain_over_a_symbol_difference<'m>(
+    key: &mut LayoutToken<'m, DynBrand>,
 ) -> (
-    Value<'_, DynBrand>,
-    InstructionView<'_, DynBrand, llvmkit_ir::ReadOnly>,
+    Value<'m, DynBrand>,
+    InstructionView<'m, DynBrand, llvmkit_ir::ReadOnly>,
 ) {
+    let module = key.module();
     let a = module.global("a").expect("fixture defines @a");
     let b = module.global("b").expect("fixture defines @b");
     let difference = module
@@ -795,7 +796,7 @@ fn xor_chain_over_a_symbol_difference(
         .next()
         .expect("%body is not empty");
     let unpositioned: IrBuilder<'_, '_, DynBrand, NoFolder, Unpositioned, Dyn> =
-        IrBuilder::with_folder(module, NoFolder);
+        IrBuilder::with_folder(key, NoFolder);
     let builder = unpositioned
         .position_before(context.placed().expect("the `ret` is in a block"))
         .expect("the `ret` is this module's");
@@ -824,7 +825,7 @@ fn xor_chain_over_a_symbol_difference(
 /// the control: without the loop, nothing proves the casts.
 #[test]
 fn a_dominating_switch_proves_a_cast_a_symbol_difference_prints() {
-    let module = parse(
+    let mut module = parse(
         r"
 @a = global i32 0
 @b = global i32 0
@@ -841,9 +842,11 @@ body:
 }
 ",
     );
-    let (x0, context) = xor_chain_over_a_symbol_difference(&module);
-    let dominator_tree = dominator_tree(&module);
-    let data_layout = module.data_layout();
+    let mut key = module.layout_token();
+    let (x0, context) = xor_chain_over_a_symbol_difference(&mut key);
+    let m = key.module();
+    let dominator_tree = dominator_tree(m);
+    let data_layout = m.data_layout();
 
     let unanchored = ValueTrackingQuery::<DynBrand>::new(&data_layout);
     assert!(
@@ -868,7 +871,7 @@ body:
 /// query is the control, as above.
 #[test]
 fn a_dominating_branch_on_a_compare_of_the_cast_proves_it_not_poison() {
-    let module = parse(
+    let mut module = parse(
         r"
 @a = global i32 0
 @b = global i32 0
@@ -890,9 +893,11 @@ exit:
 }
 ",
     );
-    let (x0, context) = xor_chain_over_a_symbol_difference(&module);
-    let dominator_tree = dominator_tree(&module);
-    let data_layout = module.data_layout();
+    let mut key = module.layout_token();
+    let (x0, context) = xor_chain_over_a_symbol_difference(&mut key);
+    let m = key.module();
+    let dominator_tree = dominator_tree(m);
+    let data_layout = m.data_layout();
 
     let unanchored = ValueTrackingQuery::<DynBrand>::new(&data_layout);
     assert!(

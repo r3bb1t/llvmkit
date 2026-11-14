@@ -19,10 +19,10 @@ use llvmkit_ir::{IrError, module_new};
 /// (loop+phi construction patterns).
 #[test]
 fn factorial_example_emits_locked_ir() -> Result<(), IrError> {
-    let m = module_new!("factorial")?;
+    let mut m = module_new!("factorial")?;
     // Function-pointer coercion: marks `main` as used without running it.
     let _: fn() = factorial_example::main;
-    factorial_example::build(&m)?;
+    factorial_example::build(&mut m.layout_token())?;
     let actual = format!("{m}");
     let expected = "; ModuleID = 'factorial'\n\
     \n\

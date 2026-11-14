@@ -25,7 +25,7 @@ fn main() {
     let i32_ty = left.i32_type();
     let left_value = i32_ty.const_int(1_i32);
 
-    let right = Module::branded::<Right, _>("right").unwrap();
+    let mut right_module = Module::branded::<Right, _>("right").unwrap(); let mut right_key = right_module.layout_token(); let right = right_key.module();
     let callee = right.view(
         right
             .add_typed_function::<i32, (i32,), _>("callee", Linkage::External)
@@ -35,7 +35,7 @@ fn main() {
         .add_typed_function::<i32, (), _>("caller", Linkage::External)
         .unwrap();
     let entry = right.view(caller).append_basic_block(&right, "entry");
-    let builder = IrBuilder::new_for::<i32>(&right).position_at_end(entry);
+    let builder = IrBuilder::new_for::<i32>(&mut right_key).position_at_end(entry);
     // `left_value` carries brand `Left`; `builder` is positioned in the
     // `Right`-branded module. Filling `callee`'s call-argument slot with a
     // foreign-module value is rejected.

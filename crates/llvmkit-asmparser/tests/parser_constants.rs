@@ -11,8 +11,8 @@ use llvmkit_ir::{ArrayType, ConstantError, Module, PtrAuthRequirement};
 pub mod support;
 
 fn parse_and_render(module_name: &str, src: &[u8]) -> String {
-    let module = Module::dynamic(module_name);
-    Parser::new(src, &module)
+    let mut module = Module::dynamic(module_name);
+    Parser::new(src, module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
@@ -48,8 +48,8 @@ fn assert_parse_print_parse_stable(text: &str) {
 /// messages that upstream prints bare.
 fn assert_parse_error(src: &[u8], expected_message: &str) {
     let err = {
-        let module = Module::dynamic("parser_constants_error");
-        Parser::new(src, &module)
+        let mut module = Module::dynamic("parser_constants_error");
+        Parser::new(src, module.layout_token())
             .expect("lexer primes")
             .parse_module()
             .expect_err("fixture is rejected")
@@ -577,8 +577,8 @@ fn unsupported_constant_expr_opcodes_are_rejected() {
             .as_slice(),
         ),
     ] {
-        let module = module_new!("parser_constants_unsupported").expect("fresh module");
-        let err = Parser::new(src, &module)
+        let mut module = module_new!("parser_constants_unsupported").expect("fresh module");
+        let err = Parser::new(src, module.layout_token())
             .expect("lexer primes")
             .parse_module()
             .expect_err("unsupported constexpr is rejected");
@@ -939,8 +939,8 @@ fn constant_splat_diagnostics_match_upstream_text() {
     ];
 
     for (name, fixture, expected) in SPLITS {
-        let module = Module::dynamic(*name);
-        let err = Parser::new(fixture, &module)
+        let mut module = Module::dynamic(*name);
+        let err = Parser::new(fixture, module.layout_token())
             .expect("lexer primes")
             .parse_module()
             .expect_err("split is rejected");
@@ -1092,8 +1092,8 @@ fn zeroinitializer_of_an_unzeroable_type_is_an_invalid_null_constant() {
         "define void @f() {\nentry:\n  %v = freeze exnref zeroinitializer\n  ret void\n}\n",
         "define void @f() {\nentry:\n  %v = freeze target(\"unknown_target_type\") zeroinitializer\n  ret void\n}\n",
     ] {
-        let module = module_new!("parser_constants_unzeroable").expect("fresh module");
-        let err = Parser::new(source.as_bytes(), &module)
+        let mut module = module_new!("parser_constants_unzeroable").expect("fresh module");
+        let err = Parser::new(source.as_bytes(), module.layout_token())
             .expect("lexer primes")
             .parse_module()
             .expect_err("an unzeroable type is rejected");
@@ -1285,8 +1285,8 @@ fn ptrauth_invalid_operands_carry_the_typed_rule() {
             PtrAuthRequirement::DeactivationSymbolType,
         ),
     ] {
-        let module = Module::dynamic("parser_constants_ptrauth_rule");
-        let err = Parser::new(fixture, &module)
+        let mut module = Module::dynamic("parser_constants_ptrauth_rule");
+        let err = Parser::new(fixture, module.layout_token())
             .expect("lexer primes")
             .parse_module()
             .expect_err("fixture is rejected");

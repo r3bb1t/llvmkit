@@ -35,28 +35,28 @@
 use llvmkit_ir::{Linkage, MetadataAttachmentKind, Module};
 
 fn main() {
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m"); let mut key = module.layout_token(); let m = key.module();
     let f = m
         .add_typed_function::<(), (), _>("f", Linkage::External)
         .unwrap()
         .as_function();
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = llvmkit_ir::IrBuilder::at_end(entry);
+    let b = llvmkit_ir::IrBuilder::at_end(&mut key, entry);
     b.ret_void();
     let node = m.metadata_string("attached");
 
-    // Consumes the `Unverified` token: `m` is moved into `verify`.
-    let verified = m.verify().unwrap();
+    // Consumes the `Unverified` token: `module` is moved into `verify`.
+    let verified = module.verify().unwrap();
 
     // A `Mutable` view, from an unverified module of the same brand, so only
     // the token can refuse the call below.
-    let n = Module::dynamic("n");
+    let mut n_module = Module::dynamic("n"); let mut n_key = n_module.layout_token(); let n = n_key.module();
     let g = n
         .add_typed_function::<(), (), _>("g", Linkage::External)
         .unwrap()
         .as_function();
     let n_entry = n.view(g).append_basic_block(&n, "entry");
-    llvmkit_ir::IrBuilder::at_end(n_entry).ret_void();
+    llvmkit_ir::IrBuilder::at_end(&mut n_key, n_entry).ret_void();
     let inst = n
         .view(g)
         .entry_block()

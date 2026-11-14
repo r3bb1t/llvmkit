@@ -1882,15 +1882,17 @@ mod tests {
         let rust_point = Point { x: 1, y: 2 };
         let _ = rust_point.x + rust_point.y;
 
-        let m = crate::module_new!("derived_call_arg")?;
+        let mut module = crate::module_new!("derived_call_arg")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let f = m.add_typed_function::<i32, (Point,), _>("consume_point", Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
         let point = m
             .get_or_insert_struct_of::<Point>()?
             .build(&b, 1_i32, 2_i32, "point");
 
-        let ids = <(_,) as CallArgs<'_, (Point,), _>>::lower((point,), (&m).into(), CrateOnly(()))?;
+        let ids = <(_,) as CallArgs<'_, (Point,), _>>::lower((point,), m.into(), CrateOnly(()))?;
 
         assert_eq!(ids.len(), 1, "expected one lowered call-argument id");
         b.ret(0_i32)?;

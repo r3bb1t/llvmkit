@@ -942,14 +942,16 @@ where
     /// insert point hands out no builder, so no mutation is possible.
     #[inline]
     pub fn builder_at<R2, Saved>(
-        &self,
+        &mut self,
         ip: InsertPoint<'m, R2, B, Saved>,
-    ) -> IrResult<IrBuilder<'m, 'm, B, ConstantFolder, Saved, R2>>
+    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, Saved, R2>>
     where
         R2: ReturnMarker,
         Saved: Positioning,
     {
-        let builder = IrBuilder::new_for::<R2>(self.module).restore_insert_point(ip)?;
+        // The builder's key borrow is this `&mut self`: while it lives, no
+        // other context edit, and no second builder, can run on the function.
+        let builder = IrBuilder::new_for_unkeyed::<R2>(self.module).restore_insert_point(ip)?;
         // Internal: the pass's own function, read in its own module.
         let own_function = self.function.as_function().slot_trusting_same_module();
         if builder.insert_block().parent_id() != Some(own_function) {
@@ -990,7 +992,7 @@ where
             }
             wl.remove(ValueId::from_raw(tag, id));
         }
-        inst.erase_from_parent(self.module);
+        inst.erase_from_parent_in(self.module);
         self.dirty.set(true);
     }
 
@@ -1321,9 +1323,9 @@ where
     /// [`Self::split_block`]).
     #[inline]
     pub fn builder_at<R2, Saved>(
-        &self,
+        &mut self,
         ip: InsertPoint<'m, R2, B, Saved>,
-    ) -> IrResult<IrBuilder<'m, 'm, B, ConstantFolder, Saved, R2>>
+    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, Saved, R2>>
     where
         R2: ReturnMarker,
         Saved: Positioning,
@@ -1490,7 +1492,7 @@ where
         let source_id = source.id().as_dyn();
         let successors = crate::cfg::block_successors(&source);
 
-        let new_block = source.split_at(self.patch.module_mut(), before, name)?;
+        let new_block = source.split_at_in(self.patch.module_mut(), before, name)?;
         let new_id = new_block.id().as_dyn();
 
         let mut log = self.cfg_updates.borrow_mut();
@@ -1951,7 +1953,7 @@ where
         crate::cfg::sync_block_uses(from_block.module_ref(), term_id, new_id);
         self.drop_incoming_from_pred(&old_block, from_id, surviving)?;
 
-        let builder = IrBuilder::new(self.patch.module_mut());
+        let builder = IrBuilder::new_for_unkeyed::<Dyn>(self.patch.module_mut());
         for (phi_id, value) in param_phis.iter().zip(phi_values.iter()) {
             let phi_ty = ctx.value_data(*phi_id).ty;
             let phi_val = Value::from_parts(*phi_id, from_block.module_ref(), phi_ty);
@@ -2463,7 +2465,7 @@ where
         // (4) All witnessed — create the phi at `block`'s phi head and record
         // every incoming. `make_phi_in_block` is cursor-independent, so an
         // Unpositioned builder is fine.
-        let builder = IrBuilder::new(self.patch.module_mut());
+        let builder = IrBuilder::new_for_unkeyed::<Dyn>(self.patch.module_mut());
         let phi_val = builder.make_phi_in_block(target_id, ty_id, "");
         for (value, pred) in incomings {
             let pred_block: BasicBlock<'m, Dyn, Terminated, B> = pred.to_block();
@@ -3489,12 +3491,14 @@ mod tests {
     /// upstream analog: LLVM pass contexts are untyped `Function&` + `FAM&`).
     #[test]
     fn inspect_cx_reads_analysis_and_reports_all() -> Result<(), IrError> {
-        let m = crate::module_new!("inspect-cx")?;
+        let mut owned = crate::module_new!("inspect-cx")?;
+        let mut key = owned.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type_no_parameters(i32_ty)?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
         b.ret(i32_ty.const_int(1_u32))?;
 
         let function = FunctionView::from(m.view(f));
@@ -3526,12 +3530,14 @@ mod tests {
     /// untyped `Function&` + `FAM&`).
     #[test]
     fn patchbody_mutate_erase_reports_cfg_floor() -> Result<(), IrError> {
-        let m = crate::module_new!("patch-cx")?;
+        let mut owned = crate::module_new!("patch-cx")?;
+        let mut key = owned.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         // `%dead` has no uses — a non-terminator we can erase.
         let dead = b.int_add(x, 1_i32, "dead")?;
@@ -3553,7 +3559,7 @@ mod tests {
             2
         );
 
-        let cx: FnCx<'_, '_, '_, _, PatchBody, Reqs> = FnCx::new(&m, function, results);
+        let cx: FnCx<'_, '_, '_, _, PatchBody, Reqs> = FnCx::new(m, function, results);
         let patch = cx.mutate();
         patch.erase(
             &dead_view
@@ -3590,12 +3596,14 @@ mod tests {
     /// llvmkit-specific capability-context lock (no upstream analog).
     #[test]
     fn patchbody_reaches_types_through_module_view() -> Result<(), IrError> {
-        let m = crate::module_new!("patch-types")?;
+        let mut owned = crate::module_new!("patch-types")?;
+        let mut key = owned.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type_no_parameters(i32_ty)?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
         b.ret(i32_ty.const_int(0_u32))?;
 
         let function = FunctionView::from(m.view(f));
@@ -3603,7 +3611,7 @@ mod tests {
         Reqs::prefetch(&mut fam, function)?;
         let results = Reqs::collect(&fam, function)?;
 
-        let cx: FnCx<'_, '_, '_, _, PatchBody, Reqs> = FnCx::new(&m, function, results);
+        let cx: FnCx<'_, '_, '_, _, PatchBody, Reqs> = FnCx::new(m, function, results);
         let patch = cx.mutate();
 
         // The read-only view carries the type constructors, and the type it
@@ -3634,20 +3642,22 @@ mod tests {
     /// capability-context lock.
     #[test]
     fn patchbody_builder_at_witnesses_dirty() -> Result<(), IrError> {
-        let m = crate::module_new!("patch-builder-dirty")?;
+        let mut owned = crate::module_new!("patch-builder-dirty")?;
+        let mut key = owned.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(m, "entry");
         // A second, deliberately-open block so an end-of-block insert point
         // restores successfully (the terminated-block guard rejects only an
         // end-of-block ip whose block has since grown a terminator).
-        let scratch = m.view(f).append_basic_block(&m, "scratch");
+        let scratch = m.view(f).append_basic_block(m, "scratch");
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-        IrBuilder::new_for::<Dyn>(&m)
+        IrBuilder::new_for::<Dyn>(&mut key)
             .position_at_end(entry)
             .ret(x)?;
-        let ip = IrBuilder::new_for::<Dyn>(&m)
+        let ip = IrBuilder::new_for::<Dyn>(&mut key)
             .position_at_end(scratch)
             .save_insert_point();
 
@@ -3656,8 +3666,8 @@ mod tests {
         Reqs::prefetch(&mut fam, function)?;
         let results = Reqs::collect(&fam, function)?;
 
-        let cx: FnCx<'_, '_, '_, _, PatchBody, Reqs> = FnCx::new(&m, function, results);
-        let patch = cx.mutate();
+        let cx: FnCx<'_, '_, '_, _, PatchBody, Reqs> = FnCx::new(m, function, results);
+        let mut patch = cx.mutate();
 
         // Before: nothing mutated, the report would be all-preserved.
         assert!(!patch.is_dirty());
@@ -3677,12 +3687,14 @@ mod tests {
     /// CFG-preserved floor sound. llvmkit-specific capability-context lock.
     #[test]
     fn terminator_does_not_narrow_to_non_terminator() -> Result<(), IrError> {
-        let m = crate::module_new!("patch-term")?;
+        let mut owned = crate::module_new!("patch-term")?;
+        let mut key = owned.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         b.ret(x)?;
 
@@ -3704,12 +3716,14 @@ mod tests {
     /// llvmkit-specific capability-context lock (no upstream analog).
     #[test]
     fn patchbody_analysis_available_during_mutation() -> Result<(), IrError> {
-        let m = crate::module_new!("patch-analysis")?;
+        let mut owned = crate::module_new!("patch-analysis")?;
+        let mut key = owned.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         b.ret(x)?;
 
@@ -3718,7 +3732,7 @@ mod tests {
         Reqs::prefetch(&mut fam, function)?;
         let results = Reqs::collect(&fam, function)?;
 
-        let cx: FnCx<'_, '_, '_, _, PatchBody, Reqs> = FnCx::new(&m, function, results);
+        let cx: FnCx<'_, '_, '_, _, PatchBody, Reqs> = FnCx::new(m, function, results);
         let patch = cx.mutate();
 
         // The prefetched dominator tree is still reachable mid-mutation.
@@ -3736,19 +3750,21 @@ mod tests {
     /// primitive (no upstream analog: LLVM's make_early_inc_range is untyped).
     #[test]
     fn body_instructions_early_inc_erase_of_yielded() -> Result<(), IrError> {
-        let m = crate::module_new!("body-cursor")?;
+        let mut owned = crate::module_new!("body-cursor")?;
+        let mut key = owned.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let _d1 = b.int_add(x, 1_i32, "d1")?;
         let _d2 = b.int_add(x, 2_i32, "d2")?;
         b.ret(x)?;
 
         let function = FunctionView::from(m.view(f));
-        let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
+        let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(m, function, ());
         let patch = cx.mutate();
 
         // Two non-terminators visited; the ret is never yielded. Erase each as
@@ -3777,12 +3793,14 @@ mod tests {
     /// analog).
     #[test]
     fn reshape_cfg_floor_is_none() -> Result<(), IrError> {
-        let m = crate::module_new!("reshape-cx")?;
+        let mut owned = crate::module_new!("reshape-cx")?;
+        let mut key = owned.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type_no_parameters(i32_ty)?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
         let dead =
             b.int_add::<i32, _, _, _>(i32_ty.const_int(1_u32), i32_ty.const_int(2_u32), "dead")?;
         b.ret(i32_ty.const_int(0_u32))?;
@@ -3792,7 +3810,7 @@ mod tests {
         Reqs::prefetch(&mut fam, function)?;
         let results = Reqs::collect(&fam, function)?;
 
-        let cx: FnCx<'_, '_, '_, _, ReshapeCfg, Reqs> = FnCx::new(&m, function, results);
+        let cx: FnCx<'_, '_, '_, _, ReshapeCfg, Reqs> = FnCx::new(m, function, results);
         let reshape = cx.mutate();
         // Erase the dead instruction so the dirty flag is set; only then
         // does `done()` report the ReshapeCfg floor.
@@ -3815,12 +3833,14 @@ mod tests {
     /// mutating rung's floor is *not* forced on a run that changed nothing.
     #[test]
     fn reshape_cfg_noop_preserves_everything() -> Result<(), IrError> {
-        let m = crate::module_new!("reshape-noop")?;
+        let mut owned = crate::module_new!("reshape-noop")?;
+        let mut key = owned.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type_no_parameters(i32_ty)?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
         b.ret(i32_ty.const_int(0_u32))?;
 
         let function = FunctionView::from(m.view(f));
@@ -3828,7 +3848,7 @@ mod tests {
         Reqs::prefetch(&mut fam, function)?;
         let results = Reqs::collect(&fam, function)?;
 
-        let cx: FnCx<'_, '_, '_, _, ReshapeCfg, Reqs> = FnCx::new(&m, function, results);
+        let cx: FnCx<'_, '_, '_, _, ReshapeCfg, Reqs> = FnCx::new(m, function, results);
         let report = cx.mutate().done();
         let pa = report.into_parts().0;
         assert!(pa.checker::<DominatorTreeAnalysis>().preserved());
@@ -3849,24 +3869,26 @@ mod tests {
     #[test]
     fn split_block_records_edge_decomposition() -> Result<(), IrError> {
         use crate::CfgUpdate;
-        let m = crate::module_new!("reshape-cfgupdate")?;
+        let mut owned = crate::module_new!("reshape-cfgupdate")?;
+        let mut key = owned.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type_no_parameters(i32_ty)?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let next = m.view(f).append_basic_block(&m, "next");
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let next = m.view(f).append_basic_block(m, "next");
         // Ids captured up front — the block handles are consumed by the
         // builders below.
         let entry_id = entry.id().as_dyn();
         let next_id = next.id().as_dyn();
 
         // entry: %x = add 1, 2 ; br label %next
-        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
         let _x =
             b.int_add::<i32, _, _, _>(i32_ty.const_int(1_u32), i32_ty.const_int(2_u32), "x")?;
         b.br(next.id())?;
         // next: ret 0
-        let b2 = IrBuilder::new_for::<Dyn>(&m).position_at_end(next);
+        let b2 = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(next);
         b2.ret(i32_ty.const_int(0_u32))?;
 
         let function = FunctionView::from(m.view(f));
@@ -3874,7 +3896,7 @@ mod tests {
         Reqs::prefetch(&mut fam, function)?;
         let results = Reqs::collect(&fam, function)?;
 
-        let cx: FnCx<'_, '_, '_, _, ReshapeCfg, Reqs> = FnCx::new(&m, function, results);
+        let cx: FnCx<'_, '_, '_, _, ReshapeCfg, Reqs> = FnCx::new(m, function, results);
         let reshape = cx.mutate();
 
         // Nothing recorded before any structural edit.
@@ -3913,20 +3935,22 @@ mod tests {
     /// witnessed-preservation plumbing (no upstream analog).
     #[test]
     fn analysis_repaired_reflects_the_edit() -> Result<(), IrError> {
-        let m = crate::module_new!("reshape-repaired")?;
+        let mut owned = crate::module_new!("reshape-repaired")?;
+        let mut key = owned.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type_no_parameters(i32_ty)?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let next = m.view(f).append_basic_block(&m, "next");
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let next = m.view(f).append_basic_block(m, "next");
         let next_label = next.id();
 
         // entry: %x = add 1, 2 ; br label %next    next: ret 0
-        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
         let _x =
             b.int_add::<i32, _, _, _>(i32_ty.const_int(1_u32), i32_ty.const_int(2_u32), "x")?;
         b.br(next.id())?;
-        let b2 = IrBuilder::new_for::<Dyn>(&m).position_at_end(next);
+        let b2 = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(next);
         b2.ret(i32_ty.const_int(0_u32))?;
 
         let function = FunctionView::from(m.view(f));
@@ -3941,7 +3965,7 @@ mod tests {
         );
 
         let results = Reqs::collect(&fam, function)?;
-        let cx: FnCx<'_, '_, '_, _, ReshapeCfg, Reqs> = FnCx::new(&m, function, results);
+        let cx: FnCx<'_, '_, '_, _, ReshapeCfg, Reqs> = FnCx::new(m, function, results);
         let mut reshape = cx.mutate();
 
         let entry_view = function
@@ -3969,12 +3993,14 @@ mod tests {
     /// untyped `Module&` + `MAM&`).
     #[test]
     fn inspect_modcx_reads_analysis_and_reports_all() -> Result<(), IrError> {
-        let m = crate::module_new!("inspect-modcx")?;
+        let mut owned = crate::module_new!("inspect-modcx")?;
+        let mut key = owned.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type_no_parameters(i32_ty)?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
         b.ret(i32_ty.const_int(1_u32))?;
 
         let module = m.as_view();
@@ -4010,12 +4036,14 @@ mod tests {
     /// (no upstream analog).
     #[test]
     fn rewrite_module_mutate_reports_none_floor() -> Result<(), IrError> {
-        let m = crate::module_new!("rewrite-modcx")?;
+        let mut owned = crate::module_new!("rewrite-modcx")?;
+        let mut key = owned.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type_no_parameters(i32_ty)?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
         b.ret(i32_ty.const_int(0_u32))?;
 
         let module = m.as_view();
@@ -4026,7 +4054,7 @@ mod tests {
         assert_eq!(module.globals().len(), 0);
 
         let cx: ModCx<'_, '_, '_, '_, _, RewriteModule, ()> =
-            ModCx::new(module, &m, (), &mam, &mut fam);
+            ModCx::new(module, m, (), &mam, &mut fam);
         let r = cx.mutate();
 
         // Reach the module's own `add_global` directly through the token.
@@ -4051,22 +4079,24 @@ mod tests {
     /// llvmkit-specific capability-context lock (no upstream analog).
     #[test]
     fn patch_functions_visits_defs_and_can_patch() -> Result<(), IrError> {
-        let m = crate::module_new!("foreach-modcx")?;
+        let mut owned = crate::module_new!("foreach-modcx")?;
+        let mut key = owned.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
 
         // Definition `f1` with a dead `add` we can erase.
         let f1 = m.add_function_dyn("f1", fn_ty, Linkage::External)?;
-        let e1 = m.view(f1).append_basic_block(&m, "entry");
-        let b1 = IrBuilder::new_for::<Dyn>(&m).position_at_end(e1);
+        let e1 = m.view(f1).append_basic_block(m, "entry");
+        let b1 = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(e1);
         let x1: IntValue<'_, i32, _> = m.view(f1).param(0)?.try_into()?;
         let dead1 = b1.int_add(x1, 1_i32, "dead")?;
         b1.ret(x1)?;
 
         // Definition `f2`, likewise.
         let f2 = m.add_function_dyn("f2", fn_ty, Linkage::External)?;
-        let e2 = m.view(f2).append_basic_block(&m, "entry");
-        let b2 = IrBuilder::new_for::<Dyn>(&m).position_at_end(e2);
+        let e2 = m.view(f2).append_basic_block(m, "entry");
+        let b2 = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(e2);
         let x2: IntValue<'_, i32, _> = m.view(f2).param(0)?.try_into()?;
         let dead2 = b2.int_add(x2, 1_i32, "dead")?;
         b2.ret(x2)?;
@@ -4091,7 +4121,7 @@ mod tests {
         let dead_by_fn = [(fv1, dead1_view), (fv2, dead2_view)];
 
         let cx: ModCx<'_, '_, '_, '_, _, RewriteModule, ()> =
-            ModCx::new(module, &m, (), &mam, &mut fam);
+            ModCx::new(module, m, (), &mam, &mut fam);
         let r = cx.mutate();
 
         let mut visited: Vec<FunctionView<'_, _>> = Vec::new();
@@ -4134,12 +4164,14 @@ mod tests {
     /// primitive (no upstream analog).
     #[test]
     fn worklist_operand_cascade_reaches_fixpoint() -> Result<(), IrError> {
-        let m = crate::module_new!("wl-cascade")?;
+        let mut owned = crate::module_new!("wl-cascade")?;
+        let mut key = owned.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         // a = x+1 (used by b), b = a+1 (used by c), c = b+1 (unused/dead).
         let a = b.int_add(x, 1_i32, "a")?;
@@ -4148,7 +4180,7 @@ mod tests {
         b.ret(x)?;
 
         let function = FunctionView::from(m.view(f));
-        let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
+        let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(m, function, ());
         let patch = cx.mutate();
 
         // Seed + drain once: only `c` is dead initially, but erasing it makes
@@ -4176,12 +4208,14 @@ mod tests {
     /// pass-authoring primitive (no upstream analog).
     #[test]
     fn erase_pushes_operands_onto_active_worklist() -> Result<(), IrError> {
-        let m = crate::module_new!("wl-erase-push")?;
+        let mut owned = crate::module_new!("wl-erase-push")?;
+        let mut key = owned.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         // a = x+1 ; b = a+1 (so b's operand `a` IS an instruction) ; ret x.
         let a = b.int_add(x, 1_i32, "a")?;
@@ -4191,7 +4225,7 @@ mod tests {
         let b_id = m.view(bb).slot_trusting_same_module();
 
         let function = FunctionView::from(m.view(f));
-        let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
+        let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(m, function, ());
         let patch = cx.mutate();
 
         // Seed [a, b]; drain the seed WITHOUT erasing, saving `b`'s handle.
@@ -4238,7 +4272,9 @@ mod tests {
     fn nested_worklist_scopes_panic() {
         // `#[should_panic]` forbids a `Result`-returning test body, so the
         // setup that used to ride the closure's `?` reports by `expect`.
-        let m = crate::module_new!("wl-nested").expect("fresh module");
+        let mut owned = crate::module_new!("wl-nested").expect("fresh module");
+        let mut key = owned.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m
             .function_type(i32_ty, [i32_ty.as_type()])
@@ -4246,8 +4282,8 @@ mod tests {
         let f = m
             .add_function_dyn("f", fn_ty, Linkage::External)
             .expect("function");
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m
             .view(f)
             .param(0)
@@ -4258,7 +4294,7 @@ mod tests {
         b.ret(x).expect("ret");
 
         let function = FunctionView::from(m.view(f));
-        let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
+        let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(m, function, ());
         let patch = cx.mutate();
 
         let _s1 = patch.worklist();
@@ -4296,15 +4332,17 @@ mod tests {
     /// Locks the `IntoIterator` sugar added for idiomatic optimizer loops.
     #[test]
     fn function_view_into_iter_yields_blocks_in_order() -> Result<(), IrError> {
-        let m = crate::module_new!("fv-into-iter")?;
+        let mut owned = crate::module_new!("fv-into-iter")?;
+        let mut key = owned.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type_no_parameters(i32_ty)?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let exit = m.view(f).append_basic_block(&m, "exit");
-        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let exit = m.view(f).append_basic_block(m, "exit");
+        let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
         b.br(&exit)?;
-        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(exit);
+        let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(exit);
         b.ret(i32_ty.const_int(0_u32))?;
 
         let function = FunctionView::from(m.view(f));
@@ -4328,12 +4366,14 @@ mod tests {
     /// a copy, and the original is read again afterwards).
     #[test]
     fn basic_block_view_into_iter_yields_instructions_in_order() -> Result<(), IrError> {
-        let m = crate::module_new!("bbv-into-iter")?;
+        let mut owned = crate::module_new!("bbv-into-iter")?;
+        let mut key = owned.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let sum = b.int_add(x, 1_i32, "sum")?;
         b.ret(sum)?;

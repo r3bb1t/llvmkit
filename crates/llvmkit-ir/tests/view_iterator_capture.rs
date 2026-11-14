@@ -39,24 +39,27 @@ use llvmkit_ir::{
 ///
 /// Returns the module plus the instruction names in program order — the phi
 /// is `join`'s block parameter, so it heads the second block.
-fn two_block_function<B: ModuleBrand>(m: &llvmkit_ir::Module<B>) -> Result<Vec<String>, IrError> {
+fn two_block_function<B: ModuleBrand>(
+    key: &mut llvmkit_ir::LayoutToken<'_, B>,
+) -> Result<Vec<String>, IrError> {
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
 
-    let scaffold = IrBuilder::new_for::<Dyn>(m);
+    let scaffold = IrBuilder::new_for::<Dyn>(key);
     let (join, params) =
         scaffold.append_block_with_params(m.view(f), &[i32_ty.as_type()], "join")?;
     let join_label = join.id();
 
-    let b = IrBuilder::with_folder(m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(key, NoFolder).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let sum = b.int_add::<i32, _, _, _>(a, a, "sum")?;
     let sum_erased = b.view(sum).as_erased();
     b.br_with_args(join_label, &[sum_erased])?;
 
-    let b = IrBuilder::with_folder(m, NoFolder).position_at_end(join);
+    let b = IrBuilder::with_folder(key, NoFolder).position_at_end(join);
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
     let doubled = b.int_add::<i32, _, _, _>(p, p, "doubled")?;
     let doubled_erased = b.view(doubled).as_erased();
@@ -75,8 +78,8 @@ fn two_block_function<B: ModuleBrand>(m: &llvmkit_ir::Module<B>) -> Result<Vec<S
 /// counterpart — see the module docs.
 #[test]
 fn instructions_flat_map_across_blocks_compiles_and_is_ordered() -> Result<(), IrError> {
-    let m = module_new!("view-iter-flatmap")?;
-    let expected_named = two_block_function(&m)?;
+    let mut m = module_new!("view-iter-flatmap")?;
+    let expected_named = two_block_function(&mut m.layout_token())?;
     let f = m.as_view().functions().next().expect("@f exists");
 
     // The composition under test. Binding it proves the iterator outlives the
@@ -127,8 +130,8 @@ fn instructions_flat_map_across_blocks_compiles_and_is_ordered() -> Result<(), I
 /// what makes this mint checkless.
 #[test]
 fn placed_instructions_flat_map_across_blocks_compiles_and_is_ordered() -> Result<(), IrError> {
-    let m = module_new!("view-iter-placed-flatmap")?;
-    let expected_named = two_block_function(&m)?;
+    let mut m = module_new!("view-iter-placed-flatmap")?;
+    let expected_named = two_block_function(&mut m.layout_token())?;
     let f = m.as_view().functions().next().expect("@f exists");
 
     // The composition the witness exists for. Binding it proves the iterator
@@ -179,8 +182,8 @@ fn placed_instructions_flat_map_across_blocks_compiles_and_is_ordered() -> Resul
 /// counterpart — see the module docs.
 #[test]
 fn instructions_iterator_outlives_its_block_view() -> Result<(), IrError> {
-    let m = module_new!("view-iter-outlives")?;
-    two_block_function(&m)?;
+    let mut m = module_new!("view-iter-outlives")?;
+    two_block_function(&mut m.layout_token())?;
     let f = m.as_view().functions().next().expect("@f exists");
 
     let iterator = {
@@ -198,8 +201,8 @@ fn instructions_iterator_outlives_its_block_view() -> Result<(), IrError> {
 /// No upstream counterpart — see the module docs.
 #[test]
 fn phi_incomings_iterator_outlives_its_phi_handle() -> Result<(), IrError> {
-    let m = module_new!("view-iter-phi")?;
-    two_block_function(&m)?;
+    let mut m = module_new!("view-iter-phi")?;
+    two_block_function(&mut m.layout_token())?;
     let f = m.as_view().functions().next().expect("@f exists");
     let join = f.basic_blocks().nth(1).expect("join block");
 

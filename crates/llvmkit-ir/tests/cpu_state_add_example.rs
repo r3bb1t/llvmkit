@@ -20,12 +20,12 @@ mod example;
 /// (trunc + add + ret IrBuilder patterns).
 #[test]
 fn cpu_state_add_matches_priorities_section_byte_for_byte() {
-    let m = module_new!("cpu_state_add").expect("fresh module");
+    let mut m = module_new!("cpu_state_add").expect("fresh module");
     // Reference `main` so the dead-code lint stays quiet without an
     // `#[allow]`. Function-pointer coercion is a real use that does not
     // run the function.
     let _: fn() = example::main;
-    example::build(&m).expect("build succeeds");
+    example::build(&mut m.layout_token()).expect("build succeeds");
     let actual = format!("{m}");
     let expected = "\
 ; ModuleID = 'cpu_state_add'

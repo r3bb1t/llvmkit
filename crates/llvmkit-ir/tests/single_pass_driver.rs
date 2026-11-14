@@ -62,15 +62,17 @@ impl<B: ModuleBrand> ModulePass<B> for CountFunctionsPass {
 /// must have genuinely executed.
 #[test]
 fn inspect_module_pass_stays_verified_and_runs() -> Result<(), IrError> {
-    let m = module_new!("inspect-module-pass")?;
+    let mut module = module_new!("inspect-module-pass")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     b.ret(i32_ty.const_int(1_u32))?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
 
     let ran = Rc::new(Cell::new(false));
@@ -119,15 +121,17 @@ impl<B: ModuleBrand> ModulePass<B> for AddGlobalPass {
 /// mutation must be observable on the returned module.
 #[test]
 fn rewrite_module_pass_downgrades_and_mutates() -> Result<(), IrError> {
-    let m = module_new!("rewrite-module-pass")?;
+    let mut module = module_new!("rewrite-module-pass")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     b.ret(i32_ty.const_int(0_u32))?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     assert_eq!(verified.globals().len(), 0);
 
     let mut analyses = Analyses::new();
@@ -186,15 +190,17 @@ impl<B: ModuleBrand> FunctionPass<B> for InspectFnPass {
 /// `scalar_cleanup_passes.rs`; this closes the `Inspect`-rung gap.)
 #[test]
 fn inspect_function_pass_stays_verified_and_runs() -> Result<(), IrError> {
-    let m = module_new!("inspect-function-pass")?;
+    let mut module = module_new!("inspect-function-pass")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     b.ret(i32_ty.const_int(1_u32))?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
 
     let ran = Rc::new(Cell::new(false));

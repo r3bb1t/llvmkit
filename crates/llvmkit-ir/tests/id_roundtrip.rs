@@ -224,7 +224,9 @@ fn view_panics_on_a_foreign_tag() {
 /// state-generic impl block).
 #[test]
 fn builder_view_agrees_with_module_view() -> Result<(), IrError> {
-    let m = module_new!("builder-view")?;
+    let mut module = module_new!("builder-view")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), ptr_ty.as_type()])?;
@@ -234,7 +236,7 @@ fn builder_view_agrees_with_module_view() -> Result<(), IrError> {
     let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(1)?.try_into()?;
     let v: Value<'_, _> = a.as_erased();
 
-    let b = IrBuilder::new(&m);
+    let b = IrBuilder::new(&mut key);
 
     assert_eq!(
         b.view(a.id()),
@@ -360,7 +362,9 @@ fn typed_ids_are_call_args() -> Result<(), IrError> {
 #[test]
 fn operand_lifts_reject_a_foreign_tag() -> Result<(), IrError> {
     let a = Module::dynamic("operand-a");
-    let b = Module::dynamic("operand-b");
+    let mut b_module = Module::dynamic("operand-b");
+    let mut b_key = b_module.layout_token();
+    let b = b_key.module();
 
     // An `i32` value that belongs to module A.
     let a_i32 = a.i32_type();
@@ -373,8 +377,8 @@ fn operand_lifts_reject_a_foreign_tag() -> Result<(), IrError> {
     let b_i32 = b.i32_type();
     let b_fn_ty = b.function_type(b_i32, [b_i32.as_type()])?;
     let b_f = b.add_function_dyn("f", b_fn_ty, Linkage::External)?;
-    let b_entry = b.view(b_f).append_basic_block(&b, "entry");
-    let builder = IrBuilder::new_for::<Dyn>(&b).position_at_end(b_entry);
+    let b_entry = b.view(b_f).append_basic_block(b, "entry");
+    let builder = IrBuilder::new_for::<Dyn>(&mut b_key).position_at_end(b_entry);
 
     let err = builder
         .int_add(foreign, 1_i32, "bad")
@@ -456,12 +460,14 @@ fn every_id_is_an_erased_operand() {
 /// handle spelling produces.
 #[test]
 fn ids_drive_erased_operand_slots_without_a_view() -> Result<(), IrError> {
-    let m = module_new!("id-erased-store")?;
+    let mut module = module_new!("id-erased-store")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("inc", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
 
     let v = b.int_load::<i32, _, _>(p, "v")?;

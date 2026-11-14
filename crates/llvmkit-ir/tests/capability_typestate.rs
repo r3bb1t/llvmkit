@@ -57,7 +57,9 @@ fn a_type_minted_through_a_module_view_is_read_only() {
 /// through the unverified module is `Mutable`. llvmkit-specific (D1, D8).
 #[test]
 fn a_verified_modules_values_are_read_only() {
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m");
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let f = m
         .add_function_dyn(
@@ -67,14 +69,14 @@ fn a_verified_modules_values_are_read_only() {
             Linkage::External,
         )
         .expect("f");
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let sum = b
         .int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "s")
         .expect("add");
     assert_eq!(capability(m.view(sum)), TypeId::of::<Mutable>());
     b.ret(m.view(sum)).expect("ret");
-    let m = m.verify().expect("verifies");
+    let m = module.verify().expect("verifies");
     let read = m.view(sum);
     assert_eq!(capability(read), TypeId::of::<ReadOnly>());
     assert_eq!(capability(read.ty()), TypeId::of::<ReadOnly>());
@@ -87,7 +89,9 @@ fn a_verified_modules_values_are_read_only() {
 /// before anything is built. llvmkit-specific (D1, D7).
 #[test]
 fn a_builder_admits_a_read_only_operand_and_refuses_a_foreign_one() {
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m");
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let f = m
         .add_function_dyn(
@@ -97,8 +101,8 @@ fn a_builder_admits_a_read_only_operand_and_refuses_a_foreign_one() {
             Linkage::External,
         )
         .expect("f");
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let read_only = m.as_view().i32_type().const_int(1_i32);
     assert_eq!(capability(read_only), TypeId::of::<ReadOnly>());
     let other = Module::dynamic("other");
@@ -129,7 +133,9 @@ fn a_builder_admits_a_read_only_operand_and_refuses_a_foreign_one() {
 /// module are `Mutable`. llvmkit-specific (D1, D8).
 #[test]
 fn a_verified_modules_globals_functions_and_comdats_are_read_only() {
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m");
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let comdat = m.get_or_insert_comdat("c");
     let g = m
@@ -160,8 +166,8 @@ fn a_verified_modules_globals_functions_and_comdats_are_read_only() {
             Linkage::Internal,
         )
         .expect("resolver");
-    let resolver_entry = m.view(resolver).append_basic_block(&m, "entry");
-    IrBuilder::with_folder(&m, NoFolder)
+    let resolver_entry = m.view(resolver).append_basic_block(m, "entry");
+    IrBuilder::with_folder(&mut key, NoFolder)
         .position_at_end(resolver_entry)
         .ret(m.ptr_type_in::<0>().const_null())
         .expect("ret");
@@ -199,7 +205,7 @@ fn a_verified_modules_globals_functions_and_comdats_are_read_only() {
     assert_eq!(capability(m.globals().next().expect("g")), mutable);
     assert_eq!(capability(m.comdat("c").expect("c")), mutable);
 
-    let m = m.verify().expect("verifies");
+    let m = module.verify().expect("verifies");
     let read_only = TypeId::of::<ReadOnly>();
     let global = m.view(g);
     assert_eq!(capability(global), read_only);
@@ -326,7 +332,9 @@ fn the_global_builders_admit_a_read_only_value_type_and_refuse_a_foreign_one() {
 /// before anything is built. llvmkit-specific (D1, D7).
 #[test]
 fn a_builder_admits_a_read_only_callee_and_refuses_a_foreign_one() {
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m");
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let callee = m
         .add_function_dyn(
@@ -344,8 +352,8 @@ fn a_builder_admits_a_read_only_callee_and_refuses_a_foreign_one() {
             Linkage::External,
         )
         .expect("f");
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let read_only = m.view(callee).read_only();
     assert_eq!(capability(read_only), TypeId::of::<ReadOnly>());
     let other = Module::dynamic("other");
@@ -519,7 +527,9 @@ fn block_view_routes<S: ModuleState>(m: &Module<DynBrand, S>) -> [(&'static str,
 /// llvmkit-specific (D1, D8).
 #[test]
 fn a_verified_modules_blocks_and_instructions_are_read_only() -> Result<(), IrError> {
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m");
+    let mut key = module.layout_token();
+    let m = key.module();
     let i1_ty = m.bool_type();
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
@@ -531,8 +541,8 @@ fn a_verified_modules_blocks_and_instructions_are_read_only() -> Result<(), IrEr
         m.function_type(m.void_type().as_type(), [ptr_ty.as_type()])?,
         Linkage::External,
     )?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let (join, params) = IrBuilder::new_for::<Dyn>(&m).append_block_with_params(
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let (join, params) = IrBuilder::new_for::<Dyn>(&mut key).append_block_with_params(
         m.view(f),
         &[
             i32_ty.as_type(),
@@ -543,7 +553,7 @@ fn a_verified_modules_blocks_and_instructions_are_read_only() -> Result<(), IrEr
         "join",
     )?;
     let block = join.id();
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let pointer: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let call = b.call_dyn(callee.as_function(), Vec::<Value<'_, _>>::new(), "c")?;
     let typed_call = b.call(callee, (), "t")?;
@@ -585,7 +595,7 @@ fn a_verified_modules_blocks_and_instructions_are_read_only() -> Result<(), IrEr
             vec_ty.as_type().poison().as_erased(),
         ],
     )?;
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(join)
         .ret_void()?;
     let phi = |index: usize| {
@@ -624,14 +634,14 @@ fn a_verified_modules_blocks_and_instructions_are_read_only() -> Result<(), IrEr
 
     // Positive control: through the unverified module every route but the
     // pass context's block view is `Mutable`.
-    for (route, seen) in instruction_routes(&m, &ids) {
+    for (route, seen) in instruction_routes(m, &ids) {
         assert_eq!(
             seen,
             TypeId::of::<Mutable>(),
             "{route} on an unverified module"
         );
     }
-    for (route, seen) in block_view_routes(&m) {
+    for (route, seen) in block_view_routes(m) {
         assert_eq!(
             seen,
             TypeId::of::<ReadOnly>(),
@@ -639,7 +649,7 @@ fn a_verified_modules_blocks_and_instructions_are_read_only() -> Result<(), IrEr
         );
     }
 
-    let m = m.verify()?;
+    let m = module.verify()?;
     for (route, seen) in instruction_routes(&m, &ids) {
         assert_eq!(
             seen,
@@ -668,7 +678,9 @@ fn a_verified_modules_blocks_and_instructions_are_read_only() -> Result<(), IrEr
 /// capability.
 #[test]
 fn read_only_predicates_take_each_operand_at_its_own_capability() -> Result<(), IrError> {
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m");
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
     let vec_ty = VectorType::of(i32_ty, lanes::<2>());
@@ -716,14 +728,14 @@ fn read_only_predicates_take_each_operand_at_its_own_capability() -> Result<(), 
         m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?,
         Linkage::External,
     )?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let lhs: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let sum = b.int_add_with_flags(lhs, rhs, AddFlags::new().nuw(), "sum")?;
     let quotient = b.int_udiv_with_flags(m.view(sum), rhs, UdivFlags::new().exact(), "q")?;
     b.ret(m.view(quotient))?;
-    let m = m.verify()?;
+    let m = module.verify()?;
 
     let Some(InstructionKind::Add(add)) =
         InstructionView::try_from(m.view(sum).as_erased())?.kind()
@@ -753,18 +765,20 @@ fn read_only_predicates_take_each_operand_at_its_own_capability() -> Result<(), 
 fn the_function_analyses_read_a_function_of_either_capability() -> Result<(), IrError> {
     use llvmkit_ir::{DominatorTree, FunctionCfg, IntPredicate};
 
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m");
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let f = m.add_function_dyn(
         "f",
         m.function_type(i32_ty, [i32_ty.as_type()])?,
         Linkage::External,
     )?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let then_block = m.view(f).append_basic_block(&m, "then");
-    let else_block = m.view(f).append_basic_block(&m, "else");
-    let join = m.view(f).append_basic_block(&m, "join");
-    let dead = m.view(f).append_basic_block(&m, "dead");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let then_block = m.view(f).append_basic_block(m, "then");
+    let else_block = m.view(f).append_basic_block(m, "else");
+    let join = m.view(f).append_basic_block(m, "join");
+    let dead = m.view(f).append_basic_block(m, "dead");
     let blocks = [
         entry.id(),
         then_block.id(),
@@ -773,17 +787,21 @@ fn the_function_analyses_read_a_function_of_either_capability() -> Result<(), Ir
         dead.id(),
     ];
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let cond = b.int_cmp(IntPredicate::Eq, x, 0_i32, "cond")?;
     b.cond_br(cond, blocks[1], blocks[2])?;
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(then_block)
         .br(blocks[3])?;
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(else_block)
         .br(blocks[3])?;
-    IrBuilder::new_for::<Dyn>(&m).position_at_end(join).ret(x)?;
-    IrBuilder::new_for::<Dyn>(&m).position_at_end(dead).ret(x)?;
+    IrBuilder::new_for::<Dyn>(&mut key)
+        .position_at_end(join)
+        .ret(x)?;
+    IrBuilder::new_for::<Dyn>(&mut key)
+        .position_at_end(dead)
+        .ret(x)?;
 
     let mutable_tree = DominatorTree::new(m.view(f));
     // A CFG snapshot borrows its module, so read the `Mutable` one out before
@@ -800,7 +818,7 @@ fn the_function_analyses_read_a_function_of_either_capability() -> Result<(), Ir
         )
     });
     drop(mutable_cfg);
-    let m = m.verify()?;
+    let m = module.verify()?;
     let function = m.view(f);
     assert_eq!(capability(function), TypeId::of::<ReadOnly>());
     let read_only_tree = DominatorTree::new(function);
@@ -887,7 +905,9 @@ fn an_inspect_pass_sees_only_read_only_instruction_views() {
         }
     }
 
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m");
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let f = m
         .add_function_dyn(
@@ -897,13 +917,13 @@ fn an_inspect_pass_sees_only_read_only_instruction_views() {
             Linkage::External,
         )
         .expect("f");
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let sum = b
         .int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "s")
         .expect("add");
     b.ret(m.view(sum)).expect("ret");
-    let verified = m.verify().expect("verifies");
+    let verified = module.verify().expect("verifies");
 
     let recorded = Rc::new(RefCell::new(Vec::new()));
     let mut analyses = Analyses::new();
@@ -969,15 +989,17 @@ fn the_value_tracking_analyses_read_values_of_either_capability() -> Result<(), 
         }
     }
 
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m");
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let f = m.add_function_dyn(
         "f",
         m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?,
         Linkage::External,
     )?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let y: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     // `%masked = and i32 %x, 255`: its top 24 bits are known zero.
@@ -1001,7 +1023,7 @@ fn the_value_tracking_analyses_read_values_of_either_capability() -> Result<(), 
     };
     assert_eq!(mutable_known.count_min_leading_zeros(), 24);
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     {
         let data_layout = verified.data_layout();
         let query: ValueTrackingQuery<'_, '_, DynBrand> = ValueTrackingQuery::new(&data_layout);
@@ -1044,11 +1066,13 @@ fn the_value_tracking_analyses_read_values_of_either_capability() -> Result<(), 
 fn typed_values_keep_the_capability_and_authoring_entries_take_either() -> Result<(), IrError> {
     use llvmkit_ir::SsaState;
 
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m");
+    let mut key = module.layout_token();
+    let m = key.module();
     let callee = m.add_typed_function::<i32, (i32, i32), _>("callee", Linkage::External)?;
     let caller = m.add_typed_function::<i32, (i32,), _>("caller", Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(entry);
     let (x,) = m.view(caller).params();
     assert_eq!(capability(x), TypeId::of::<Mutable>());
     let call = b.call(callee, (x, m.i32_type().const_int(1_i32)), "r")?;
@@ -1062,16 +1086,16 @@ fn typed_values_keep_the_capability_and_authoring_entries_take_either() -> Resul
     let g_read_only = m.view(g).as_function().read_only();
     // An empty slice names no capability, so it spells one.
     let no_parameters: &[llvmkit_ir::Type<'_, DynBrand, ReadOnly>] = &[];
-    let (body, _) = IrBuilder::new_for::<()>(&m).append_block_with_params(
+    let (body, _) = IrBuilder::new_for::<()>(&mut key).append_block_with_params(
         g_read_only,
         no_parameters,
         "body",
     )?;
     let address = m.block_address(g_read_only, &body)?;
-    IrBuilder::new_for::<()>(&m)
+    IrBuilder::new_for::<()>(&mut key)
         .position_at_end(body)
         .ret_void();
-    let _past_allocas = IrBuilder::new_for::<()>(&m).position_past_allocas(g_read_only)?;
+    let _past_allocas = IrBuilder::new_for::<()>(&mut key).position_past_allocas(g_read_only)?;
     assert!(
         address.to_string().contains("blockaddress(@g, %body)"),
         "{address}"
@@ -1084,33 +1108,36 @@ fn typed_values_keep_the_capability_and_authoring_entries_take_either() -> Resul
         "{equivalent}"
     );
     let k = m.add_typed_function::<(), (), _>("k", Linkage::External)?;
-    let (k_body, ()) = IrBuilder::new_for::<()>(&m)
+    let (k_body, ()) = IrBuilder::new_for::<()>(&mut key)
         .append_block_typed::<(), _, _>(m.view(k).as_function().read_only(), "body")?;
-    IrBuilder::new_for::<()>(&m)
+    IrBuilder::new_for::<()>(&mut key)
         .position_at_end(k_body)
         .ret_void();
     let h = m.add_typed_function::<(), (), _>("h", Linkage::External)?;
-    SsaState::for_function(&m, m.view(h).as_function().read_only())?;
+    SsaState::for_function(m, m.view(h).as_function().read_only())?;
 
     // Block parameter types of either capability: a view mints `ReadOnly`
     // ones, and a `ReshapeCfg` pass holds no module token to re-mint them. In
     // a module of its own, which is never verified — the blocks stay
     // unterminated.
-    let scratch = Module::dynamic("scratch");
+    let mut scratch_module = Module::dynamic("scratch");
+    let mut scratch_key = scratch_module.layout_token();
+    let scratch = scratch_key.module();
     let p = scratch.add_typed_function::<(), (), _>("p", Linkage::External)?;
     let read_only_i32 = scratch.as_view().i32_type();
     assert_eq!(capability(read_only_i32), TypeId::of::<ReadOnly>());
-    let (_, parameters) = IrBuilder::new_for::<()>(&scratch).append_block_with_params(
+    let (_, parameters) = IrBuilder::new_for::<()>(&mut scratch_key).append_block_with_params(
         scratch.view(p).as_function(),
         &[read_only_i32.as_type()],
         "join",
     )?;
     assert_eq!(parameters.len(), 1);
-    let (_, parameters) = IrBuilder::new_for::<()>(&scratch).append_block_with_named_params(
-        scratch.view(p).as_function(),
-        [(read_only_i32.as_type(), "x")],
-        "named",
-    )?;
+    let (_, parameters) = IrBuilder::new_for::<()>(&mut scratch_key)
+        .append_block_with_named_params(
+            scratch.view(p).as_function(),
+            [(read_only_i32.as_type(), "x")],
+            "named",
+        )?;
     assert_eq!(parameters.len(), 1);
     assert!(scratch.to_string().contains("%x = phi i32"), "{scratch}");
 
@@ -1118,14 +1145,14 @@ fn typed_values_keep_the_capability_and_authoring_entries_take_either() -> Resul
     // whatever its capability.
     let other = Module::dynamic("other");
     let foreign = other.add_typed_function::<(), (), _>("f", Linkage::External)?;
-    let refused = IrBuilder::new_for::<()>(&m)
+    let refused = IrBuilder::new_for::<()>(&mut key)
         .append_block_typed::<(), _, _>(other.view(foreign).as_function().read_only(), "x");
     assert!(
         matches!(refused, Err(IrError::ForeignValueId)),
         "{refused:?}"
     );
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let (x,) = verified.view(caller).params();
     assert_eq!(capability(x), TypeId::of::<ReadOnly>());
     assert_eq!(
@@ -1170,7 +1197,7 @@ fn a_patch_body_pass_builds_with_a_type_read_through_its_view() -> Result<(), Ir
             'ctx: 'm,
             Self: 'ctx,
         {
-            let patch = cx.mutate();
+            let mut patch = cx.mutate();
             // The body's blocks are `ReadOnly` too: the rung mutates through
             // `patch`, not through them.
             let body = patch.function_mut();
@@ -1187,7 +1214,9 @@ fn a_patch_body_pass_builds_with_a_type_read_through_its_view() -> Result<(), Ir
         }
     }
 
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m");
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let f = m.add_function_dyn(
         "f",
@@ -1195,18 +1224,18 @@ fn a_patch_body_pass_builds_with_a_type_read_through_its_view() -> Result<(), Ir
         Linkage::External,
     )?;
     let parameter: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let (_, ret) = IrBuilder::new_for::<Dyn>(&m)
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let (_, ret) = IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(entry)
         .ret(parameter)?;
-    let builder = IrBuilder::new_for::<Dyn>(&m).position_before(ret.placed())?;
+    let builder = IrBuilder::new_for::<Dyn>(&mut key).position_before(ret.placed())?;
     // A type of another module is refused before anything is built.
     let other = Module::dynamic("other");
     let refused = builder.trunc::<i32, i8, _, _>(parameter, other.as_view().i8_type(), "u");
     assert!(matches!(refused, Err(IrError::ForeignType)), "{refused:?}");
     let at = builder.save_insert_point();
     let parameter = parameter.id();
-    let verified = m.verify()?;
+    let verified = module.verify()?;
 
     let type_capability = Rc::new(RefCell::new(None));
     let block_capabilities = Rc::new(RefCell::new(Vec::new()));

@@ -45,18 +45,20 @@ impl UniqueBrand for Jit {}
 /// Takes the module **by value** and returns it by value: the whole batch is
 /// one ownership hop, with no borrow escaping.
 pub fn compile_batch<B: ModuleBrand>(
-    module: Module<B, Unverified>,
+    mut module: Module<B, Unverified>,
     n: i32,
 ) -> Result<Module<B, Verified>, IrError> {
-    let i32_ty = module.i32_type();
-    let fn_ty = module.function_type(i32_ty, [i32_ty.as_type()])?;
-    let f = module.add_function_dyn("batch", fn_ty, Linkage::External)?;
-    let entry = module.view(f).append_basic_block(&module, "entry");
+    let mut key = module.layout_token();
+    let m = key.module();
+    let i32_ty = m.i32_type();
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
+    let f = m.add_function_dyn("batch", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(m, "entry");
 
-    let b = IrBuilder::new_for::<llvmkit_ir::Dyn>(&module).position_at_end(entry);
-    let x: llvmkit_ir::IntValue<'_, i32, _> = module.view(f).param(0)?.try_into()?;
+    let b = IrBuilder::new_for::<llvmkit_ir::Dyn>(&mut key).position_at_end(entry);
+    let x: llvmkit_ir::IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let sum = b.int_add(x, n, "sum")?;
-    b.ret(module.view(sum))?;
+    b.ret(m.view(sum))?;
 
     module.verify()
 }

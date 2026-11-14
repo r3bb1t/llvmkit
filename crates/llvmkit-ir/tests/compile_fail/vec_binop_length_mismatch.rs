@@ -9,7 +9,7 @@
 use llvmkit_ir::{Dyn, IrBuilder, Len, Linkage, Module, VectorType, VectorValue, lanes};
 
 fn main() {
-    let m = Module::dynamic("vec-len-mismatch");
+    let mut module = Module::dynamic("vec-len-mismatch"); let mut key = module.layout_token(); let m = key.module();
     let i32_ty = m.i32_type();
     let v4 = VectorType::of(i32_ty, lanes::<4>());
     let v2 = VectorType::of(i32_ty, lanes::<2>());
@@ -17,7 +17,7 @@ fn main() {
     let fn_ty = m.function_type(void_ty.as_type(), [v4.as_type(), v2.as_type()]).expect("valid function type");
     let f = m.add_function_dyn("g", fn_ty, Linkage::External).unwrap();
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
 
     let a4: VectorValue<'_, i32, Len<4>, _> =
         m.view(f).param(0).unwrap().as_erased().try_into().unwrap();

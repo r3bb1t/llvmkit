@@ -24,7 +24,7 @@ use llvmkit_ir::{
     BasicBlock, CallInst, CallSiteConfig, CastOpcode, CastOperation, DominatorTreeAnalysis, Dyn,
     DynBrand, FastMathFlags, FloatDyn, FloatValue, FnCx, FnReport, FunctionId, FunctionPass,
     GepNoWrapFlags, InlineAsmOptions, InstructionView, IntDyn, IntValue, InvokeInst, IrBuilder,
-    IrError, IrResult, IrStruct, Linkage, Module, OperandBundleDef, OperandBundleTag,
+    IrError, IrResult, IrStruct, LayoutToken, Linkage, Module, OperandBundleDef, OperandBundleTag,
     OperandBundleUse, PatchBody, PointerValue, PositionedAtEnd, ReshapeCfg, SsaBuilder, SsaState,
     SyncScope, TailCallKind, TruncFlags, Type, UiToFpFlags, Unterminated, Value, ValueId,
     ZextFlags, comdat::SelectionKind, iter::BlockCursor, lanes, run_function_pass,
@@ -45,8 +45,8 @@ struct Nest {
 }
 
 /// A positioned erased-return builder over a `DynBrand` module.
-type PositionedBuilder<'m> =
-    IrBuilder<'m, 'm, DynBrand, llvmkit_ir::ConstantFolder, PositionedAtEnd, Dyn>;
+type PositionedBuilder<'k, 'm> =
+    IrBuilder<'k, 'm, DynBrand, llvmkit_ir::ConstantFolder, PositionedAtEnd, Dyn>;
 
 /// An unterminated block of an erased-return function in a `DynBrand` module.
 type OpenBlock<'m> = BasicBlock<'m, Dyn, Unterminated, DynBrand>;
@@ -62,21 +62,26 @@ fn open_block<'m>(module: &'m Module<DynBrand>, name: &str) -> OpenBlock<'m> {
     module.view(f).append_basic_block(module, "entry")
 }
 
-/// A builder positioned at the end of a fresh block of `module`.
-fn builder<'m>(module: &'m Module<DynBrand>, name: &str) -> PositionedBuilder<'m> {
-    IrBuilder::new_for::<Dyn>(module).position_at_end(open_block(module, name))
+/// A builder positioned at the end of a fresh block of `key`'s module.
+fn builder<'k, 'm>(
+    key: &'k mut LayoutToken<'m, DynBrand>,
+    name: &str,
+) -> PositionedBuilder<'k, 'm> {
+    let block = open_block(key.module(), name);
+    IrBuilder::new_for::<Dyn>(key).position_at_end(block)
 }
 
 /// A builder positioned in a fresh block of `i32 f(i32, i64, float, double,
-/// ptr)` in `module`, with those five parameters as erased values.
+/// ptr)` in `key`'s module, with those five parameters as erased values.
 ///
 /// No folder can fold a parameter, so an entry that fails to refuse a foreign
 /// type reaches its append and returns `Ok` — the refusal under test is the
 /// entry's own, never a fold's.
-fn builder_with_parameters<'m>(
-    module: &'m Module<DynBrand>,
+fn builder_with_parameters<'k, 'm>(
+    key: &'k mut LayoutToken<'m, DynBrand>,
     name: &str,
-) -> (PositionedBuilder<'m>, [Value<'m, DynBrand>; 5]) {
+) -> (PositionedBuilder<'k, 'm>, [Value<'m, DynBrand>; 5]) {
+    let module = key.module();
     let fn_ty = module
         .function_type(
             module.i32_type(),
@@ -103,17 +108,33 @@ fn builder_with_parameters<'m>(
     ];
     let block = function.append_basic_block(module, "entry");
     (
-        IrBuilder::new_for::<Dyn>(module).position_at_end(block),
+        IrBuilder::new_for::<Dyn>(key).position_at_end(block),
         parameters,
     )
 }
 
-/// A builder positioned in the entry block of a fresh `i32 f()` in `module`,
-/// plus two more empty blocks of that function for a terminator to target.
-fn builder_with_targets<'m>(
+/// A builder positioned in the entry block of a fresh `i32 f()` in `key`'s
+/// module, plus two more empty blocks of that function for a terminator to
+/// target.
+fn builder_with_targets<'k, 'm>(
+    key: &'k mut LayoutToken<'m, DynBrand>,
+    name: &str,
+) -> (PositionedBuilder<'k, 'm>, OpenBlock<'m>, OpenBlock<'m>) {
+    let (entry, first, second) = blocks_with_targets(key.module(), name);
+    (
+        IrBuilder::new_for::<Dyn>(key).position_at_end(entry),
+        first,
+        second,
+    )
+}
+
+/// The three empty blocks `builder_with_targets` makes, for a test that holds
+/// several of them at once and positions a builder at each entry only when it
+/// builds there: one builder holds the layout token at a time.
+fn blocks_with_targets<'m>(
     module: &'m Module<DynBrand>,
     name: &str,
-) -> (PositionedBuilder<'m>, OpenBlock<'m>, OpenBlock<'m>) {
+) -> (OpenBlock<'m>, OpenBlock<'m>, OpenBlock<'m>) {
     let fn_ty = module
         .function_type_no_parameters(module.i32_type())
         .expect("valid function type");
@@ -124,11 +145,15 @@ fn builder_with_targets<'m>(
     let entry = function.append_basic_block(module, "entry");
     let first = function.append_basic_block(module, "first");
     let second = function.append_basic_block(module, "second");
-    (
-        IrBuilder::new_for::<Dyn>(module).position_at_end(entry),
-        first,
-        second,
-    )
+    (entry, first, second)
+}
+
+/// A builder over `key` positioned at the end of `block`.
+fn at_end<'k, 'm>(
+    key: &'k mut LayoutToken<'m, DynBrand>,
+    block: OpenBlock<'m>,
+) -> PositionedBuilder<'k, 'm> {
+    IrBuilder::new_for::<Dyn>(key).position_at_end(block)
 }
 
 /// The labels of the outcomes that are not the refusal each expects, so one
@@ -173,10 +198,12 @@ fn not_refused(outcomes: Vec<(&'static str, Result<(), IrError>)>) -> Vec<String
 /// takes `Value *` operands.
 #[test]
 fn a_builder_rejects_a_value_view_from_another_module() {
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
     let foreign_constant = foreign.i32_type().const_int(7i32);
-    let b = builder(&home, "f");
+    let b = builder(&mut home_key, "f");
 
     let before = format!("{home}");
     let result = b.int_add(foreign_constant, home.i32_type().const_int(1i32), "sum");
@@ -198,10 +225,12 @@ fn a_builder_rejects_a_value_view_from_another_module() {
 /// takes a `Value *`.
 #[test]
 fn a_builder_rejects_an_erased_value_view_from_another_module() {
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
     let foreign_constant = foreign.i32_type().const_int(7i32);
-    let b = builder(&home, "f");
+    let b = builder(&mut home_key, "f");
 
     let before = format!("{home}");
     let result = b.freeze(foreign_constant, "frozen");
@@ -223,7 +252,9 @@ fn a_builder_rejects_an_erased_value_view_from_another_module() {
 /// operands.
 #[test]
 fn an_int_operand_rejects_an_int_value_from_another_module() {
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
     let foreign_value: IntValue<'_, i32, DynBrand> = foreign
         .i32_type()
@@ -231,7 +262,7 @@ fn an_int_operand_rejects_an_int_value_from_another_module() {
         .as_erased()
         .try_into()
         .expect("an i32 value");
-    let b = builder(&home, "f");
+    let b = builder(&mut home_key, "f");
 
     let before = format!("{home}");
     let result = b.int_add(foreign_value, 1i32, "sum");
@@ -250,14 +281,16 @@ fn an_int_operand_rejects_an_int_value_from_another_module() {
 /// takes `Value *` operands.
 #[test]
 fn a_float_operand_rejects_a_value_from_another_module() {
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
     let foreign_constant = foreign.f32_type().const_float(1.0);
     let foreign_value: FloatValue<'_, f32, DynBrand> = foreign_constant
         .as_erased()
         .try_into()
         .expect("an f32 value");
-    let b = builder(&home, "f");
+    let b = builder(&mut home_key, "f");
 
     let before = format!("{home}");
     let from_constant = b.fp_add(foreign_constant, 2.0f32, "sum");
@@ -284,14 +317,16 @@ fn a_float_operand_rejects_a_value_from_another_module() {
 /// takes a `Value *`.
 #[test]
 fn a_pointer_operand_rejects_a_value_from_another_module() {
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
     let foreign_null = foreign.ptr_type_in::<0>().const_null();
     let foreign_pointer: PointerValue<'_, llvmkit_ir::SpaceDyn, DynBrand> = foreign_null
         .as_erased()
         .try_into()
         .expect("a pointer value");
-    let b = builder(&home, "f");
+    let b = builder(&mut home_key, "f");
 
     let before = format!("{home}");
     let from_null = b.is_null(foreign_null, "isnull");
@@ -318,7 +353,9 @@ fn a_pointer_operand_rejects_a_value_from_another_module() {
 /// takes `Value *` arms.
 #[test]
 fn a_select_arm_rejects_a_value_from_another_module() {
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
     let int_arm: IntValue<'_, i32, DynBrand> = foreign
         .i32_type()
@@ -338,7 +375,7 @@ fn a_select_arm_rejects_a_value_from_another_module() {
         .as_erased()
         .try_into()
         .expect("a pointer value");
-    let b = builder(&home, "f");
+    let b = builder(&mut home_key, "f");
     let condition = home.bool_type().const_int(true);
 
     let before = format!("{home}");
@@ -368,7 +405,9 @@ fn a_select_arm_rejects_a_value_from_another_module() {
 /// is the nearest check, after the fact.
 #[test]
 fn a_callee_rejects_a_function_from_another_module() {
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
     let foreign_ty = foreign
         .function_type_no_parameters(foreign.i32_type())
@@ -376,7 +415,7 @@ fn a_callee_rejects_a_function_from_another_module() {
     let g = foreign
         .add_function_dyn("g", foreign_ty, Linkage::External)
         .expect("g");
-    let b = builder(&home, "f");
+    let b = builder(&mut home_key, "f");
 
     let before = format!("{home}");
     let result = b.call_dyn(foreign.view(g), Vec::<Value<'_, DynBrand>>::new(), "r");
@@ -394,12 +433,14 @@ fn a_callee_rejects_a_function_from_another_module() {
 /// `FunctionCallee`.
 #[test]
 fn a_typed_callee_rejects_a_function_from_another_module() {
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
     let g = foreign
         .add_typed_function::<i32, (), _>("g", Linkage::External)
         .expect("g");
-    let b = builder(&home, "f");
+    let b = builder(&mut home_key, "f");
 
     let before = format!("{home}");
     let result = b.call(foreign.view(g), (), "r");
@@ -419,26 +460,36 @@ fn a_typed_callee_rejects_a_function_from_another_module() {
 /// after the fact.
 #[test]
 fn a_branch_target_rejects_a_block_from_another_module() {
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
     let foreign_block = open_block(&foreign, "g");
 
-    let label_builder = builder(&home, "f1");
-    let borrowed_builder = builder(&home, "f2");
-    let owned_builder = builder(&home, "f3");
+    // All three blocks exist before the snapshot; a builder is positioned at
+    // each in turn, because one builder holds the layout token at a time.
+    let label_block = open_block(home, "f1");
+    let borrowed_block = open_block(home, "f2");
+    let owned_block = open_block(home, "f3");
     let before = format!("{home}");
 
-    let from_label = label_builder.br(foreign.view(foreign_block.id()));
+    let from_label = IrBuilder::new_for::<Dyn>(&mut home_key)
+        .position_at_end(label_block)
+        .br(foreign.view(foreign_block.id()));
     assert!(
         matches!(from_label, Err(IrError::ForeignValueId)),
         "{from_label:?}"
     );
-    let from_borrowed = borrowed_builder.br(&foreign_block);
+    let from_borrowed = IrBuilder::new_for::<Dyn>(&mut home_key)
+        .position_at_end(borrowed_block)
+        .br(&foreign_block);
     assert!(
         matches!(from_borrowed, Err(IrError::ForeignValueId)),
         "{from_borrowed:?}"
     );
-    let from_owned = owned_builder.br(foreign_block);
+    let from_owned = IrBuilder::new_for::<Dyn>(&mut home_key)
+        .position_at_end(owned_block)
+        .br(foreign_block);
     assert!(
         matches!(from_owned, Err(IrError::ForeignValueId)),
         "{from_owned:?}"
@@ -495,7 +546,9 @@ fn a_struct_schema_operand_rejects_a_value_from_another_module() {
         },
     };
     let _ = rust_nest.pair.first + rust_nest.pair.second;
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
     let g = foreign
         .add_typed_function::<i32, (Pair,), _>("g", Linkage::External)
@@ -510,20 +563,19 @@ fn a_struct_schema_operand_rejects_a_value_from_another_module() {
     let h = home
         .add_typed_function::<i32, (Pair,), _>("h", Linkage::External)
         .expect("h");
-    let b = builder(&home, "f");
-    // `%Pair name(%Pair)`, positioned at its entry, with its own parameter.
+    // One builder holds the layout token at a time, so each block is made
+    // here and a builder is positioned at it only when it is used.
+    let f_block = open_block(home, "f");
+    // `%Pair name(%Pair)`, with its entry block and its own parameter.
     let returning = |name: &str| {
         let k = home
             .add_typed_function::<Pair, (Pair,), _>(name, Linkage::External)
             .expect("returning function");
-        let entry = home.view(k).append_basic_block(&home, "entry");
+        let entry = home.view(k).append_basic_block(home, "entry");
         let (parameter,) = home.view(k).params();
-        (
-            IrBuilder::new_for::<Dyn>(&home).position_at_end(entry),
-            parameter,
-        )
+        (entry, parameter)
     };
-    let (refusing, _) = returning("k");
+    let (refusing_block, _) = returning("k");
     // The build's `StructOf` token interns `%Nest`, and llvmkit prints every
     // named struct in the module's type arena where upstream prints only the
     // ones a `TypeFinder` walk reaches (`docs/divergences.md`, entry 143).
@@ -533,6 +585,7 @@ fn a_struct_schema_operand_rejects_a_value_from_another_module() {
     let nest = home.get_or_insert_struct_of::<Nest>().expect("%Nest");
 
     let before = format!("{home}");
+    let b = IrBuilder::new_for::<Dyn>(&mut home_key).position_at_end(f_block);
     let field = b.extract_field::<Pair, i32, _, _>(foreign_pair, 0, "first");
     assert!(matches!(field, Err(IrError::ForeignValueId)), "{field:?}");
     let call = b.call(home.view(h), (foreign_pair,), "r");
@@ -541,6 +594,7 @@ fn a_struct_schema_operand_rejects_a_value_from_another_module() {
     assert!(matches!(nested, Err(IrError::ForeignValueId)), "{nested:?}");
     let call = b.call(home.view(h), (foreign_pair_value,), "r");
     assert!(matches!(call, Err(IrError::ForeignValueId)), "{call:?}");
+    let refusing = IrBuilder::new_for::<Dyn>(&mut home_key).position_at_end(refusing_block);
     let ret = refusing.ret(foreign_pair_value);
     assert!(matches!(ret, Err(IrError::ForeignValueId)), "{ret:?}");
     assert_eq!(
@@ -550,7 +604,8 @@ fn a_struct_schema_operand_rejects_a_value_from_another_module() {
     );
 
     // Positive control: the same two lifts accept a value of the home module.
-    let (accepting, home_pair_value) = returning("accepting");
+    let (accepting_block, home_pair_value) = returning("accepting");
+    let accepting = IrBuilder::new_for::<Dyn>(&mut home_key).position_at_end(accepting_block);
     let accepted = accepting.call(home.view(h), (home_pair_value,), "r");
     assert!(accepted.is_ok(), "{accepted:?}");
     let accepted = accepting.ret(home_pair_value);
@@ -1305,9 +1360,11 @@ fn target_ext_none_rejects_a_type_from_another_module() {
 /// `Type *` uniqued per `LLVMContext`.
 #[test]
 fn an_integer_cast_rejects_a_destination_type_from_another_module() {
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
-    let (b, [narrow, wide, ..]) = builder_with_parameters(&home, "f");
+    let (b, [narrow, wide, ..]) = builder_with_parameters(&mut home_key, "f");
     let narrow_typed: IntValue<'_, i32, DynBrand> = narrow.try_into().expect("an i32");
     let wide_typed: IntValue<'_, i64, DynBrand> = wide.try_into().expect("an i64");
     let narrow_dyn: IntValue<'_, IntDyn, DynBrand> = narrow.try_into().expect("an integer");
@@ -1418,9 +1475,11 @@ fn an_integer_cast_rejects_a_destination_type_from_another_module() {
 /// a destination `Type *` uniqued per `LLVMContext`.
 #[test]
 fn a_float_cast_rejects_a_destination_type_from_another_module() {
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
-    let (b, [narrow, _, single, double, _]) = builder_with_parameters(&home, "f");
+    let (b, [narrow, _, single, double, _]) = builder_with_parameters(&mut home_key, "f");
     let narrow_typed: IntValue<'_, i32, DynBrand> = narrow.try_into().expect("an i32");
     let narrow_dyn: IntValue<'_, IntDyn, DynBrand> = narrow.try_into().expect("an integer");
     let single_typed: FloatValue<'_, f32, DynBrand> = single.try_into().expect("a float");
@@ -1521,9 +1580,11 @@ fn a_float_cast_rejects_a_destination_type_from_another_module() {
 /// `LLVMContext`.
 #[test]
 fn a_pointer_cast_rejects_a_destination_type_from_another_module() {
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
-    let (b, [_, wide, _, _, pointer]) = builder_with_parameters(&home, "f");
+    let (b, [_, wide, _, _, pointer]) = builder_with_parameters(&mut home_key, "f");
     let wide_typed: IntValue<'_, i64, DynBrand> = wide.try_into().expect("an i64");
     let pointer_typed: PointerValue<'_, llvmkit_ir::SpaceDyn, DynBrand> =
         pointer.try_into().expect("a pointer");
@@ -1577,9 +1638,11 @@ fn a_pointer_cast_rejects_a_destination_type_from_another_module() {
 /// `CreateGEP` (`IR/IRBuilder.h`) take a `Type *` uniqued per `LLVMContext`.
 #[test]
 fn a_memory_entry_rejects_a_type_from_another_module() {
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
-    let (b, [_, wide, _, _, pointer]) = builder_with_parameters(&home, "f");
+    let (b, [_, wide, _, _, pointer]) = builder_with_parameters(&mut home_key, "f");
     let wide_dyn: IntValue<'_, IntDyn, DynBrand> = wide.try_into().expect("an integer");
     let pointer_typed: PointerValue<'_, llvmkit_ir::SpaceDyn, DynBrand> =
         pointer.try_into().expect("a pointer");
@@ -1671,9 +1734,11 @@ fn a_memory_entry_rejects_a_type_from_another_module() {
 /// `LLVMContext`.
 #[test]
 fn a_phi_pad_or_va_arg_rejects_a_type_from_another_module() {
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
-    let (b, [.., pointer]) = builder_with_parameters(&home, "f");
+    let (b, [.., pointer]) = builder_with_parameters(&mut home_key, "f");
     let pointer_typed: PointerValue<'_, llvmkit_ir::SpaceDyn, DynBrand> =
         pointer.try_into().expect("a pointer");
     let before = format!("{home}");
@@ -1727,7 +1792,9 @@ fn a_phi_pad_or_va_arg_rejects_a_type_from_another_module() {
 /// takes a `FunctionType *` uniqued per `LLVMContext` and a `Value *` callee.
 #[test]
 fn a_call_site_rejects_a_callee_or_function_type_from_another_module() {
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
     let home_fn_ty = home
         .function_type_no_parameters(home.i32_type())
@@ -1744,7 +1811,7 @@ fn a_call_site_rejects_a_callee_or_function_type_from_another_module() {
     let foreign_asm = foreign.inline_asm(foreign_fn_ty, "nop", "=r", InlineAsmOptions::new());
     let own_callee = home.view(h).as_erased();
     let no_args = Vec::<Value<'_, DynBrand>>::new;
-    let b = builder(&home, "f");
+    let b = builder(&mut home_key, "f");
     let before = format!("{home}");
 
     let outcomes = vec![
@@ -1837,7 +1904,9 @@ fn a_call_site_rejects_a_callee_or_function_type_from_another_module() {
 /// `Value *` callee.
 #[test]
 fn invoke_and_callbr_reject_a_callee_or_function_type_from_another_module() {
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
     let home_fn_ty = home
         .function_type_no_parameters(home.i32_type())
@@ -1859,141 +1928,161 @@ fn invoke_and_callbr_reject_a_callee_or_function_type_from_another_module() {
     let no_values: Vec<Value<'_, DynBrand>> = Vec::new();
     let no_args = Vec::<Value<'_, DynBrand>>::new;
     let no_indirects = Vec::<BasicBlock<'_, Dyn, Unterminated, DynBrand>>::new;
-    let (b1, n1, u1) = builder_with_targets(&home, "f1");
-    let (b2, n2, u2) = builder_with_targets(&home, "f2");
-    let (b3, n3, u3) = builder_with_targets(&home, "f3");
-    let (b4, n4, u4) = builder_with_targets(&home, "f4");
-    let (b5, n5, u5) = builder_with_targets(&home, "f5");
-    let (b6, n6, u6) = builder_with_targets(&home, "f6");
-    let (b7, n7, u7) = builder_with_targets(&home, "f7");
-    let (b8, d8, _) = builder_with_targets(&home, "f8");
-    let (b9, d9, _) = builder_with_targets(&home, "f9");
-    let (b10, d10, _) = builder_with_targets(&home, "f10");
-    let (b11, d11, _) = builder_with_targets(&home, "f11");
+    // Every function exists before the snapshot; each entry gets its builder
+    // only when it builds, because one builder holds the layout token at a
+    // time.
+    let (e1, n1, u1) = blocks_with_targets(home, "f1");
+    let (e2, n2, u2) = blocks_with_targets(home, "f2");
+    let (e3, n3, u3) = blocks_with_targets(home, "f3");
+    let (e4, n4, u4) = blocks_with_targets(home, "f4");
+    let (e5, n5, u5) = blocks_with_targets(home, "f5");
+    let (e6, n6, u6) = blocks_with_targets(home, "f6");
+    let (e7, n7, u7) = blocks_with_targets(home, "f7");
+    let (e8, d8, _) = blocks_with_targets(home, "f8");
+    let (e9, d9, _) = blocks_with_targets(home, "f9");
+    let (e10, d10, _) = blocks_with_targets(home, "f10");
+    let (e11, d11, _) = blocks_with_targets(home, "f11");
     let before = format!("{home}");
 
     let outcomes = vec![
         (
             "invoke_dyn_with_config callee",
             IrError::ForeignValueId,
-            b1.invoke_dyn_with_config(foreign.view(g), no_args(), n1, u1, CallSiteConfig::new("r"))
+            at_end(&mut home_key, e1)
+                .invoke_dyn_with_config(
+                    foreign.view(g),
+                    no_args(),
+                    n1,
+                    u1,
+                    CallSiteConfig::new("r"),
+                )
                 .map(|_| ()),
         ),
         (
             "invoke_dyn_with_args callee",
             IrError::ForeignValueId,
-            b2.invoke_dyn_with_args(
-                foreign.view(g),
-                no_args(),
-                (n2, no_values.as_slice()),
-                (u2, no_values.as_slice()),
-                "r",
-            )
-            .map(|_| ()),
+            at_end(&mut home_key, e2)
+                .invoke_dyn_with_args(
+                    foreign.view(g),
+                    no_args(),
+                    (n2, no_values.as_slice()),
+                    (u2, no_values.as_slice()),
+                    "r",
+                )
+                .map(|_| ()),
         ),
         (
             "CallSiteConfig::call_site_type on invoke_dyn_with_config",
             IrError::ForeignType,
-            b3.invoke_dyn_with_config(
-                home.view(h),
-                no_args(),
-                n3,
-                u3,
-                CallSiteConfig::new("r").call_site_type(foreign_fn_ty),
-            )
-            .map(|_| ()),
+            at_end(&mut home_key, e3)
+                .invoke_dyn_with_config(
+                    home.view(h),
+                    no_args(),
+                    n3,
+                    u3,
+                    CallSiteConfig::new("r").call_site_type(foreign_fn_ty),
+                )
+                .map(|_| ()),
         ),
         (
             "invoke_with_config callee",
             IrError::ForeignValueId,
-            b4.invoke_with_config(foreign.view(typed_g), (), n4, u4, CallSiteConfig::new("r"))
+            at_end(&mut home_key, e4)
+                .invoke_with_config(foreign.view(typed_g), (), n4, u4, CallSiteConfig::new("r"))
                 .map(|_| ()),
         ),
         (
             "invoke_with_args callee",
             IrError::ForeignValueId,
-            b5.invoke_with_args(
-                foreign.view(typed_g),
-                (),
-                (n5, no_values.as_slice()),
-                (u5, no_values.as_slice()),
-                "r",
-            )
-            .map(|_| ()),
+            at_end(&mut home_key, e5)
+                .invoke_with_args(
+                    foreign.view(typed_g),
+                    (),
+                    (n5, no_values.as_slice()),
+                    (u5, no_values.as_slice()),
+                    "r",
+                )
+                .map(|_| ()),
         ),
         (
             "indirect_invoke_dyn_with_config function type",
             IrError::ForeignType,
-            b6.indirect_invoke_dyn_with_config::<Dyn, _, _, _, _, _>(
-                home_null,
-                foreign_fn_ty,
-                no_args(),
-                n6,
-                u6,
-                CallSiteConfig::new("r"),
-            )
-            .map(|_| ()),
+            at_end(&mut home_key, e6)
+                .indirect_invoke_dyn_with_config::<Dyn, _, _, _, _, _>(
+                    home_null,
+                    foreign_fn_ty,
+                    no_args(),
+                    n6,
+                    u6,
+                    CallSiteConfig::new("r"),
+                )
+                .map(|_| ()),
         ),
         (
             "inline_asm_invoke_with_config callee",
             IrError::ForeignValueId,
-            b7.inline_asm_invoke_with_config::<Dyn, _, _, _, _>(
-                foreign_asm,
-                no_args(),
-                n7,
-                u7,
-                CallSiteConfig::new("r"),
-            )
-            .map(|_| ()),
+            at_end(&mut home_key, e7)
+                .inline_asm_invoke_with_config::<Dyn, _, _, _, _>(
+                    foreign_asm,
+                    no_args(),
+                    n7,
+                    u7,
+                    CallSiteConfig::new("r"),
+                )
+                .map(|_| ()),
         ),
         (
             "callbr_with_config callee",
             IrError::ForeignValueId,
-            b8.callbr_with_config(
-                foreign.view(g),
-                no_args(),
-                d8,
-                no_indirects(),
-                CallSiteConfig::new("r"),
-            )
-            .map(|_| ()),
+            at_end(&mut home_key, e8)
+                .callbr_with_config(
+                    foreign.view(g),
+                    no_args(),
+                    d8,
+                    no_indirects(),
+                    CallSiteConfig::new("r"),
+                )
+                .map(|_| ()),
         ),
         (
             "CallSiteConfig::call_site_type on callbr_with_config",
             IrError::ForeignType,
-            b9.callbr_with_config(
-                home.view(h),
-                no_args(),
-                d9,
-                no_indirects(),
-                CallSiteConfig::new("r").call_site_type(foreign_fn_ty),
-            )
-            .map(|_| ()),
+            at_end(&mut home_key, e9)
+                .callbr_with_config(
+                    home.view(h),
+                    no_args(),
+                    d9,
+                    no_indirects(),
+                    CallSiteConfig::new("r").call_site_type(foreign_fn_ty),
+                )
+                .map(|_| ()),
         ),
         (
             "indirect_callbr_with_config function type",
             IrError::ForeignType,
-            b10.indirect_callbr_with_config(
-                home_null,
-                foreign_fn_ty,
-                no_args(),
-                d10,
-                no_indirects(),
-                CallSiteConfig::new("r"),
-            )
-            .map(|_| ()),
+            at_end(&mut home_key, e10)
+                .indirect_callbr_with_config(
+                    home_null,
+                    foreign_fn_ty,
+                    no_args(),
+                    d10,
+                    no_indirects(),
+                    CallSiteConfig::new("r"),
+                )
+                .map(|_| ()),
         ),
         (
             "inline_asm_callbr_with_config callee",
             IrError::ForeignValueId,
-            b11.inline_asm_callbr_with_config::<Dyn, _, _, _, _, _>(
-                foreign_asm,
-                no_args(),
-                d11,
-                no_indirects(),
-                CallSiteConfig::new("r"),
-            )
-            .map(|_| ()),
+            at_end(&mut home_key, e11)
+                .inline_asm_callbr_with_config::<Dyn, _, _, _, _, _>(
+                    foreign_asm,
+                    no_args(),
+                    d11,
+                    no_indirects(),
+                    CallSiteConfig::new("r"),
+                )
+                .map(|_| ()),
         ),
     ];
     let let_through = not_refused_as_expected(outcomes);
@@ -2030,7 +2119,9 @@ fn deopt_inputs<'ctx>(
 /// holds `Value *`s, which carry no module to compare.
 #[test]
 fn an_operand_bundle_input_from_another_module_is_refused() {
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
     let home_fn_ty = home
         .function_type_no_parameters(home.i32_type())
@@ -2055,30 +2146,37 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
     let config = || CallSiteConfig::new("r").operand_bundles([mixed()]);
     let no_args = Vec::<Value<'_, DynBrand>>::new;
     let no_indirects = Vec::<BasicBlock<'_, Dyn, Unterminated, DynBrand>>::new;
-    let (b0, _, _) = builder_with_targets(&home, "f0");
-    let (b1, n1, u1) = builder_with_targets(&home, "f1");
-    let (b2, n2, u2) = builder_with_targets(&home, "f2");
-    let (b3, n3, u3) = builder_with_targets(&home, "f3");
-    let (b4, n4, u4) = builder_with_targets(&home, "f4");
-    let (b5, d5, _) = builder_with_targets(&home, "f5");
-    let (b6, d6, _) = builder_with_targets(&home, "f6");
-    let (b7, d7, _) = builder_with_targets(&home, "f7");
-    let (b9, _, _) = builder_with_targets(&home, "f9");
+    // Every function exists before the snapshot; each entry gets its builder
+    // only when it builds, because one builder holds the layout token at a
+    // time.
+    let (e0, _, _) = blocks_with_targets(home, "f0");
+    let (e1, n1, u1) = blocks_with_targets(home, "f1");
+    let (e2, n2, u2) = blocks_with_targets(home, "f2");
+    let (e3, n3, u3) = blocks_with_targets(home, "f3");
+    let (e4, n4, u4) = blocks_with_targets(home, "f4");
+    let (e5, d5, _) = blocks_with_targets(home, "f5");
+    let (e6, d6, _) = blocks_with_targets(home, "f6");
+    let (e7, d7, _) = blocks_with_targets(home, "f7");
+    let (e9, _, _) = blocks_with_targets(home, "f9");
     // The intrinsic is declared when its call builder is made, as
     // `Intrinsic::getOrInsertDeclaration` runs before `CreateCall`; made here,
     // before the snapshot, so the snapshot sees only what the refusal could
-    // change.
+    // change. The call builder borrows its `IrBuilder`, which may not outlive
+    // the others' turns, so the refusal below makes it again, finding the
+    // declaration this one made.
     let donothing = llvmkit_ir::IntrinsicDescriptor::new(
         llvmkit_ir::IntrinsicId::DONOTHING,
         Vec::<Type<'_, DynBrand>>::new(),
     )
     .expect("llvm.donothing takes no overload");
-    let intrinsic9 = b9
-        .intrinsic_call_builder(&donothing)
+    let b9 = at_end(&mut home_key, e9);
+    b9.intrinsic_call_builder(&donothing)
         .expect("llvm.donothing declares");
+    let e9 = b9.into_insert_block();
     let home_before = format!("{home}");
     let foreign_before = format!("{foreign}");
 
+    let b0 = at_end(&mut home_key, e0);
     let outcomes = vec![
         (
             "call_erased",
@@ -2118,40 +2216,56 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
         (
             "invoke_with_config",
             IrError::ForeignValueId,
-            without_value(b1.invoke_with_config(home.view(typed_h), (), n1, u1, config())),
+            without_value(at_end(&mut home_key, e1).invoke_with_config(
+                home.view(typed_h),
+                (),
+                n1,
+                u1,
+                config(),
+            )),
         ),
         (
             "invoke_dyn_with_config",
             IrError::ForeignValueId,
-            without_value(b2.invoke_dyn_with_config(home.view(h), no_args(), n2, u2, config())),
+            without_value(at_end(&mut home_key, e2).invoke_dyn_with_config(
+                home.view(h),
+                no_args(),
+                n2,
+                u2,
+                config(),
+            )),
         ),
         (
             "indirect_invoke_dyn_with_config",
             IrError::ForeignValueId,
-            without_value(b3.indirect_invoke_dyn_with_config::<Dyn, _, _, _, _, _>(
-                home_null,
-                home_fn_ty,
-                no_args(),
-                n3,
-                u3,
-                config(),
-            )),
+            without_value(
+                at_end(&mut home_key, e3).indirect_invoke_dyn_with_config::<Dyn, _, _, _, _, _>(
+                    home_null,
+                    home_fn_ty,
+                    no_args(),
+                    n3,
+                    u3,
+                    config(),
+                ),
+            ),
         ),
         (
             "inline_asm_invoke_with_config",
             IrError::ForeignValueId,
-            without_value(b4.inline_asm_invoke_with_config::<Dyn, _, _, _, _>(
-                home_asm,
-                no_args(),
-                n4,
-                u4,
-                config(),
-            )),
+            without_value(
+                at_end(&mut home_key, e4).inline_asm_invoke_with_config::<Dyn, _, _, _, _>(
+                    home_asm,
+                    no_args(),
+                    n4,
+                    u4,
+                    config(),
+                ),
+            ),
         ),
         (
             "callbr_with_config",
             IrError::ForeignValueId,
-            without_value(b5.callbr_with_config(
+            without_value(at_end(&mut home_key, e5).callbr_with_config(
                 home.view(h),
                 no_args(),
                 d5,
@@ -2162,7 +2276,7 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
         (
             "indirect_callbr_with_config",
             IrError::ForeignValueId,
-            without_value(b6.indirect_callbr_with_config(
+            without_value(at_end(&mut home_key, e6).indirect_callbr_with_config(
                 home_null,
                 home_fn_ty,
                 no_args(),
@@ -2174,18 +2288,26 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
         (
             "inline_asm_callbr_with_config",
             IrError::ForeignValueId,
-            without_value(b7.inline_asm_callbr_with_config::<Dyn, _, _, _, _, _>(
-                home_asm,
-                no_args(),
-                d7,
-                no_indirects(),
-                config(),
-            )),
+            without_value(
+                at_end(&mut home_key, e7).inline_asm_callbr_with_config::<Dyn, _, _, _, _, _>(
+                    home_asm,
+                    no_args(),
+                    d7,
+                    no_indirects(),
+                    config(),
+                ),
+            ),
         ),
         (
             "intrinsic_call_builder",
             IrError::ForeignValueId,
-            without_value(intrinsic9.operand_bundles([mixed()]).build()),
+            without_value(
+                at_end(&mut home_key, e9)
+                    .intrinsic_call_builder(&donothing)
+                    .expect("llvm.donothing is declared")
+                    .operand_bundles([mixed()])
+                    .build(),
+            ),
         ),
     ];
     let let_through = not_refused_as_expected(outcomes);
@@ -2203,7 +2325,7 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
 
     // Positive control: a bundle of home inputs is accepted, printed, and
     // read back with the same input.
-    let (b8, _, _) = builder_with_targets(&home, "f8");
+    let (b8, _, _) = builder_with_targets(&mut home_key, "f8");
     let seven = home.i32_type().const_int(7i32).as_erased();
     let call = b8
         .call_builder(home.view(h))
@@ -2235,7 +2357,7 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
     let home_config = |bundle| CallSiteConfig::new("r").operand_bundles([bundle]);
     let mut controls = Vec::new();
 
-    let (c1, _, _) = builder_with_targets(&home, "c1");
+    let (c1, _, _) = builder_with_targets(&mut home_key, "c1");
     let (input, bundle) = home_bundle(101);
     let id = c1
         .call_erased::<Dyn, _, _>(
@@ -2250,7 +2372,7 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
     let read = deopt_inputs(home.view(id).operand_bundle(&OperandBundleTag::Deopt));
     controls.push(("call_erased", 101, input, read));
 
-    let (c2, _, _) = builder_with_targets(&home, "c2");
+    let (c2, _, _) = builder_with_targets(&mut home_key, "c2");
     let (input, bundle) = home_bundle(102);
     let id = c2
         .call_with_config(home.view(typed_h), (), home_config(bundle))
@@ -2262,7 +2384,7 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
     );
     controls.push(("call_with_config", 102, input, read));
 
-    let (c4, _, _) = builder_with_targets(&home, "c4");
+    let (c4, _, _) = builder_with_targets(&mut home_key, "c4");
     let (input, bundle) = home_bundle(104);
     let id = c4
         .typed_call_builder(home.view(typed_h), ())
@@ -2276,7 +2398,7 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
     );
     controls.push(("typed_call_builder", 104, input, read));
 
-    let (c5, n5, u5) = builder_with_targets(&home, "c5");
+    let (c5, n5, u5) = builder_with_targets(&mut home_key, "c5");
     let (input, bundle) = home_bundle(105);
     let (_, invoke) = c5
         .invoke_with_config(home.view(typed_h), (), n5, u5, home_config(bundle))
@@ -2284,7 +2406,7 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
     let read = deopt_inputs(invoke.operand_bundle(&OperandBundleTag::Deopt));
     controls.push(("invoke_with_config", 105, input, read));
 
-    let (c6, n6, u6) = builder_with_targets(&home, "c6");
+    let (c6, n6, u6) = builder_with_targets(&mut home_key, "c6");
     let (input, bundle) = home_bundle(106);
     let (_, invoke) = c6
         .invoke_dyn_with_config(home.view(h), no_args(), n6, u6, home_config(bundle))
@@ -2292,7 +2414,7 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
     let read = deopt_inputs(invoke.operand_bundle(&OperandBundleTag::Deopt));
     controls.push(("invoke_dyn_with_config", 106, input, read));
 
-    let (c7, n7, u7) = builder_with_targets(&home, "c7");
+    let (c7, n7, u7) = builder_with_targets(&mut home_key, "c7");
     let (input, bundle) = home_bundle(107);
     let (_, invoke) = c7
         .indirect_invoke_dyn_with_config::<Dyn, _, _, _, _, _>(
@@ -2307,7 +2429,7 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
     let read = deopt_inputs(invoke.operand_bundle(&OperandBundleTag::Deopt));
     controls.push(("indirect_invoke_dyn_with_config", 107, input, read));
 
-    let (c8, n8, u8) = builder_with_targets(&home, "c8");
+    let (c8, n8, u8) = builder_with_targets(&mut home_key, "c8");
     let (input, bundle) = home_bundle(108);
     let (_, invoke) = c8
         .inline_asm_invoke_with_config::<Dyn, _, _, _, _>(
@@ -2321,7 +2443,7 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
     let read = deopt_inputs(invoke.operand_bundle(&OperandBundleTag::Deopt));
     controls.push(("inline_asm_invoke_with_config", 108, input, read));
 
-    let (c9, d9, _) = builder_with_targets(&home, "c9");
+    let (c9, d9, _) = builder_with_targets(&mut home_key, "c9");
     let (input, bundle) = home_bundle(109);
     let (_, callbr) = c9
         .callbr_with_config(
@@ -2335,7 +2457,7 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
     let read = deopt_inputs(callbr.operand_bundle(&OperandBundleTag::Deopt));
     controls.push(("callbr_with_config", 109, input, read));
 
-    let (c10, d10, _) = builder_with_targets(&home, "c10");
+    let (c10, d10, _) = builder_with_targets(&mut home_key, "c10");
     let (input, bundle) = home_bundle(110);
     let (_, callbr) = c10
         .indirect_callbr_with_config(
@@ -2350,7 +2472,7 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
     let read = deopt_inputs(callbr.operand_bundle(&OperandBundleTag::Deopt));
     controls.push(("indirect_callbr_with_config", 110, input, read));
 
-    let (c11, d11, _) = builder_with_targets(&home, "c11");
+    let (c11, d11, _) = builder_with_targets(&mut home_key, "c11");
     let (input, bundle) = home_bundle(111);
     let (_, callbr) = c11
         .inline_asm_callbr_with_config::<Dyn, _, _, _, _, _>(
@@ -2364,7 +2486,7 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
     let read = deopt_inputs(callbr.operand_bundle(&OperandBundleTag::Deopt));
     controls.push(("inline_asm_callbr_with_config", 111, input, read));
 
-    let (c12, _, _) = builder_with_targets(&home, "c12");
+    let (c12, _, _) = builder_with_targets(&mut home_key, "c12");
     let (input, bundle) = home_bundle(112);
     let id = c12
         .intrinsic_call_builder(&donothing)
@@ -2412,7 +2534,9 @@ fn an_operand_bundle_input_from_another_module_is_refused() {
 /// constructors take carry no module to compare.
 #[test]
 fn detached_call_sites_and_their_copies_refuse_another_modules_operands() {
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
     let home_fn_ty = home
         .function_type(home.i32_type().as_type(), [home.i32_type().as_type()])
@@ -2445,21 +2569,21 @@ fn detached_call_sites_and_their_copies_refuse_another_modules_operands() {
             [home.i32_type().const_int(2i32).as_erased()],
         )
     };
-    let normal = BasicBlock::create_orphan(&home, "normal");
-    let unwind = BasicBlock::create_orphan(&home, "unwind");
+    let normal = BasicBlock::create_orphan(home, "normal");
+    let unwind = BasicBlock::create_orphan(home, "unwind");
     let elsewhere = BasicBlock::create_orphan(&foreign, "elsewhere");
 
     // An attached call, invoke and callbr of home operands, to copy.
-    let (b, _, _) = builder_with_targets(&home, "c");
+    let (b, _, _) = builder_with_targets(&mut home_key, "c");
     let call = home.view(
         b.call_dyn::<Dyn, _, _, _, _>(home.view(h), [home_arg], "c")
             .expect("call"),
     );
-    let (b, first, second) = builder_with_targets(&home, "i");
+    let (b, first, second) = builder_with_targets(&mut home_key, "i");
     let (_, invoke) = b
         .invoke_dyn::<Dyn, _, _, _, _, _, _>(home.view(h), [home_arg], &first, &second, "i")
         .expect("invoke");
-    let (b, first, second) = builder_with_targets(&home, "cb");
+    let (b, first, second) = builder_with_targets(&mut home_key, "cb");
     let (_, call_br) = b
         .callbr::<Dyn, _, _, _, _, _, _, _>(home.view(h), [home_arg], &first, [&second], "cb")
         .expect("callbr");
@@ -2471,7 +2595,7 @@ fn detached_call_sites_and_their_copies_refuse_another_modules_operands() {
             "CallInst::create_detached function type",
             IrError::ForeignType,
             without_value(CallInst::<Dyn, _>::create_detached(
-                &home,
+                home,
                 foreign_fn_ty,
                 callee,
                 [home_arg],
@@ -2482,7 +2606,7 @@ fn detached_call_sites_and_their_copies_refuse_another_modules_operands() {
             "CallInst::create_detached callee",
             IrError::ForeignValueId,
             without_value(CallInst::<Dyn, _>::create_detached(
-                &home,
+                home,
                 home_fn_ty,
                 foreign_callee,
                 [home_arg],
@@ -2493,7 +2617,7 @@ fn detached_call_sites_and_their_copies_refuse_another_modules_operands() {
             "CallInst::create_detached argument",
             IrError::ForeignValueId,
             without_value(CallInst::<Dyn, _>::create_detached(
-                &home,
+                home,
                 home_fn_ty,
                 callee,
                 [foreign_arg],
@@ -2504,7 +2628,7 @@ fn detached_call_sites_and_their_copies_refuse_another_modules_operands() {
             "CallInst::create_detached bundle input",
             IrError::ForeignValueId,
             without_value(CallInst::<Dyn, _>::create_detached(
-                &home,
+                home,
                 home_fn_ty,
                 callee,
                 [home_arg],
@@ -2515,7 +2639,7 @@ fn detached_call_sites_and_their_copies_refuse_another_modules_operands() {
             "InvokeInst::create_detached normal destination",
             IrError::ForeignValueId,
             without_value(InvokeInst::<Dyn, _>::create_detached(
-                &home,
+                home,
                 home_fn_ty,
                 callee,
                 &elsewhere,
@@ -2528,7 +2652,7 @@ fn detached_call_sites_and_their_copies_refuse_another_modules_operands() {
             "InvokeInst::create_detached unwind destination",
             IrError::ForeignValueId,
             without_value(InvokeInst::<Dyn, _>::create_detached(
-                &home,
+                home,
                 home_fn_ty,
                 callee,
                 &normal,
@@ -2541,7 +2665,7 @@ fn detached_call_sites_and_their_copies_refuse_another_modules_operands() {
             "InvokeInst::create_detached bundle input",
             IrError::ForeignValueId,
             without_value(InvokeInst::<Dyn, _>::create_detached(
-                &home,
+                home,
                 home_fn_ty,
                 callee,
                 &normal,
@@ -2553,17 +2677,17 @@ fn detached_call_sites_and_their_copies_refuse_another_modules_operands() {
         (
             "CallInst::with_operand_bundles",
             IrError::ForeignValueId,
-            without_value(call.with_operand_bundles(&home, [mixed()])),
+            without_value(call.with_operand_bundles(home, [mixed()])),
         ),
         (
             "InvokeInst::with_operand_bundles",
             IrError::ForeignValueId,
-            without_value(invoke.with_operand_bundles(&home, [mixed()])),
+            without_value(invoke.with_operand_bundles(home, [mixed()])),
         ),
         (
             "CallBrInst::with_operand_bundles",
             IrError::ForeignValueId,
-            without_value(call_br.with_operand_bundles(&home, [mixed()])),
+            without_value(call_br.with_operand_bundles(home, [mixed()])),
         ),
     ];
     let let_through = not_refused_as_expected(outcomes);
@@ -2578,7 +2702,7 @@ fn detached_call_sites_and_their_copies_refuse_another_modules_operands() {
     // Positive controls: each construction with home operands creates one
     // detached call site naming the callee, and dropping it releases the use.
     let (created, _) = CallInst::<Dyn, _>::create_detached(
-        &home,
+        home,
         home_fn_ty,
         callee,
         [home_arg],
@@ -2586,11 +2710,11 @@ fn detached_call_sites_and_their_copies_refuse_another_modules_operands() {
     )
     .expect("a detached call of home operands");
     assert_eq!(callee.num_uses(), uses_before + 1);
-    created.drop_detached(&home);
+    created.drop_detached(home);
     assert_eq!(callee.num_uses(), uses_before);
 
     let (created, _) = InvokeInst::<Dyn, _>::create_detached(
-        &home,
+        home,
         home_fn_ty,
         callee,
         &normal,
@@ -2600,31 +2724,31 @@ fn detached_call_sites_and_their_copies_refuse_another_modules_operands() {
     )
     .expect("a detached invoke of home operands");
     assert_eq!(callee.num_uses(), uses_before + 1);
-    created.drop_detached(&home);
+    created.drop_detached(home);
     assert_eq!(callee.num_uses(), uses_before);
 
     for (label, copy) in [
         (
             "call",
             without_value(
-                call.with_operand_bundles(&home, [home_bundle()])
-                    .map(|(copy, _)| copy.drop_detached(&home)),
+                call.with_operand_bundles(home, [home_bundle()])
+                    .map(|(copy, _)| copy.drop_detached(home)),
             ),
         ),
         (
             "invoke",
             without_value(
                 invoke
-                    .with_operand_bundles(&home, [home_bundle()])
-                    .map(|(copy, _)| copy.drop_detached(&home)),
+                    .with_operand_bundles(home, [home_bundle()])
+                    .map(|(copy, _)| copy.drop_detached(home)),
             ),
         ),
         (
             "callbr",
             without_value(
                 call_br
-                    .with_operand_bundles(&home, [home_bundle()])
-                    .map(|(copy, _)| copy.drop_detached(&home)),
+                    .with_operand_bundles(home, [home_bundle()])
+                    .map(|(copy, _)| copy.drop_detached(home)),
             ),
         ),
     ] {
@@ -2642,10 +2766,14 @@ fn detached_call_sites_and_their_copies_refuse_another_modules_operands() {
 /// (`IR/IRBuilder.h`) takes a `Value *`, whose identity is its address.
 #[test]
 fn position_before_rejects_an_anchor_from_another_module() {
-    let home = Module::dynamic("home");
-    let foreign = Module::dynamic("foreign");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
+    let mut foreign_module = Module::dynamic("foreign");
+    let mut foreign_key = foreign_module.layout_token();
+    let foreign = foreign_key.module();
     // Parameters, so no folder turns either anchor into a constant.
-    let (home_builder, home_parameters) = builder_with_parameters(&home, "f");
+    let (home_builder, home_parameters) = builder_with_parameters(&mut home_key, "f");
     let home_anchor = home_builder
         .int_binop_erased(
             BinaryOpcode::Add,
@@ -2655,7 +2783,7 @@ fn position_before_rejects_an_anchor_from_another_module() {
             "home.anchor",
         )
         .expect("home anchor");
-    let (foreign_builder, foreign_parameters) = builder_with_parameters(&foreign, "g");
+    let (foreign_builder, foreign_parameters) = builder_with_parameters(&mut foreign_key, "g");
     let foreign_anchor = foreign_builder
         .int_binop_erased(
             BinaryOpcode::Add,
@@ -2676,7 +2804,7 @@ fn position_before_rejects_an_anchor_from_another_module() {
         .expect("the home add is in a block");
 
     let home_before = format!("{home}");
-    let refused = IrBuilder::new_for::<Dyn>(&home).position_before(foreign_placed);
+    let refused = IrBuilder::new_for::<Dyn>(&mut home_key).position_before(foreign_placed);
     assert!(
         matches!(refused, Err(IrError::ForeignValueId)),
         "{refused:?}"
@@ -2687,7 +2815,7 @@ fn position_before_rejects_an_anchor_from_another_module() {
         "a rejected positioning must not mutate"
     );
 
-    let positioned = IrBuilder::new_for::<Dyn>(&home)
+    let positioned = IrBuilder::new_for::<Dyn>(&mut home_key)
         .position_before(home_placed)
         .expect("a home anchor positions the builder");
     positioned
@@ -2710,15 +2838,18 @@ fn position_before_rejects_an_anchor_from_another_module() {
 /// address.
 #[test]
 fn restore_insert_point_rejects_an_insert_point_from_another_module() {
-    let home = Module::dynamic("home");
-    let foreign = Module::dynamic("foreign");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
+    let mut foreign_module = Module::dynamic("foreign");
+    let mut foreign_key = foreign_module.layout_token();
     // A block of `home` too, so a slot the foreign snapshot names can resolve
     // to something here if the tag goes unchecked.
-    let _home_builder = builder(&home, "f");
-    let saved = builder(&foreign, "g").save_insert_point();
+    let _home_builder = builder(&mut home_key, "f");
+    let saved = builder(&mut foreign_key, "g").save_insert_point();
 
     let before = format!("{home}");
-    let restored = IrBuilder::new_for::<Dyn>(&home).restore_insert_point(saved);
+    let restored = IrBuilder::new_for::<Dyn>(&mut home_key).restore_insert_point(saved);
     assert!(
         matches!(restored, Err(IrError::ForeignValueId)),
         "{restored:?}"
@@ -2741,7 +2872,9 @@ fn restore_insert_point_rejects_an_insert_point_from_another_module() {
 /// `BasicBlock *`.
 #[test]
 fn a_block_argument_edge_rejects_a_value_or_predecessor_from_another_module() {
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
     let fn_ty = home
         .function_type_no_parameters(home.i32_type())
@@ -2749,8 +2882,8 @@ fn a_block_argument_edge_rejects_a_value_or_predecessor_from_another_module() {
     let f = home
         .add_function_dyn("f", fn_ty, Linkage::External)
         .expect("f");
-    let entry = home.view(f).append_basic_block(&home, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&home).position_at_end(entry);
+    let entry = home.view(f).append_basic_block(home, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut home_key).position_at_end(entry);
     let i32_ty = home.i32_type().as_type();
     let (target, _) = b
         .append_block_with_params(home.view(f), &[i32_ty, i32_ty], "target")
@@ -2759,8 +2892,10 @@ fn a_block_argument_edge_rejects_a_value_or_predecessor_from_another_module() {
     let home_one = home.i32_type().const_int(1i32).as_erased();
     let home_two = home.i32_type().const_int(2i32).as_erased();
     let foreign_two = foreign.i32_type().const_int(2i32).as_erased();
-    let positioned_elsewhere =
-        IrBuilder::new_for::<Dyn>(&home).position_at_end(open_block(&foreign, "g"));
+    // The other module's block is made before the snapshot; the builder over
+    // this module's token is positioned there only once `b` is done, because
+    // one builder holds the layout token at a time.
+    let elsewhere = open_block(&foreign, "g");
     let before = format!("{home}");
 
     let outcomes = vec![
@@ -2772,7 +2907,8 @@ fn a_block_argument_edge_rejects_a_value_or_predecessor_from_another_module() {
         (
             "predecessor",
             IrError::ForeignValueId,
-            positioned_elsewhere
+            IrBuilder::new_for::<Dyn>(&mut home_key)
+                .position_at_end(elsewhere)
                 .br_with_args(target, &[home_one, home_two])
                 .map(|_| ()),
         ),
@@ -2796,7 +2932,9 @@ fn a_block_argument_edge_rejects_a_value_or_predecessor_from_another_module() {
 /// `PHINode::Create` a `Type *` uniqued per `LLVMContext`.
 #[test]
 fn append_block_with_params_rejects_a_function_or_type_from_another_module() {
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
     let home_fn_ty = home
         .function_type_no_parameters(home.i32_type())
@@ -2812,7 +2950,7 @@ fn append_block_with_params_rejects_a_function_or_type_from_another_module() {
         .expect("g");
     let home_i32 = home.i32_type().as_type();
     let foreign_i32 = foreign.i32_type().as_type();
-    let b = IrBuilder::new_for::<Dyn>(&home);
+    let b = IrBuilder::new_for::<Dyn>(&mut home_key);
     let before = format!("{home}");
     let foreign_before = format!("{foreign}");
 
@@ -2874,8 +3012,12 @@ fn append_block_with_params_rejects_a_function_or_type_from_another_module() {
 /// `SSAUpdater` (`Transforms/Utils/SSAUpdater.cpp`), works on `Value *`s.
 #[test]
 fn ssa_construction_rejects_a_function_or_state_from_another_module() {
-    let home = Module::dynamic("home");
-    let foreign = Module::dynamic("foreign");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
+    let mut foreign_module = Module::dynamic("foreign");
+    let mut foreign_key = foreign_module.layout_token();
+    let foreign = foreign_key.module();
     // Declared in the same order in both modules, so `f` and `g` share a slot:
     // only the module tag tells the two states apart.
     let f = home
@@ -2886,31 +3028,31 @@ fn ssa_construction_rejects_a_function_or_state_from_another_module() {
         .add_typed_function::<(), (), _>("g", Linkage::External)
         .expect("g")
         .as_function();
-    let mut home_state = SsaState::for_function(&home, home.view(f)).expect("home state");
+    let mut home_state = SsaState::for_function(home, home.view(f)).expect("home state");
     let mut foreign_state =
-        SsaState::for_function(&foreign, foreign.view(g)).expect("foreign state");
+        SsaState::for_function(foreign, foreign.view(g)).expect("foreign state");
     let before = format!("{home}");
 
     let outcomes = vec![
         (
             "SsaState::for_function",
             IrError::ForeignValueId,
-            SsaState::for_function(&home, foreign.view(g)).map(|_| ()),
+            SsaState::for_function(home, foreign.view(g)).map(|_| ()),
         ),
         (
             "SsaBuilder::for_function function",
             IrError::ForeignValueId,
-            SsaBuilder::for_function(&home, foreign.view(g), &mut home_state).map(|_| ()),
+            SsaBuilder::for_function(&mut home_key, foreign.view(g), &mut home_state).map(|_| ()),
         ),
         (
             "SsaBuilder::for_function module",
             IrError::ForeignValueId,
-            SsaBuilder::for_function(&foreign, home.view(f), &mut home_state).map(|_| ()),
+            SsaBuilder::for_function(&mut foreign_key, home.view(f), &mut home_state).map(|_| ()),
         ),
         (
             "state from another module",
             IrError::SsaForeignFunction,
-            SsaBuilder::for_function(&home, home.view(f), &mut foreign_state).map(|_| ()),
+            SsaBuilder::for_function(&mut home_key, home.view(f), &mut foreign_state).map(|_| ()),
         ),
     ];
     let let_through = not_refused_as_expected(outcomes);
@@ -2934,8 +3076,12 @@ fn ssa_construction_rejects_a_function_or_state_from_another_module() {
 /// `SSAUpdater` (`Transforms/Utils/SSAUpdater.cpp`), works on `Value *`s.
 #[test]
 fn an_ssa_session_rejects_a_block_or_variable_from_another_module() {
-    let home = Module::dynamic("home");
-    let foreign = Module::dynamic("foreign");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
+    let mut foreign_module = Module::dynamic("foreign");
+    let mut foreign_key = foreign_module.layout_token();
+    let foreign = foreign_key.module();
     let declare = |module: &Module<DynBrand>| {
         let fn_ty = module
             .function_type(
@@ -2947,14 +3093,15 @@ fn an_ssa_session_rejects_a_block_or_variable_from_another_module() {
             .add_function_dyn("f", fn_ty, Linkage::External)
             .expect("function")
     };
-    let f = declare(&home);
-    let g = declare(&foreign);
-    let mut home_state = SsaState::for_function(&home, home.view(f)).expect("home state");
+    let f = declare(home);
+    let g = declare(foreign);
+    let mut home_state = SsaState::for_function(home, home.view(f)).expect("home state");
     let mut foreign_state =
-        SsaState::for_function(&foreign, foreign.view(g)).expect("foreign state");
+        SsaState::for_function(foreign, foreign.view(g)).expect("foreign state");
     let (foreign_block, foreign_variable) = {
-        let mut session = SsaBuilder::for_function(&foreign, foreign.view(g), &mut foreign_state)
-            .expect("foreign session");
+        let mut session =
+            SsaBuilder::for_function(&mut foreign_key, foreign.view(g), &mut foreign_state)
+                .expect("foreign session");
         let _entry = session.create_block("entry");
         (
             session.create_block("target"),
@@ -2962,8 +3109,8 @@ fn an_ssa_session_rejects_a_block_or_variable_from_another_module() {
         )
     };
 
-    let mut session =
-        SsaBuilder::for_function(&home, home.view(f), &mut home_state).expect("home session");
+    let mut session = SsaBuilder::for_function(&mut home_key, home.view(f), &mut home_state)
+        .expect("home session");
     let entry = session.create_block("entry");
     let target = session.create_block("target");
     session.switch_to_block(entry).expect("positioned");
@@ -3049,14 +3196,15 @@ fn an_ssa_session_rejects_a_block_or_variable_from_another_module() {
         .expect("the session's own block is accepted");
 }
 
-/// `i32 name(i32 %a) { %x = add i32 %a, 1; ret i32 %x }` in `module`: a body
-/// whose first instruction a pass or a split can name. Built identically in
-/// two modules, the two `add`s sit at the same slot. Returns the function and
-/// a storable id of its parameter.
+/// `i32 name(i32 %a) { %x = add i32 %a, 1; ret i32 %x }` in `key`'s module: a
+/// body whose first instruction a pass or a split can name. Built identically
+/// in two modules, the two `add`s sit at the same slot. Returns the function
+/// and a storable id of its parameter.
 fn function_with_an_add(
-    module: &Module<DynBrand>,
+    key: &mut LayoutToken<'_, DynBrand>,
     name: &str,
 ) -> (FunctionId<Dyn, DynBrand>, ValueId<DynBrand>) {
+    let module = key.module();
     let fn_ty = module
         .function_type(module.i32_type(), [module.i32_type().as_type()])
         .expect("valid function type");
@@ -3064,7 +3212,7 @@ fn function_with_an_add(
         .add_function_dyn(name, fn_ty, Linkage::External)
         .expect("function");
     let entry = module.view(f).append_basic_block(module, "entry");
-    let b = IrBuilder::new_for::<Dyn>(module).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(key).position_at_end(entry);
     let parameter = module.view(f).param(0).expect("parameter").as_erased();
     let a: IntValue<'_, i32, DynBrand> = parameter.try_into().expect("an i32");
     let x = b.int_add(a, 1i32, "x").expect("add");
@@ -3081,10 +3229,12 @@ fn function_with_an_add(
 /// (`lib/IR/BasicBlock.cpp`) takes an iterator into its own instruction list.
 #[test]
 fn split_at_rejects_an_instruction_from_another_module() {
-    let home = Module::dynamic("home");
-    let foreign = Module::dynamic("foreign");
-    let (f, _) = function_with_an_add(&home, "f");
-    let (g, _) = function_with_an_add(&foreign, "g");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
+    let mut foreign = Module::dynamic("foreign");
+    let (f, _) = function_with_an_add(&mut home_key, "f");
+    let (g, _) = function_with_an_add(&mut foreign.layout_token(), "g");
     let foreign_add = foreign
         .view(g)
         .entry_block()
@@ -3094,11 +3244,11 @@ fn split_at_rejects_an_instruction_from_another_module() {
         .expect("add");
 
     let before = format!("{home}");
-    let result = home
-        .view(f)
-        .entry_block()
-        .expect("entry")
-        .split_at(&home, &foreign_add, "tail");
+    let result =
+        home.view(f)
+            .entry_block()
+            .expect("entry")
+            .split_at(&mut home_key, &foreign_add, "tail");
     assert!(
         matches!(result, Err(IrError::ForeignValueId)),
         "{:?}",
@@ -3179,8 +3329,8 @@ impl<'s> FunctionPass<DynBrand> for InsertPhiOfForeignType<'s> {
 /// `Type *` uniqued per `LLVMContext`.
 #[test]
 fn a_pass_rejects_an_instruction_or_type_from_another_module() {
-    let foreign = Module::dynamic("foreign");
-    let (g, _) = function_with_an_add(&foreign, "g");
+    let mut foreign = Module::dynamic("foreign");
+    let (g, _) = function_with_an_add(&mut foreign.layout_token(), "g");
     let foreign_add = foreign
         .view(g)
         .entry_block()
@@ -3190,10 +3340,10 @@ fn a_pass_rejects_an_instruction_or_type_from_another_module() {
         .expect("add");
     let foreign_i32 = foreign.i32_type().as_type();
 
-    let patched = Module::dynamic("patched");
-    let (patched_f, replacement) = function_with_an_add(&patched, "f");
-    let reshaped = Module::dynamic("reshaped");
-    let (reshaped_f, _) = function_with_an_add(&reshaped, "f");
+    let mut patched = Module::dynamic("patched");
+    let (patched_f, replacement) = function_with_an_add(&mut patched.layout_token(), "f");
+    let mut reshaped = Module::dynamic("reshaped");
+    let (reshaped_f, _) = function_with_an_add(&mut reshaped.layout_token(), "f");
     let mut analyses = Analyses::new();
 
     let outcomes = vec![
@@ -3239,9 +3389,11 @@ fn a_pass_rejects_an_instruction_or_type_from_another_module() {
 /// an `Instruction *` or `BasicBlock *`.
 #[test]
 fn an_instruction_move_rejects_a_handle_from_another_module() {
-    let home = Module::dynamic("home");
-    let foreign = Module::dynamic("foreign");
-    let (g, _) = function_with_an_add(&foreign, "g");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
+    let mut foreign = Module::dynamic("foreign");
+    let (g, _) = function_with_an_add(&mut foreign.layout_token(), "g");
     let foreign_add = foreign
         .view(g)
         .entry_block()
@@ -3257,7 +3409,7 @@ fn an_instruction_move_rejects_a_handle_from_another_module() {
     let foreign_block = open_block(&foreign, "h");
     // An `i32` instruction with a user, so an unadmitted `i32` replacement
     // would pass the type check and be written into the user's operand.
-    let (replacing, [narrow, ..]) = builder_with_parameters(&home, "f1");
+    let (replacing, [narrow, ..]) = builder_with_parameters(&mut home_key, "f1");
     let narrow: IntValue<'_, i32, DynBrand> = narrow.try_into().expect("an i32");
     let x = replacing.int_add(narrow, 1i32, "x").expect("add");
     replacing.int_add(x, 2i32, "y").expect("a user of x");
@@ -3265,48 +3417,58 @@ fn an_instruction_move_rejects_a_handle_from_another_module() {
         .step()
         .expect("the add");
     let zero = home.i32_type().const_int(0i32);
-    let ret = |name: &str| builder(&home, name).ret(zero).expect("ret").1;
-    let moved_before = ret("f2");
-    let moved_after = ret("f3");
-    let inserted_before = ret("f4").detach_from_parent(&home);
-    let inserted_after = ret("f5").detach_from_parent(&home);
-    let appended = ret("f6").detach_from_parent(&home);
+    let moved_before = builder(&mut home_key, "f2").ret(zero).expect("ret").1;
+    let moved_after = builder(&mut home_key, "f3").ret(zero).expect("ret").1;
+    let inserted_before = builder(&mut home_key, "f4").ret(zero).expect("ret").1;
+    let inserted_before = inserted_before
+        .detach_from_parent(&mut home_key)
+        .expect("home's own token");
+    let inserted_after = builder(&mut home_key, "f5").ret(zero).expect("ret").1;
+    let inserted_after = inserted_after
+        .detach_from_parent(&mut home_key)
+        .expect("home's own token");
+    let appended = builder(&mut home_key, "f6").ret(zero).expect("ret").1;
+    let appended = appended
+        .detach_from_parent(&mut home_key)
+        .expect("home's own token");
     let before = format!("{home}");
 
     let outcomes = vec![
         (
             "replace_all_uses_with",
             IrError::ForeignValueId,
-            replaced.replace_all_uses_with(&home, foreign_value),
+            replaced.replace_all_uses_with(home, foreign_value),
         ),
         (
             "move_before",
             IrError::ForeignValueId,
-            moved_before.move_before(&home, foreign_anchor),
+            moved_before.move_before(&mut home_key, foreign_anchor),
         ),
         (
             "move_after",
             IrError::ForeignValueId,
-            moved_after.move_after(&home, foreign_anchor),
+            moved_after.move_after(&mut home_key, foreign_anchor),
         ),
         (
             "insert_before",
             IrError::ForeignValueId,
             inserted_before
-                .insert_before(&home, foreign_anchor)
+                .insert_before(&mut home_key, foreign_anchor)
                 .map(|_| ()),
         ),
         (
             "insert_after",
             IrError::ForeignValueId,
             inserted_after
-                .insert_after(&home, foreign_anchor)
+                .insert_after(&mut home_key, foreign_anchor)
                 .map(|_| ()),
         ),
         (
             "append_to",
             IrError::ForeignValueId,
-            appended.append_to(&home, &foreign_block).map(|_| ()),
+            appended
+                .append_to(&mut home_key, &foreign_block)
+                .map(|_| ()),
         ),
     ];
     let let_through = not_refused_as_expected(outcomes);
@@ -3328,11 +3490,13 @@ fn an_instruction_move_rejects_a_handle_from_another_module() {
 /// `Constant *`.
 #[test]
 fn an_operand_or_clause_setter_rejects_a_handle_from_another_module() {
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
     let foreign_value = foreign.i32_type().const_int(5i32);
     let foreign_null = foreign.ptr_type_in::<0>().const_null();
-    let (b, [narrow, _, _, _, pointer]) = builder_with_parameters(&home, "f");
+    let (b, [narrow, _, _, _, pointer]) = builder_with_parameters(&mut home_key, "f");
     let narrow: IntValue<'_, i32, DynBrand> = narrow.try_into().expect("an i32");
     let pointer: PointerValue<'_, llvmkit_ir::SpaceDyn, DynBrand> =
         pointer.try_into().expect("a pointer");
@@ -3351,7 +3515,7 @@ fn an_operand_or_clause_setter_rejects_a_handle_from_another_module() {
     let filter_pad = b
         .landingpad(home.ptr_type_in::<0>().as_type(), false, "filter")
         .expect("landingpad");
-    let (switcher, default, case_target) = builder_with_targets(&home, "s");
+    let (switcher, default, case_target) = builder_with_targets(&mut home_key, "s");
     let (_, switch) = switcher
         .switch_dyn(home.i32_type().const_int(0i32), default, "")
         .expect("switch");
@@ -3368,7 +3532,7 @@ fn an_operand_or_clause_setter_rejects_a_handle_from_another_module() {
             "AtomicRmwInst::set_value_operand",
             IrError::ForeignValueId,
             home.view(rmw)
-                .set_value_operand(&home, foreign_value.as_erased()),
+                .set_value_operand(home, foreign_value.as_erased()),
         ),
         (
             "SwitchInst::add_case",
@@ -3388,17 +3552,17 @@ fn an_operand_or_clause_setter_rejects_a_handle_from_another_module() {
         (
             "FunctionValue::set_prefix_data",
             IrError::ForeignValueId,
-            home.view(h).set_prefix_data(&home, foreign_value),
+            home.view(h).set_prefix_data(home, foreign_value),
         ),
         (
             "FunctionValue::set_prologue_data",
             IrError::ForeignValueId,
-            home.view(h).set_prologue_data(&home, foreign_value),
+            home.view(h).set_prologue_data(home, foreign_value),
         ),
         (
             "FunctionValue::set_personality_fn",
             IrError::ForeignValueId,
-            home.view(h).set_personality_fn(&home, foreign_null),
+            home.view(h).set_personality_fn(home, foreign_null),
         ),
     ];
     let let_through = not_refused_as_expected(outcomes);
@@ -3439,7 +3603,9 @@ fn a_constant_fold_rejects_an_operand_or_type_from_another_module() {
         lossless_unsigned_trunc,
     };
 
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
     let one = home.i32_type().const_int(1i32).as_constant();
     let two = foreign.i32_type().const_int(2i32).as_constant();
@@ -3450,7 +3616,7 @@ fn a_constant_fold_rejects_an_operand_or_type_from_another_module() {
     let foreign_i8 = foreign.i8_type().as_type();
     let home_double = home.f64_type().const_double(4.0).as_constant();
     let foreign_double = foreign.f64_type().const_double(4.0).as_constant();
-    let (f, _) = function_with_an_add(&home, "f");
+    let (f, _) = function_with_an_add(&mut home_key, "f");
     let add = home
         .view(f)
         .entry_block()
@@ -3694,10 +3860,14 @@ fn the_constant_folder_rejects_an_operand_or_type_from_another_module() {
         FloatPredicate, IntPredicate, IrBuilderFolder, OverflowFlags,
     };
 
-    let home = Module::dynamic("home");
-    let foreign = Module::dynamic("foreign");
-    let (_, [h_i32, h_i64, h_f32, _, h_ptr]) = builder_with_parameters(&home, "f");
-    let (_, [f_i32, f_i64, f_f32, _, _]) = builder_with_parameters(&foreign, "g");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
+    let mut foreign_module = Module::dynamic("foreign");
+    let mut foreign_key = foreign_module.layout_token();
+    let foreign = foreign_key.module();
+    let (_, [h_i32, h_i64, h_f32, _, h_ptr]) = builder_with_parameters(&mut home_key, "f");
+    let (_, [f_i32, f_i64, f_f32, _, _]) = builder_with_parameters(&mut foreign_key, "g");
     let h_int: IntValue<'_, i32, DynBrand> = h_i32.try_into().expect("an i32");
     let f_int: IntValue<'_, i32, DynBrand> = f_i32.try_into().expect("an i32");
     let h_float: FloatValue<'_, f32, DynBrand> = h_f32.try_into().expect("a float");
@@ -3909,10 +4079,12 @@ fn the_constant_folder_rejects_an_operand_or_type_from_another_module() {
 /// (`lib/IR/Function.cpp`, `lib/IR/BasicBlock.cpp`) take `BasicBlock *`s.
 #[test]
 fn a_block_move_or_splice_rejects_a_block_from_another_module() {
-    let home = Module::dynamic("home");
-    let foreign = Module::dynamic("foreign");
-    let (f, _) = function_with_an_add(&home, "f");
-    let (g, _) = function_with_an_add(&foreign, "g");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
+    let mut foreign = Module::dynamic("foreign");
+    let (f, _) = function_with_an_add(&mut home_key, "f");
+    let (g, _) = function_with_an_add(&mut foreign.layout_token(), "g");
     let foreign_entry = || foreign.view(g).entry_block().expect("entry");
     let home_entry = home.view(f).entry_block().expect("entry");
     let before = (format!("{home}"), format!("{foreign}"));
@@ -3921,20 +4093,20 @@ fn a_block_move_or_splice_rejects_a_block_from_another_module() {
         (
             "FunctionValue::move_basic_block_to_end",
             IrError::ForeignValueId,
-            home.view(f).move_basic_block_to_end(&home, foreign_entry()),
+            home.view(f).move_basic_block_to_end(home, foreign_entry()),
         ),
         (
             "FunctionValue::basic_block_for_construction",
             IrError::ForeignValueId,
             without_value(
                 home.view(f)
-                    .basic_block_for_construction(&home, foreign_entry().to_erased()),
+                    .basic_block_for_construction(home, foreign_entry().to_erased()),
             ),
         ),
         (
             "BasicBlock::splice_into",
             IrError::ForeignValueId,
-            home_entry.splice_into(&home, foreign_entry()),
+            home_entry.splice_into(&mut home_key, foreign_entry()),
         ),
     ];
     let let_through = not_refused_as_expected(outcomes);
@@ -4064,16 +4236,21 @@ fn must_trigger_ub_matches_a_known_poison_value_in_its_own_module_only() {
     use std::collections::HashSet;
 
     /// `udiv i32 %0, %0` in a fresh `name`; returns the divisor `%0`.
-    fn udiv_by_parameter<'m>(module: &'m Module<DynBrand>, name: &str) -> Value<'m, DynBrand> {
-        let (b, [divisor, ..]) = builder_with_parameters(module, name);
+    fn udiv_by_parameter<'m>(
+        key: &mut LayoutToken<'m, DynBrand>,
+        name: &str,
+    ) -> Value<'m, DynBrand> {
+        let (b, [divisor, ..]) = builder_with_parameters(key, name);
         let divisor_int: IntValue<'_, i32, DynBrand> = divisor.try_into().expect("an i32");
         b.int_udiv(divisor_int, divisor_int, "q").expect("udiv");
         divisor
     }
-    let home = Module::dynamic("home");
-    let foreign = Module::dynamic("foreign");
-    let home_divisor = udiv_by_parameter(&home, "f");
-    let foreign_divisor = udiv_by_parameter(&foreign, "f");
+    let mut home = Module::dynamic("home");
+    let mut home_key = home.layout_token();
+    let mut foreign = Module::dynamic("foreign");
+    let mut foreign_key = foreign.layout_token();
+    let home_divisor = udiv_by_parameter(&mut home_key, "f");
+    let foreign_divisor = udiv_by_parameter(&mut foreign_key, "f");
     let udiv = home_divisor.users().next().expect("the udiv");
 
     assert!(
@@ -4207,26 +4384,35 @@ impl<'m> IrBuilderFolder<'m, DynBrand> for TypedAnswerFolder<'m> {
 }
 
 /// A positioned builder over a custom folder `F`.
-type FoldingBuilder<'m, F> = IrBuilder<'m, 'm, DynBrand, F, PositionedAtEnd, Dyn>;
+type FoldingBuilder<'k, 'm, F> = IrBuilder<'k, 'm, DynBrand, F, PositionedAtEnd, Dyn>;
 
-/// `i32 name(i32, i64, float, double, ptr)` in `module` with a builder over
-/// `folder` at its entry, plus the `i32` and `float` parameters, typed.
-fn folding_builder<'m, F: IrBuilderFolder<'m, DynBrand>>(
-    module: &'m Module<DynBrand>,
+/// `i32 name(i32, i64, float, double, ptr)` in `key`'s module: its entry
+/// block, for a builder over a custom folder to be positioned at when it
+/// builds there, plus the `i32` and `float` parameters, typed. One builder
+/// holds the layout token at a time.
+fn folding_block<'m>(
+    key: &mut LayoutToken<'m, DynBrand>,
     name: &str,
-    folder: F,
 ) -> (
-    FoldingBuilder<'m, F>,
+    OpenBlock<'m>,
     IntValue<'m, i32, DynBrand>,
     FloatValue<'m, f32, DynBrand>,
 ) {
-    let (b, [narrow, _, single, _, _]) = builder_with_parameters(module, name);
-    let block = b.into_insert_block();
+    let (b, [narrow, _, single, _, _]) = builder_with_parameters(key, name);
     (
-        IrBuilder::with_folder(module, folder).position_at_end(block),
+        b.into_insert_block(),
         narrow.try_into().expect("an i32"),
         single.try_into().expect("a float"),
     )
+}
+
+/// A builder over `key` and `folder`, positioned at the end of `block`.
+fn folding_builder<'k, 'm, F: IrBuilderFolder<'m, DynBrand>>(
+    key: &'k mut LayoutToken<'m, DynBrand>,
+    block: OpenBlock<'m>,
+    folder: F,
+) -> FoldingBuilder<'k, 'm, F> {
+    IrBuilder::with_folder(key, folder).position_at_end(block)
 }
 
 /// A fold result a custom folder hands back is refused when another module
@@ -4240,7 +4426,9 @@ fn folding_builder<'m, F: IrBuilderFolder<'m, DynBrand>>(
 /// carries its own identity.
 #[test]
 fn a_builder_rejects_a_fold_result_from_another_module() {
-    let home = Module::dynamic("home");
+    let mut home_module = Module::dynamic("home");
+    let mut home_key = home_module.layout_token();
+    let home = home_key.module();
     let foreign = Module::dynamic("foreign");
     let int32 = foreign.i32_type().const_int(9i32).as_erased();
     let erased = ErasedAnswerFolder { answer: int32 };
@@ -4251,11 +4439,12 @@ fn a_builder_rejects_a_fold_result_from_another_module() {
         double: foreign.f64_type().const_double(1.0).as_erased(),
         boolean: foreign.bool_type().const_int(true).as_erased(),
     };
-    let (e, e_int, e_float) = folding_builder(&home, "e", erased);
-    let (t, t_int, t_float) = folding_builder(&home, "t", typed);
+    let (e_block, e_int, e_float) = folding_block(&mut home_key, "e");
+    let (t_block, t_int, t_float) = folding_block(&mut home_key, "t");
     let before = format!("{home}");
 
-    let outcomes = vec![
+    let e = folding_builder(&mut home_key, e_block, erased);
+    let mut outcomes = vec![
         (
             "checked_folded_value (int_binop_erased)",
             IrError::ForeignValueId,
@@ -4287,6 +4476,9 @@ fn a_builder_rejects_a_fold_result_from_another_module() {
             IrError::ForeignValueId,
             without_value(e.fp_ext::<f32, f64, _, _>(e_float, home.f64_type(), "x")),
         ),
+    ];
+    let t = folding_builder(&mut home_key, t_block, typed);
+    outcomes.extend([
         (
             "accept_folded_int (int_add, native hook)",
             IrError::ForeignValueId,
@@ -4312,7 +4504,7 @@ fn a_builder_rejects_a_fold_result_from_another_module() {
             IrError::ForeignValueId,
             without_value(t.int_cmp(IntPredicate::Eq, t_int, t_int, "x")),
         ),
-    ];
+    ]);
     let let_through = not_refused_as_expected(outcomes);
     assert!(let_through.is_empty(), "{let_through:#?}");
     assert_eq!(format!("{home}"), before, "a refused fold must not mutate");

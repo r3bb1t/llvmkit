@@ -28,32 +28,34 @@ fn refusal<T>(result: Result<T, IrError>, entry: &str) -> IrError {
 /// handle for a block that is already terminated.
 #[test]
 fn a_function_refuses_a_block_that_is_not_its_own() -> Result<(), IrError> {
-    let m = module_new!("block-errors-function")?;
+    let mut module = module_new!("block-errors-function")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let fn_ty = m.function_type(m.void_type(), Vec::<Type<'_, _>>::new())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let g = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let f_entry = m.view(f).append_basic_block(&m, "entry");
+    let f_entry = m.view(f).append_basic_block(m, "entry");
     let f_entry_value = f_entry.to_erased();
-    let g_entry = m.view(g).append_basic_block(&m, "entry");
+    let g_entry = m.view(g).append_basic_block(m, "entry");
     let g_entry_value = g_entry.to_erased();
 
     let err = refusal(
-        m.view(f).basic_block_for_construction(&m, g_entry_value),
+        m.view(f).basic_block_for_construction(m, g_entry_value),
         "construction into @f of a block of @g",
     );
     assert_eq!(err, IrError::from(BlockError::BlockNotInFunction));
     let err = refusal(
-        m.view(f).move_basic_block_to_end(&m, g_entry),
+        m.view(f).move_basic_block_to_end(m, g_entry),
         "moving a block of @g to the end of @f",
     );
     assert_eq!(err, IrError::from(BlockError::BlockNotInFunction));
     assert_eq!(err.blame(), Blame::UsageError);
 
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(f_entry)
         .ret_void()?;
     let err = refusal(
-        m.view(f).basic_block_for_construction(&m, f_entry_value),
+        m.view(f).basic_block_for_construction(m, f_entry_value),
         "construction into a terminated block",
     );
     assert_eq!(err, IrError::from(BlockError::InsertionIntoTerminatedBlock));
@@ -65,10 +67,12 @@ fn a_function_refuses_a_block_that_is_not_its_own() -> Result<(), IrError> {
 /// needs no function to check against.
 #[test]
 fn an_orphan_block_refuses_to_split() -> Result<(), IrError> {
-    let m = module_new!("block-errors-orphan")?;
-    let target = BasicBlock::<Dyn, _, _>::create_orphan(&m, "target");
-    let orphan = BasicBlock::<Dyn, _, _>::create_orphan(&m, "orphan");
-    let (terminated, _) = IrBuilder::new_for::<Dyn>(&m)
+    let mut module = module_new!("block-errors-orphan")?;
+    let mut key = module.layout_token();
+    let m = key.module();
+    let target = BasicBlock::<Dyn, _, _>::create_orphan(m, "target");
+    let orphan = BasicBlock::<Dyn, _, _>::create_orphan(m, "orphan");
+    let (terminated, _) = IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(orphan)
         .br(target.id())?;
     let ret = terminated
@@ -76,7 +80,7 @@ fn an_orphan_block_refuses_to_split() -> Result<(), IrError> {
         .next()
         .expect("the orphan holds its `ret`");
     let err = refusal(
-        terminated.split_at(&m, &ret, "orphan.split"),
+        terminated.split_at(&mut key, &ret, "orphan.split"),
         "splitting an orphan block",
     );
     assert_eq!(err, IrError::from(BlockError::SplitOrphanBlock));
@@ -92,10 +96,12 @@ fn an_orphan_block_refuses_to_split() -> Result<(), IrError> {
 /// `IRBuilder::CreateRetVoid` builds the `ret` regardless.
 #[test]
 fn a_dyn_return_in_an_orphan_block_is_refused() -> Result<(), IrError> {
-    let m = module_new!("block-errors-orphan-ret")?;
-    let orphan = BasicBlock::<Dyn, _, _>::create_orphan(&m, "orphan");
+    let mut module = module_new!("block-errors-orphan-ret")?;
+    let mut key = module.layout_token();
+    let m = key.module();
+    let orphan = BasicBlock::<Dyn, _, _>::create_orphan(m, "orphan");
     let err = refusal(
-        IrBuilder::new_for::<Dyn>(&m)
+        IrBuilder::new_for::<Dyn>(&mut key)
             .position_at_end(orphan)
             .ret_void(),
         "a Dyn `ret void` in an orphan block",
@@ -104,9 +110,9 @@ fn a_dyn_return_in_an_orphan_block_is_refused() -> Result<(), IrError> {
         err,
         IrError::from(llvmkit_ir::BuilderError::ReturnOutsideFunction)
     );
-    let orphan = BasicBlock::<Dyn, _, _>::create_orphan(&m, "orphan.value");
+    let orphan = BasicBlock::<Dyn, _, _>::create_orphan(m, "orphan.value");
     let err = refusal(
-        IrBuilder::new_for::<Dyn>(&m)
+        IrBuilder::new_for::<Dyn>(&mut key)
             .position_at_end(orphan)
             .ret(m.i32_type().const_int(0_i32)),
         "a Dyn `ret i32` in an orphan block",

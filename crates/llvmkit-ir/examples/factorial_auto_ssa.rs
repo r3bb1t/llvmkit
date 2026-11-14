@@ -58,10 +58,11 @@
 //! ```
 
 use llvmkit_ir::{
-    IntPredicate, IrError, Linkage, Module, ModuleBrand, SsaBuilder, SsaState, module_new,
+    IntPredicate, IrError, LayoutToken, Linkage, ModuleBrand, SsaBuilder, SsaState, module_new,
 };
 
-pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
+pub fn build<B: ModuleBrand>(key: &mut LayoutToken<'_, B>) -> Result<(), IrError> {
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m
@@ -74,7 +75,7 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
         .with_typed_params::<(i32,)>()?;
 
     let mut st_b = SsaState::for_function(m, m.view(f).as_function())?;
-    let mut b = SsaBuilder::for_function(m, m.view(f).as_function(), &mut st_b)?;
+    let mut b = SsaBuilder::for_function(key, m.view(f).as_function(), &mut st_b)?;
 
     // Same block names, same creation order as the manual example:
     // entry (auto-sealed), base, loop, exit.
@@ -147,8 +148,8 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
 /// return to: `module_new!` is fallible (its brand is a registry key) and
 /// `main` reports errors by hand.
 fn emit() -> Result<(), IrError> {
-    let m = module_new!("factorial")?;
-    build(&m)?;
+    let mut m = module_new!("factorial")?;
+    build(&mut m.layout_token())?;
     print!("{m}");
     Ok(())
 }

@@ -14,12 +14,14 @@ use llvmkit_ir::{
 };
 
 fn module_for(op: &str) -> Result<String, IrError> {
-    let m = Module::dynamic("dr");
+    let mut module = Module::dynamic("dr");
+    let mut key = module.layout_token();
+    let m = key.module();
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()])?;
     let f = m.add_function_dyn(op, fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let x: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let y: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
     let r = match op {
@@ -70,12 +72,14 @@ fn srem_plain() -> Result<(), IrError> {
 /// Mirrors `test/Assembler/flags.ll` for the `udiv exact` variant.
 #[test]
 fn udiv_exact() -> Result<(), IrError> {
-    let m = module_new!("ex")?;
+    let mut module = module_new!("ex")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()])?;
     let f = m.add_function_dyn("udiv_exact", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
     let r = b.int_udiv_with_flags(lhs, rhs, UdivFlags::new().exact(), "z")?;
@@ -88,12 +92,14 @@ fn udiv_exact() -> Result<(), IrError> {
 /// Mirrors `test/Assembler/flags.ll` for the `sdiv exact` variant.
 #[test]
 fn sdiv_exact() -> Result<(), IrError> {
-    let m = module_new!("ex")?;
+    let mut module = module_new!("ex")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()])?;
     let f = m.add_function_dyn("sdiv_exact", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
     let r = b.int_sdiv_with_flags(lhs, rhs, SdivFlags::new().exact(), "z")?;

@@ -23,8 +23,8 @@ fn parse_and_render(src: &str) -> String {
 }
 
 fn parse_and_render_bytes(module_name: &str, src: &[u8]) -> String {
-    let module = Module::dynamic(module_name);
-    Parser::new(src, &module)
+    let mut module = Module::dynamic(module_name);
+    Parser::new(src, module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
@@ -37,8 +37,8 @@ fn parse_and_render_bytes(module_name: &str, src: &[u8]) -> String {
 /// `RUN` line piping through `llvm-as` asserts verification as well as
 /// parse-and-print; [`parse_and_render_bytes`] drops that half.
 fn parse_verify_and_render_bytes(module_name: &str, src: &[u8]) -> String {
-    let module = Module::dynamic(module_name);
-    Parser::new(src, &module)
+    let mut module = Module::dynamic(module_name);
+    Parser::new(src, module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
@@ -49,8 +49,8 @@ fn parse_verify_and_render_bytes(module_name: &str, src: &[u8]) -> String {
 }
 
 fn parse_fixture_err(module_name: &str, src: &[u8]) -> ParseError {
-    let module = Module::dynamic(module_name);
-    Parser::new(src, &module)
+    let mut module = Module::dynamic(module_name);
+    Parser::new(src, module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect_err("parser rejects malformed input")
@@ -224,8 +224,8 @@ fn inline_asm_label_constraint_rules_are_verifier_rules() {
             "Number of label constraints does not match number of callbr dests",
         ),
     ] {
-        let module = Module::dynamic(name);
-        Parser::new(fixture, &module)
+        let mut module = Module::dynamic(name);
+        Parser::new(fixture, module.layout_token())
             .expect("lexer primes")
             .parse_module()
             .expect("the parser accepts what upstream's parser accepts");
@@ -463,8 +463,8 @@ define void @passes_unmarked() {
 }
 ";
     let source = format!("{PRELUDE}{passes}");
-    let module = Module::dynamic("swifterror_unmarked");
-    Parser::new(source.as_bytes(), &module)
+    let mut module = Module::dynamic("swifterror_unmarked");
+    Parser::new(source.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
@@ -506,8 +506,8 @@ define void @passes_unmarked() {
 }
 declare float @foo(ptr swifterror)
 ";
-    let module = Module::dynamic("swifterror_declared_after");
-    Parser::new(source.as_bytes(), &module)
+    let mut module = Module::dynamic("swifterror_declared_after");
+    Parser::new(source.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
@@ -526,8 +526,8 @@ fn assert_fixture_case_verifies(
     expected: Option<&str>,
 ) {
     let source = format!("{prelude}{}", fixture_define(fixture, marker));
-    let module = Module::dynamic("fixture_case");
-    Parser::new(source.as_bytes(), &module)
+    let mut module = Module::dynamic("fixture_case");
+    Parser::new(source.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .unwrap_or_else(|e| panic!("case {marker} parses: {e}"));
@@ -1085,8 +1085,8 @@ fn operand_bundle_reads_back_and_refuses_a_duplicated_tag() {
     use llvmkit_ir::{InstructionKind, IrError, OperandBundleTag, Value};
 
     const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/operand-bundles/operand-bundles.ll");
-    let module = Module::dynamic("operand-bundles");
-    Parser::new(FIXTURE, &module)
+    let mut module = Module::dynamic("operand-bundles");
+    Parser::new(FIXTURE, module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
@@ -1171,8 +1171,8 @@ fn invoke_operand_bundles_read_back() {
     use llvmkit_ir::{Blame, IrError, OperandBundleTag, TerminatorKind};
 
     const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/operand-bundles/operand-bundles.ll");
-    let module = Module::dynamic("operand-bundles");
-    Parser::new(FIXTURE, &module)
+    let mut module = Module::dynamic("operand-bundles");
+    Parser::new(FIXTURE, module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
@@ -1284,8 +1284,8 @@ fn callbr_operand_bundles_read_back() {
     use llvmkit_ir::{OperandBundleTag, TerminatorKind};
 
     const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/Verifier/callbr-intrinsic.ll");
-    let module = Module::dynamic("callbr-intrinsic");
-    Parser::new(FIXTURE, &module)
+    let mut module = Module::dynamic("callbr-intrinsic");
+    Parser::new(FIXTURE, module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
@@ -2064,8 +2064,8 @@ fn operand_bundle_module(fixture: &OperandBundleFixture<'_>, body: &[&str]) -> S
 
 /// The verifier's answer for one rebuilt module, `Ok` or the failure message.
 fn verify_operand_bundle_module(name: &str, source: &str) -> Result<(), String> {
-    let module = Module::dynamic(name);
-    Parser::new(source.as_bytes(), &module)
+    let mut module = Module::dynamic(name);
+    Parser::new(source.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .unwrap_or_else(|e| panic!("{name} parses: {e}\n{source}"));
@@ -2092,8 +2092,8 @@ fn verify_operand_bundle_module(name: &str, source: &str) -> Result<(), String> 
 fn run_operand_bundle_fixture(name: &str, fixture: &str) {
     let parsed = operand_bundle_fixture(fixture);
 
-    let module = Module::dynamic(name);
-    Parser::new(fixture.as_bytes(), &module)
+    let mut module = Module::dynamic(name);
+    Parser::new(fixture.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .unwrap_or_else(|e| panic!("{name} parses: {e}"));
@@ -2349,8 +2349,8 @@ fn callbr_indirect_callee_is_rejected_by_the_verifier() {
     const FIXTURE: &[u8] =
         include_bytes!("fixtures/upstream/LLParser-parseCall/callbr_indirect_callee_rejected.ll");
 
-    let module = Module::dynamic("callbr_indirect_callee_rejected");
-    Parser::new(FIXTURE, &module)
+    let mut module = Module::dynamic("callbr_indirect_callee_rejected");
+    Parser::new(FIXTURE, module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("upstream parses an indirect callbr");
@@ -2931,8 +2931,8 @@ fn upstream_musttail_invalid_fixture_messages_match() {
     ];
     for (marker, expected) in cases {
         let source = musttail_fixture_case(FIXTURE, marker);
-        let module = Module::dynamic("upstream_musttail_invalid_fixture_messages_match");
-        Parser::new(source.as_bytes(), &module)
+        let mut module = Module::dynamic("upstream_musttail_invalid_fixture_messages_match");
+        Parser::new(source.as_bytes(), module.layout_token())
             .expect("lexer primes")
             .parse_module()
             .unwrap_or_else(|e| panic!("case {marker} parses: {e}"));
@@ -2999,8 +2999,8 @@ fn short_syntax_musttail_forwarding_call_is_not_vararg() {
                          ret void\n\
                          }\n";
 
-    let module = Module::dynamic("short_syntax_musttail_forwarding_call_is_not_vararg");
-    Parser::new(SRC, &module)
+    let mut module = Module::dynamic("short_syntax_musttail_forwarding_call_is_not_vararg");
+    Parser::new(SRC, module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser accepts the short syntax");
@@ -3053,8 +3053,8 @@ fn a_musttail_call_result_may_be_returned_as_itself_undef_or_poison() {
         "ret ptr poison\n}\n",
     ] {
         let source = format!("{PROLOGUE}{accepted}");
-        let module = Module::dynamic("musttail_result_returned");
-        Parser::new(source.as_bytes(), &module)
+        let mut module = Module::dynamic("musttail_result_returned");
+        Parser::new(source.as_bytes(), module.layout_token())
             .expect("lexer primes")
             .parse_module()
             .expect("parser succeeds");
@@ -3066,8 +3066,8 @@ fn a_musttail_call_result_may_be_returned_as_itself_undef_or_poison() {
     // `!Ret->getReturnValue()` — a void caller, so the `ret` carries nothing.
     let void_source = "declare void @vcallee()\ndefine void @vcaller() {\n  \
                        musttail call void @vcallee()\n  ret void\n}\n";
-    let module = Module::dynamic("musttail_result_returned_void");
-    Parser::new(void_source.as_bytes(), &module)
+    let mut module = Module::dynamic("musttail_result_returned_void");
+    Parser::new(void_source.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
@@ -3076,8 +3076,8 @@ fn a_musttail_call_result_may_be_returned_as_itself_undef_or_poison() {
         .expect("upstream accepts `ret void`");
 
     let rejected = format!("{PROLOGUE}ret ptr null\n}}\n");
-    let module = Module::dynamic("musttail_result_not_returned");
-    Parser::new(rejected.as_bytes(), &module)
+    let mut module = Module::dynamic("musttail_result_not_returned");
+    Parser::new(rejected.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
@@ -3105,8 +3105,8 @@ fn a_musttail_call_result_may_be_returned_as_itself_undef_or_poison() {
 fn upstream_musttail_valid_fixture_verifies() {
     const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/Verifier/musttail-valid.ll");
 
-    let module = Module::dynamic("upstream_musttail_valid_fixture_verifies");
-    Parser::new(FIXTURE, &module)
+    let mut module = Module::dynamic("upstream_musttail_valid_fixture_verifies");
+    Parser::new(FIXTURE, module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
@@ -3128,8 +3128,8 @@ fn upstream_swifttailcc_musttail_valid_fixture_verifies() {
     const FIXTURE: &[u8] =
         include_bytes!("fixtures/upstream/Verifier/swifttailcc-musttail-valid.ll");
 
-    let module = Module::dynamic("upstream_swifttailcc_musttail_valid_fixture_verifies");
-    Parser::new(FIXTURE, &module)
+    let mut module = Module::dynamic("upstream_swifttailcc_musttail_valid_fixture_verifies");
+    Parser::new(FIXTURE, module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
@@ -3258,8 +3258,8 @@ fn upstream_tailcc_musttail_fixture_messages_match() {
                 .collect();
             let source = format!("{prelude}\n{define}\n");
 
-            let module = Module::dynamic("upstream_tailcc_musttail_fixture_messages_match");
-            Parser::new(source.as_bytes(), &module)
+            let mut module = Module::dynamic("upstream_tailcc_musttail_fixture_messages_match");
+            Parser::new(source.as_bytes(), module.layout_token())
                 .expect("lexer primes")
                 .parse_module()
                 .unwrap_or_else(|e| panic!("{cc} case {marker} parses: {e}\n{source}"));
@@ -3313,8 +3313,8 @@ fn function_text<'a>(fixture: &'a str, header_marker: &str) -> &'a str {
 
 /// Parse `source` and report the verifier's answer, or the parse diagnostic.
 fn parse_and_verify(name: &str, source: &str) -> Result<Result<(), String>, String> {
-    let module = Module::dynamic(name);
-    match Parser::new(source.as_bytes(), &module)
+    let mut module = Module::dynamic(name);
+    match Parser::new(source.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
     {
@@ -3521,8 +3521,8 @@ pad:
 
 attributes #0 = { nounwind }
 ";
-    let module = Module::dynamic("has_fn_attr");
-    Parser::new(SOURCE.as_bytes(), &module)
+    let mut module = Module::dynamic("has_fn_attr");
+    Parser::new(SOURCE.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
@@ -3606,8 +3606,8 @@ define i32 @f(i32 %x) {
 
 attributes #0 = { speculatable }
 ";
-    let module = Module::dynamic("speculatable_group");
-    Parser::new(SOURCE.as_bytes(), &module)
+    let mut module = Module::dynamic("speculatable_group");
+    Parser::new(SOURCE.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");

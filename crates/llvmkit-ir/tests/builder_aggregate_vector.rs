@@ -21,15 +21,17 @@ use llvmkit_ir::{
 /// type for an unpacked struct extract.
 #[test]
 fn extract_value_struct_field0() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()])?;
     let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()])?;
     let f = m.add_function_dyn("instructions.aggregateops", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let up = m.view(f).param(0)?;
     let _ = b.extract_value(up, [0u32], "")?;
     b.ret_void()?;
@@ -47,14 +49,16 @@ fn extract_value_struct_field0() -> Result<(), IrError> {
 /// `extractvalue [3 x i8] %arr, 2`.
 #[test]
 fn extract_value_array_index() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
     let arr_ty = ArrayType::of(i8_ty, 3);
     let fn_ty = m.function_type(void_ty.as_type(), [arr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let arr = m.view(f).param(0)?;
     let _ = b.extract_value(arr, [2u32], "")?;
     b.ret_void()?;
@@ -72,7 +76,9 @@ fn extract_value_array_index() -> Result<(), IrError> {
 /// path walks struct → struct → leaf.
 #[test]
 fn extract_value_nested_indices() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
@@ -80,8 +86,8 @@ fn extract_value_nested_indices() -> Result<(), IrError> {
     let outer = m.struct_type([i8_ty.as_type(), inner.as_type()])?;
     let fn_ty = m.function_type(void_ty.as_type(), [outer.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let n = m.view(f).param(0)?;
     let _ = b.extract_value(n, [1u32, 0u32], "")?;
     b.ret_void()?;
@@ -101,15 +107,17 @@ fn extract_value_nested_indices() -> Result<(), IrError> {
 /// the assembler diagnostic in `test/Assembler/extractvalue-no-idx.ll`.
 #[test]
 fn extract_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()])?;
     let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let up = m.view(f).param(0)?;
     let err = b
         .extract_value_dyn(up, &[], "bad")
@@ -133,14 +141,16 @@ fn extract_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
 /// AT->getNumElements()`.
 #[test]
 fn extract_value_rejects_out_of_range_array_index() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let arr_ty = ArrayType::of(i32_ty, 0);
     let fn_ty = m.function_type(void_ty.as_type(), [arr_ty.as_type()])?;
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let undef = arr_ty.as_type().undef();
     let err = b
         .extract_value(undef, [0u32], "")
@@ -162,15 +172,17 @@ fn extract_value_rejects_out_of_range_array_index() -> Result<(), IrError> {
 /// ST->getNumElements()`.
 #[test]
 fn extract_value_rejects_out_of_range_struct_index() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()])?;
     let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()])?;
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let undef = s_ty.as_type().undef();
     let err = b
         .extract_value(undef, [2u32], "")
@@ -193,15 +205,17 @@ fn extract_value_rejects_out_of_range_struct_index() -> Result<(), IrError> {
 /// `insertvalue { i8, i32 } %up, i8 1, 0`.
 #[test]
 fn insert_value_struct_field0() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()])?;
     let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let up = m.view(f).param(0)?;
     let one = i8_ty.const_int(1_i8);
     let _ = b.insert_value(up, one, [0u32], "")?;
@@ -219,14 +233,16 @@ fn insert_value_struct_field0() -> Result<(), IrError> {
 /// `insertvalue [3 x i8] %arr, i8 0, 0`.
 #[test]
 fn insert_value_array_index_zero() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
     let arr_ty = ArrayType::of(i8_ty, 3);
     let fn_ty = m.function_type(void_ty.as_type(), [arr_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let arr = m.view(f).param(0)?;
     let zero = i8_ty.const_int(0_i8);
     let _ = b.insert_value(arr, zero, [0u32], "")?;
@@ -248,15 +264,17 @@ fn insert_value_array_index_zero() -> Result<(), IrError> {
 /// `test/Assembler/extractvalue-no-idx.ll`.
 #[test]
 fn insert_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()])?;
     let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let up = m.view(f).param(0)?;
     let err = b
         .insert_value_dyn(up, up, &[], "bad")
@@ -282,15 +300,17 @@ fn insert_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
 /// vector + integer-indexed extract.
 #[test]
 fn extract_element_vector_i8_index() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f32_ty = m.f32_type();
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
     let vec_ty = VectorType::of(f32_ty, lanes::<4>());
     let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type()])?;
     let f = m.add_function_dyn("instructions.vectorops", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let vec = m.view(f).param(0)?;
     let zero = i8_ty.const_int(0_i8);
     let _ = b.extract_element(vec, zero, "")?;
@@ -312,15 +332,17 @@ fn extract_element_vector_i8_index() -> Result<(), IrError> {
 /// `insertelement <4 x float> %vec, float 3.500000e+00, i8 0`.
 #[test]
 fn insert_element_vector_float_at_i8() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f32_ty = m.f32_type();
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
     let vec_ty = VectorType::of(f32_ty, lanes::<4>());
     let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let vec = m.view(f).param(0)?;
     let three_five = f32_ty.const_float(3.5_f32);
     let zero = i8_ty.const_int(0_i8);
@@ -344,14 +366,16 @@ fn insert_element_vector_float_at_i8() -> Result<(), IrError> {
 /// Locks the all-zero mask print form (`zeroinitializer`).
 #[test]
 fn shuffle_vector_zeroinitializer_mask() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f32_ty = m.f32_type();
     let void_ty = m.void_type();
     let vec_ty = VectorType::of(f32_ty, lanes::<4>());
     let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let v0 = m.view(f).param(0)?;
     let v1 = m.view(f).param(1)?;
     let _ = b.shuffle_vector(v0, v1, &[Lane(0), Lane(0)], "")?;
@@ -373,14 +397,16 @@ fn shuffle_vector_zeroinitializer_mask() -> Result<(), IrError> {
 /// form rather than the `zeroinitializer` / `poison` short forms.
 #[test]
 fn shuffle_vector_explicit_mask_print() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let vec_ty = VectorType::of(i32_ty, lanes::<4>());
     let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let v0 = m.view(f).param(0)?;
     let v1 = m.view(f).param(1)?;
     let _ = b.shuffle_vector(v0, v1, &[Lane(1), Lane(1), Lane(0), Lane(0)], "")?;
@@ -409,14 +435,16 @@ fn shuffle_vector_explicit_mask_print() -> Result<(), IrError> {
 /// `vscale x ` prefix.
 #[test]
 fn shuffle_vector_scalable_zero_mask_splat() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let vec_ty = VectorType::scalable_of(i32_ty, lanes::<4>());
     let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()])?;
     let f = m.add_function_dyn("non_const_shufflevector", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let v0 = m.view(f).param(0)?;
     let v1 = m.view(f).param(1)?;
     let _ = b.shuffle_vector(v0, v1, &[Lane(0), Lane(0), Lane(0), Lane(0)], "res")?;
@@ -441,14 +469,16 @@ fn shuffle_vector_scalable_zero_mask_splat() -> Result<(), IrError> {
 /// `poison` spelling `printShuffleMask` then emits.
 #[test]
 fn shuffle_vector_scalable_poison_mask() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let vec_ty = VectorType::scalable_of(i32_ty, lanes::<4>());
     let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let v0 = m.view(f).param(0)?;
     let v1 = m.view(f).param(1)?;
     let _ = b.shuffle_vector(v0, v1, &[Poison, Poison, Poison, Poison], "")?;
@@ -472,14 +502,16 @@ fn shuffle_vector_scalable_poison_mask() -> Result<(), IrError> {
 /// `Poison` is upstream's `PoisonMaskElem`.
 #[test]
 fn shuffle_vector_scalable_rejects_a_non_splat_mask() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let vec_ty = VectorType::scalable_of(i32_ty, lanes::<4>());
     let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let v0 = m.view(f).param(0)?;
     let v1 = m.view(f).param(1)?;
     for mask in [
@@ -507,14 +539,16 @@ fn shuffle_vector_scalable_rejects_a_non_splat_mask() -> Result<(), IrError> {
 /// this is the instruction form of the same rule.
 #[test]
 fn shuffle_vector_rejects_an_out_of_range_mask_lane() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let vec_ty = VectorType::of(i32_ty, lanes::<2>());
     let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()])?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let v0 = m.view(f).param(0)?;
     let v1 = m.view(f).param(1)?;
     // `V1Size * 2` is 4, so `Lane(3)` is the last legal lane and `Lane(4)` the
@@ -546,7 +580,9 @@ fn shuffle_vector_rejects_an_out_of_range_mask_lane() -> Result<(), IrError> {
 /// shape existed only on the constant-expression path.
 #[test]
 fn shuffle_vector_scalable_constant_operand_survives_folding() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
     let my_global = m.add_global_uninitialized("my_global", i32_ty.as_type())?;
@@ -555,8 +591,8 @@ fn shuffle_vector_scalable_constant_operand_survives_folding() -> Result<(), IrE
     let no_parameters: [llvmkit_ir::Type<'_, _>; 0] = [];
     let fn_ty = m.function_type(vec_ty.as_type(), no_parameters)?;
     let f = m.add_function_dyn("ret_scalable_vector_ptr", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let poison = vec_ty.as_type().poison();
     let inserted = b.insert_element(poison, global_ptr, i64_ty.const_int(0_i64), "")?;
     let shuffled = b.shuffle_vector(
@@ -725,15 +761,17 @@ const _: fn() = || {
 /// a `uint32` and an array length is a `uint64`.
 #[test]
 fn the_three_aggregate_index_walks_agree_at_the_u32_boundary() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
     // One element past `u32::MAX`, so the largest legal index is `u32::MAX`.
     let arr_ty = ArrayType::of(i8_ty, u64::from(u32::MAX) + 1);
     let fn_ty = m.function_type(void_ty.as_type(), [arr_ty.as_type()])?;
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let arr = m.view(f).param(0)?;
 
     // Walk 1, the public port the parser calls: in range, leaf is `i8`.
@@ -753,7 +791,8 @@ fn the_three_aggregate_index_walks_agree_at_the_u32_boundary() -> Result<(), IrE
 
     // Walk 3, the verifier's: must reach the same verdict, or llvmkit rejects
     // a module it just built.
-    m.verify()
+    module
+        .verify()
         .map_err(|e| panic!("the verifier disagreed with the builder and the parser: {e:?}"))
         .ok();
     Ok(())

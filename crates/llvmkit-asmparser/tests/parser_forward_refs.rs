@@ -9,8 +9,8 @@ use llvmkit_ir::Module;
 use llvmkit_ir::module_new;
 
 fn parse_and_render(src: &str) -> String {
-    let module = Module::dynamic("forward_refs");
-    Parser::new(src.as_bytes(), &module)
+    let mut module = Module::dynamic("forward_refs");
+    Parser::new(src.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
@@ -18,16 +18,16 @@ fn parse_and_render(src: &str) -> String {
 }
 
 fn parse_err(src: &str) -> ParseError {
-    let module = Module::dynamic("forward_refs");
-    Parser::new(src.as_bytes(), &module)
+    let mut module = Module::dynamic("forward_refs");
+    Parser::new(src.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect_err("parser rejects malformed input")
 }
 
 fn parse_ok(src: &str) {
-    let module = Module::dynamic("forward_refs");
-    Parser::new(src.as_bytes(), &module)
+    let mut module = Module::dynamic("forward_refs");
+    Parser::new(src.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
@@ -83,8 +83,8 @@ fn numbered_slots_may_not_go_backwards() {
             "function expected to be numbered '@11' or greater",
         ),
     ] {
-        let module = Module::dynamic("skip_value_numbers_invalid");
-        let err = Parser::new(fixture, &module)
+        let mut module = Module::dynamic("skip_value_numbers_invalid");
+        let err = Parser::new(fixture, module.layout_token())
             .expect("lexer primes")
             .parse_module()
             .expect_err("fixture is rejected");
@@ -106,8 +106,8 @@ fn numbered_slots_may_skip_ahead() {
         include_bytes!("fixtures/upstream/skip-value-numbers/instr_skip_ahead.ll").as_slice(),
         include_bytes!("fixtures/upstream/skip-value-numbers/blocks_skip_ahead.ll").as_slice(),
     ] {
-        let module = Module::dynamic("skip_value_numbers");
-        Parser::new(fixture, &module)
+        let mut module = Module::dynamic("skip_value_numbers");
+        Parser::new(fixture, module.layout_token())
             .expect("lexer primes")
             .parse_module()
             .expect("upstream accepts skipped-ahead numbering");
@@ -126,10 +126,10 @@ fn numbered_slots_may_skip_ahead() {
 /// `setInstName`'s numbering path.
 #[test]
 fn invalid_numbered_var_reports_the_defining_type() {
-    let module = Module::dynamic("invalid_numbered_var");
+    let mut module = Module::dynamic("invalid_numbered_var");
     let err = Parser::new(
         include_bytes!("fixtures/upstream/invalid-numbered-var/invalid_numbered_var.ll"),
-        &module,
+        module.layout_token(),
     )
     .expect("lexer primes")
     .parse_module()
@@ -240,10 +240,10 @@ fn unresolved_global_reference_is_rejected() {
 /// it — the module-level twin of the function-local machinery above.
 #[test]
 fn unnamed_global_forward_reference_resolves() {
-    let module = Module::dynamic("unnamed_forward_ref");
+    let mut module = Module::dynamic("unnamed_forward_ref");
     Parser::new(
         include_bytes!("fixtures/upstream/unnamed-forward-ref/unnamed_forward_ref.ll"),
-        &module,
+        module.layout_token(),
     )
     .expect("lexer primes")
     .parse_module()
@@ -395,8 +395,8 @@ fn undefined_block_label_is_rejected() {
 /// SlotMappingTest)`: numbered declarations populate global slots.
 #[test]
 fn numbered_declare_records_slot_mapping() {
-    let module = module_new!("numbered_declare").expect("fresh module");
-    let parsed = Parser::new(b"declare void @0()\n", &module)
+    let mut module = module_new!("numbered_declare").expect("fresh module");
+    let parsed = Parser::new(b"declare void @0()\n", module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");

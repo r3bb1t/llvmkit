@@ -62,7 +62,9 @@ fn str_bool_attribute_reads_true_false_and_absent() -> Result<(), IrError> {
 /// `unittests/IR/AttributesTest.cpp::TEST(Attributes, AddAttributes)`.
 #[test]
 fn function_with_noundef_param_and_return() -> Result<(), IrError> {
-    let m = module_new!("p")?;
+    let mut module = module_new!("p")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m
@@ -72,8 +74,8 @@ fn function_with_noundef_param_and_return() -> Result<(), IrError> {
         .param_attribute(0, AttrKind::NoUndef)
         .param_name(0, "x")
         .build()?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     b.ret(x)?;
 
@@ -93,7 +95,9 @@ fn function_with_noundef_param_and_return() -> Result<(), IrError> {
 /// (`zeroext` keyword) defined in `lib/IR/AsmWriter.cpp`.
 #[test]
 fn attribute_added_via_attribute_method_path() -> Result<(), IrError> {
-    let m = module_new!("p")?;
+    let mut module = module_new!("p")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m
@@ -104,8 +108,8 @@ fn attribute_added_via_attribute_method_path() -> Result<(), IrError> {
         )
         .param_name(0, "n")
         .build()?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     b.ret(n)?;
 

@@ -27,12 +27,12 @@ fn main() {
         .as_function();
     let left_target = left.view(f).append_basic_block(&left, "target");
 
-    let right = Module::branded::<Right, _>("right").unwrap();
+    let mut right_module = Module::branded::<Right, _>("right").unwrap(); let mut right_key = right_module.layout_token(); let right = right_key.module();
     let f = right
         .add_typed_function::<(), (), _>("right_f", Linkage::External)
         .unwrap()
         .as_function();
     let entry = right.view(f).append_basic_block(&right, "entry");
-    let builder = IrBuilder::new_for::<()>(&right).position_at_end(entry);
+    let builder = IrBuilder::new_for::<()>(&mut right_key).position_at_end(entry);
     let _ = builder.br(left_target);
 }

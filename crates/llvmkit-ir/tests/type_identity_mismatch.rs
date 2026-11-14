@@ -60,7 +60,9 @@ fn rendered_type_agrees_with_the_type_it_came_from() -> Result<(), IrError> {
 /// because both sides would then render the same word.
 #[test]
 fn same_kind_operands_still_render_distinctly() -> Result<(), IrError> {
-    let m = module_new!("identity")?;
+    let mut module = module_new!("identity")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
 
@@ -85,7 +87,7 @@ fn same_kind_operands_still_render_distinctly() -> Result<(), IrError> {
     let wrong_body = struct_i64.const_struct([i64_ty.const_int(0i64)])?;
     rejections.push(
         m.view(global)
-            .set_initializer(&m, wrong_body)
+            .set_initializer(m, wrong_body)
             .expect_err("an initializer of the wrong struct type is rejected"),
     );
 
@@ -93,8 +95,8 @@ fn same_kind_operands_still_render_distinctly() -> Result<(), IrError> {
     // widths, so both label `integer`.
     let fn_ty = m.function_type_no_parameters(m.void_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     rejections.push(
         b.select_erased(
             m.bool_type().const_int(true).as_erased(),

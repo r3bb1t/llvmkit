@@ -1188,15 +1188,17 @@ fn alias_builder_refuses_an_extern_weak_linkage() {
 #[test]
 fn an_ifunc_resolver_is_stripped_through_a_compact_zero_offset_getelementptr() -> Result<(), IrError>
 {
-    let m = module_new!("m")?;
+    let mut module = module_new!("m")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let resolver = m.add_function_dyn(
         "resolver",
         m.function_type_no_parameters(ptr_ty)?,
         Linkage::Internal,
     )?;
-    let entry = m.view(resolver).append_basic_block(&m, "entry");
-    IrBuilder::with_folder(&m, NoFolder)
+    let entry = m.view(resolver).append_basic_block(m, "entry");
+    IrBuilder::with_folder(&mut key, NoFolder)
         .position_at_end(entry)
         .ret(ptr_ty.const_null())?;
     let ifunc_ty = m.function_type_no_parameters(m.void_type())?;
@@ -1210,7 +1212,7 @@ fn an_ifunc_resolver_is_stripped_through_a_compact_zero_offset_getelementptr() -
     .build()?;
     // `AssemblyWriter::printIFunc` writes a `ConstantExpr` resolver without
     // its type: `writeOperand(Resolver, !isa<ConstantExpr>(Resolver))`.
-    let text = module_text(&m);
+    let text = module_text(m);
     assert!(
         text.contains("@zero = ifunc void (), getelementptr inbounds (i8, ptr @resolver, i64 0)"),
         "the zero-offset GEP must survive to the verifier, got:\n{text}"
@@ -1234,7 +1236,7 @@ fn an_ifunc_resolver_is_stripped_through_a_compact_zero_offset_getelementptr() -
     let compact = constant_fold_constant(gep, &dl, None)?;
     assert_ne!(compact, gep, "the fold must hand back the compact node");
     m.ifunc_builder("non_zero", ifunc_ty, compact).build()?;
-    let text = module_text(&m);
+    let text = module_text(m);
     assert!(
         text.contains(
             "@non_zero = ifunc void (), getelementptr inbounds (i8, ptr @resolver, i64 4)"

@@ -14,13 +14,15 @@ use llvmkit_ir::{
 /// (insertelement-into-poison + zero-mask shufflevector).
 #[test]
 fn build_vector_splat_expands_to_insertelement_plus_shuffle() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i8_ty = m.i8_type();
     let v_ty = VectorType::of(i8_ty, lanes::<5>());
     let fn_ty = m.function_type(v_ty, [i8_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&mut key).position_at_end(entry);
     let scalar: IntValue<'_, i8, _> = m.view(f).param(0)?.try_into()?;
     let splat = b.vector_splat_dyn(lanes::<5>(), scalar, "v")?;
     b.ret(splat.as_erased())?;
@@ -46,12 +48,14 @@ fn build_vector_splat_expands_to_insertelement_plus_shuffle() -> Result<(), IrEr
 /// `; CHECK:` directive for `getelementptr i8, ptr ..., <offset>`.
 #[test]
 fn build_ptr_add_emits_gep_i8() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(ptr_ty, [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&mut key).position_at_end(entry);
     let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let i64_ty = m.i64_type();
     let one = i64_ty.const_int(1_i64);
@@ -71,13 +75,15 @@ fn build_ptr_add_emits_gep_i8() -> Result<(), IrError> {
 /// `IRBuilder::CreateInBoundsPtrAdd`.
 #[test]
 fn build_inbounds_ptr_add_emits_gep_inbounds_i8() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(ptr_ty, [ptr_ty.as_type(), i64_ty.as_type()])?;
     let f = m.add_function_dyn("gep_inbounds", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&mut key).position_at_end(entry);
     let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let idx: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
     let q = b.inbounds_ptr_add::<_, _, i64, _>(p, idx, "gep")?;

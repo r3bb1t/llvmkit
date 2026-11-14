@@ -5259,14 +5259,16 @@ mod tests {
     /// code at all).
     #[test]
     fn typed_call_inst_result_narrows_to_callresult() -> Result<(), IrError> {
-        let m = crate::module_new!("typed-call-inst-result")?;
+        let mut module = crate::module_new!("typed-call-inst-result")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let callee = m
             .add_typed_function::<i32, (), _>("callee", Linkage::External)?
             .as_function();
         let caller_ty = m.function_type_no_parameters(m.i32_type())?;
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-        let entry = m.view(caller).append_basic_block(&m, "entry");
-        let b = crate::IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let entry = m.view(caller).append_basic_block(m, "entry");
+        let b = crate::IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
 
         let call: CallInst<'_, i32, _> =
             b.view(b.call_dyn(callee, Vec::<Value<'_, _>>::new(), "call")?);

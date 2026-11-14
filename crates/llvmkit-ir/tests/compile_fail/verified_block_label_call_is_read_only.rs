@@ -23,7 +23,7 @@ fn main() {
     // A second unverified module of the same brand: its constant is `Mutable`
     // and type-checks as the call's argument.
     let other = Module::dynamic("other");
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m"); let mut key = module.layout_token(); let m = key.module();
     let i32_ty = m.i32_type();
     let f = m
         .add_function_dyn(
@@ -33,13 +33,13 @@ fn main() {
         )
         .expect("f");
     let head = {
-        let b = IrBuilder::new_for::<Dyn>(&m);
+        let b = IrBuilder::new_for::<Dyn>(&mut key);
         let (head, _params) = b
             .append_block_typed::<(i32,), _, _>(m.view(f), "head")
             .expect("head");
         head.id()
     };
-    let m = m.verify().expect("verifies");
+    let m = module.verify().expect("verifies");
     let seven = other.i32_type().const_int(7_i32);
     let _ = m.view(head).call((seven,));
 }

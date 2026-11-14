@@ -13,16 +13,16 @@
 use llvmkit_ir::{IrBuilder, Linkage, Module, NoFolder};
 
 fn main() {
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m"); let mut key = module.layout_token(); let m = key.module();
     let i32_ty = m.i32_type();
     let f = m
         .add_function_dyn("f", m.function_type_no_parameters(i32_ty).expect("valid function type"), Linkage::External)
         .expect("f");
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let one = i32_ty.const_int(1_i32);
     let sum = b.int_add::<i32, _, _, _>(one, one, "s").expect("add");
     b.ret(m.view(sum)).expect("ret");
-    let m = m.verify().expect("verifies");
+    let m = module.verify().expect("verifies");
     let _ = m.view(sum).as_erased().sort_use_list(&[0]);
 }

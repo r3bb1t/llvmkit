@@ -13,10 +13,10 @@ struct Node {
 }
 
 fn main() -> Result<(), IrError> {
-    let m = module_new!("m")?;
+    let mut module = module_new!("m")?; let mut key = module.layout_token(); let m = key.module();
     let f = m.add_typed_function::<Node, (), _>("make", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut key,NoFolder).position_at_end(entry);
     let slot = m.view(b.alloca(m.i32_type(), "slot")?);
     let node = m.get_or_insert_struct_of::<Node>()?;
     let _ = node.build(&b, slot, "n");

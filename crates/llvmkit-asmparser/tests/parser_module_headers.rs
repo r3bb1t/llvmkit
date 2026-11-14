@@ -11,8 +11,8 @@ use llvmkit_ir::{Linkage, Module, Visibility};
 use support::{check_directives, read_check_directives};
 
 fn parse_module(src: &str) -> String {
-    let module = Module::dynamic("parser_module_headers");
-    Parser::new(src.as_bytes(), &module)
+    let mut module = Module::dynamic("parser_module_headers");
+    Parser::new(src.as_bytes(), module.layout_token())
         .expect("parser constructs")
         .parse_module()
         .expect("module parses");
@@ -71,8 +71,8 @@ fn dso_local_precedes_visibility_and_dll_storage() {
 /// orig_cpp/llvm-project-llvmorg-22.1.4/llvm/unittests` prints nothing.
 #[test]
 fn the_dso_local_bit_outlives_what_set_it() {
-    let module = Module::dynamic("dso_local_bit");
-    Parser::new(b"@g = global i32 0\n", &module)
+    let mut module = Module::dynamic("dso_local_bit");
+    Parser::new(b"@g = global i32 0\n", module.layout_token())
         .expect("parser constructs")
         .parse_module()
         .expect("module parses");
@@ -185,11 +185,14 @@ fn global_alias_round_trips() {
 #[test]
 fn common_function_linkage_is_rejected() {
     let err = {
-        let module = module_new!("parser_module_headers_invalid").expect("fresh module");
-        Parser::new(b"define common void @f() { ret void }\n", &module)
-            .expect("parser constructs")
-            .parse_module()
-            .expect_err("common function linkage rejected")
+        let mut module = module_new!("parser_module_headers_invalid").expect("fresh module");
+        Parser::new(
+            b"define common void @f() { ret void }\n",
+            module.layout_token(),
+        )
+        .expect("parser constructs")
+        .parse_module()
+        .expect_err("common function linkage rejected")
     };
     assert!(matches!(err, ParseError::Message { .. }));
     assert_eq!(err.to_string(), "invalid function linkage type");

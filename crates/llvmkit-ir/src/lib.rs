@@ -120,6 +120,7 @@ pub mod iter;
 pub(crate) mod keyed_list;
 pub mod known_bits;
 pub mod known_fp_class;
+pub mod layout_token;
 pub(crate) mod llvm_context;
 pub mod marker;
 pub mod matchers;
@@ -329,6 +330,7 @@ pub use ir_builder::{
     SelectNarrow, StoreBuilder, Unpositioned,
 };
 pub use known_bits::{AddSubOperation, KnownBits, ShiftAmountKnowledge};
+pub use layout_token::LayoutToken;
 pub use marker::{Dyn, Ptr, ReturnMarker};
 pub use metadata::{
     DwarfExpressionOperand, MetadataAttachmentKind, MetadataAttachmentSet, MetadataField,

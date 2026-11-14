@@ -19,8 +19,8 @@ use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_ir::Module;
 
 fn parse_snippet(src: &str) -> String {
-    let module = Module::dynamic("test");
-    let _ = Parser::new(src.as_bytes(), &module)
+    let mut module = Module::dynamic("test");
+    let _ = Parser::new(src.as_bytes(), module.layout_token())
         .expect("parse constructor")
         .parse_module()
         .expect("parse succeeded");
@@ -30,8 +30,8 @@ fn parse_snippet(src: &str) -> String {
 /// `opt -passes=verify` — the whole contract of an upstream `-valid` fixture.
 /// Parses, verifies, and returns the printed module.
 fn parse_verify_and_print(src: &str) -> String {
-    let module = Module::dynamic("test");
-    let _ = Parser::new(src.as_bytes(), &module)
+    let mut module = Module::dynamic("test");
+    let _ = Parser::new(src.as_bytes(), module.layout_token())
         .expect("parse constructor")
         .parse_module()
         .expect("parse succeeded");
@@ -132,8 +132,8 @@ lpad:
         let printed = parse_verify_and_print(&source(accepted));
         assert!(printed.contains(&format!("filter {accepted}")), "{printed}");
     }
-    let module = Module::dynamic("filter");
-    let _ = Parser::new(source("[1 x i8] [i8 1]").as_bytes(), &module)
+    let mut module = Module::dynamic("filter");
+    let _ = Parser::new(source("[1 x i8] [i8 1]").as_bytes(), module.layout_token())
         .expect("parse constructor")
         .parse_module()
         .expect("`parseLandingPad` asks only that a filter have array type");
@@ -373,8 +373,8 @@ fn color_eh_funclets_colours_the_wineh_fixture() {
     use std::collections::HashMap;
 
     const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/operand-bundles-wineh.ll");
-    let module = Module::dynamic("operand-bundles-wineh");
-    let _ = Parser::new(FIXTURE.as_bytes(), &module)
+    let mut module = Module::dynamic("operand-bundles-wineh");
+    let _ = Parser::new(FIXTURE.as_bytes(), module.layout_token())
         .expect("parse constructor")
         .parse_module()
         .expect("parse succeeded");
@@ -427,8 +427,8 @@ fn color_eh_funclets_colours_the_wineh_fixture() {
 fn wineh_missing_funclet_token_is_diagnosed() {
     const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/operand-bundles-wineh.ll");
 
-    let module = Module::dynamic("test");
-    let _ = Parser::new(FIXTURE.as_bytes(), &module)
+    let mut module = Module::dynamic("test");
+    let _ = Parser::new(FIXTURE.as_bytes(), module.layout_token())
         .expect("parse constructor")
         .parse_module()
         .expect("parse succeeded");
@@ -484,8 +484,8 @@ fn wineh_funclet_token_and_missing_personality_both_silence_the_rule() {
             Some("CatchSwitchInst needs to be in a function with a personality."),
         ),
     ] {
-        let module = Module::dynamic("test");
-        Parser::new(source.as_bytes(), &module)
+        let mut module = Module::dynamic("test");
+        Parser::new(source.as_bytes(), module.layout_token())
             .expect("parse constructor")
             .parse_module()
             .unwrap_or_else(|e| {
@@ -661,8 +661,8 @@ fn upstream_invalid_eh_fixture_messages_match() {
     let mut mismatches: Vec<String> = Vec::new();
     for (case, expected) in cases {
         let source = invalid_eh_case(FIXTURE, case);
-        let module = Module::dynamic("invalid_eh");
-        let parsed = Parser::new(source.as_bytes(), &module)
+        let mut module = Module::dynamic("invalid_eh");
+        let parsed = Parser::new(source.as_bytes(), module.layout_token())
             .expect("lexer primes")
             .parse_module();
         if let Err(e) = parsed {
@@ -709,8 +709,8 @@ fn invalid_eh_case(fixture: &str, case: u32) -> String {
 #[test]
 fn upstream_invalid_cleanuppad_chain_fixture_message_matches() {
     const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/invalid-cleanuppad-chain.ll");
-    let module = Module::dynamic("invalid_cleanuppad_chain");
-    Parser::new(FIXTURE.as_bytes(), &module)
+    let mut module = Module::dynamic("invalid_cleanuppad_chain");
+    Parser::new(FIXTURE.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("the fixture parses; the verifier is the layer that rejects it");
@@ -743,8 +743,8 @@ fn upstream_invalid_cleanuppad_chain_fixture_message_matches() {
 #[test]
 fn upstream_pr69428_fixture_verifies() {
     const FIXTURE: &str = include_str!("fixtures/upstream/Verifier/pr69428.ll");
-    let module = Module::dynamic("pr69428");
-    Parser::new(FIXTURE.as_bytes(), &module)
+    let mut module = Module::dynamic("pr69428");
+    Parser::new(FIXTURE.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("upstream's RUN line is `llvm-as -disable-output`: the fixture parses");
@@ -804,8 +804,8 @@ declare void @llvm.coro.resume(ptr)
         )
     };
     let verify = |text: String| {
-        let module = Module::dynamic("nounwind_group");
-        Parser::new(text.as_bytes(), &module)
+        let mut module = Module::dynamic("nounwind_group");
+        Parser::new(text.as_bytes(), module.layout_token())
             .expect("lexer primes")
             .parse_module()
             .expect("the module parses; the verifier is the layer under test");

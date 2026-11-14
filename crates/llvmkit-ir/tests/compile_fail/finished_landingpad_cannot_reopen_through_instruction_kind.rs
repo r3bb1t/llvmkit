@@ -6,7 +6,7 @@
 use llvmkit_ir::{IrBuilder, InstructionKind, Linkage, Module};
 
 fn main() {
-    let m = Module::dynamic("landingpad-kind");
+    let mut module = Module::dynamic("landingpad-kind"); let mut key = module.layout_token(); let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
@@ -14,7 +14,7 @@ fn main() {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
     let entry = m.view(f).append_basic_block(&m, "entry");
     let null_ptr = ptr_ty.const_null();
-    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&mut key).position_at_end(entry);
     let lp = b.landingpad(i32_ty.as_type(), true, "lp").unwrap();
     let closed = lp.finish();
 

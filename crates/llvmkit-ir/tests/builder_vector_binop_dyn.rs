@@ -10,7 +10,9 @@ use llvmkit_ir::{Dyn, IrBuilder, Linkage, VectorType, lanes, module_new};
 /// operands with identical vector types.
 #[test]
 fn vector_binops_emit_elementwise_ir() {
-    let m = module_new!("vbinop").expect("fresh module");
+    let mut module = module_new!("vbinop").expect("fresh module");
+    let mut key = module.layout_token();
+    let m = key.module();
     let i64_ty = m.i64_type();
     let vec_ty = VectorType::of(i64_ty, lanes::<2>());
 
@@ -21,8 +23,8 @@ fn vector_binops_emit_elementwise_ir() {
     let f = m
         .add_function_dyn("g", fn_ty, Linkage::External)
         .expect("g");
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
 
     let a = m.view(f).param(0).expect("p0").as_erased();
     let c = m.view(f).param(1).expect("p1").as_erased();
@@ -58,7 +60,9 @@ fn vector_binops_emit_elementwise_ir() {
 /// `Verifier::visitBinaryOperator` scalar integer binop type checks.
 #[test]
 fn scalar_binop_dyn_still_works() {
-    let m = module_new!("sbinop").expect("fresh module");
+    let mut module = module_new!("sbinop").expect("fresh module");
+    let mut key = module.layout_token();
+    let m = key.module();
     let i64_ty = m.i64_type();
     let fn_ty = m
         .function_type(i64_ty.as_type(), [i64_ty.as_type(), i64_ty.as_type()])
@@ -66,8 +70,8 @@ fn scalar_binop_dyn_still_works() {
     let f = m
         .add_function_dyn("h", fn_ty, Linkage::External)
         .expect("h");
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
 
     let a = m.view(f).param(0).expect("p0").as_erased();
     let c = m.view(f).param(1).expect("p1").as_erased();

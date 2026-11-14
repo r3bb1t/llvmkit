@@ -6,7 +6,7 @@
 use llvmkit_ir::{Dyn, IrBuilder, Linkage, Module, PointerValue};
 
 fn main() {
-    let m = Module::dynamic("retained-indirectbr");
+    let mut module = Module::dynamic("retained-indirectbr"); let mut key = module.layout_token(); let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty, [ptr_ty.as_type()]).expect("valid function type");
@@ -20,7 +20,7 @@ fn main() {
     // operand typing.
     let addr: PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(f).param(0).unwrap().try_into().unwrap();
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let (_sealed, ibr) = b.indirectbr(addr, "").unwrap();
 
     let _closed = ibr.finish();

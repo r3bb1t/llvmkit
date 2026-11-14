@@ -19,8 +19,8 @@ use std::collections::HashSet;
 use std::sync::{Arc, Barrier};
 
 use llvmkit_ir::{
-    BrandError, Dyn, DynBrand, IntValue, IrBuilder, IrError, Linkage, Module, ModuleBrand,
-    UniqueBrand, Unverified, module_new,
+    BrandError, Dyn, DynBrand, IntValue, IrBuilder, IrError, LayoutToken, Linkage, Module,
+    ModuleBrand, UniqueBrand, Unverified, module_new,
 };
 
 /// Declare a brand type exactly as a user would: a bare unit struct and the
@@ -41,16 +41,18 @@ fn bare_brand_builds_a_module() {
     struct Bare;
     impl ModuleBrand for Bare {}
 
-    let m = Module::branded::<Bare, _>("bare").expect("brand is free");
+    let mut module = Module::branded::<Bare, _>("bare").expect("brand is free");
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m
         .add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)
         .expect("declare");
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::at_end(&mut key, entry);
     let (lhs, rhs) = m.view(f).params();
     let sum = b.int_add(lhs, rhs, "sum").expect("add");
     b.ret(sum).expect("ret");
-    let verified = m.verify().expect("verifies");
+    let verified = module.verify().expect("verifies");
     assert!(format!("{verified}").contains("define i32 @add"));
 }
 
@@ -355,24 +357,25 @@ fn a_named_brand_emits_byte_identical_ir() -> Result<(), IrError> {
     brand!(Emitting);
 
     fn build<'ctx, B: ModuleBrand + 'ctx>(
-        module: &'ctx Module<B, Unverified>,
+        key: &mut LayoutToken<'ctx, B>,
     ) -> Result<String, IrError> {
+        let module = key.module();
         let i32_ty = module.i32_type();
         let fn_ty = module.function_type(i32_ty, [i32_ty.as_type()])?;
         let f = module.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = module.view(f).append_basic_block(module, "entry");
-        let builder = IrBuilder::new_for::<Dyn>(module).position_at_end(entry);
+        let builder = IrBuilder::new_for::<Dyn>(key).position_at_end(entry);
         let n: IntValue<'_, i32, _> = module.view(f).param(0)?.try_into()?;
         let sum = builder.int_add(n, 1_i32, "sum")?;
         builder.ret(sum)?;
         Ok(format!("{module}"))
     }
 
-    let generated = module_new!("same")?;
-    let via_generated_brand = build(&generated)?;
+    let mut generated = module_new!("same")?;
+    let via_generated_brand = build(&mut generated.layout_token())?;
 
-    let named = Module::branded::<Emitting, _>("same")?;
-    let via_named_brand = build(&named)?;
+    let mut named = Module::branded::<Emitting, _>("same")?;
+    let via_named_brand = build(&mut named.layout_token())?;
 
     assert_eq!(via_named_brand, via_generated_brand);
     assert!(

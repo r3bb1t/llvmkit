@@ -7,15 +7,15 @@
 use llvmkit_ir::{IrBuilder, Linkage, Module};
 
 fn main() {
-    let m = Module::dynamic("retained-block");
+    let mut module = Module::dynamic("retained-block"); let mut key = module.layout_token(); let m = key.module();
     let f = m
         .add_typed_function::<(), (), _>("f", Linkage::External)
         .unwrap()
         .as_function();
     let entry = m.view(f).append_basic_block(&m, "entry");
 
-    let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<()>(&mut key).position_at_end(entry);
     b.ret_void();
 
-    let _ = IrBuilder::new_for::<()>(&m).position_at_end(entry);
+    let _ = IrBuilder::new_for::<()>(&mut key).position_at_end(entry);
 }

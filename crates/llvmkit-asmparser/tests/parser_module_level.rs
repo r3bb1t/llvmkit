@@ -12,8 +12,8 @@ pub mod support;
 
 use support::{rejection_at, reported_line_and_column};
 
-fn parse_into<B: ModuleBrand>(src: &str, m: &Module<B>) {
-    Parser::new(src.as_bytes(), m)
+fn parse_into<B: ModuleBrand>(src: &str, m: &mut Module<B>) {
+    Parser::new(src.as_bytes(), m.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
@@ -75,15 +75,15 @@ fn global_sanitizer_and_code_model_round_trip() {
             "@g14 = global i32 2, code_model \"large\"",
         ),
     ] {
-        let m = llvmkit_ir::Module::dynamic("global_properties");
-        parse_into(source, &m);
+        let mut m = llvmkit_ir::Module::dynamic("global_properties");
+        parse_into(source, &mut m);
         let printed = format!("{m}");
         assert!(printed.contains(expected), "{source}printed:\n{printed}");
 
         // Same module name, so the `ModuleID` header matches and the
         // comparison is about the global itself.
-        let round_tripped = llvmkit_ir::Module::dynamic("global_properties");
-        parse_into(printed.as_str(), &round_tripped);
+        let mut round_tripped = llvmkit_ir::Module::dynamic("global_properties");
+        parse_into(printed.as_str(), &mut round_tripped);
         assert_eq!(format!("{round_tripped}"), printed);
     }
 }
@@ -97,8 +97,8 @@ fn a_bad_code_model_reports_upstream_text() {
         "@g = global i32 2, code_model \"huge\"\n",
         "@g = global i32 2, code_model 4\n",
     ] {
-        let m = llvmkit_ir::Module::dynamic("bad_code_model");
-        let err = Parser::new(source.as_bytes(), &m)
+        let mut m = llvmkit_ir::Module::dynamic("bad_code_model");
+        let err = Parser::new(source.as_bytes(), m.layout_token())
             .expect("lexer primes")
             .parse_module()
             .expect_err("bad code model is rejected")
@@ -121,8 +121,8 @@ fn a_bad_code_model_reports_upstream_text() {
 #[test]
 fn local_linkage_constrains_visibility_everywhere() {
     fn parse_err(src: &str) -> String {
-        let m = llvmkit_ir::Module::dynamic("local_linkage");
-        Parser::new(src.as_bytes(), &m)
+        let mut m = llvmkit_ir::Module::dynamic("local_linkage");
+        Parser::new(src.as_bytes(), m.layout_token())
             .expect("lexer primes")
             .parse_module()
             .expect_err("local linkage with non-default visibility is rejected")
@@ -163,8 +163,8 @@ fn local_linkage_constrains_visibility_everywhere() {
 #[test]
 fn local_linkage_constrains_dll_storage_class_everywhere() {
     fn parse_err(src: &str) -> String {
-        let m = llvmkit_ir::Module::dynamic("local_linkage_dll");
-        Parser::new(src.as_bytes(), &m)
+        let mut m = llvmkit_ir::Module::dynamic("local_linkage_dll");
+        Parser::new(src.as_bytes(), m.layout_token())
             .expect("lexer primes")
             .parse_module()
             .expect_err("local linkage with a DLL storage class is rejected")
@@ -197,8 +197,8 @@ fn local_linkage_constrains_dll_storage_class_everywhere() {
 #[test]
 fn a_global_of_invalid_type_is_rejected() {
     fn parse_err(src: &str) -> String {
-        let m = llvmkit_ir::Module::dynamic("invalid_global_type");
-        Parser::new(src.as_bytes(), &m)
+        let mut m = llvmkit_ir::Module::dynamic("invalid_global_type");
+        Parser::new(src.as_bytes(), m.layout_token())
             .expect("lexer primes")
             .parse_module()
             .expect_err("invalid global value type is rejected")
@@ -235,8 +235,8 @@ fn a_global_of_invalid_type_is_rejected() {
 /// the same rejection reached by guessing rather than by the rule.
 #[test]
 fn a_declaration_linkage_global_takes_no_initializer() {
-    let m = llvmkit_ir::Module::dynamic("declaration_linkage");
-    let err = Parser::new(b"@g = external global i32 0\n".as_slice(), &m)
+    let mut m = llvmkit_ir::Module::dynamic("declaration_linkage");
+    let err = Parser::new(b"@g = external global i32 0\n".as_slice(), m.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect_err("the initializer is never consumed")
@@ -244,8 +244,8 @@ fn a_declaration_linkage_global_takes_no_initializer() {
     assert_eq!(err, "expected top-level entity");
 
     // Without the initializer it is an ordinary declaration.
-    let m = llvmkit_ir::Module::dynamic("declaration_linkage_ok");
-    parse_into("@g = external global i32\n", &m);
+    let mut m = llvmkit_ir::Module::dynamic("declaration_linkage_ok");
+    parse_into("@g = external global i32\n", &mut m);
     assert!(format!("{m}").contains("@g = external global i32"), "{m}");
 }
 
@@ -254,18 +254,21 @@ fn a_declaration_linkage_global_takes_no_initializer() {
 /// which this definition satisfies instead.
 #[test]
 fn a_redefined_global_is_rejected_but_a_forward_reference_is_not() {
-    let m = llvmkit_ir::Module::dynamic("global_redefinition");
-    let err = Parser::new(b"@g = global i32 0\n@g = global i32 1\n".as_slice(), &m)
-        .expect("lexer primes")
-        .parse_module()
-        .expect_err("a second definition of @g is a redefinition")
-        .to_string();
+    let mut m = llvmkit_ir::Module::dynamic("global_redefinition");
+    let err = Parser::new(
+        b"@g = global i32 0\n@g = global i32 1\n".as_slice(),
+        m.layout_token(),
+    )
+    .expect("lexer primes")
+    .parse_module()
+    .expect_err("a second definition of @g is a redefinition")
+    .to_string();
     assert_eq!(err, "redefinition of global '@g'");
 
     // The forward-reference half: `@p` names `@g` before `@g` exists, and the
     // later definition satisfies the reference rather than colliding with it.
-    let m = llvmkit_ir::Module::dynamic("global_forward");
-    parse_into("@p = global ptr @g\n@g = global i32 0\n", &m);
+    let mut m = llvmkit_ir::Module::dynamic("global_forward");
+    parse_into("@p = global ptr @g\n@g = global i32 0\n", &mut m);
     assert!(format!("{m}").contains("@p = global ptr @g"), "{m}");
 }
 
@@ -301,9 +304,9 @@ fn quoted_global_name_hex_escapes_print_uppercase() {
     const QUOTE_IN_NAME: &str =
         include_str!("fixtures/upstream/assembler-corpus/2008-10-14-QuoteInName.ll");
 
-    let m = llvmkit_ir::Module::dynamic("quoted_names");
+    let mut m = llvmkit_ir::Module::dynamic("quoted_names");
     let src = format!("{QUOTE_IN_NAME}\n@\"t\\7Fag\" = global i32 0\n");
-    parse_into(&src, &m);
+    parse_into(&src, &mut m);
     let text = format!("{m}");
     // The upstream fixture's own name, round-tripped.
     assert!(text.contains(r#"@"a\22quote" = global i32 0"#), "{text}");
@@ -319,16 +322,16 @@ fn quoted_global_name_hex_escapes_print_uppercase() {
 /// neither.
 #[test]
 fn an_ifunc_takes_metadata_attachments_but_an_alias_does_not() {
-    let m = llvmkit_ir::Module::dynamic("ifunc_metadata");
+    let mut m = llvmkit_ir::Module::dynamic("ifunc_metadata");
     parse_into(
         "declare ptr @r()\n@i = ifunc i32 (i32), ptr @r, !dbg !0\n!0 = !{}\n",
-        &m,
+        &mut m,
     );
 
-    let m = llvmkit_ir::Module::dynamic("alias_metadata");
+    let mut m = llvmkit_ir::Module::dynamic("alias_metadata");
     let err = Parser::new(
         b"@g = global i32 0\n@a = alias i32, ptr @g, !dbg !0\n!0 = !{}\n".as_slice(),
-        &m,
+        m.layout_token(),
     )
     .expect("lexer primes")
     .parse_module()
@@ -345,10 +348,10 @@ fn an_ifunc_takes_metadata_attachments_but_an_alias_does_not() {
 /// them rather than asserting they reappear.
 #[test]
 fn an_ifunc_stores_but_does_not_print_the_shared_prefix_clauses() {
-    let m = llvmkit_ir::Module::dynamic("ifunc_prefix");
+    let mut m = llvmkit_ir::Module::dynamic("ifunc_prefix");
     parse_into(
         "declare ptr @r()\n@i = dllexport thread_local unnamed_addr ifunc i32 (i32), ptr @r\n",
-        &m,
+        &mut m,
     );
     let printed = format!("{m}");
     // `printIFunc` emits linkage, DSO location and visibility, then `ifunc` —
@@ -362,8 +365,8 @@ fn an_ifunc_stores_but_does_not_print_the_shared_prefix_clauses() {
     assert!(!printed.contains("thread_local"), "{printed}");
     assert!(!printed.contains("unnamed_addr"), "{printed}");
 
-    let round_tripped = llvmkit_ir::Module::dynamic("ifunc_prefix");
-    parse_into(printed.as_str(), &round_tripped);
+    let mut round_tripped = llvmkit_ir::Module::dynamic("ifunc_prefix");
+    parse_into(printed.as_str(), &mut round_tripped);
     assert_eq!(format!("{round_tripped}"), printed);
 }
 
@@ -378,10 +381,10 @@ fn an_ifunc_stores_but_does_not_print_the_shared_prefix_clauses() {
 /// unreachable. The alias half stays a parse error, as upstream has it.
 #[test]
 fn an_ifunc_linkage_is_a_verifier_rule_not_a_parse_rule() {
-    let m = llvmkit_ir::Module::dynamic("ifunc_linkage");
+    let mut m = llvmkit_ir::Module::dynamic("ifunc_linkage");
     Parser::new(
         b"declare ptr @r()\n@i = appending ifunc i32 (i32), ptr @r\n".as_slice(),
-        &m,
+        m.layout_token(),
     )
     .expect("lexer primes")
     .parse_module()
@@ -397,10 +400,10 @@ fn an_ifunc_linkage_is_a_verifier_rule_not_a_parse_rule() {
     );
 
     // The alias twin is a *parse* error, because upstream checks that one.
-    let m = llvmkit_ir::Module::dynamic("alias_linkage");
+    let mut m = llvmkit_ir::Module::dynamic("alias_linkage");
     let err = Parser::new(
         b"@g = global i32 0\n@a = appending alias i32, ptr @g\n".as_slice(),
-        &m,
+        m.layout_token(),
     )
     .expect("lexer primes")
     .parse_module()
@@ -488,8 +491,8 @@ fn assert_ifunc_verifier_fixture(fixture: &str) {
         "one CHECK per ifunc in the fixture"
     );
 
-    let whole = llvmkit_ir::Module::dynamic("ifunc_verifier_fixture_as_written");
-    parse_into(fixture, &whole);
+    let mut whole = llvmkit_ir::Module::dynamic("ifunc_verifier_fixture_as_written");
+    parse_into(fixture, &mut whole);
     let Err(llvmkit_ir::IrError::VerifierFailure {
         message, subject, ..
     }) = whole.verify_borrowed()
@@ -516,8 +519,8 @@ fn assert_ifunc_verifier_fixture(fixture: &str) {
             .filter(|line| !is_ifunc(line) || *line == ifunc)
             .map(|line| format!("{line}\n"))
             .collect();
-        let module = llvmkit_ir::Module::dynamic("ifunc_verifier_fixture");
-        parse_into(&source, &module);
+        let mut module = llvmkit_ir::Module::dynamic("ifunc_verifier_fixture");
+        parse_into(&source, &mut module);
         let Err(err) = module.verify_borrowed() else {
             panic!("{ifunc}: `llvm-as` rejects every ifunc in this fixture, but it verified");
         };
@@ -589,8 +592,8 @@ fn an_ifunc_resolver_is_stripped_through_a_zero_index_getelementptr() {
              @i = ifunc void (), ptr getelementptr inrange(0, 1) (i8, ptr @resolver, i64 {index})\n"
         )
     };
-    let m = llvmkit_ir::Module::dynamic("ifunc_zero_index_gep");
-    parse_into(&source(0), &m);
+    let mut m = llvmkit_ir::Module::dynamic("ifunc_zero_index_gep");
+    parse_into(&source(0), &mut m);
     let text = format!("{m}");
     assert!(
         text.contains("getelementptr inrange(0, 1) (i8, ptr @resolver, i64 0)"),
@@ -599,8 +602,8 @@ fn an_ifunc_resolver_is_stripped_through_a_zero_index_getelementptr() {
     m.verify_borrowed()
         .expect("a zero-index GEP is stripped to the resolver function");
 
-    let m = llvmkit_ir::Module::dynamic("ifunc_non_zero_index_gep");
-    parse_into(&source(1), &m);
+    let mut m = llvmkit_ir::Module::dynamic("ifunc_non_zero_index_gep");
+    parse_into(&source(1), &mut m);
     let err = m
         .verify_borrowed()
         .expect_err("a non-zero index stops the walk at the GEP");
@@ -631,8 +634,11 @@ fn an_ifunc_resolver_behind_a_vector_bitcast_is_no_function() {
             "define ptr @resolver() {{\n  ret ptr null\n}}\n@i = ifunc void (), ptr {resolver}\n"
         )
     };
-    let m = llvmkit_ir::Module::dynamic("ifunc_vector_bitcast");
-    parse_into(&source("bitcast (<1 x ptr> <ptr @resolver> to ptr)"), &m);
+    let mut m = llvmkit_ir::Module::dynamic("ifunc_vector_bitcast");
+    parse_into(
+        &source("bitcast (<1 x ptr> <ptr @resolver> to ptr)"),
+        &mut m,
+    );
     let text = format!("{m}");
     assert!(
         text.contains("bitcast (<1 x ptr> <ptr @resolver> to ptr)"),
@@ -646,8 +652,8 @@ fn an_ifunc_resolver_behind_a_vector_bitcast_is_no_function() {
     };
     assert_eq!(message, "IFunc must have a Function resolver");
 
-    let m = llvmkit_ir::Module::dynamic("ifunc_pointer_bitcast");
-    parse_into(&source("bitcast (ptr @resolver to ptr)"), &m);
+    let mut m = llvmkit_ir::Module::dynamic("ifunc_pointer_bitcast");
+    parse_into(&source("bitcast (ptr @resolver to ptr)"), &mut m);
     let text = format!("{m}");
     assert!(
         text.contains("@i = ifunc void (), ptr @resolver"),
@@ -682,8 +688,8 @@ fn an_ifunc_may_carry_neither_a_dbg_nor_a_prof_attachment() {
             "an ifunc may not have a !dbg attachment",
         ),
     ] {
-        let m = llvmkit_ir::Module::dynamic("ifunc_attachment");
-        parse_into(&source(attachments), &m);
+        let mut m = llvmkit_ir::Module::dynamic("ifunc_attachment");
+        parse_into(&source(attachments), &mut m);
         let err = m.verify_borrowed().expect_err("the verifier rejects it");
         let llvmkit_ir::IrError::VerifierFailure { message, .. } = err else {
             panic!("{attachments}: expected a verifier failure, got {err:?}");
@@ -691,8 +697,8 @@ fn an_ifunc_may_carry_neither_a_dbg_nor_a_prof_attachment() {
         assert_eq!(message, expected, "{attachments}");
     }
 
-    let m = llvmkit_ir::Module::dynamic("ifunc_custom_attachment");
-    parse_into(&source("!custom !0"), &m);
+    let mut m = llvmkit_ir::Module::dynamic("ifunc_custom_attachment");
+    parse_into(&source("!custom !0"), &mut m);
     m.verify_borrowed()
         .expect("a custom attachment on an ifunc verifies");
 }
@@ -712,16 +718,19 @@ fn an_ifunc_may_carry_neither_a_dbg_nor_a_prof_attachment() {
 #[test]
 fn extern_weak_is_no_valid_alias_linkage() {
     let source = "@g = global i32 0\n@a = extern_weak alias i32, ptr @g\n";
-    let m = llvmkit_ir::Module::dynamic("extern_weak_alias");
-    let err = Parser::new(source.as_bytes(), &m)
+    let mut m = llvmkit_ir::Module::dynamic("extern_weak_alias");
+    let err = Parser::new(source.as_bytes(), m.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect_err("`parseAliasOrIFunc` rejects an extern_weak alias");
     assert_eq!(err.to_string(), "invalid linkage type for alias");
     assert_eq!(reported_line_and_column(source.as_bytes(), &err), (2, 1));
 
-    let m = llvmkit_ir::Module::dynamic("weak_odr_alias");
-    parse_into("@g = global i32 0\n@a = weak_odr alias i32, ptr @g\n", &m);
+    let mut m = llvmkit_ir::Module::dynamic("weak_odr_alias");
+    parse_into(
+        "@g = global i32 0\n@a = weak_odr alias i32, ptr @g\n",
+        &mut m,
+    );
     m.verify_borrowed().expect("a weak_odr alias verifies");
 }
 
@@ -743,8 +752,8 @@ fn extern_weak_is_no_valid_alias_linkage() {
 #[test]
 fn module_entity_property_diagnostics_match_upstream_text() {
     fn parse_err(src: &str) -> String {
-        let m = llvmkit_ir::Module::dynamic("module_entity_diagnostics");
-        Parser::new(src.as_bytes(), &m)
+        let mut m = llvmkit_ir::Module::dynamic("module_entity_diagnostics");
+        Parser::new(src.as_bytes(), m.layout_token())
             .expect("lexer primes")
             .parse_module()
             .expect_err("malformed module entity is rejected")
@@ -785,10 +794,10 @@ fn module_entity_property_diagnostics_match_upstream_text() {
 #[test]
 fn target_directives_round_trip_through_asm_writer() {
     let printed = {
-        let m = module_new!("target_directives_round_trip").expect("fresh module");
+        let mut m = module_new!("target_directives_round_trip").expect("fresh module");
         parse_into(
             "target datalayout = \"e-m:e-i64:64\"\ntarget triple = \"x86_64-unknown-linux-gnu\"\n",
-            &m,
+            &mut m,
         );
         format!("{m}")
     };
@@ -801,8 +810,8 @@ fn target_directives_round_trip_through_asm_writer() {
 #[test]
 fn source_filename_round_trips_through_asm_writer() {
     let printed = {
-        let m = module_new!("source_file").expect("fresh module");
-        parse_into("source_filename = \"dir/file.c\"\n", &m);
+        let mut m = module_new!("source_file").expect("fresh module");
+        parse_into("source_filename = \"dir/file.c\"\n", &mut m);
         format!("{m}")
     };
     assert!(
@@ -821,10 +830,10 @@ fn source_filename_round_trips_through_asm_writer() {
 #[test]
 fn top_level_comdat_round_trips() {
     let printed = {
-        let m = module_new!("comdat_module").expect("fresh module");
+        let mut m = module_new!("comdat_module").expect("fresh module");
         parse_into(
             "$foo = comdat largest\n@g = global i32 0, comdat($foo)\n",
-            &m,
+            &mut m,
         );
         format!("{m}")
     };
@@ -855,7 +864,7 @@ fn top_level_comdat_round_trips() {
 #[test]
 fn the_comdat_block_is_first_use_order_over_functions_then_globals() {
     let printed = {
-        let m = module_new!("comdat_order").expect("fresh module");
+        let mut m = module_new!("comdat_order").expect("fresh module");
         parse_into(
             "$a = comdat any\n\
              $b = comdat largest\n\
@@ -865,7 +874,7 @@ fn the_comdat_block_is_first_use_order_over_functions_then_globals() {
              entry:\n\
              \x20 ret void\n\
              }\n",
-            &m,
+            &mut m,
         );
         format!("{m}")
     };
@@ -885,8 +894,8 @@ fn the_comdat_block_is_first_use_order_over_functions_then_globals() {
 #[test]
 fn global_externally_initialized_round_trips() {
     let printed = {
-        let m = module_new!("global_externally_initialized").expect("fresh module");
-        parse_into("@g = externally_initialized global i32 0\n", &m);
+        let mut m = module_new!("global_externally_initialized").expect("fresh module");
+        parse_into("@g = externally_initialized global i32 0\n", &mut m);
         format!("{m}")
     };
     assert!(
@@ -898,8 +907,8 @@ fn global_externally_initialized_round_trips() {
 #[test]
 fn global_linkage_round_trips() {
     let printed = {
-        let m = module_new!("global_linkage").expect("fresh module");
-        parse_into("@g = weak_odr global i32 0\n", &m);
+        let mut m = module_new!("global_linkage").expect("fresh module");
+        parse_into("@g = weak_odr global i32 0\n", &mut m);
         format!("{m}")
     };
     assert!(
@@ -912,8 +921,8 @@ fn global_linkage_round_trips() {
 #[test]
 fn global_visibility_round_trips() {
     let printed = {
-        let m = module_new!("global_visibility").expect("fresh module");
-        parse_into("@g = hidden global i32 0\n", &m);
+        let mut m = module_new!("global_visibility").expect("fresh module");
+        parse_into("@g = hidden global i32 0\n", &mut m);
         format!("{m}")
     };
     assert!(
@@ -925,8 +934,8 @@ fn global_visibility_round_trips() {
 #[test]
 fn global_dll_storage_round_trips() {
     let printed = {
-        let m = module_new!("global_dll_storage").expect("fresh module");
-        parse_into("@g = dllexport global i32 0\n", &m);
+        let mut m = module_new!("global_dll_storage").expect("fresh module");
+        parse_into("@g = dllexport global i32 0\n", &mut m);
         format!("{m}")
     };
     assert!(
@@ -938,8 +947,8 @@ fn global_dll_storage_round_trips() {
 #[test]
 fn global_tls_mode_round_trips() {
     let printed = {
-        let m = module_new!("global_tls").expect("fresh module");
-        parse_into("@g = thread_local(initialexec) global i32 0\n", &m);
+        let mut m = module_new!("global_tls").expect("fresh module");
+        parse_into("@g = thread_local(initialexec) global i32 0\n", &mut m);
         format!("{m}")
     };
     assert!(
@@ -952,8 +961,8 @@ fn global_tls_mode_round_trips() {
 #[test]
 fn global_unnamed_addr_round_trips() {
     let printed = {
-        let m = module_new!("global_unnamed_addr").expect("fresh module");
-        parse_into("@g = local_unnamed_addr global i32 0\n", &m);
+        let mut m = module_new!("global_unnamed_addr").expect("fresh module");
+        parse_into("@g = local_unnamed_addr global i32 0\n", &mut m);
         format!("{m}")
     };
     assert!(
@@ -966,8 +975,8 @@ fn global_unnamed_addr_round_trips() {
 #[test]
 fn global_addrspace_round_trips() {
     let printed = {
-        let m = module_new!("global_addrspace").expect("fresh module");
-        parse_into("@g = addrspace(3) global i32 0\n", &m);
+        let mut m = module_new!("global_addrspace").expect("fresh module");
+        parse_into("@g = addrspace(3) global i32 0\n", &mut m);
         format!("{m}")
     };
     assert!(
@@ -981,10 +990,10 @@ fn global_addrspace_round_trips() {
 #[test]
 fn global_trailing_attributes_round_trip() {
     let printed = {
-        let m = module_new!("global_trailing_attrs").expect("fresh module");
+        let mut m = module_new!("global_trailing_attrs").expect("fresh module");
         parse_into(
             "$foo = comdat any\n@g = global i32 0, section \".data\", partition \"part\", comdat($foo), align 8\n",
-            &m,
+            &mut m,
         );
         format!("{m}")
     };
@@ -1002,10 +1011,10 @@ fn global_trailing_attributes_round_trip() {
 #[test]
 fn module_asm_directives_accumulate() {
     let asm = {
-        let m = module_new!("module_asm").expect("fresh module");
+        let mut m = module_new!("module_asm").expect("fresh module");
         parse_into(
             "module asm \"first line\"\nmodule asm \"second line\"\n",
-            &m,
+            &mut m,
         );
         m.module_asm()
     };
@@ -1018,8 +1027,8 @@ fn module_asm_directives_accumulate() {
 /// definition is encountered.
 #[test]
 fn named_struct_forward_reference_resolves() {
-    let m = module_new!("recursive_named").expect("fresh module");
-    let parser = Parser::new(b"%self = type { ptr }\n", &m).unwrap();
+    let mut m = module_new!("recursive_named").expect("fresh module");
+    let parser = Parser::new(b"%self = type { ptr }\n", m.layout_token()).unwrap();
     let parsed = parser.parse_module().expect("parser succeeds");
     // The named-type table records the definition so external callers can
     // resolve `%self` against this module.
@@ -1030,8 +1039,8 @@ fn named_struct_forward_reference_resolves() {
 /// declarator ingestion proves both compositions work end-to-end.
 #[test]
 fn array_and_vector_types_parse() {
-    let m = module_new!("aggregate_types").expect("fresh module");
-    parse_into("declare void @takes([4 x i32], <8 x float>)\n", &m);
+    let mut m = module_new!("aggregate_types").expect("fresh module");
+    parse_into("declare void @takes([4 x i32], <8 x float>)\n", &mut m);
     let f = m.view(m.function_dyn("takes").expect("function present"));
     let params: Vec<_> = f.signature().params().collect();
     assert_eq!(params.len(), 2);
@@ -1049,8 +1058,8 @@ fn array_and_vector_types_parse() {
 /// Ports the `<vscale x N x T>` arm of `LLParser::parseType`.
 #[test]
 fn scalable_vector_type_parses() {
-    let m = module_new!("scalable_vec").expect("fresh module");
-    parse_into("declare void @sv(<vscale x 4 x i32>)\n", &m);
+    let mut m = module_new!("scalable_vec").expect("fresh module");
+    parse_into("declare void @sv(<vscale x 4 x i32>)\n", &mut m);
     let f = m.view(m.function_dyn("sv").expect("function present"));
     let params: Vec<_> = f.signature().params().collect();
     let v = match AnyTypeEnum::from(params[0]) {
@@ -1065,8 +1074,8 @@ fn scalable_vector_type_parses() {
 #[test]
 fn variadic_declaration_round_trips() {
     let printed = {
-        let m = module_new!("variadic_decl").expect("fresh module");
-        parse_into("declare i32 @printf(ptr, ...)\n", &m);
+        let mut m = module_new!("variadic_decl").expect("fresh module");
+        parse_into("declare i32 @printf(ptr, ...)\n", &mut m);
         format!("{m}")
     };
     assert!(
@@ -1081,8 +1090,8 @@ fn variadic_declaration_round_trips() {
 /// upstream's `NumberedVals`.
 #[test]
 fn numbered_global_records_in_slot_mapping() {
-    let m = module_new!("numbered_globals").expect("fresh module");
-    let parser = Parser::new(b"@0 = global i32 0\n@1 = global i32 1\n", &m).unwrap();
+    let mut m = module_new!("numbered_globals").expect("fresh module");
+    let parser = Parser::new(b"@0 = global i32 0\n@1 = global i32 1\n", m.layout_token()).unwrap();
     let parsed = parser.parse_module().expect("parser succeeds");
     assert_eq!(parsed.slot_mapping.global_values.next_unused_id(), 2);
     assert!(parsed.slot_mapping.global_values.get(0).is_some());
@@ -1100,8 +1109,8 @@ fn numbered_global_records_in_slot_mapping() {
 #[test]
 fn void_in_value_position_is_rejected() {
     let err = {
-        let m = module_new!("reject_void").expect("fresh module");
-        let parser = Parser::new(b"@x = global void 0\n", &m).unwrap();
+        let mut m = module_new!("reject_void").expect("fresh module");
+        let parser = Parser::new(b"@x = global void 0\n", m.layout_token()).unwrap();
         parser.parse_module().unwrap_err()
     };
     assert_eq!(
@@ -1137,8 +1146,8 @@ fn a_void_argument_is_refused_by_parse_type_not_by_the_dead_guard() {
             "void %x",
         ),
     ] {
-        let module = llvmkit_ir::Module::dynamic("void_argument");
-        let error = Parser::new(source.as_bytes(), &module)
+        let mut module = llvmkit_ir::Module::dynamic("void_argument");
+        let error = Parser::new(source.as_bytes(), module.layout_token())
             .expect("lexer primes")
             .parse_module()
             .expect_err("upstream runs `not llvm-as` on a void argument");
@@ -1163,8 +1172,8 @@ fn a_void_argument_is_refused_by_parse_type_not_by_the_dead_guard() {
 #[test]
 fn unknown_top_level_entity_is_typed_error() {
     let err = {
-        let m = module_new!("unknown_top_level").expect("fresh module");
-        let parser = Parser::new(b"42 i32\n", &m).unwrap();
+        let mut m = module_new!("unknown_top_level").expect("fresh module");
+        let parser = Parser::new(b"42 i32\n", m.layout_token()).unwrap();
         parser.parse_module().unwrap_err()
     };
     assert!(format!("{err}").contains("top-level entity"));
@@ -1246,8 +1255,8 @@ fn the_header_checks_its_argument_types() {
         include_bytes!("fixtures/upstream/invalid-label.ll").as_slice(),
         include_bytes!("fixtures/upstream/2007-01-02-Undefined-Arg-Type.ll").as_slice(),
     ] {
-        let m = llvmkit_ir::Module::dynamic("invalid_argument_type");
-        let err = Parser::new(fixture, &m)
+        let mut m = llvmkit_ir::Module::dynamic("invalid_argument_type");
+        let err = Parser::new(fixture, m.layout_token())
             .expect("lexer primes")
             .parse_module()
             .expect_err("fixture is rejected")
@@ -1284,8 +1293,8 @@ fn a_declaration_checks_its_argument_numbering() {
 
     // A name in between does not advance the counter, so `%1` is still the
     // next legal number after `%0`.
-    let m = llvmkit_ir::Module::dynamic("named_argument_numbering");
-    parse_into("declare void @f(i32 %0, i32 %named, i32 %1)\n", &m);
+    let mut m = llvmkit_ir::Module::dynamic("named_argument_numbering");
+    parse_into("declare void @f(i32 %0, i32 %named, i32 %1)\n", &mut m);
 }
 
 /// A *numbered* argument is legal in a function type. `parseArgumentList`
@@ -1296,8 +1305,8 @@ fn a_declaration_checks_its_argument_numbering() {
 /// llvmkit rejected both spellings, which was stricter than upstream.
 #[test]
 fn a_function_type_accepts_a_numbered_argument_but_not_a_named_one() {
-    let m = llvmkit_ir::Module::dynamic("function_type_argument_names");
-    parse_into("%s = type i32 (i32 %0)\n", &m);
+    let mut m = llvmkit_ir::Module::dynamic("function_type_argument_names");
+    parse_into("%s = type i32 (i32 %0)\n", &mut m);
 
     assert_eq!(
         header_err("%s = type i32 (i32 %x)\n"),
@@ -1373,11 +1382,11 @@ fn a_function_redefinition_is_rejected() {
 /// call site.
 #[test]
 fn a_forward_referenced_function_is_not_a_redefinition() {
-    let m = llvmkit_ir::Module::dynamic("forward_referenced_function");
+    let mut m = llvmkit_ir::Module::dynamic("forward_referenced_function");
     parse_into(
         "define void @g() {\nentry:\n  call void @f()\n  ret void\n}\n\
          define void @f() {\nentry:\n  ret void\n}\n",
-        &m,
+        &mut m,
     );
     let printed = format!("{m}");
     assert!(printed.contains("define void @f()"), "{printed}");
@@ -1398,17 +1407,17 @@ fn a_forward_referenced_function_is_not_a_redefinition() {
 #[test]
 fn the_header_clause_chain_is_a_fixed_sequence() {
     // In order: accepted.
-    let m = llvmkit_ir::Module::dynamic("clause_order_ok");
+    let mut m = llvmkit_ir::Module::dynamic("clause_order_ok");
     parse_into(
         "define void @f() section \"s\" align 8 gc \"g\" {\nentry:\n  ret void\n}\n",
-        &m,
+        &mut m,
     );
     // `align` as an attribute, before `section`: also accepted, and it lands
     // in the alignment field rather than the attribute list.
-    let m = llvmkit_ir::Module::dynamic("clause_order_align_attr");
+    let mut m = llvmkit_ir::Module::dynamic("clause_order_align_attr");
     parse_into(
         "define void @f() align 8 section \"s\" {\nentry:\n  ret void\n}\n",
-        &m,
+        &mut m,
     );
     let printed = format!("{m}");
     assert!(printed.contains("section \"s\""), "{printed}");
@@ -1447,10 +1456,10 @@ fn builtin_is_not_a_function_attribute() {
     }
 
     // The call-site spelling stays legal.
-    let m = llvmkit_ir::Module::dynamic("builtin_call_site");
+    let mut m = llvmkit_ir::Module::dynamic("builtin_call_site");
     parse_into(
         "declare void @g()\ndefine void @f() {\nentry:\n  call void @g() builtin\n  ret void\n}\n",
-        &m,
+        &mut m,
     );
 }
 
@@ -1464,10 +1473,10 @@ fn an_sret_first_argument_forces_a_void_return() {
     );
 
     // Void return: fine. `sret` on a later parameter: not this rule.
-    let m = llvmkit_ir::Module::dynamic("sret_ok");
-    parse_into("declare void @f(ptr sret(i32) %p)\n", &m);
-    let m = llvmkit_ir::Module::dynamic("sret_second_param");
-    parse_into("declare i32 @f(ptr %a, ptr sret(i32) %p)\n", &m);
+    let mut m = llvmkit_ir::Module::dynamic("sret_ok");
+    parse_into("declare void @f(ptr sret(i32) %p)\n", &mut m);
+    let mut m = llvmkit_ir::Module::dynamic("sret_second_param");
+    parse_into("declare i32 @f(ptr %a, ptr sret(i32) %p)\n", &mut m);
 }
 
 /// `parseFunctionHeader`'s tail, reached only when `IsDefine` is false: a
@@ -1495,8 +1504,8 @@ fn the_function_body_frame_matches_upstream_text() {
         include_bytes!("fixtures/upstream/align-param-attr-error1.ll").as_slice(),
         include_bytes!("fixtures/upstream/mustprogress-parse-error-2.ll").as_slice(),
     ] {
-        let m = llvmkit_ir::Module::dynamic("function_body_brace");
-        let err = Parser::new(fixture, &m)
+        let mut m = llvmkit_ir::Module::dynamic("function_body_brace");
+        let err = Parser::new(fixture, m.layout_token())
             .expect("lexer primes")
             .parse_module()
             .expect_err("fixture is rejected")
@@ -1507,8 +1516,8 @@ fn the_function_body_frame_matches_upstream_text() {
     // `test/Assembler/2004-03-30-UnclosedFunctionCrash.ll`
     let unclosed =
         include_bytes!("fixtures/upstream/2004-03-30-UnclosedFunctionCrash.ll").as_slice();
-    let m = llvmkit_ir::Module::dynamic("unclosed_function");
-    let err = Parser::new(unclosed, &m)
+    let mut m = llvmkit_ir::Module::dynamic("unclosed_function");
+    let err = Parser::new(unclosed, m.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect_err("fixture is rejected");
@@ -1522,8 +1531,8 @@ fn the_function_body_frame_matches_upstream_text() {
     // the name **without** a `%`, unlike its `redefinition of ...` family.
     let symbol_table_crash =
         include_bytes!("fixtures/upstream/2003-11-24-SymbolTableCrash.ll").as_slice();
-    let m = llvmkit_ir::Module::dynamic("symbol_table_crash");
-    let err = Parser::new(symbol_table_crash, &m)
+    let mut m = llvmkit_ir::Module::dynamic("symbol_table_crash");
+    let err = Parser::new(symbol_table_crash, m.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect_err("fixture is rejected");
@@ -1556,11 +1565,11 @@ fn the_function_body_frame_matches_upstream_text() {
 /// at any point, so a block after a directive parsed.
 #[test]
 fn uselistorder_directives_come_after_every_block() {
-    let m = llvmkit_ir::Module::dynamic("uselistorder_placement");
+    let mut m = llvmkit_ir::Module::dynamic("uselistorder_placement");
     parse_into(
         "define i32 @f(i32 %a) {\nentry:\n  %b = add i32 %a, %a\n  ret i32 %b\n\
          uselistorder i32 %a, { 1, 0 }\n}\n",
-        &m,
+        &mut m,
     );
 
     // Once the directives start, the only things left are more directives or
@@ -1871,10 +1880,10 @@ fn a_definition_claims_its_own_forward_reference() {
 /// line.
 #[test]
 fn module_asm_block_is_preceded_by_a_blank_line() {
-    let m = module_new!("module_asm_blank").expect("fresh module");
+    let mut m = module_new!("module_asm_blank").expect("fresh module");
     parse_into(
         "module asm \"first line\"\nmodule asm \"second line\"\n",
-        &m,
+        &mut m,
     );
     let printed = format!("{m}");
     assert_eq!(
@@ -1910,13 +1919,13 @@ module asm \"second line\"\n",
 /// line.
 #[test]
 fn consecutive_comdats_are_separated_by_a_blank_line() {
-    let m = module_new!("comdat_separator").expect("fresh module");
+    let mut m = module_new!("comdat_separator").expect("fresh module");
     parse_into(
         "$a = comdat any\n\
 $b = comdat largest\n\
 @g = global i32 0, comdat($a)\n\
 @h = global i32 0, comdat($b)\n",
-        &m,
+        &mut m,
     );
     let printed = format!("{m}");
     assert_eq!(
@@ -1946,11 +1955,11 @@ $b = comdat largest\n\
 /// spelling, which is what makes the two halves round-trip.
 #[test]
 fn a_self_typed_addrspacecast_aliasee_round_trips() {
-    let m = module_new!("addrspacecast_alias").expect("fresh module");
+    let mut m = module_new!("addrspacecast_alias").expect("fresh module");
     parse_into(
         "@i = internal addrspace(1) global i8 42\n\
 @ia = internal alias ptr addrspace(2), addrspacecast (ptr addrspace(1) @i to ptr addrspace(3))\n",
-        &m,
+        &mut m,
     );
     let printed = format!("{m}");
     assert!(
@@ -1973,7 +1982,7 @@ fn a_self_typed_addrspacecast_aliasee_round_trips() {
 /// which every `GlobalValue`, alias included, qualifies.
 #[test]
 fn an_alias_forward_referenced_from_a_constant_expression_resolves() {
-    let m = module_new!("alias_use_list_order").expect("fresh module");
+    let mut m = module_new!("alias_use_list_order").expect("fresh module");
     parse_into(
         "@global = global i32 0\n\
 @alias.ref1 = global ptr getelementptr inbounds (i32, ptr @alias, i64 1)\n\
@@ -1981,7 +1990,7 @@ fn an_alias_forward_referenced_from_a_constant_expression_resolves() {
 @alias = alias i32, ptr @global\n\
 @alias.ref3 = alias i32, getelementptr inbounds (i32, ptr @alias, i64 1)\n\
 @alias.ref4 = alias i32, getelementptr inbounds (i32, ptr @alias, i64 1)\n",
-        &m,
+        &mut m,
     );
     let printed = format!("{m}");
     assert!(
@@ -2009,8 +2018,8 @@ fn an_alias_forward_referenced_from_a_constant_expression_resolves() {
 /// token alone and says nothing about `IsAlias`.
 #[test]
 fn a_self_typed_ifunc_resolver_parses() {
-    let m = module_new!("ifunc_self_typed_resolver").expect("fresh module");
-    parse_into("@h = ifunc i32 (), inttoptr (i64 42 to ptr)\n", &m);
+    let mut m = module_new!("ifunc_self_typed_resolver").expect("fresh module");
+    parse_into("@h = ifunc i32 (), inttoptr (i64 42 to ptr)\n", &mut m);
     let printed = format!("{m}");
     assert!(
         printed.contains("@h = ifunc i32 (), inttoptr (i64 42 to ptr)"),

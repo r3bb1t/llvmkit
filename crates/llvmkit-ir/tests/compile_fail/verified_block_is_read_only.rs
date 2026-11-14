@@ -33,7 +33,7 @@ fn call_at_any_capability<'a, C: Capability>(
 }
 
 fn main() {
-    let other = Module::dynamic("other");
+    let mut other_module = Module::dynamic("other"); let mut other_key = other_module.layout_token(); let other = other_key.module();
     let g = other
         .add_function_dyn(
             "g",
@@ -43,7 +43,7 @@ fn main() {
         .expect("g");
     let dest = other.view(g).append_basic_block(&other, "dest");
 
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m"); let mut key = module.layout_token(); let m = key.module();
     let i32_ty = m.i32_type();
     let f = m
         .add_function_dyn(
@@ -53,20 +53,20 @@ fn main() {
         )
         .expect("f");
     let entry = m.view(f).append_basic_block(&m, "entry");
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(entry)
         .ret(i32_ty.const_int(0_i32))
         .expect("ret");
-    let m = m.verify().expect("verifies");
+    let m = module.verify().expect("verifies");
     let block = || m.view(f).entry_block().expect("a definition");
     let first = block().instructions().next().expect("the ret");
 
     block().set_name(&other, "renamed").expect("set");
     block().clear_name(&other);
     SetName::set_name(block(), &other, "renamed").expect("set");
-    block().splice_into(&other, dest).expect("splice");
-    let _ = block().split_at(&other, &first, "tail");
-    let _ = block().split_before(&other, &first, "tail");
+    block().splice_into(&mut other_key, dest).expect("splice");
+    let _ = block().split_at(&mut other_key, &first, "tail");
+    let _ = block().split_before(&mut other_key, &first, "tail");
     block()
         .parent_function()
         .expect("attached")

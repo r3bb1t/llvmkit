@@ -11,8 +11,8 @@
 
 use llvmkit_ir::{
     Constant, ConstantFolder, Dyn, DynBrand, ElemDyn, FunctionValue, IntoConstantValue,
-    IntrinsicId, IntrinsicInst, IrBuilder, IrError, LenDyn, Linkage, Module, PositionedAtEnd, Type,
-    VectorType, lanes,
+    IntrinsicId, IntrinsicInst, IrBuilder, IrError, LayoutToken, LenDyn, Linkage, Module,
+    PositionedAtEnd, Type, VectorType, lanes,
 };
 
 fn intrinsic(name: &str) -> IntrinsicId {
@@ -73,16 +73,19 @@ impl Fixture {
         Self { m }
     }
 
-    /// `IRBuilder<> Builder(BB)`.
-    fn builder(&self) -> IrBuilder<'_, '_, DynBrand, ConstantFolder, PositionedAtEnd, Dyn> {
-        let test = self.m.function_dyn("test").expect("declared in `set_up`");
-        let block = self.m.view(test).append_basic_block(&self.m, "");
-        IrBuilder::new_for::<Dyn>(&self.m).position_at_end(block)
+    /// `IRBuilder<> Builder(BB)`, over the layout token of the fixture's
+    /// module (`f.m.layout_token()`).
+    fn builder<'k, 'm>(
+        key: &'k mut LayoutToken<'m, DynBrand>,
+    ) -> IrBuilder<'k, 'm, DynBrand, ConstantFolder, PositionedAtEnd, Dyn> {
+        let m = key.module();
+        let test = m.function_dyn("test").expect("declared in `set_up`");
+        let block = m.view(test).append_basic_block(m, "");
+        IrBuilder::new_for::<Dyn>(key).position_at_end(block)
     }
 
     /// `Constant::getNullValue` of `ty`, a vector of `element`.
     fn null_vector<'m, E>(
-        &'m self,
         ty: VectorType<'m, ElemDyn, LenDyn, DynBrand>,
         element: E,
     ) -> Constant<'m, DynBrand>
@@ -227,9 +230,10 @@ fn upstream_different_overloads() {
 /// Port of `TEST_F(IntrinsicsTest, IRBuilderCreateIntrinsicScalar)`.
 #[test]
 fn upstream_ir_builder_create_intrinsic_scalar() {
-    let f = Fixture::set_up();
-    let m = &f.m;
-    let builder = f.builder();
+    let mut f = Fixture::set_up();
+    let mut key = f.m.layout_token();
+    let m = key.module();
+    let builder = Fixture::builder(&mut key);
 
     let ret_ty = m.i32_type().as_type();
     let args = [
@@ -248,14 +252,15 @@ fn upstream_ir_builder_create_intrinsic_scalar() {
 /// Port of `TEST_F(IntrinsicsTest, IRBuilderCreateIntrinsicVector)`.
 #[test]
 fn upstream_ir_builder_create_intrinsic_vector() {
-    let f = Fixture::set_up();
-    let m = &f.m;
-    let builder = f.builder();
+    let mut f = Fixture::set_up();
+    let mut key = f.m.layout_token();
+    let m = key.module();
+    let builder = Fixture::builder(&mut key);
 
     let ret_ty = m
         .vector_type(m.i32_type(), lanes::<4>())
         .expect("a valid element");
-    let null = f.null_vector(ret_ty, m.i32_type().const_zero());
+    let null = Fixture::null_vector(ret_ty, m.i32_type().const_zero());
     let args = [null.as_erased(), null.as_erased()];
 
     let id = intrinsic("llvm.umax");
@@ -269,9 +274,10 @@ fn upstream_ir_builder_create_intrinsic_vector() {
 /// Port of `TEST_F(IntrinsicsTest, IRBuilderCreateIntrinsicAddressSpace)`.
 #[test]
 fn upstream_ir_builder_create_intrinsic_address_space() {
-    let f = Fixture::set_up();
-    let m = &f.m;
-    let builder = f.builder();
+    let mut f = Fixture::set_up();
+    let mut key = f.m.layout_token();
+    let m = key.module();
+    let builder = Fixture::builder(&mut key);
 
     let ret_ty = m.void_type().as_type();
     let args = [
@@ -293,9 +299,10 @@ fn upstream_ir_builder_create_intrinsic_address_space() {
 /// Port of `TEST_F(IntrinsicsTest, IRBuilderCreateIntrinsicVarArg)`.
 #[test]
 fn upstream_ir_builder_create_intrinsic_var_arg() {
-    let f = Fixture::set_up();
-    let m = &f.m;
-    let builder = f.builder();
+    let mut f = Fixture::set_up();
+    let mut key = f.m.layout_token();
+    let m = key.module();
+    let builder = Fixture::builder(&mut key);
 
     // Create a dummy function to call through statepoint
     let dummy_fn_ty = m

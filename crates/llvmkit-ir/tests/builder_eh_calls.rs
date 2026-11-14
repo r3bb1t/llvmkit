@@ -19,27 +19,29 @@ use llvmkit_ir::{
 /// `printInstruction` emits in `lib/IR/AsmWriter.cpp`.
 #[test]
 fn invoke_void_to_unwind() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let callee = m.add_function_dyn("f.fastcc", callee_ty, Linkage::External)?;
-    m.view(callee).set_calling_conv(&m, CallingConv::FAST);
+    m.view(callee).set_calling_conv(m, CallingConv::FAST);
     let caller_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let caller = m.add_function_dyn("instructions.terminators", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let normal = m.view(caller).append_basic_block(&m, "defaultdest");
-    let unwind = m.view(caller).append_basic_block(&m, "exc");
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let normal = m.view(caller).append_basic_block(m, "defaultdest");
+    let unwind = m.view(caller).append_basic_block(m, "exc");
     let normal_label = normal.id();
     let unwind_label = unwind.id();
     {
-        let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(normal);
+        let bb_b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(normal);
         bb_b.ret_void()?;
     }
     {
-        let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(unwind);
+        let bb_b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(unwind);
         bb_b.ret_void()?;
     }
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let _ = b.invoke_dyn_with_config(
         m.view(callee),
         Vec::<llvmkit_ir::Value<'_, _>>::new(),
@@ -66,25 +68,27 @@ fn invoke_void_to_unwind() -> Result<(), IrError> {
 /// `invoke_void_to_unwind`, exercised through the typed callee facade.
 #[test]
 fn typed_invoke_derives_return_marker_from_callee() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let callee = m.add_typed_function::<i32, (), _>("callee", Linkage::External)?;
     let caller = m.add_typed_function::<i32, (i32,), _>("caller", Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let normal = m.view(caller).append_basic_block(&m, "normal");
-    let unwind = m.view(caller).append_basic_block(&m, "unwind");
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let normal = m.view(caller).append_basic_block(m, "normal");
+    let unwind = m.view(caller).append_basic_block(m, "unwind");
     let normal_label = normal.id();
     let unwind_label = unwind.id();
     let (x,) = m.view(caller).params();
     {
-        let bb_b = IrBuilder::new_for::<i32>(&m).position_at_end(unwind);
+        let bb_b = IrBuilder::new_for::<i32>(&mut key).position_at_end(unwind);
         bb_b.ret(x)?;
     }
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(entry);
     let (_sealed, invoke) = b.invoke(m.view(callee), (), normal_label, unwind_label, "iv")?;
     // The invoke's marker is already `i32` (derived from the callee),
     // so this infallible-in-practice narrowing never errors.
     let result: IntValue<'_, i32, _> = invoke.to_erased().try_into()?;
-    let bn = IrBuilder::new_for::<i32>(&m).position_at_end(normal);
+    let bn = IrBuilder::new_for::<i32>(&mut key).position_at_end(normal);
     bn.ret(result)?;
     let text = format!("{m}");
     assert!(
@@ -105,26 +109,28 @@ fn typed_invoke_derives_return_marker_from_callee() -> Result<(), IrError> {
 /// successor list, and block order from the upstream fixture.
 #[test]
 fn callbr_void_with_one_indirect_dest() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let bool_ty = m.bool_type();
     let void_ty = m.void_type();
     let callee = m.get_or_insert_intrinsic_declaration_by_name("llvm.amdgcn.kill")?;
     let caller_ty = m.function_type(void_ty.as_type(), [bool_ty.as_type()])?;
     let caller = m.add_function_dyn("test_kill", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let kill = m.view(caller).append_basic_block(&m, "kill");
-    let cont = m.view(caller).append_basic_block(&m, "cont");
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let kill = m.view(caller).append_basic_block(m, "kill");
+    let cont = m.view(caller).append_basic_block(m, "cont");
     let kill_label = kill.id();
     let cont_label = cont.id();
     {
-        let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(kill);
+        let bb_b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(kill);
         bb_b.unreachable();
     }
     {
-        let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(cont);
+        let bb_b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(cont);
         bb_b.ret_void()?;
     }
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let c: llvmkit_ir::IntValue<'_, bool, _> = m.view(caller).param(0)?.try_into()?;
     let _ = b.callbr(callee, [c.as_erased()], cont_label, [kill_label], "")?;
     let text = format!("{m}");
@@ -150,7 +156,9 @@ fn callbr_void_with_one_indirect_dest() -> Result<(), IrError> {
 /// the successor list matches the upstream label-constraint fixture.
 #[test]
 fn callbr_two_indirect_dests_print_form() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let asm_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let asm = m.inline_asm(
@@ -161,16 +169,16 @@ fn callbr_two_indirect_dests_print_form() -> Result<(), IrError> {
     );
     let caller_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let caller = m.add_function_dyn("foo", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let bb1 = m.view(caller).append_basic_block(&m, "1");
-    let bb2 = m.view(caller).append_basic_block(&m, "2");
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let bb1 = m.view(caller).append_basic_block(m, "1");
+    let bb2 = m.view(caller).append_basic_block(m, "2");
     let bb1_label = bb1.id();
     let bb2_label = bb2.id();
     for bb in [bb1, bb2] {
-        let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
+        let bb_b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(bb);
         bb_b.ret_void()?;
     }
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let _ = b.inline_asm_callbr::<(), _, _, _, _, _, _>(
         asm,
         Vec::<llvmkit_ir::Value<'_, _>>::new(),
@@ -203,20 +211,22 @@ fn callbr_two_indirect_dests_print_form() -> Result<(), IrError> {
 /// control is the same invoke under the `Dyn` marker.
 #[test]
 fn an_indirect_invoke_refuses_a_return_marker_its_type_does_not_have() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let caller_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-    let first = m.view(caller).append_basic_block(&m, "first");
-    let second = m.view(caller).append_basic_block(&m, "second");
-    let normal = m.view(caller).append_basic_block(&m, "normal");
-    let unwind = m.view(caller).append_basic_block(&m, "unwind");
+    let first = m.view(caller).append_basic_block(m, "first");
+    let second = m.view(caller).append_basic_block(m, "second");
+    let normal = m.view(caller).append_basic_block(m, "normal");
+    let unwind = m.view(caller).append_basic_block(m, "unwind");
     let fp = PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(m.view(caller).param(0)?)?;
 
     let before = format!("{m}");
-    let refused = IrBuilder::new_for::<Dyn>(&m)
+    let refused = IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(first)
         .indirect_invoke_dyn_with_config::<i32, _, _, _, _, _>(
             fp,
@@ -233,7 +243,7 @@ fn an_indirect_invoke_refuses_a_return_marker_its_type_does_not_have() -> Result
     );
     assert_eq!(format!("{m}"), before, "a refusal must not mutate");
 
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(second)
         .indirect_invoke_dyn_with_config::<Dyn, _, _, _, _, _>(
             fp,
@@ -264,7 +274,9 @@ fn an_indirect_invoke_refuses_a_return_marker_its_type_does_not_have() -> Result
 #[test]
 fn the_indirect_and_inline_asm_call_sites_honour_a_call_site_type_override() -> Result<(), IrError>
 {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
@@ -277,17 +289,17 @@ fn the_indirect_and_inline_asm_call_sites_honour_a_call_site_type_override() -> 
     let v = m.view(caller).param(1)?;
     let function = m.view(caller);
     let (e0, e1, e2, e3) = (
-        function.append_basic_block(&m, "e0"),
-        function.append_basic_block(&m, "e1"),
-        function.append_basic_block(&m, "e2"),
-        function.append_basic_block(&m, "e3"),
+        function.append_basic_block(m, "e0"),
+        function.append_basic_block(m, "e1"),
+        function.append_basic_block(m, "e2"),
+        function.append_basic_block(m, "e3"),
     );
-    let normal = function.append_basic_block(&m, "normal");
-    let unwind = function.append_basic_block(&m, "unwind");
-    let indirect = function.append_basic_block(&m, "indirect");
+    let normal = function.append_basic_block(m, "normal");
+    let unwind = function.append_basic_block(m, "unwind");
+    let indirect = function.append_basic_block(m, "indirect");
     let config = |name: &str| CallSiteConfig::new(name).call_site_type(override_ty);
 
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(e0)
         .indirect_invoke_dyn_with_config::<Dyn, _, _, _, _, _>(
             fp,
@@ -297,7 +309,7 @@ fn the_indirect_and_inline_asm_call_sites_honour_a_call_site_type_override() -> 
             &unwind,
             config("ii"),
         )?;
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(e1)
         .inline_asm_invoke_with_config::<Dyn, _, _, _, _>(
             asm,
@@ -306,10 +318,10 @@ fn the_indirect_and_inline_asm_call_sites_honour_a_call_site_type_override() -> 
             &unwind,
             config("ai"),
         )?;
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(e2)
         .indirect_callbr_with_config(fp, fallback, [v], &normal, [&indirect], config("ic"))?;
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(e3)
         .inline_asm_callbr_with_config::<Dyn, _, _, _, _, _>(
             asm,

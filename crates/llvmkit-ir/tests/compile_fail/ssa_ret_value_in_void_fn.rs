@@ -17,13 +17,13 @@
 use llvmkit_ir::{Linkage, Module, SsaState};
 
 fn main() {
-    let m = Module::dynamic("ssa-ret-value-in-void-fn");
+    let mut module = Module::dynamic("ssa-ret-value-in-void-fn"); let mut key = module.layout_token(); let m = key.module();
     let f = m
         .add_typed_function::<(), (), _>("f", Linkage::External)
         .unwrap()
         .as_function();
     let mut state = SsaState::for_function(&m, m.view(f)).unwrap();
-    let mut b = llvmkit_ir::SsaBuilder::for_function(&m, m.view(f), &mut state).unwrap();
+    let mut b = llvmkit_ir::SsaBuilder::for_function(&mut key,m.view(f), &mut state).unwrap();
     let entry = b.create_block("entry");
 
     b.switch_to_block(entry).unwrap();

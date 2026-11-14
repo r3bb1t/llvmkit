@@ -9,8 +9,8 @@
 use llvmkit_asmparser::parser;
 use llvmkit_ir::{
     BasicBlock, BlockId, BlockTerminationState, DominatorTree, Dyn, DynBrand, FunctionCfg,
-    InstructionKind, InstructionView, IrError, MetadataAttachmentKind, MetadataFieldValue,
-    MetadataKind, Module, Terminated, Unverified,
+    InstructionKind, InstructionView, IrError, LayoutToken, MetadataAttachmentKind,
+    MetadataFieldValue, MetadataKind, Module, Terminated, Unverified,
 };
 
 fn parse(source: &str) -> Module<DynBrand, Unverified> {
@@ -158,7 +158,7 @@ fn label(name: &str, predecessors: &str) -> String {
 /// insert no branch and leave the phi naming `%entry`.
 #[test]
 fn split_at_places_the_new_block_after_the_original_and_branches_to_it() -> Result<(), IrError> {
-    let m = parse(
+    let mut module = parse(
         r#"
 define i32 @f(i32 %a) {
 entry:
@@ -172,13 +172,15 @@ exit:
 }
 "#,
     );
-    let entry = block_by_name(&m, "f", "entry");
+    let mut key = module.layout_token();
+    let m = key.module();
+    let entry = block_by_name(m, "f", "entry");
     let y = entry
         .instructions()
         .nth(1)
         .expect("entry holds %x, %y and the br");
 
-    let tail = entry.split_at(&m, &y, "tail")?;
+    let tail = entry.split_at(&mut key, &y, "tail")?;
 
     assert_eq!(tail.name().as_deref(), Some("tail"));
     let expected = [
@@ -198,8 +200,9 @@ exit:
         String::new(),
     ]
     .join("\n");
-    assert_eq!(printed_function(&m, "f"), expected);
-    m.verify()
+    assert_eq!(printed_function(m, "f"), expected);
+    module
+        .verify()
         .expect("the split leaves the function well formed");
     Ok(())
 }
@@ -214,7 +217,7 @@ exit:
 /// has no upstream unit test.
 #[test]
 fn split_at_rewrites_every_successor_phi_entry_naming_the_original() -> Result<(), IrError> {
-    let m = parse(
+    let mut module = parse(
         r#"
 define i32 @g(i32 %a) {
 entry:
@@ -229,13 +232,15 @@ exit:
 }
 "#,
     );
-    let entry = block_by_name(&m, "g", "entry");
+    let mut key = module.layout_token();
+    let m = key.module();
+    let entry = block_by_name(m, "g", "entry");
     let switch = entry.terminator().expect("entry ends in the switch");
 
-    let tail = entry.split_at(&m, &switch, "tail")?;
+    let tail = entry.split_at(&mut key, &switch, "tail")?;
     let tail_id = tail.id();
 
-    let exit = block_by_name(&m, "g", "exit");
+    let exit = block_by_name(m, "g", "exit");
     let phi = exit
         .instructions()
         .next()
@@ -264,7 +269,7 @@ exit:
 /// which only the unported AutoUpgrade turns into records.
 #[test]
 fn split_at_leaves_the_split_points_debug_records_ahead_of_the_new_branch() -> Result<(), IrError> {
-    let m = parse(
+    let mut module = parse(
         r#"
 define dso_local void @func(i32 %a) !dbg !10 {
 entry:
@@ -291,7 +296,9 @@ entry:
 !17 = !DILocation(line: 3, column: 2, scope: !10)
 "#,
     );
-    let entry = block_by_name(&m, "func", "entry");
+    let mut key = module.layout_token();
+    let m = key.module();
+    let entry = block_by_name(m, "func", "entry");
     let y = entry
         .instructions()
         .nth(1)
@@ -302,7 +309,7 @@ entry:
         "fixture: the record precedes %y"
     );
 
-    let tail = entry.split_at(&m, &y, "tail")?;
+    let tail = entry.split_at(&mut key, &y, "tail")?;
 
     let moved = tail.instructions().next().expect("tail starts with %y");
     assert_eq!(
@@ -310,7 +317,7 @@ entry:
         0,
         "the record did not move with %y"
     );
-    let entry = block_by_name(&m, "func", "entry");
+    let entry = block_by_name(m, "func", "entry");
     let branch = entry.terminator().expect("entry ends in the new br");
     assert_eq!(
         branch.debug_records().count(),
@@ -327,7 +334,7 @@ entry:
 /// while the moved `ret` keeps atom group 1.
 #[test]
 fn drop_source_atom_on_split() -> Result<(), IrError> {
-    let m = parse(
+    let mut module = parse(
         r#"
     define dso_local void @func() !dbg !10 {
       %1 = alloca i32, align 4
@@ -349,6 +356,8 @@ fn drop_source_atom_on_split() -> Result<(), IrError> {
     !15 = !DIBasicType(name: "int", size: 32, encoding: DW_ATE_signed)
   "#,
     );
+    let mut key = module.layout_token();
+    let m = key.module();
     let func = m.function_dyn("func").expect("fixture defines @func");
 
     // Test splitBasicBlockBefore.
@@ -356,14 +365,14 @@ fn drop_source_atom_on_split() -> Result<(), IrError> {
         let bb = m.view(func).basic_blocks().next_back().expect("F->back()");
         // Split at `ret void`.
         let split_point = bb.terminator().expect("std::prev(BB.end(), 1)");
-        let before = bb.split_before(&m, &split_point, "before")?;
+        let before = bb.split_before(&mut key, &split_point, "before")?;
         let br_to_after = before.terminator().expect("Before->getTerminator()");
-        assert_eq!(atom_group(&m, &br_to_after), Some(0));
+        assert_eq!(atom_group(m, &br_to_after), Some(0));
 
         let after = single_successor(&before).expect("Before->getSingleSuccessor()");
-        let after = block_by_id(&m, "func", after);
+        let after = block_by_id(m, "func", after);
         let orig_terminator = after.terminator().expect("After->getTerminator()");
-        assert_eq!(atom_group(&m, &orig_terminator), Some(1));
+        assert_eq!(atom_group(m, &orig_terminator), Some(1));
     }
 
     // Test splitBasicBlock.
@@ -371,15 +380,15 @@ fn drop_source_atom_on_split() -> Result<(), IrError> {
         let bb = m.view(func).basic_blocks().next_back().expect("F->back()");
         // Split at `ret void`.
         let split_point = bb.terminator().expect("std::prev(BB.end(), 1)");
-        let after = bb.split_at(&m, &split_point, "before")?;
+        let after = bb.split_at(&mut key, &split_point, "before")?;
 
         let orig_terminator = after.terminator().expect("After->getTerminator()");
-        assert_eq!(atom_group(&m, &orig_terminator), Some(1));
+        assert_eq!(atom_group(m, &orig_terminator), Some(1));
 
-        let before = single_predecessor(&m, "func", &after).expect("After->getSinglePredecessor()");
-        let before = block_by_id(&m, "func", before);
+        let before = single_predecessor(m, "func", &after).expect("After->getSinglePredecessor()");
+        let before = block_by_id(m, "func", before);
         let br_to_after = before.terminator().expect("Before->getTerminator()");
-        assert_eq!(atom_group(&m, &br_to_after), Some(0));
+        assert_eq!(atom_group(m, &br_to_after), Some(0));
     }
     Ok(())
 }
@@ -390,7 +399,7 @@ fn drop_source_atom_on_split() -> Result<(), IrError> {
 /// and rewrites the phi's incoming block to it.
 #[test]
 fn split_basic_block_before_ex1() -> Result<(), IrError> {
-    let m = parse(
+    let mut module = parse(
         r#"
 define void @foo() {
 bb0:
@@ -406,17 +415,19 @@ bb3:
 }
 "#,
     );
+    let mut key = module.layout_token();
+    let m = key.module();
     let foo = m.function_dyn("foo").expect("fixture defines @foo");
     let _dominator_tree = DominatorTree::new(m.view(foo));
 
-    let dest_block = block_by_name(&m, "foo", "bb2");
+    let dest_block = block_by_name(m, "foo", "bb2");
     let front = dest_block
         .instructions()
         .next()
         .expect("DestBlock->front()");
-    let new_bb = dest_block.split_before(&m, &front, "test")?;
+    let new_bb = dest_block.split_before(&mut key, &front, "test")?;
 
-    let dest_block = block_by_name(&m, "foo", "bb2");
+    let dest_block = block_by_name(m, "foo", "bb2");
     let front = dest_block
         .instructions()
         .next()
@@ -427,10 +438,7 @@ bb3:
     assert_eq!(pn.incoming(0)?.1, new_bb.id());
     assert_eq!(new_bb.name().as_deref(), Some("test"));
     assert_eq!(single_successor(&new_bb), Some(dest_block.id()));
-    assert_eq!(
-        single_predecessor(&m, "foo", &dest_block),
-        Some(new_bb.id())
-    );
+    assert_eq!(single_predecessor(m, "foo", &dest_block), Some(new_bb.id()));
     Ok(())
 }
 
@@ -442,7 +450,7 @@ bb3:
 /// and leaves the module untouched, which is hardening rather than divergence.
 #[test]
 fn split_basic_block_before_ex2() {
-    let m = parse(
+    let mut module = parse(
         r#"
 define void @foo() {
 bb0:
@@ -458,17 +466,19 @@ bb3:
 }
 "#,
     );
+    let mut key = module.layout_token();
+    let m = key.module();
     let foo = m.function_dyn("foo").expect("fixture defines @foo");
     let _dominator_tree = DominatorTree::new(m.view(foo));
 
-    let dest_block = block_by_name(&m, "foo", "bb2");
+    let dest_block = block_by_name(m, "foo", "bb2");
     let front = dest_block
         .instructions()
         .next()
         .expect("DestBlock->front()");
     let printed_before = format!("{m}");
 
-    let result = dest_block.split_before(&m, &front, "test");
+    let result = dest_block.split_before(&mut key, &front, "test");
 
     assert!(
         matches!(
@@ -503,7 +513,7 @@ bb3:
 #[test]
 fn split_before_moves_the_split_points_debug_records_ahead_of_the_new_branch() -> Result<(), IrError>
 {
-    let m = parse(
+    let mut module = parse(
         r#"
     define dso_local void @func() #0 !dbg !10 {
       %1 = alloca i32, align 4
@@ -540,6 +550,8 @@ fn split_before_moves_the_split_points_debug_records_ahead_of_the_new_branch() -
     !17 = !DILocation(line: 3, column: 2, scope: !10)
   "#,
     );
+    let mut key = module.layout_token();
+    let m = key.module();
     let func = m.function_dyn("func").expect("fixture defines @func");
 
     let bb = m.view(func).entry_block().expect("F->getEntryBlock()");
@@ -547,7 +559,7 @@ fn split_before_moves_the_split_points_debug_records_ahead_of_the_new_branch() -
         .instructions()
         .nth_back(1)
         .expect("std::prev(BB.end(), 2): store i32 2, ptr %1");
-    bb.split_before(&m, &split_point, "before")?;
+    bb.split_before(&mut key, &split_point, "before")?;
 
     let bb_before = m.view(func).entry_block().expect("F->getEntryBlock()");
     let branch = bb_before
@@ -556,7 +568,7 @@ fn split_before_moves_the_split_points_debug_records_ahead_of_the_new_branch() -
     assert!(branch.debug_records().count() > 0, "I2->hasDbgRecords()");
 
     let bb = block_by_id(
-        &m,
+        m,
         "func",
         single_successor(&bb_before).expect("the new block branches to the old one"),
     );
@@ -579,9 +591,10 @@ fn split_before_moves_the_split_points_debug_records_ahead_of_the_new_branch() -
 /// only predecessor. Every function is checked and every miss reported
 /// together, so one run names each terminator kind that failed.
 fn assert_split_before_retargets_every_edge(
-    module: &Module<DynBrand, Unverified>,
+    key: &mut LayoutToken<'_, DynBrand>,
     functions: &[&str],
 ) -> Result<(), IrError> {
+    let module = key.module();
     let mut misses = Vec::new();
     for &function in functions {
         let edges_into_t = predecessor_names(module, function, "t");
@@ -589,7 +602,7 @@ fn assert_split_before_retargets_every_edge(
         let t = block_by_name(module, function, "t");
         let first = t.instructions().next().expect("%t is not empty");
 
-        t.split_before(module, &first, "new")?;
+        t.split_before(key, &first, "new")?;
 
         let edges_into_new = predecessor_names(module, function, "new");
         if edges_into_new != edges_into_t {
@@ -630,7 +643,7 @@ fn assert_split_before_retargets_every_edge(
 /// terminator kind through this routine.
 #[test]
 fn split_before_retargets_every_successor_slot_of_ordinary_terminators() -> Result<(), IrError> {
-    let m = parse(
+    let mut module = parse(
         r#"
 declare void @callee()
 declare i32 @__gxx_personality_v0(...)
@@ -680,7 +693,7 @@ t:
 "#,
     );
     assert_split_before_retargets_every_edge(
-        &m,
+        &mut module.layout_token(),
         &["br", "switch", "indirectbr", "invoke", "callbr"],
     )
 }
@@ -697,7 +710,7 @@ t:
 #[test]
 fn split_before_retargets_every_successor_slot_of_exception_handling_terminators()
 -> Result<(), IrError> {
-    let m = parse(
+    let mut module = parse(
         r#"
 declare void @callee()
 declare i32 @__gxx_personality_v0(...)
@@ -755,7 +768,7 @@ exit:
 "#,
     );
     assert_split_before_retargets_every_edge(
-        &m,
+        &mut module.layout_token(),
         &["catchret", "cleanupret", "catchswitch", "invoke_unwind"],
     )
 }

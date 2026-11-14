@@ -16,13 +16,15 @@ use llvmkit_ir::{Dyn, IntValue, IrBuilder, IrError, Linkage, Type, module_new};
 /// IR shape mirrors `test/Assembler/flags.ll` (basic add+ret rendering).
 #[test]
 fn module_prints_simple_add_function() -> Result<(), IrError> {
-    let m = module_new!("demo")?;
+    let mut module = module_new!("demo")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("add", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
 
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let lhs: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let sum = b.int_add(lhs, rhs, "sum")?;
@@ -48,15 +50,17 @@ fn module_prints_simple_add_function() -> Result<(), IrError> {
 /// writes a blank line before `printFunction`.
 #[test]
 fn module_prints_blank_line_between_type_identities_and_first_function() -> Result<(), IrError> {
-    let m = module_new!("type_separator")?;
+    let mut module = module_new!("type_separator")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let point_ty = m.get_or_insert_named_struct("Point");
     m.set_struct_body_dyn(point_ty, [i32_ty.as_type(), i32_ty.as_type()], false)?;
 
     let fn_ty = m.function_type(m.void_type(), [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    IrBuilder::new_for::<Dyn>(&m)
+    let entry = m.view(f).append_basic_block(m, "entry");
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(entry)
         .ret_void()?;
 
@@ -87,12 +91,14 @@ fn module_prints_blank_line_between_type_identities_and_first_function() -> Resu
 /// the `$`-quoting divergence, encoded as its own expectation.
 #[test]
 fn dollar_names_print_quoted() -> Result<(), IrError> {
-    let m = module_new!("dollar_names")?;
+    let mut module = module_new!("dollar_names")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("foo$bar", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry$bb");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry$bb");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let sum = b.int_add::<i32, _, _, _>(arg, 1_i32, "sum$value")?;
     b.ret(sum)?;
@@ -108,16 +114,18 @@ fn dollar_names_print_quoted() -> Result<(), IrError> {
 /// the same function symbol table, so they share one local namespace.
 #[test]
 fn function_local_names_share_argument_block_and_instruction_namespace() -> Result<(), IrError> {
-    let m = module_new!("local_names")?;
+    let mut module = module_new!("local_names")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m
         .function_builder::<i32, _>("f", fn_ty)
         .param_name(0, "entry")
         .build()?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
     let entry_name = entry.name();
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(entry);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let result = b.int_add::<i32, _, _, _>(arg, 1_i32, "entry")?;
     b.ret(result)?;
@@ -143,17 +151,19 @@ fn function_local_names_share_argument_block_and_instruction_namespace() -> Resu
 /// `unittests/IR/ValueTest.cpp::TEST(ValueTest, setNameShrink)`.
 #[test]
 fn set_name_reinserts_and_frees_old_binding() -> Result<(), IrError> {
-    let m = module_new!("rename")?;
+    let mut module = module_new!("rename")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
     let first = b.int_add::<i32, _, _, _>(arg, 1_i32, "tmp")?;
     let second = b.int_add::<i32, _, _, _>(first, 1_i32, "other")?;
-    b.view(second).set_name(&m, "tmp")?;
+    b.view(second).set_name(m, "tmp")?;
     let third = b.int_add::<i32, _, _, _>(second, first, "other")?;
     b.ret(third)?;
 
@@ -174,15 +184,17 @@ fn set_name_reinserts_and_frees_old_binding() -> Result<(), IrError> {
 /// `unittests/IR/ConstantsTest.cpp` (constant folding of integer arithmetic).
 #[test]
 fn module_prints_const_folded_arithmetic() -> Result<(), IrError> {
-    let m = module_new!("folded")?;
+    let mut module = module_new!("folded")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     // Two integer constants fed through the constant folder produce a
     // pre-folded ConstantInt operand for `ret`.
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("answer", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
 
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let a = i32_ty.const_int(40_i32);
     let bb = i32_ty.const_int(2_i32);
     // int_add on two constants: the folder produces a constant.
@@ -208,13 +220,15 @@ fn module_prints_const_folded_arithmetic() -> Result<(), IrError> {
 /// (uses `Function::print` independently of `Module::print`).
 #[test]
 fn function_print_standalone_matches_module_section() -> Result<(), IrError> {
-    let m = module_new!("standalone")?;
+    let mut module = module_new!("standalone")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("identity", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
 
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     b.ret(arg)?;
 
@@ -263,16 +277,18 @@ fn declare_form_for_empty_function() -> Result<(), IrError> {
 /// argument, which prints `i32 <badref>`.
 #[test]
 fn unnamed_basic_block_uses_slot_label() -> Result<(), IrError> {
-    let m = module_new!("slots")?;
+    let mut module = module_new!("slots")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("anon", fn_ty, Linkage::External)?;
     // No name on either block.
-    let entry = m.view(f).append_basic_block(&m, "");
-    let tail = m.view(f).append_basic_block(&m, "");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "");
+    let tail = m.view(f).append_basic_block(m, "");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     b.br(&tail)?;
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(tail);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(tail);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     b.ret(arg)?;
     let text = format!("{m}");

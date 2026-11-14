@@ -79,13 +79,15 @@ fn derive_builds_nested_named_structs_and_accessors() -> Result<(), IrError> {
         + rust_window.normal_position.min.x
         + rust_window.normal_position.max.y;
 
-    let m = module_new!("derived")?;
+    let mut module = module_new!("derived")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<WindowPlacement, (WindowPlacement,), _>(
         "normalize",
         Linkage::External,
     )?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let (placement,) = m.view(f).params();
     let rect = placement.normal_position(&b);
     let min = rect.min(&b);
@@ -151,10 +153,12 @@ fn derive_builds_nested_named_structs_and_accessors() -> Result<(), IrError> {
 /// upstream coverage is `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)`.
 #[test]
 fn derive_try_from_raw_ir_values() -> Result<(), IrError> {
-    let m = module_new!("derived_try_from")?;
+    let mut module = module_new!("derived_try_from")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<(), (WindowPlacement,), _>("read_raw", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let arg = m.view(f).as_function().param(0)?;
     let placement = WindowPlacementValue::try_from(arg)?;
     let normal_position = placement.normal_position(&b);
@@ -168,13 +172,15 @@ fn derive_try_from_raw_ir_values() -> Result<(), IrError> {
 /// `extractvalue` / `insertvalue` forms.
 #[test]
 fn derive_struct_fields_unpacks_top_level_fields() -> Result<(), IrError> {
-    let m = module_new!("derived_fields")?;
+    let mut module = module_new!("derived_fields")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<WindowPlacement, StructFields<WindowPlacement>, _>(
         "normalize_fields",
         Linkage::External,
     )?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let (show_cmd, normal_position) = m.view(f).params();
     let _: IntValue<'_, i32, _> = show_cmd;
     let _: RectValue<'_, _> = normal_position;
@@ -212,10 +218,12 @@ fn derive_build_accepts_fields_named_like_helper_parameters() -> Result<(), IrEr
     };
     let _ = rust_value.module + rust_value.builder + rust_value.name;
 
-    let m = module_new!("collision")?;
+    let mut module = module_new!("collision")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<CollisionNames, (), _>("collision", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let value =
         m.get_or_insert_struct_of::<CollisionNames>()?
             .build(&b, 1_i32, 2_i32, 3_i32, "collision");
@@ -288,10 +296,12 @@ fn a_derived_body_comes_from_its_field_layouts() -> Result<(), IrError> {
 /// `a_derived_body_comes_from_its_field_layouts` is the minting half.
 #[test]
 fn a_derived_field_of_each_layout_reads_its_value() -> Result<(), IrError> {
-    let m = module_new!("layout_reads")?;
+    let mut module = module_new!("layout_reads")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<(), (Sample,), _>("read", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let (sample,) = m.view(f).params();
     let a: IntValue<'_, i32, _> = sample.a(&b);
     let array: ArrayValue<'_, f32, ArrLen<4>, _> = sample.b(&b);
@@ -332,10 +342,12 @@ entry:
 /// the old fallible build printed.
 #[test]
 fn a_build_needs_no_question_mark() -> Result<(), IrError> {
-    let m = module_new!("token_build")?;
+    let mut module = module_new!("token_build")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<Point, (i32,), _>("make", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let (x,) = m.view(f).params();
     let point = m.get_or_insert_struct_of::<Point>()?;
     let p = point.build(&b, x, 7_i32, "p");
@@ -359,10 +371,12 @@ fn a_pointer_field_takes_a_space_zero_pointer() -> Result<(), IrError> {
     let Node { next } = Node { next: Ptr::null() };
     let _ = next;
 
-    let m = module_new!("pointer_build")?;
+    let mut module = module_new!("pointer_build")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<Node, (), _>("make", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let slot = m.view(b.alloca_in::<0, _, _>(m.i32_type(), "slot")?);
     let node = m.get_or_insert_struct_of::<Node>()?;
     let n = node.build(&b, slot, "n");
@@ -432,10 +446,12 @@ fn a_field_type_is_not_shadowed_by_the_derive() -> Result<(), IrError> {
     };
     let _ = name.name + first.field + folder.f + ret.r;
 
-    let m = module_new!("shadowed")?;
+    let mut module = module_new!("shadowed")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<(), (A, Person), _>("take", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let (a, person) = m.view(f).params();
     let inner: BValue<'_, _> = a.b(&b);
     let _ = inner.b(&b);
@@ -469,10 +485,12 @@ fn a_raw_identifier_names_nothing_in_the_ir() -> Result<(), IrError> {
     let Raw { r#type } = Raw { r#type: 1 };
     let _ = r#type;
 
-    let m = module_new!("raw_names")?;
+    let mut module = module_new!("raw_names")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<(), (Raw,), _>("take", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let (value,) = m.view(f).params();
     let _ = value.r#type(&b);
     let _ = value.try_type(&b)?;
@@ -498,10 +516,12 @@ fn a_raw_identifier_names_nothing_in_the_ir() -> Result<(), IrError> {
 /// half.
 #[test]
 fn a_narrowed_space_dyn_pointer_goes_through_try_build() -> Result<(), IrError> {
-    let m = module_new!("narrowed_pointer")?;
+    let mut module = module_new!("narrowed_pointer")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<Node, (), _>("make", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let slot = m.view(b.alloca(m.i32_type(), "slot")?);
     let narrowed = PointerValue::<Space<0>, _>::try_from(slot)?;
     let node = m.get_or_insert_struct_of::<Node>()?;
@@ -532,10 +552,12 @@ fn a_narrowed_space_dyn_pointer_goes_through_try_build() -> Result<(), IrError> 
 /// token become a `Rect`'s fields.
 #[test]
 fn a_nested_field_takes_a_derived_value() -> Result<(), IrError> {
-    let m = module_new!("nested_build")?;
+    let mut module = module_new!("nested_build")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<Rect, (i32,), _>("make", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let (x,) = m.view(f).params();
     let point = m.get_or_insert_struct_of::<Point>()?;
     let rect = m.get_or_insert_struct_of::<Rect>()?;
@@ -573,10 +595,12 @@ fn a_stale_id_is_refused_by_try_build() -> Result<(), IrError> {
         // `first` drops here, releasing the brand; the id survives it.
     };
 
-    let second = Module::branded::<Generation, _>("second")?;
+    let mut second_module = Module::branded::<Generation, _>("second")?;
+    let mut second_key = second_module.layout_token();
+    let second = second_key.module();
     let f = second.add_typed_function::<Point, (), _>("make", Linkage::External)?;
-    let entry = second.view(f).append_basic_block(&second, "entry");
-    let b = IrBuilder::with_folder(&second, NoFolder).position_at_end(entry);
+    let entry = second.view(f).append_basic_block(second, "entry");
+    let b = IrBuilder::with_folder(&mut second_key, NoFolder).position_at_end(entry);
     let point = second.get_or_insert_struct_of::<Point>()?;
     assert_eq!(
         point.try_build(&b, stale, 7_i32, "p").map(|_| ()),
@@ -596,10 +620,12 @@ fn a_stale_id_is_refused_by_try_build() -> Result<(), IrError> {
 /// schema value proves the field's type.
 #[test]
 fn a_field_read_needs_no_question_mark() -> Result<(), IrError> {
-    let m = module_new!("infallible_read")?;
+    let mut module = module_new!("infallible_read")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<i32, (Point,), _>("first", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let (p,) = m.view(f).params();
     let x: IntValue<'_, i32, _> = p.x(&b);
     b.ret(x)?;
@@ -618,7 +644,9 @@ fn a_field_read_needs_no_question_mark() -> Result<(), IrError> {
 /// instruction is appended.
 #[test]
 fn a_constant_struct_field_read_folds() -> Result<(), IrError> {
-    let m = module_new!("folded_read")?;
+    let mut module = module_new!("folded_read")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let point = m
         .get_or_insert_struct_of::<Point>()?
@@ -626,8 +654,8 @@ fn a_constant_struct_field_read_folds() -> Result<(), IrError> {
         .const_struct([i32_ty.const_int(1_i32), i32_ty.const_int(2_i32)])?;
     let p = PointValue::try_from(point.as_constant())?;
     let f = m.add_typed_function::<i32, (), _>("one", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, ConstantFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, ConstantFolder).position_at_end(entry);
     let x = p.x(&b);
     assert_eq!(x.as_erased(), i32_ty.const_int(1_i32).as_erased());
     assert_eq!(b.insert_block().instructions().len(), 0);
@@ -644,15 +672,17 @@ fn a_constant_struct_field_read_folds() -> Result<(), IrError> {
 /// read half.
 #[test]
 fn a_constant_struct_build_folds() -> Result<(), IrError> {
-    let m = module_new!("folded_build")?;
+    let mut module = module_new!("folded_build")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let point = m.get_or_insert_struct_of::<Point>()?;
     let expected = point
         .struct_type()
         .const_struct([i32_ty.const_int(1_i32), i32_ty.const_int(2_i32)])?;
     let f = m.add_typed_function::<Point, (), _>("one_two", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, ConstantFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, ConstantFolder).position_at_end(entry);
     let p = point.build(&b, 1_i32, 2_i32, "p");
     assert_eq!(p.as_erased(), expected.as_erased());
     assert_eq!(b.insert_block().instructions().len(), 0);
@@ -667,10 +697,12 @@ fn a_constant_struct_build_folds() -> Result<(), IrError> {
 /// compile-fail half.
 #[test]
 fn a_dynamic_module_reads_with_try() -> Result<(), IrError> {
-    let m = Module::dynamic("dynamic_read");
+    let mut module = Module::dynamic("dynamic_read");
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<i32, (Point,), _>("first", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let (p,) = m.view(f).params();
     let x: IntValue<'_, i32, _> = p.try_x(&b)?;
     b.ret(x)?;
@@ -690,10 +722,12 @@ fn a_dynamic_module_reads_with_try() -> Result<(), IrError> {
 fn a_custom_field_kind_names_its_layout() -> Result<(), IrError> {
     let Run { distance: Meters } = Run { distance: Meters };
 
-    let m = module_new!("custom_kind")?;
+    let mut module = module_new!("custom_kind")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<(), (Run,), _>("pace", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let (run,) = m.view(f).params();
     let distance: FloatValue<'_, f64, _> = run.distance(&b);
     let _ = distance;
@@ -734,10 +768,12 @@ fn a_hand_built_different_body_is_refused() -> Result<(), IrError> {
 /// `fold_field_insert`'s `unreachable!` nor leaves a second `%Point`.
 #[test]
 fn renaming_a_schema_struct_is_refused_with_constant_folder() -> Result<(), IrError> {
-    let m = module_new!("rename_constant")?;
+    let mut module = module_new!("rename_constant")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<(), (), _>("f", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, ConstantFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, ConstantFolder).position_at_end(entry);
     let point = m.get_or_insert_struct_of::<Point>()?;
     assert_eq!(
         m.set_struct_name(point.struct_type(), "Old"),
@@ -752,7 +788,7 @@ fn renaming_a_schema_struct_is_refused_with_constant_folder() -> Result<(), IrEr
     b.ret_void();
     let text = format!("{m}");
     assert_eq!(text.matches("%Point = type").count(), 1, "got:\n{text}");
-    assert!(m.verify().is_ok());
+    assert!(module.verify().is_ok());
     Ok(())
 }
 
@@ -762,10 +798,12 @@ fn renaming_a_schema_struct_is_refused_with_constant_folder() -> Result<(), IrEr
 /// `verify` caught it.
 #[test]
 fn renaming_a_schema_struct_is_refused_with_no_folder() -> Result<(), IrError> {
-    let m = module_new!("rename_no_folder")?;
+    let mut module = module_new!("rename_no_folder")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<(), (), _>("f", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let point = m.get_or_insert_struct_of::<Point>()?;
     assert_eq!(
         m.set_struct_name(point.struct_type(), "Old"),
@@ -783,7 +821,7 @@ fn renaming_a_schema_struct_is_refused_with_no_folder() -> Result<(), IrError> {
         text.contains("%r.min = insertvalue %Rect poison, %Point %p.y, 0"),
         "got:\n{text}"
     );
-    assert!(m.verify().is_ok());
+    assert!(module.verify().is_ok());
     Ok(())
 }
 
@@ -831,14 +869,16 @@ fn a_confirmed_struct_keeps_its_name_and_so_do_its_fields() -> Result<(), IrErro
 /// module allowed here gave `rect.build` an `%Old` for a `%Point` field.
 #[test]
 fn a_struct_a_schema_value_checked_keeps_its_name() -> Result<(), IrError> {
-    let m = module_new!("rename_checked")?;
+    let mut module = module_new!("rename_checked")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let hand = m.get_or_insert_named_struct("Point");
     m.set_struct_body_dyn(hand, [i32_ty, i32_ty], false)?;
     let fn_ty = m.function_type(m.void_type(), [hand.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let p = PointValue::try_from(m.view(f).param(0)?)?;
     assert_eq!(
         m.set_struct_name(hand, "Old"),
@@ -850,7 +890,7 @@ fn a_struct_a_schema_value_checked_keeps_its_name() -> Result<(), IrError> {
     let r = rect.build(&b, p, p, "r");
     let _ = r;
     b.ret_void()?;
-    assert!(m.verify().is_ok());
+    assert!(module.verify().is_ok());
     Ok(())
 }
 
@@ -862,14 +902,16 @@ fn a_struct_a_schema_value_checked_keeps_its_name() -> Result<(), IrError> {
 /// write an `%Old` into a `%Point` field if the rename went through.
 #[test]
 fn a_read_only_proof_reaches_a_build_so_its_check_holds() -> Result<(), IrError> {
-    let m = module_new!("rename_read_only")?;
+    let mut module = module_new!("rename_read_only")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let hand = m.get_or_insert_named_struct("Point");
     m.set_struct_body_dyn(hand, [i32_ty, i32_ty], false)?;
     let fn_ty = m.function_type(m.void_type(), [hand.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
 
     let p = PointValue::try_from(m.as_view().view(f).param(0)?)?;
     assert_eq!(

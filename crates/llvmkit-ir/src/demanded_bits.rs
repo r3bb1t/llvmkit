@@ -1059,7 +1059,7 @@ fn simplify_demanded_bits_iteration<'ctx, B: ModuleBrand + 'ctx>(
                     id,
                     module_token.capability_ref(),
                 );
-                erased.erase_from_parent(module_token);
+                erased.erase_from_parent_in(module_token);
                 return Ok(true);
             }
             if let Some(replacement) = demanded_value_replacement(value, &demanded, &query)? {
@@ -1070,7 +1070,7 @@ fn simplify_demanded_bits_iteration<'ctx, B: ModuleBrand + 'ctx>(
                     id,
                     module_token.capability_ref(),
                 );
-                erased.erase_from_parent(module_token);
+                erased.erase_from_parent_in(module_token);
                 return Ok(true);
             }
             if mark_non_negative_zext(value, &query)? {
@@ -1088,7 +1088,7 @@ fn simplify_demanded_bits_iteration<'ctx, B: ModuleBrand + 'ctx>(
         if erased.to_erased().has_uses() {
             continue;
         }
-        erased.erase_from_parent(module_token);
+        erased.erase_from_parent_in(module_token);
         return Ok(true);
     }
 

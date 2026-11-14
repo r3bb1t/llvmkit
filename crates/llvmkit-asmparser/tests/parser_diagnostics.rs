@@ -17,8 +17,8 @@ use llvmkit_ir::Module;
 
 /// Parse `src` expecting rejection, and return the rendered diagnostic.
 fn parse_err(module_name: &str, src: &[u8]) -> String {
-    let module = Module::dynamic(module_name);
-    match Parser::new(src, &module) {
+    let mut module = Module::dynamic(module_name);
+    match Parser::new(src, module.layout_token()) {
         // The lexer primes on construction, so a lexeme-level failure
         // surfaces here rather than from `parse_module`.
         Err(e) => e.to_string(),

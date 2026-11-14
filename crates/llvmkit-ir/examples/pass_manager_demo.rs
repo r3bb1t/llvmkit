@@ -19,8 +19,8 @@ use std::rc::Rc;
 
 use llvmkit_ir::{
     Analyses, DcePass, DominatorTreeAnalysis, FnCx, FnReport, FunctionPass, Inspect,
-    InstSimplifyPass, IntPredicate, IntValue, IrBuilder, IrError, Linkage, ModCx, ModReport,
-    Module, ModuleBrand, ModulePass, module_new, run_function_pass, run_module_pass,
+    InstSimplifyPass, IntPredicate, IntValue, IrBuilder, IrError, LayoutToken, Linkage, ModCx,
+    ModReport, Module, ModuleBrand, ModulePass, module_new, run_function_pass, run_module_pass,
 };
 
 /// Read-only module pass: reports how many functions the module holds. Declares
@@ -89,7 +89,8 @@ impl<B: ModuleBrand> FunctionPass<B> for ReportFunctionPass {
     }
 }
 
-pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
+pub fn build<B: ModuleBrand>(key: &mut LayoutToken<'_, B>) -> Result<(), IrError> {
+    let m = key.module();
     let i32_ty = m.i32_type();
     let f = m.add_typed_function::<i32, (bool, i32, i32), _>("select_or_add", Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
@@ -97,7 +98,7 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     let else_bb = m.view(f).append_basic_block(m, "else");
     // `merge`'s single `i32` parameter is the diamond's head-phi: the `then`
     // and `else` arms carry their values in as block arguments below.
-    let bwp = IrBuilder::new_for::<i32>(m);
+    let bwp = IrBuilder::new_for::<i32>(key);
     let (merge, params) =
         bwp.append_block_with_params(m.view(f).as_function(), &[i32_ty.as_type()], "merge")?;
     let then_label = then_bb.id();
@@ -106,17 +107,17 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
 
     let (cond, x, y) = m.view(f).params();
 
-    IrBuilder::at_end(entry).cond_br(cond, then_label, else_label)?;
+    IrBuilder::at_end(key, entry).cond_br(cond, then_label, else_label)?;
 
-    let bt = IrBuilder::at_end(then_bb);
+    let bt = IrBuilder::at_end(key, then_bb);
     let add_xy = bt.int_add(x, y, "add_xy")?;
     bt.br_with_args(merge_label, &[m.view(add_xy).as_erased()])?;
 
-    let be = IrBuilder::at_end(else_bb);
+    let be = IrBuilder::at_end(key, else_bb);
     let sub_xy = be.int_sub(x, y, "sub_xy")?;
     be.br_with_args(merge_label, &[m.view(sub_xy).as_erased()])?;
 
-    let bm = IrBuilder::at_end(merge);
+    let bm = IrBuilder::at_end(key, merge);
     // `params[0]` is `merge`'s head-phi, seeded with `[ %add_xy, %then ]` and
     // `[ %sub_xy, %else ]` by the two block-argument branches above.
     let result: IntValue<'_, i32, _> = params[0].try_into()?;
@@ -192,8 +193,8 @@ pub fn run_demo<B: ModuleBrand>(m: Module<B>) -> Result<(String, String, String)
 /// return to: `module_new!` is fallible (its brand is a registry key) and
 /// `main` reports errors by hand.
 fn emit() -> Result<(String, String, String), IrError> {
-    let m = module_new!("pass_manager_demo")?;
-    build(&m)?;
+    let mut m = module_new!("pass_manager_demo")?;
+    build(&mut m.layout_token())?;
     run_demo(m)
 }
 

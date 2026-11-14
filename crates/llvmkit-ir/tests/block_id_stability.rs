@@ -26,7 +26,7 @@
 
 use llvmkit_ir::{
     Analyses, BlockId, Dyn, FnCx, FnReport, FunctionId, FunctionPass, IntPredicate, IntValue,
-    IrBuilder, IrError, IrResult, Linkage, Module, ModuleBrand, ReshapeCfg, Unverified, module_new,
+    IrBuilder, IrError, IrResult, LayoutToken, Linkage, ModuleBrand, ReshapeCfg, module_new,
 };
 
 /// Everything the fixture hands back: the function plus the four block ids a
@@ -50,7 +50,8 @@ struct Fixture<B: ModuleBrand> {
 ///
 /// `old` has two predecessors and `new` has none, so redirecting both `br`s is
 /// exactly a block replace-all-uses of `old` by `new`.
-fn build<'ctx, B: ModuleBrand + 'ctx>(m: &'ctx Module<B, Unverified>) -> IrResult<Fixture<B>> {
+fn build<'ctx, B: ModuleBrand + 'ctx>(key: &mut LayoutToken<'ctx, B>) -> IrResult<Fixture<B>> {
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let function = m.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -64,16 +65,16 @@ fn build<'ctx, B: ModuleBrand + 'ctx>(m: &'ctx Module<B, Unverified>) -> IrResul
     // Capture the ids up front — this is the client's side map.
     let (left_id, right_id, old_id, new_id) = (left.id(), right.id(), old.id(), new.id());
 
-    let bo = IrBuilder::new_for::<Dyn>(m).position_at_end(old);
+    let bo = IrBuilder::new_for::<Dyn>(key).position_at_end(old);
     bo.ret(i32_ty.const_int(3_i32))?;
-    let bn = IrBuilder::new_for::<Dyn>(m).position_at_end(new);
+    let bn = IrBuilder::new_for::<Dyn>(key).position_at_end(new);
     bn.ret(i32_ty.const_int(7_i32))?;
-    let bl = IrBuilder::new_for::<Dyn>(m).position_at_end(left);
+    let bl = IrBuilder::new_for::<Dyn>(key).position_at_end(left);
     bl.br(old_id)?;
-    let br = IrBuilder::new_for::<Dyn>(m).position_at_end(right);
+    let br = IrBuilder::new_for::<Dyn>(key).position_at_end(right);
     br.br(old_id)?;
 
-    let be = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
+    let be = IrBuilder::new_for::<Dyn>(key).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(function).param(0)?.try_into()?;
     let c = be.int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "c")?;
     be.cond_br(c, left_id, right_id)?;
@@ -117,14 +118,14 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectAllPreds<B> {
 /// as an argument to the mutation API. No map migration anywhere.
 #[test]
 fn block_ids_survive_a_block_replace_all_uses() -> Result<(), IrError> {
-    let m = module_new!("block-rauw")?;
+    let mut m = module_new!("block-rauw")?;
     let Fixture {
         function,
         left,
         right,
         old,
         new,
-    } = build(&m)?;
+    } = build(&mut m.layout_token())?;
     let verified = m.verify()?;
 
     // --- the edit: every use of `old` as a branch target becomes `new` ---

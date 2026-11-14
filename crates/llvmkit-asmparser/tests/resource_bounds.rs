@@ -177,15 +177,17 @@ fn erasing_every_user_of_one_value_is_linear() {
 
     support::deadline::within_a_minute("erasing a user scans the use list", || {
         const USERS: usize = 200_000;
-        let m = module_new!("erase").expect("a fresh module");
+        let mut module = module_new!("erase").expect("a fresh module");
+        let mut key = module.layout_token();
+        let m = key.module();
         let fn_ty = m
             .function_type(m.void_type(), [m.i32_type().as_type()])
             .expect("a valid function type");
         let f = m
             .add_function_dyn("f", fn_ty, Linkage::External)
             .expect("a fresh name");
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m
             .view(f)
             .param(0)
@@ -203,7 +205,8 @@ fn erasing_every_user_of_one_value_is_linear() {
             cursor = next;
         }
         for user in users {
-            user.erase_from_parent(&m);
+            user.erase_from_parent(&mut key)
+                .expect("the user is this module's");
         }
         assert_eq!(x.as_erased().num_uses(), 0);
         let entry = m.view(f).entry_block().expect("the block remains");

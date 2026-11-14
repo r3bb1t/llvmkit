@@ -16,19 +16,21 @@ use llvmkit_ir::{Dyn, IrBuilder, IrError, Linkage, module_new};
 /// `unwind to caller`.
 #[test]
 fn catchswitch_within_none_unwind_to_caller() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("instructions.funclets", fn_ty, Linkage::External)?;
-    let cs1_block = m.view(f).append_basic_block(&m, "catchswitch1");
-    let cp1_block = m.view(f).append_basic_block(&m, "catchpad1");
+    let cs1_block = m.view(f).append_basic_block(m, "catchswitch1");
+    let cp1_block = m.view(f).append_basic_block(m, "catchpad1");
     let cp1_label = cp1_block.id();
     {
         // Stub a terminator on the handler so the block is well-formed.
-        let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(cp1_block);
+        let bb_b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(cp1_block);
         bb_b.unreachable();
     }
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(cs1_block);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(cs1_block);
     let (_sealed, cs) = b.catch_switch_within_none_to_caller("cs1");
     let _closed = cs.add_handler(cp1_label)?.finish();
     let text = format!("{m}");
@@ -44,23 +46,25 @@ fn catchswitch_within_none_unwind_to_caller() -> Result<(), IrError> {
 /// `catchpad within %cs1 []`. Locks the empty-args print form.
 #[test]
 fn catchpad_within_catchswitch_empty_args() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let cs_block = m.view(f).append_basic_block(&m, "cs");
-    let cp_block = m.view(f).append_basic_block(&m, "cp");
-    let exit = m.view(f).append_basic_block(&m, "exit");
+    let cs_block = m.view(f).append_basic_block(m, "cs");
+    let cp_block = m.view(f).append_basic_block(m, "cp");
+    let exit = m.view(f).append_basic_block(m, "exit");
     let cp_label = cp_block.id();
     {
-        let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(exit);
+        let bb_b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(exit);
         bb_b.ret_void()?;
     }
-    let b_cs = IrBuilder::new_for::<Dyn>(&m).position_at_end(cs_block);
+    let b_cs = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(cs_block);
     let (_sealed, cs) = b_cs.catch_switch_within_none_to_caller("cs1");
     let cs_closed = cs.add_handler(cp_label)?.finish();
     let cs_value = cs_closed.to_erased();
-    let b_cp = IrBuilder::new_for::<Dyn>(&m).position_at_end(cp_block);
+    let b_cp = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(cp_block);
     let _cp = b_cp.catch_pad(cs_value, Vec::<llvmkit_ir::value::Value<'_, _>>::new(), "")?;
     b_cp.unreachable();
     let text = format!("{m}");
@@ -77,12 +81,14 @@ fn catchpad_within_catchswitch_empty_args() -> Result<(), IrError> {
 /// `%clean.1 = cleanuppad within none []`.
 #[test]
 fn cleanuppad_within_none_empty_args() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let _ = b.cleanup_pad_within_none(Vec::<llvmkit_ir::value::Value<'_, _>>::new(), "clean.1")?;
     b.unreachable();
     let text = format!("{m}");
@@ -99,12 +105,14 @@ fn cleanuppad_within_none_empty_args() -> Result<(), IrError> {
 /// for the unwind-to-caller variant of `cleanupret`.
 #[test]
 fn cleanupret_unwind_to_caller() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let cp = b.cleanup_pad_within_none(Vec::<llvmkit_ir::value::Value<'_, _>>::new(), "clean")?;
     let _ = b.cleanup_ret_to_caller(cp.to_erased(), "")?;
     let text = format!("{m}");
@@ -126,24 +134,26 @@ fn cleanupret_unwind_to_caller() -> Result<(), IrError> {
 /// invoke-funclet-protected block.
 #[test]
 fn catchret_to_label() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let cs_block = m.view(f).append_basic_block(&m, "cs_block");
-    let cp_block = m.view(f).append_basic_block(&m, "cp_block");
-    let return_block = m.view(f).append_basic_block(&m, "return");
+    let cs_block = m.view(f).append_basic_block(m, "cs_block");
+    let cp_block = m.view(f).append_basic_block(m, "cp_block");
+    let return_block = m.view(f).append_basic_block(m, "return");
     let cp_label = cp_block.id();
     let return_label = return_block.id();
     {
-        let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(return_block);
+        let bb_b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(return_block);
         bb_b.ret_void()?;
     }
-    let b_cs = IrBuilder::new_for::<Dyn>(&m).position_at_end(cs_block);
+    let b_cs = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(cs_block);
     let (_sealed, cs) = b_cs.catch_switch_within_none_to_caller("cs");
     let cs_closed = cs.add_handler(cp_label)?.finish();
     let cs_value = cs_closed.to_erased();
-    let b_cp = IrBuilder::new_for::<Dyn>(&m).position_at_end(cp_block);
+    let b_cp = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(cp_block);
     let cp = b_cp.catch_pad(
         cs_value,
         Vec::<llvmkit_ir::value::Value<'_, _>>::new(),

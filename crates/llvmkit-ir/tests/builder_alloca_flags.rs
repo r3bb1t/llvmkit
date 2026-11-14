@@ -13,11 +13,13 @@ use llvmkit_ir::{
 /// [`llvmkit_ir::AllocaBuilder`] chain.
 #[test]
 fn swifterror_pointer_alloca_verifies_and_prints() -> Result<(), IrError> {
-    let m = module_new!("se")?;
+    let mut module = module_new!("se")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let fn_ty = m.function_type_no_parameters(m.void_type().as_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let e = b
         .alloca_builder(m.ptr_type_in::<0>())
         .swifterror()
@@ -45,11 +47,13 @@ fn swifterror_pointer_alloca_verifies_and_prints() -> Result<(), IrError> {
 /// the [`llvmkit_ir::AllocaBuilder`] chain.
 #[test]
 fn inalloca_alloca_prints() -> Result<(), IrError> {
-    let m = module_new!("ia")?;
+    let mut module = module_new!("ia")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let fn_ty = m.function_type_no_parameters(m.void_type().as_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let i = b
         .alloca_builder(m.i32_type())
         .inalloca()
@@ -72,11 +76,13 @@ fn inalloca_alloca_prints() -> Result<(), IrError> {
 /// Constructed through the [`llvmkit_ir::AllocaBuilder`] chain.
 #[test]
 fn swifterror_non_pointer_alloca_rejected() -> Result<(), IrError> {
-    let m = module_new!("se")?;
+    let mut module = module_new!("se")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let fn_ty = m.function_type_no_parameters(m.void_type().as_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     b.alloca_builder(m.i32_type())
         .swifterror()
         .name("e")
@@ -97,12 +103,14 @@ fn swifterror_non_pointer_alloca_rejected() -> Result<(), IrError> {
 /// (`.array(..)` supplies the size operand).
 #[test]
 fn swifterror_array_alloca_rejected() -> Result<(), IrError> {
-    let m = module_new!("se")?;
+    let mut module = module_new!("se")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.custom_width_int_type(32)?;
     let fn_ty = m.function_type_no_parameters(m.void_type().as_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let count: IntValue<IntDyn, _> = i32_ty.const_int_checked(4_i64)?.as_erased().try_into()?;
     b.alloca_builder(m.ptr_type_in::<0>())
         .array(count)
@@ -126,12 +134,14 @@ fn swifterror_array_alloca_rejected() -> Result<(), IrError> {
 /// Constructed through the [`llvmkit_ir::AllocaBuilder`] chain.
 #[test]
 fn swifterror_size_one_alloca_verifies_and_drops_canonical_size() -> Result<(), IrError> {
-    let m = module_new!("se1")?;
+    let mut module = module_new!("se1")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.custom_width_int_type(32)?;
     let fn_ty = m.function_type_no_parameters(m.void_type().as_type())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let one: IntValue<IntDyn, _> = i32_ty.const_int_checked(1_i64)?.as_erased().try_into()?;
     b.alloca_builder(m.ptr_type_in::<0>())
         .array(one)

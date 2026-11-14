@@ -18,12 +18,14 @@ fn view_of<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx>(
 /// `(X, Y)` in order.
 #[test]
 fn add_sub_allones_binds_operands() -> Result<(), IrError> {
-    let m = module_new!("m_add_sub")?;
+    let mut module = module_new!("m_add_sub")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let y: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let sub = b.int_sub::<i32, _, _, _>(x, y, "s")?;
@@ -43,12 +45,14 @@ fn add_sub_allones_binds_operands() -> Result<(), IrError> {
 /// no longer matches.
 #[test]
 fn one_use_gate_rejects_multi_use_subexpr() -> Result<(), IrError> {
-    let m = module_new!("m_one_use")?;
+    let mut module = module_new!("m_one_use")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let y: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let sub = b.int_sub::<i32, _, _, _>(x, y, "s")?;
@@ -76,12 +80,14 @@ fn one_use_gate_rejects_multi_use_subexpr() -> Result<(), IrError> {
 /// `add %y, %x` whose operands are in the *other* order.
 #[test]
 fn commutative_add_matches_swapped_operands() -> Result<(), IrError> {
-    let m = module_new!("m_c_add")?;
+    let mut module = module_new!("m_c_add")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let y: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     // add %y, %x  (x is the second operand)
@@ -105,12 +111,14 @@ fn commutative_add_matches_swapped_operands() -> Result<(), IrError> {
 /// `m_not` matches `xor %v, -1` and `m_neg` matches `sub 0, %v`.
 #[test]
 fn not_and_neg_sugar() -> Result<(), IrError> {
-    let m = module_new!("m_not_neg")?;
+    let mut module = module_new!("m_not_neg")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let v: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let not = b.int_xor::<i32, _, _, _>(v, i32_ty.const_int(-1_i32), "n")?;
     let neg = b.int_sub::<i32, _, _, _>(i32_ty.const_int(0_i32), v, "g")?;
@@ -131,13 +139,15 @@ fn not_and_neg_sugar() -> Result<(), IrError> {
 /// GEP base pointer.
 #[test]
 fn load_of_gep_binds_base() -> Result<(), IrError> {
-    let m = module_new!("m_load_gep")?;
+    let mut module = module_new!("m_load_gep")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let base: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
     let idx: IntValue<'_, IntDyn, _> = m.view(f).param(1)?.try_into()?;
     let gep = b.gep(i32_ty, base, [idx], "p")?;
@@ -190,12 +200,14 @@ fn constant_predicates() -> Result<(), IrError> {
 /// values inside the `and`.
 #[test]
 fn two_step_specific_reuse() -> Result<(), IrError> {
-    let m = module_new!("m_two_step")?;
+    let mut module = module_new!("m_two_step")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let y: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let or = b.int_or::<i32, _, _, _>(x, y, "o")?;
@@ -218,23 +230,25 @@ fn two_step_specific_reuse() -> Result<(), IrError> {
 /// discriminator — an `i32` phi surfaces as `PhiKind::Int`.
 #[test]
 fn m_phi_binds_phi_kind() -> Result<(), IrError> {
-    let m = module_new!("m_phi_bind")?;
+    let mut module = module_new!("m_phi_bind")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let other = m.view(f).append_basic_block(&m, "other");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let other = m.view(f).append_basic_block(m, "other");
 
     // join(%p: i32): two unconditional predecessors merge here, each
     // carrying its own constant into the head-phi: `[1, entry], [2, other]`.
-    let bwp = IrBuilder::new_for::<Dyn>(&m);
+    let bwp = IrBuilder::new_for::<Dyn>(&mut key);
     let (join, params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "join")?;
     let join_label = join.id();
 
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(entry)
         .br_with_args(join_label, &[i32_ty.const_int(1_i32).as_erased()])?;
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(other)
         .br_with_args(join_label, &[i32_ty.const_int(2_i32).as_erased()])?;
 
@@ -247,12 +261,14 @@ fn m_phi_binds_phi_kind() -> Result<(), IrError> {
 /// `m_phi()` rejects a non-phi instruction (an `add`).
 #[test]
 fn m_phi_rejects_non_phi() -> Result<(), IrError> {
-    let m = module_new!("m_phi_reject")?;
+    let mut module = module_new!("m_phi_reject")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let y: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let add = b.int_add::<i32, _, _, _>(x, y, "r")?;
@@ -266,29 +282,33 @@ fn m_phi_rejects_non_phi() -> Result<(), IrError> {
 /// one use still matches through the gate.
 #[test]
 fn m_phi_composes_with_m_one_use() -> Result<(), IrError> {
-    let m = module_new!("m_phi_one_use")?;
+    let mut module = module_new!("m_phi_one_use")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let other = m.view(f).append_basic_block(&m, "other");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let other = m.view(f).append_basic_block(m, "other");
 
     // join(%p: i32): two unconditional predecessors merge here, carrying
     // `[1, entry], [2, other]` into the head-phi.
-    let bwp = IrBuilder::new_for::<Dyn>(&m);
+    let bwp = IrBuilder::new_for::<Dyn>(&mut key);
     let (join, params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "join")?;
     let join_label = join.id();
 
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(entry)
         .br_with_args(join_label, &[i32_ty.const_int(1_i32).as_erased()])?;
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(other)
         .br_with_args(join_label, &[i32_ty.const_int(2_i32).as_erased()])?;
 
     // Exactly one use of the phi result: the return.
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
-    IrBuilder::new_for::<Dyn>(&m).position_at_end(join).ret(p)?;
+    IrBuilder::new_for::<Dyn>(&mut key)
+        .position_at_end(join)
+        .ret(p)?;
 
     let view = view_of(params[0]);
     assert!(m_one_use(m_phi()).match_view(&view).is_some());

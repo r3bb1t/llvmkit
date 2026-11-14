@@ -39,14 +39,16 @@ where
         IntValue<'m, i32, llvmkit_ir::DynBrand>,
     ) -> Result<R, IrError>,
 {
-    let m = Module::dynamic(name);
+    let mut module = Module::dynamic(name);
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()])?;
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    body(&m, &b, a)
+    body(m, &b, a)
 }
 
 /// Port of
@@ -257,13 +259,15 @@ fn ported_arms_never_over_report_sign_bits() -> Result<(), IrError> {
 /// the two cast arms, checked against the concrete widened/narrowed value.
 #[test]
 fn sext_and_trunc_arms_never_over_report() -> Result<(), IrError> {
-    let m = Module::dynamic("nsb-casts");
+    let mut module = Module::dynamic("nsb-casts");
+    let mut key = module.layout_token();
+    let m = key.module();
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty.as_type())?;
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
 
     // sext i8 -8 to i32 == -8; an i8 -8 has 5 sign bits, the i32 has 29.
     let narrow: IntValue<'_, i8, _> = i8_ty.const_int(-8_i8).as_constant().try_into()?;

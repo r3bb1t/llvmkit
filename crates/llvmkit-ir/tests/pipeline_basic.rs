@@ -18,9 +18,9 @@ use std::rc::Rc;
 
 use llvmkit_ir::{
     Analyses, DcePass, DominatorTreeAnalysis, Dyn, FnCx, FnReport, FunctionId, FunctionPass,
-    FunctionView, Inspect, IrBuilder, IrError, IrResult, Linkage, ModCx, ModReport, Module,
-    ModuleBrand, ModulePass, NoFolder, PatchBody, ReshapeCfg, RewriteModule, Unverified, Verified,
-    for_each_function, function_pipeline, module_new, module_pipeline,
+    FunctionView, Inspect, IrBuilder, IrError, IrResult, LayoutToken, Linkage, ModCx, ModReport,
+    Module, ModuleBrand, ModulePass, NoFolder, PatchBody, ReshapeCfg, RewriteModule, Unverified,
+    Verified, for_each_function, function_pipeline, module_new, module_pipeline,
 };
 
 // ==========================================================================
@@ -29,14 +29,15 @@ use llvmkit_ir::{
 
 /// Single-block `i32 @<name>()` whose entry just returns a constant.
 fn build_ret_i32_named<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<B, Unverified>,
+    key: &mut LayoutToken<'ctx, B>,
     name: &str,
 ) -> Result<FunctionId<Dyn, B>, IrError> {
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(key).position_at_end(entry);
     b.ret(i32_ty.const_int(1_u32))?;
     Ok(f)
 }
@@ -45,14 +46,15 @@ fn build_ret_i32_named<'ctx, B: ModuleBrand + 'ctx>(
 /// Built with [`NoFolder`] so the constant add is not folded away, giving
 /// `DcePass` a real trivially-dead instruction to erase.
 fn build_dead_add_named<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<B, Unverified>,
+    key: &mut LayoutToken<'ctx, B>,
     name: &str,
 ) -> Result<FunctionId<Dyn, B>, IrError> {
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::with_folder(m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(key, NoFolder).position_at_end(entry);
     let _dead =
         b.int_add::<i32, _, _, _>(i32_ty.const_int(10_u32), i32_ty.const_int(20_u32), "dead")?;
     b.ret(i32_ty.const_int(1_u32))?;
@@ -248,8 +250,8 @@ impl<B: ModuleBrand> ModulePass<B> for AddGlobalPass {
 
 #[test]
 fn all_inspect_function_pipeline_stays_verified() -> Result<(), IrError> {
-    let m = module_new!("pipe-fn-ro")?;
-    let f = build_ret_i32_named(&m, "f")?;
+    let mut m = module_new!("pipe-fn-ro")?;
+    let f = build_ret_i32_named(&mut m.layout_token(), "f")?;
     let verified = m.verify()?;
     let log = Rc::new(RefCell::new(Vec::new()));
     let mut pipe = function_pipeline((
@@ -276,8 +278,8 @@ fn all_inspect_function_pipeline_stays_verified() -> Result<(), IrError> {
 
 #[test]
 fn function_pipeline_with_mutator_downgrades() -> Result<(), IrError> {
-    let m = module_new!("pipe-fn-mixed")?;
-    let f = build_dead_add_named(&m, "f")?;
+    let mut m = module_new!("pipe-fn-mixed")?;
+    let f = build_dead_add_named(&mut m.layout_token(), "f")?;
     let verified = m.verify()?;
     let log = Rc::new(RefCell::new(Vec::new()));
     let mut pipe = function_pipeline((
@@ -303,8 +305,8 @@ fn function_pipeline_with_mutator_downgrades() -> Result<(), IrError> {
 
 #[test]
 fn module_pipeline_all_inspect_stays_verified() -> Result<(), IrError> {
-    let m = module_new!("pipe-mod-ro")?;
-    let _f = build_ret_i32_named(&m, "f")?;
+    let mut m = module_new!("pipe-mod-ro")?;
+    let _f = build_ret_i32_named(&mut m.layout_token(), "f")?;
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
     let ran = Rc::new(Cell::new(false));
@@ -316,8 +318,8 @@ fn module_pipeline_all_inspect_stays_verified() -> Result<(), IrError> {
 
 #[test]
 fn module_pipeline_with_rewrite_downgrades() -> Result<(), IrError> {
-    let m = module_new!("pipe-mod-rewrite")?;
-    let _f = build_ret_i32_named(&m, "f")?;
+    let mut m = module_new!("pipe-mod-rewrite")?;
+    let _f = build_ret_i32_named(&mut m.layout_token(), "f")?;
     let verified = m.verify()?;
     assert_eq!(verified.globals().len(), 0);
     let mut analyses = Analyses::new();
@@ -338,8 +340,8 @@ fn module_pipeline_with_rewrite_downgrades() -> Result<(), IrError> {
 
 #[test]
 fn for_each_function_read_only_stays_verified() -> Result<(), IrError> {
-    let m = module_new!("pipe-foreach-ro")?;
-    let _f = build_ret_i32_named(&m, "f")?;
+    let mut m = module_new!("pipe-foreach-ro")?;
+    let _f = build_ret_i32_named(&mut m.layout_token(), "f")?;
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
     let log = Rc::new(RefCell::new(Vec::new()));
@@ -356,9 +358,10 @@ fn for_each_function_read_only_stays_verified() -> Result<(), IrError> {
 
 #[test]
 fn for_each_function_mutating_downgrades_and_visits_defs() -> Result<(), IrError> {
-    let m = module_new!("pipe-foreach-mut")?;
-    let f1 = build_dead_add_named(&m, "f1")?;
-    let f2 = build_dead_add_named(&m, "f2")?;
+    let mut m = module_new!("pipe-foreach-mut")?;
+    let mut key = m.layout_token();
+    let f1 = build_dead_add_named(&mut key, "f1")?;
+    let f2 = build_dead_add_named(&mut key, "f2")?;
     // A declaration (no body) — must be skipped by `for_each_function`.
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
@@ -405,8 +408,8 @@ fn for_each_function_mutating_downgrades_and_visits_defs() -> Result<(), IrError
 
 #[test]
 fn nested_read_only_pipeline_stays_verified() -> Result<(), IrError> {
-    let m = module_new!("pipe-nested-ro")?;
-    let f = build_ret_i32_named(&m, "f")?;
+    let mut m = module_new!("pipe-nested-ro")?;
+    let f = build_ret_i32_named(&mut m.layout_token(), "f")?;
     let verified = m.verify()?;
     let log = Rc::new(RefCell::new(Vec::new()));
     let mut pipe = function_pipeline((
@@ -435,8 +438,8 @@ fn nested_read_only_pipeline_stays_verified() -> Result<(), IrError> {
 
 #[test]
 fn nested_pipeline_with_inner_mutator_downgrades() -> Result<(), IrError> {
-    let m = module_new!("pipe-nested-mixed")?;
-    let f = build_dead_add_named(&m, "f")?;
+    let mut m = module_new!("pipe-nested-mixed")?;
+    let f = build_dead_add_named(&mut m.layout_token(), "f")?;
     let verified = m.verify()?;
     let log = Rc::new(RefCell::new(Vec::new()));
     let mut pipe = function_pipeline((
@@ -469,8 +472,8 @@ fn nested_pipeline_with_inner_mutator_downgrades() -> Result<(), IrError> {
 
 #[test]
 fn pipeline_runs_in_order_and_second_member_sees_first() -> Result<(), IrError> {
-    let m = module_new!("pipe-order")?;
-    let f = build_dead_add_named(&m, "f")?;
+    let mut m = module_new!("pipe-order")?;
+    let f = build_dead_add_named(&mut m.layout_token(), "f")?;
     // Entry starts with `dead` + `ret`.
     assert_eq!(
         FunctionView::from(m.view(f))
@@ -495,8 +498,8 @@ fn pipeline_runs_in_order_and_second_member_sees_first() -> Result<(), IrError> 
 
 #[test]
 fn mutating_member_invalidates_and_analysis_recomputes() -> Result<(), IrError> {
-    let m = module_new!("pipe-invalidate")?;
-    let f = build_dead_add_named(&m, "f")?;
+    let mut m = module_new!("pipe-invalidate")?;
+    let f = build_dead_add_named(&mut m.layout_token(), "f")?;
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
 

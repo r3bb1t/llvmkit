@@ -3,7 +3,8 @@
 Date: 2026-11-14. Target: `crates/llvmkit-ir` (`module.rs`, `ir_builder.rs`,
 `instruction.rs`, `basic_block.rs`, `function.rs`, `pass_context.rs`,
 `pass_manager.rs`, `ssa_builder.rs`), `crates/llvmkit-asmparser` (`ll_parser.rs`).
-Status: **proposed, not built.** Written for review before any code changes.
+Status: **approved 2026-11-14, in progress.** The decisions taken in review
+are recorded in §8 and override the text above them where the two differ.
 It supersedes the unscheduled "layout session" entry in `docs/future-work.md`
 (*A placement witness proves* was placed, *not* is placed).
 
@@ -233,3 +234,42 @@ restructuring rather than a mechanical edit.
 6. **Migrate** the parser, `SsaBuilder`, tests and examples, then update docs:
    `type-safety-vs-llvm.md`, `inkwell-migration.md`, and the `future-work.md`
    entry, which this note closes.
+
+## 8. Decisions (2026-11-14)
+
+Checked against a real consumer, [Mergen](https://github.com/NaC-L/Mergen).
+Each lifter owns one module and one function, and keeps one long-lived
+`IRBuilder` (`lifter/core/LifterClass.hpp`). It always creates blocks inside
+the function.
+
+1. **One token per module** (open question 1). No per-function split.
+2. **The token borrows its module**: `LayoutToken<'m, B>` holds
+   `&'m Module<B, Unverified>`.
+   - **Minting:** a module hands its token out with `m.layout_token()`. This
+     refuses only while another token over the module is alive, which a flag
+     in the module core tracks and the token's `Drop` clears.
+   - **What this replaces:** §3.3's `NewModule` and §3.4's brand check.
+     - The token names exactly one module, so builders and edits take only
+       `&mut LayoutToken`, with no `try_` forms for `DynBrand`.
+     - It cannot outlive its module, so open question 2 (brand reuse) does
+       not arise.
+     - `verify(self)` cannot run while a token is alive, because the token
+       borrows the module.
+   - **Exclusivity:** the one run-time refusal is at acquisition. After
+     that, exclusivity is compile-time.
+3. **Appending a block, or creating an orphan, needs no token** (open
+   question 3). Neither can invalidate a live builder's position or a
+   witness. Only edits that can are keyed: inserting, appending, erasing,
+   detaching or moving an instruction, and splitting or splicing a block.
+   Moving a block within its function's list
+   (`Function::move_basic_block_to_end`) changes no block's contents, so it
+   is not keyed either.
+4. **The builder's `'m`** (today an unused `PhantomData<&'m Module>`)
+   becomes the token borrow: `key: &'m mut LayoutToken<'ctx, B>`. The
+   builder's type parameters are unchanged.
+5. **Pass contexts** own the token the driver took. `builder_at` borrows the
+   context `&mut`, so no context edit can run while a pass's builder lives.
+6. **Witnesses (§3.6) are deferred.** The five witness entries need
+   `&mut LayoutToken`, so a witness that borrows the token shared cannot be
+   passed to them. They keep their run-time re-check, which stays correct.
+   Folding the token into the witness is a later step.

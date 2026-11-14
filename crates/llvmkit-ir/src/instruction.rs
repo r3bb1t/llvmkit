@@ -54,6 +54,7 @@ use super::instructions::{
     UremInst, VaArgInst, XorInst, ZextInst,
 };
 use super::int_width::IntDyn;
+use super::layout_token::LayoutToken;
 use super::marker::{Dyn, ReturnMarker};
 use super::metadata::{
     DebugRecord, MetadataAttachmentKind, MetadataAttachmentSet, MetadataId, StoredBrand,
@@ -1364,8 +1365,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// it from each operand's reverse use-list. Mirrors
     /// `Instruction::eraseFromParent` in `lib/IR/Instruction.cpp`.
     ///
-    /// Consumes `self`: use-after-erase is a *compile* error.
-    pub fn erase_from_parent(self, module_token: &'ctx Module<B, Unverified>) {
+    /// Consumes `self`: use-after-erase is a *compile* error. Takes the
+    /// module's [`LayoutToken`] `&mut`, so no builder can be positioned at
+    /// this instruction while it is erased.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::ForeignLayoutToken`] if `key` is another module's.
+    pub fn erase_from_parent(self, key: &mut LayoutToken<'ctx, B>) -> IrResult<()> {
+        key.admit(self.module.id())?;
+        self.erase_from_parent_in(key.module());
+        Ok(())
+    }
+
+    /// Crate-internal body of [`erase_from_parent`](Self::erase_from_parent),
+    /// for a caller that already holds the module's layout permission further
+    /// up (a pass context, the SSA builder, a transform reached through one).
+    pub(crate) fn erase_from_parent_in(self, module_token: &'ctx Module<B, Unverified>) {
         let self_id = self.id;
         let module = module_token.core_ref();
         remove_local_name_from_parent(self.to_erased());
@@ -1389,10 +1405,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// it can be reattached elsewhere via [`Instruction::insert_before`] /
     /// [`Instruction::insert_after`] / [`Instruction::append_to`].
     /// Mirrors `Instruction::removeFromParent` in `lib/IR/Instruction.cpp`.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::ForeignLayoutToken`] if `key` is another module's.
     pub fn detach_from_parent(
         self,
-        module_token: &'ctx Module<B, Unverified>,
-    ) -> Instruction<'ctx, state::Detached, B> {
+        key: &mut LayoutToken<'ctx, B>,
+    ) -> IrResult<Instruction<'ctx, state::Detached, B>> {
+        key.admit(self.module.id())?;
+        let module_token = key.module();
         let module = module_token.core_ref();
         let self_id = self.id;
         remove_local_name_from_parent(self.to_erased());
@@ -1410,12 +1432,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         // detached instruction names no block rather than the one that no
         // longer lists it.
         module.context().clear_instruction_parent(self_id);
-        Instruction {
+        Ok(Instruction {
             id: self.id,
             module: self.module,
             ty: self.ty,
             _state: core::marker::PhantomData,
-        }
+        })
     }
 
     /// Move this instruction so it appears immediately before `other`
@@ -1430,9 +1452,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// detached after the witness was made.
     pub fn move_before<C2: Capability>(
         self,
-        module_token: &'ctx Module<B, Unverified>,
+        key: &mut LayoutToken<'ctx, B>,
         other: PlacedInstruction<'ctx, B, C2>,
     ) -> IrResult<()> {
+        key.admit(self.module.id())?;
+        let module_token = key.module();
         let other = &other.instruction();
         // Boundary: the caller's anchor, admitted before its block is read.
         let other_id = other.slot_in(self.module.id())?;
@@ -1489,9 +1513,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// detached after the witness was made.
     pub fn move_after<C2: Capability>(
         self,
-        module_token: &'ctx Module<B, Unverified>,
+        key: &mut LayoutToken<'ctx, B>,
         other: PlacedInstruction<'ctx, B, C2>,
     ) -> IrResult<()> {
+        key.admit(self.module.id())?;
+        let module_token = key.module();
         let other = &other.instruction();
         // Boundary: the caller's anchor, admitted before its block is read.
         let other_id = other.slot_in(self.module.id())?;
@@ -1549,9 +1575,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     /// detached after the witness was made.
     pub fn insert_before<C2: Capability>(
         self,
-        module_token: &'ctx Module<B, Unverified>,
+        key: &mut LayoutToken<'ctx, B>,
         other: PlacedInstruction<'ctx, B, C2>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
+        key.admit(self.module.id())?;
+        let module_token = key.module();
         let other = &other.instruction();
         // Boundary: the caller's anchor, admitted before its block is read.
         let other_id = other.slot_in(self.module.id())?;
@@ -1585,9 +1613,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     /// detached after the witness was made.
     pub fn insert_after<C2: Capability>(
         self,
-        module_token: &'ctx Module<B, Unverified>,
+        key: &mut LayoutToken<'ctx, B>,
         other: PlacedInstruction<'ctx, B, C2>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
+        key.admit(self.module.id())?;
+        let module_token = key.module();
         let other = &other.instruction();
         // Boundary: the caller's anchor, admitted before its block is read.
         let other_id = other.slot_in(self.module.id())?;
@@ -1618,9 +1648,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     /// module.
     pub fn append_to<R: ReturnMarker>(
         self,
-        module_token: &'ctx Module<B, Unverified>,
+        key: &mut LayoutToken<'ctx, B>,
         block: &BasicBlock<'ctx, R, Unterminated, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
+        key.admit(self.module.id())?;
+        let module_token = key.module();
         // Boundary: the caller's block, admitted before it is read.
         let parent_id = block.to_erased().slot_in(self.module.id())?;
         let module = module_token.core_ref();

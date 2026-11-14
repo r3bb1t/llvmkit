@@ -17,18 +17,18 @@ use llvmkit_ir::{
 };
 
 fn main() {
-    let a = Module::dynamic("a");
+    let mut a_module = Module::dynamic("a"); let mut a_key = a_module.layout_token(); let a = a_key.module();
     let i32_ty = a.i32_type();
     let f = a
         .add_function_dyn("f", a.function_type_no_parameters(i32_ty).expect("valid function type"), Linkage::External)
         .expect("f");
     let entry = a.view(f).append_basic_block(&a, "entry");
-    let b0 = IrBuilder::with_folder(&a, NoFolder).position_at_end(entry);
+    let b0 = IrBuilder::with_folder(&mut a_key, NoFolder).position_at_end(entry);
     let sum = b0
         .int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "s")
         .expect("add");
     b0.ret(a.view(sum)).expect("ret");
-    let a = a.verify().expect("verifies");
+    let a = a_module.verify().expect("verifies");
     let b = Module::dynamic("b");
     let node = b.metadata_tuple(Vec::<MetadataId<_>>::new()).expect("node");
     let instruction =

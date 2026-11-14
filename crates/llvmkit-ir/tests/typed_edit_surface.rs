@@ -14,8 +14,8 @@ use std::rc::Rc;
 use llvmkit_ir::{
     Analyses, BasicBlock, BasicBlockLabel, BlockId, CfgEditError, Dyn, EditedTerminator, FnCx,
     FnReport, FunctionId, FunctionPass, InsertPoint, IntPredicate, IntValue, IrBuilder, IrError,
-    IrResult, Linkage, Module, ModuleBrand, PositionedBefore, ReshapeCfg, TermEdit, Value, ValueId,
-    module_new, run_function_pass,
+    IrResult, LayoutToken, Linkage, Module, ModuleBrand, PositionedBefore, ReshapeCfg, TermEdit,
+    Value, ValueId, module_new, run_function_pass,
 };
 
 // Fixture return-type aliases. These keep the the emitters helper signatures under
@@ -95,8 +95,9 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectInvokeEdge<B> {
 /// unwind label %unwind`, plus an unreferenced `%new` block that a redirect can
 /// aim at. Returns the caller and the `%new` `Dyn` label.
 fn build_invoke_caller<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<B, llvmkit_ir::Unverified>,
+    key: &mut LayoutToken<'ctx, B>,
 ) -> IrResult<InvokeCallerFixture<B>> {
+    let m = key.module();
     let callee = m
         .add_typed_function::<(), (), _>("callee", Linkage::External)?
         .as_function();
@@ -119,24 +120,24 @@ fn build_invoke_caller<'ctx, B: ModuleBrand + 'ctx>(
     let new_pad_dyn: BasicBlockLabel<'_, Dyn, _> = new_pad.to_erased().try_into()?;
     let new_pad_dyn = new_pad_dyn.id();
 
-    let bn = IrBuilder::new_for::<()>(m).position_at_end(normal);
+    let bn = IrBuilder::new_for::<()>(key).position_at_end(normal);
     bn.ret_void();
     // `Verifier::visitInvokeInst` requires the unwind destination to be an EH
     // pad, and `visitLandingPadInst` requires the `personality` set above.
-    let bu = IrBuilder::new_for::<()>(m).position_at_end(unwind);
+    let bu = IrBuilder::new_for::<()>(key).position_at_end(unwind);
     let _closed = bu.landingpad(m.i32_type().as_type(), true, "lp")?.finish();
     bu.ret_void();
-    let bnew = IrBuilder::new_for::<()>(m).position_at_end(new);
+    let bnew = IrBuilder::new_for::<()>(key).position_at_end(new);
     bnew.ret_void();
     // The unwind-redirect target: an EH pad of its own, with no predecessor
     // until the redirect gives it one.
-    let bnew_pad = IrBuilder::new_for::<()>(m).position_at_end(new_pad);
+    let bnew_pad = IrBuilder::new_for::<()>(key).position_at_end(new_pad);
     let _closed = bnew_pad
         .landingpad(m.i32_type().as_type(), true, "lp.new")?
         .finish();
     bnew_pad.ret_void();
 
-    let b = IrBuilder::new_for::<()>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<()>(key).position_at_end(entry);
     let _ = b.invoke_dyn(
         m.view(callee),
         Vec::<Value<'_, _>>::new(),
@@ -151,9 +152,10 @@ fn build_invoke_caller<'ctx, B: ModuleBrand + 'ctx>(
 /// the unwind edge is untouched, and the output re-verifies.
 #[test]
 fn invoke_redirect_normal_retargets_normal_edge() -> Result<(), IrError> {
-    let m = module_new!("invoke-redirect-normal")?;
-    let (caller, new_dyn, _new_pad_dyn) = build_invoke_caller(&m)?;
-    let verified = m.verify()?;
+    let mut module = module_new!("invoke-redirect-normal")?;
+    let mut key = module.layout_token();
+    let (caller, new_dyn, _new_pad_dyn) = build_invoke_caller(&mut key)?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let pass = RedirectInvokeEdge {
         which: InvokeArm::Normal,
@@ -172,9 +174,10 @@ fn invoke_redirect_normal_retargets_normal_edge() -> Result<(), IrError> {
 /// `edit_invoke(..).redirect_unwind(new, [])` retargets ONLY the unwind edge.
 #[test]
 fn invoke_redirect_unwind_retargets_unwind_edge() -> Result<(), IrError> {
-    let m = module_new!("invoke-redirect-unwind")?;
-    let (caller, _new_dyn, new_pad_dyn) = build_invoke_caller(&m)?;
-    let verified = m.verify()?;
+    let mut module = module_new!("invoke-redirect-unwind")?;
+    let mut key = module.layout_token();
+    let (caller, _new_dyn, new_pad_dyn) = build_invoke_caller(&mut key)?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let pass = RedirectInvokeEdge {
         which: InvokeArm::Unwind,
@@ -262,8 +265,9 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectCallBrEdge<B> {
 /// function is not IR upstream accepts, and these tests re-verify their output.
 /// One `!i` label constraint matches the one indirect destination.
 fn build_callbr_caller<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<B, llvmkit_ir::Unverified>,
+    key: &mut LayoutToken<'ctx, B>,
 ) -> IrResult<CallerFixture<B>> {
+    let m = key.module();
     let void_ty = m.void_type();
     let asm_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let asm = m.inline_asm(
@@ -286,14 +290,14 @@ fn build_callbr_caller<'ctx, B: ModuleBrand + 'ctx>(
     let new_dyn: BasicBlockLabel<'_, Dyn, _> = new.to_erased().try_into()?;
     let new_dyn = new_dyn.id();
 
-    let bc = IrBuilder::new_for::<()>(m).position_at_end(cont);
+    let bc = IrBuilder::new_for::<()>(key).position_at_end(cont);
     bc.ret_void();
-    let bi = IrBuilder::new_for::<()>(m).position_at_end(ind);
+    let bi = IrBuilder::new_for::<()>(key).position_at_end(ind);
     bi.unreachable();
-    let bnew = IrBuilder::new_for::<()>(m).position_at_end(new);
+    let bnew = IrBuilder::new_for::<()>(key).position_at_end(new);
     bnew.ret_void();
 
-    let b = IrBuilder::new_for::<()>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<()>(key).position_at_end(entry);
     let _ = b.inline_asm_callbr::<(), _, _, _, _, _, _>(
         asm,
         Vec::<Value<'_, _>>::new(),
@@ -307,9 +311,10 @@ fn build_callbr_caller<'ctx, B: ModuleBrand + 'ctx>(
 /// `edit_callbr(..).redirect_default(new, [])` retargets the fallthrough edge.
 #[test]
 fn callbr_redirect_default_retargets_default_edge() -> Result<(), IrError> {
-    let m = module_new!("callbr-redirect-default")?;
-    let (caller, new_dyn) = build_callbr_caller(&m)?;
-    let verified = m.verify()?;
+    let mut module = module_new!("callbr-redirect-default")?;
+    let mut key = module.layout_token();
+    let (caller, new_dyn) = build_callbr_caller(&mut key)?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let pass = RedirectCallBrEdge::new(CallBrEdge::Default, new_dyn);
     let refusal = Rc::clone(&pass.refusal);
@@ -336,10 +341,12 @@ fn callbr_redirect_default_retargets_default_edge() -> Result<(), IrError> {
 /// index; llvmkit's typed refusal carries it.
 #[test]
 fn callbr_redirect_indirect_refuses_an_index_past_the_destinations() -> Result<(), IrError> {
-    let m = module_new!("callbr-redirect-indirect-out-of-range")?;
-    let (caller, new_dyn) = build_callbr_caller(&m)?;
+    let mut module = module_new!("callbr-redirect-indirect-out-of-range")?;
+    let mut key = module.layout_token();
+    let m = key.module();
+    let (caller, new_dyn) = build_callbr_caller(&mut key)?;
     let before = format!("{m}");
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let pass = RedirectCallBrEdge::new(CallBrEdge::Indirect(1), new_dyn);
     let refusal = Rc::clone(&pass.refusal);
@@ -367,9 +374,10 @@ fn callbr_redirect_indirect_refuses_an_index_past_the_destinations() -> Result<(
 /// `edit_callbr(..).redirect_indirect(0, new, [])` retargets indirect edge 0.
 #[test]
 fn callbr_redirect_indirect_retargets_indirect_edge() -> Result<(), IrError> {
-    let m = module_new!("callbr-redirect-indirect")?;
-    let (caller, new_dyn) = build_callbr_caller(&m)?;
-    let verified = m.verify()?;
+    let mut module = module_new!("callbr-redirect-indirect")?;
+    let mut key = module.layout_token();
+    let (caller, new_dyn) = build_callbr_caller(&mut key)?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let pass = RedirectCallBrEdge::new(CallBrEdge::Indirect(0), new_dyn);
     let refusal = Rc::clone(&pass.refusal);
@@ -449,15 +457,16 @@ fn every_typed_narrowing_refuses_a_terminator_of_another_kind() -> Result<(), Ir
             "edit_callbr: `from`'s terminator is not a `callbr`",
         ),
     ] {
-        let m = module_new!("narrow-a-ret")?;
-        let (caller, new_dyn) = build_callbr_caller(&m)?;
+        let mut module = module_new!("narrow-a-ret")?;
+        let mut key = module.layout_token();
+        let (caller, new_dyn) = build_callbr_caller(&mut key)?;
         let pass = NarrowAs {
             kind,
             block: new_dyn,
             refusal: Rc::new(RefCell::new(None)),
         };
         let refusal = Rc::clone(&pass.refusal);
-        let refused = refusal_leaving_module_unchanged(m, caller, pass, &refusal)?;
+        let refused = refusal_leaving_module_unchanged(module, caller, pass, &refusal)?;
         let expected = IrError::from(CfgEditError::TerminatorKindMismatch { expected: kind });
         assert_eq!(refused, Some(expected.clone()), "{kind:?}");
         assert_eq!(expected.to_string(), text, "{kind:?}");
@@ -504,7 +513,7 @@ impl<B: ModuleBrand> FunctionPass<B> for ReachOutsideFunction<B> {
         'ctx: 'm,
         Self: 'ctx,
     {
-        let reshape = cx.mutate();
+        let mut reshape = cx.mutate();
         let refused = match &mut self.reach {
             OutsideReach::EditTerminator(block) => reshape.edit_terminator(*block).err(),
             OutsideReach::BuildAt(at) => reshape
@@ -526,19 +535,20 @@ struct TwoFunctionFixture<B: ModuleBrand> {
 }
 
 fn build_two_functions<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<B, llvmkit_ir::Unverified>,
+    key: &mut LayoutToken<'ctx, B>,
 ) -> IrResult<TwoFunctionFixture<B>> {
-    let (caller, _new) = build_callbr_caller(m)?;
+    let m = key.module();
+    let (caller, _new) = build_callbr_caller(key)?;
     let other = m
         .add_typed_function::<(), (), _>("other", Linkage::External)?
         .as_function();
     let other_entry = m.view(other).append_basic_block(m, "entry");
     let other_entry_label: BasicBlockLabel<'_, Dyn, _> = other_entry.to_erased().try_into()?;
     let other_entry_id = other_entry_label.id();
-    let (_block, ret) = IrBuilder::new_for::<()>(m)
+    let (_block, ret) = IrBuilder::new_for::<()>(key)
         .position_at_end(other_entry)
         .ret_void();
-    let before_other_ret = IrBuilder::new_for::<()>(m)
+    let before_other_ret = IrBuilder::new_for::<()>(key)
         .position_before(ret.placed())?
         .save_insert_point();
     let orphan = BasicBlock::create_orphan(m, "orphan").id();
@@ -579,11 +589,12 @@ fn refusal_leaving_module_unchanged<B: ModuleBrand>(
 /// but nothing there checks it; llvmkit's typed refusal is its own.
 #[test]
 fn a_function_pass_cannot_edit_another_functions_terminator() -> Result<(), IrError> {
-    let m = module_new!("edit-another-functions-terminator")?;
-    let fixture = build_two_functions(&m)?;
+    let mut module = module_new!("edit-another-functions-terminator")?;
+    let mut key = module.layout_token();
+    let fixture = build_two_functions(&mut key)?;
     let pass = ReachOutsideFunction::new(OutsideReach::EditTerminator(fixture.other_entry));
     let refusal = Rc::clone(&pass.refusal);
-    let refused = refusal_leaving_module_unchanged(m, fixture.caller, pass, &refusal)?;
+    let refused = refusal_leaving_module_unchanged(module, fixture.caller, pass, &refusal)?;
     assert_eq!(
         refused,
         Some(IrError::from(llvmkit_ir::BlockError::BlockNotInFunction))
@@ -599,11 +610,12 @@ fn a_function_pass_cannot_edit_another_functions_terminator() -> Result<(), IrEr
 /// **No upstream counterpart**: as above.
 #[test]
 fn a_function_pass_cannot_edit_an_orphan_blocks_terminator() -> Result<(), IrError> {
-    let m = module_new!("edit-orphan-terminator")?;
-    let fixture = build_two_functions(&m)?;
+    let mut module = module_new!("edit-orphan-terminator")?;
+    let mut key = module.layout_token();
+    let fixture = build_two_functions(&mut key)?;
     let pass = ReachOutsideFunction::new(OutsideReach::EditTerminator(fixture.orphan));
     let refusal = Rc::clone(&pass.refusal);
-    let refused = refusal_leaving_module_unchanged(m, fixture.caller, pass, &refusal)?;
+    let refused = refusal_leaving_module_unchanged(module, fixture.caller, pass, &refusal)?;
     assert_eq!(
         refused,
         Some(IrError::from(llvmkit_ir::BlockError::BlockNotInFunction))
@@ -619,11 +631,12 @@ fn a_function_pass_cannot_edit_an_orphan_blocks_terminator() -> Result<(), IrErr
 /// itself.
 #[test]
 fn a_function_pass_cannot_redirect_onto_another_functions_block() -> Result<(), IrError> {
-    let m = module_new!("redirect-onto-another-function")?;
-    let fixture = build_two_functions(&m)?;
+    let mut module = module_new!("redirect-onto-another-function")?;
+    let mut key = module.layout_token();
+    let fixture = build_two_functions(&mut key)?;
     let pass = RedirectCallBrEdge::new(CallBrEdge::Default, fixture.other_entry);
     let refusal = Rc::clone(&pass.refusal);
-    let refused = refusal_leaving_module_unchanged(m, fixture.caller, pass, &refusal)?;
+    let refused = refusal_leaving_module_unchanged(module, fixture.caller, pass, &refusal)?;
     assert_eq!(
         refused,
         Some(IrError::from(llvmkit_ir::BlockError::BlockNotInFunction))
@@ -637,11 +650,12 @@ fn a_function_pass_cannot_redirect_onto_another_functions_block() -> Result<(), 
 /// **No upstream counterpart**: as above.
 #[test]
 fn a_function_pass_cannot_build_into_another_function() -> Result<(), IrError> {
-    let m = module_new!("build-into-another-function")?;
-    let fixture = build_two_functions(&m)?;
+    let mut module = module_new!("build-into-another-function")?;
+    let mut key = module.layout_token();
+    let fixture = build_two_functions(&mut key)?;
     let pass = ReachOutsideFunction::new(OutsideReach::BuildAt(Some(fixture.before_other_ret)));
     let refusal = Rc::clone(&pass.refusal);
-    let refused = refusal_leaving_module_unchanged(m, fixture.caller, pass, &refusal)?;
+    let refused = refusal_leaving_module_unchanged(module, fixture.caller, pass, &refusal)?;
     assert_eq!(
         refused,
         Some(IrError::from(llvmkit_ir::BlockError::BlockNotInFunction))
@@ -686,8 +700,9 @@ impl<B: ModuleBrand> FunctionPass<B> for RemoveCondBrArm {
 
 /// Build `i32 @f(i32 %a)` whose entry is `cond_br (%a == 0) ? then : else`.
 fn build_cond_br_fn<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<B, llvmkit_ir::Unverified>,
+    key: &mut LayoutToken<'ctx, B>,
 ) -> IrResult<FunctionId<i32, B>> {
+    let m = key.module();
     let i32_ty = m.i32_type();
     let f = m
         .add_typed_function::<i32, (i32,), _>("f", Linkage::External)?
@@ -699,12 +714,12 @@ fn build_cond_br_fn<'ctx, B: ModuleBrand + 'ctx>(
     let then_lbl = then_bb.id();
     let else_lbl = else_bb.id();
 
-    let bt = IrBuilder::new_for::<i32>(m).position_at_end(then_bb);
+    let bt = IrBuilder::new_for::<i32>(key).position_at_end(then_bb);
     bt.ret(i32_ty.const_int(0_u32))?;
-    let be = IrBuilder::new_for::<i32>(m).position_at_end(else_bb);
+    let be = IrBuilder::new_for::<i32>(key).position_at_end(else_bb);
     be.ret(i32_ty.const_int(1_u32))?;
 
-    let b = IrBuilder::new_for::<i32>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(key).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let c = b.int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
     b.cond_br(c, then_lbl, else_lbl)?;
@@ -715,9 +730,10 @@ fn build_cond_br_fn<'ctx, B: ModuleBrand + 'ctx>(
 /// %else` (the survivor), and the output re-verifies.
 #[test]
 fn cond_br_remove_then_collapses_to_br() -> Result<(), IrError> {
-    let m = module_new!("condbr-remove-then")?;
-    let f = build_cond_br_fn(&m)?;
-    let verified = m.verify()?;
+    let mut module = module_new!("condbr-remove-then")?;
+    let mut key = module.layout_token();
+    let f = build_cond_br_fn(&mut key)?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let pass = RemoveCondBrArm { remove_then: true };
     let out = run_function_pass(pass, verified, f, &mut analyses)?;
@@ -738,9 +754,10 @@ fn cond_br_remove_then_collapses_to_br() -> Result<(), IrError> {
 /// %then` (the survivor).
 #[test]
 fn cond_br_remove_else_collapses_to_br() -> Result<(), IrError> {
-    let m = module_new!("condbr-remove-else")?;
-    let f = build_cond_br_fn(&m)?;
-    let verified = m.verify()?;
+    let mut module = module_new!("condbr-remove-else")?;
+    let mut key = module.layout_token();
+    let f = build_cond_br_fn(&mut key)?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let pass = RemoveCondBrArm { remove_then: false };
     let out = run_function_pass(pass, verified, f, &mut analyses)?;
@@ -798,8 +815,9 @@ impl<B: ModuleBrand> FunctionPass<B> for SwitchCaseOp<B> {
 /// case0, 1 -> case1 ]`, plus an unreferenced `%new` block. Returns the
 /// function and the `case0`/`new` `Dyn` labels.
 fn build_switch_fn<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<B, llvmkit_ir::Unverified>,
+    key: &mut LayoutToken<'ctx, B>,
 ) -> IrResult<SwitchFixture<B>> {
+    let m = key.module();
     let i32_ty = m.i32_type();
     let f = m
         .add_typed_function::<i32, (i32,), _>("f", Linkage::External)?
@@ -819,11 +837,11 @@ fn build_switch_fn<'ctx, B: ModuleBrand + 'ctx>(
     let new_dyn = new_dyn.id();
 
     for (bb, k) in [(dflt, 0_u32), (case0, 1), (case1, 2), (new, 3)] {
-        let bb_b = IrBuilder::new_for::<i32>(m).position_at_end(bb);
+        let bb_b = IrBuilder::new_for::<i32>(key).position_at_end(bb);
         bb_b.ret(i32_ty.const_int(k))?;
     }
 
-    let b = IrBuilder::new_for::<i32>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(key).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let (_sealed, sw) = b.switch_dyn(a, dflt_lbl, "")?;
     let sw = sw.add_case(i32_ty.const_int(0_u32), case0_lbl)?;
@@ -835,9 +853,10 @@ fn build_switch_fn<'ctx, B: ModuleBrand + 'ctx>(
 /// edge onto `%new`, and the output re-verifies.
 #[test]
 fn switch_redirect_successor_retargets_case() -> Result<(), IrError> {
-    let m = module_new!("switch-redirect-succ")?;
-    let (f, case0_dyn, new_dyn) = build_switch_fn(&m)?;
-    let verified = m.verify()?;
+    let mut module = module_new!("switch-redirect-succ")?;
+    let mut key = module.layout_token();
+    let (f, case0_dyn, new_dyn) = build_switch_fn(&mut key)?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let pass = SwitchCaseOp {
         remove: false,
@@ -862,9 +881,10 @@ fn switch_redirect_successor_retargets_case() -> Result<(), IrError> {
 /// the default survive, and the output re-verifies.
 #[test]
 fn switch_remove_successor_drops_case() -> Result<(), IrError> {
-    let m = module_new!("switch-remove-succ")?;
-    let (f, case0_dyn, new_dyn) = build_switch_fn(&m)?;
-    let verified = m.verify()?;
+    let mut module = module_new!("switch-remove-succ")?;
+    let mut key = module.layout_token();
+    let (f, case0_dyn, new_dyn) = build_switch_fn(&mut key)?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let pass = SwitchCaseOp {
         remove: true,
@@ -938,8 +958,9 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectSwitchSuccessor<B> {
 /// `redirect_successor(bogus, new, [ev])` would pass phi validation and corrupt
 /// `new`'s phi; `%ev` (defined in `entry`) is a valid seed for it.
 fn build_switch_bogus_fn<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<B, llvmkit_ir::Unverified>,
+    key: &mut LayoutToken<'ctx, B>,
 ) -> IrResult<SwitchBogusFixture<B>> {
+    let m = key.module();
     let i32_ty = m.i32_type();
     let f = m
         .add_typed_function::<i32, (i32,), _>("f", Linkage::External)?
@@ -949,7 +970,7 @@ fn build_switch_bogus_fn<'ctx, B: ModuleBrand + 'ctx>(
     let case0 = m.view(f).append_basic_block(m, "case0");
     let bogus = m.view(f).append_basic_block(m, "bogus");
     // new(%np: i32): a head-phi authored as a block parameter, seeded by `dflt`.
-    let (new, new_params) = IrBuilder::new_for::<i32>(m).append_block_with_params(
+    let (new, new_params) = IrBuilder::new_for::<i32>(key).append_block_with_params(
         m.view(f),
         &[i32_ty.as_type()],
         "new",
@@ -964,28 +985,28 @@ fn build_switch_bogus_fn<'ctx, B: ModuleBrand + 'ctx>(
     let new_dyn = new_dyn.id();
 
     // entry: %ev = add %a, 3 ; switch %a, default %dflt [ 0 -> case0 ]
-    let b = IrBuilder::new_for::<i32>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(key).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let ev = b.int_add(a, 3_i32, "ev")?;
     let (_sealed, sw) = b.switch_dyn(a, dflt_lbl, "")?;
     sw.add_case(i32_ty.const_int(0_u32), case0_lbl)?.finish();
 
     // dflt: %nd = add %a, 5 ; br new(%nd)
-    let b = IrBuilder::new_for::<i32>(m).position_at_end(dflt);
+    let b = IrBuilder::new_for::<i32>(key).position_at_end(dflt);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let nd = b.int_add(a, 5_i32, "nd")?;
     b.br_with_args(new_lbl, &[m.view(nd).as_erased()])?;
 
     // case0: ret 0
-    let b = IrBuilder::new_for::<i32>(m).position_at_end(case0);
+    let b = IrBuilder::new_for::<i32>(key).position_at_end(case0);
     b.ret(i32_ty.const_int(0_u32))?;
 
     // bogus: ret 99 (a real block, but not reached from the switch's cases).
-    let b = IrBuilder::new_for::<i32>(m).position_at_end(bogus);
+    let b = IrBuilder::new_for::<i32>(key).position_at_end(bogus);
     b.ret(i32_ty.const_int(99_u32))?;
 
     // new: ret %np (the head-phi param carrying dflt's branch argument).
-    let b = IrBuilder::new_for::<i32>(m).position_at_end(new);
+    let b = IrBuilder::new_for::<i32>(key).position_at_end(new);
     let np: IntValue<'_, i32, _> = new_params[0].try_into()?;
     b.ret(np)?;
 
@@ -999,9 +1020,10 @@ fn build_switch_bogus_fn<'ctx, B: ModuleBrand + 'ctx>(
 /// the missing target-liveness check.
 #[test]
 fn switch_redirect_successor_rejects_non_case_target() -> Result<(), IrError> {
-    let m = module_new!("switch-redirect-bogus")?;
-    let (f, bogus_dyn, new_dyn, ev) = build_switch_bogus_fn(&m)?;
-    let verified = m.verify()?;
+    let mut module = module_new!("switch-redirect-bogus")?;
+    let mut key = module.layout_token();
+    let (f, bogus_dyn, new_dyn, ev) = build_switch_bogus_fn(&mut key)?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let pass = RedirectSwitchSuccessor {
         old_to: bogus_dyn,
@@ -1025,9 +1047,10 @@ fn switch_redirect_successor_rejects_non_case_target() -> Result<(), IrError> {
 /// missing target-liveness check.
 #[test]
 fn switch_remove_successor_rejects_non_case_target() -> Result<(), IrError> {
-    let m = module_new!("switch-remove-bogus")?;
-    let (f, bogus_dyn, new_dyn, _ev) = build_switch_bogus_fn(&m)?;
-    let verified = m.verify()?;
+    let mut module = module_new!("switch-remove-bogus")?;
+    let mut key = module.layout_token();
+    let (f, bogus_dyn, new_dyn, _ev) = build_switch_bogus_fn(&mut key)?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let pass = SwitchCaseOp {
         remove: true,
@@ -1080,16 +1103,18 @@ impl<B: ModuleBrand> FunctionPass<B> for AssertUneditable {
 /// `edit_terminator` on a `ret`-terminated block yields `TermEdit::Uneditable`.
 #[test]
 fn edit_terminator_ret_is_uneditable() -> Result<(), IrError> {
-    let m = module_new!("uneditable-ret")?;
+    let mut module = module_new!("uneditable-ret")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let f = m
         .add_typed_function::<i32, (), _>("f", Linkage::External)?
         .as_function();
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(entry);
     b.ret(i32_ty.const_int(0_u32))?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     // The pass's internal assertion is the test; a clean run means it held.
     let _ = run_function_pass(AssertUneditable, verified, f, &mut analyses)?;

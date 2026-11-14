@@ -8,8 +8,8 @@ use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_ir::Module;
 
 fn parse_to_text(src: &str) -> String {
-    let module = Module::dynamic("test");
-    let _ = Parser::new(src.as_bytes(), &module)
+    let mut module = Module::dynamic("test");
+    let _ = Parser::new(src.as_bytes(), module.layout_token())
         .expect("parse constructor")
         .parse_module()
         .expect("parse succeeded");

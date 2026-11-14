@@ -337,7 +337,9 @@ fn a_mismatched_function_holding_an_intrinsic_name_is_renamed_invalid() {
 /// Derived from those routines; no upstream unit test drives the arm.
 #[test]
 fn a_same_typed_definition_holding_an_intrinsic_name_is_returned() {
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m");
+    let mut key = module.layout_token();
+    let m = key.module();
     let body = m
         .add_function_dyn(
             "body",
@@ -346,13 +348,13 @@ fn a_same_typed_definition_holding_an_intrinsic_name_is_returned() {
             Linkage::External,
         )
         .expect("@body");
-    let entry = m.view(body).append_basic_block(&m, "entry");
-    IrBuilder::new_for::<Dyn>(&m)
+    let entry = m.view(body).append_basic_block(m, "entry");
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(entry)
         .ret_void()
         .expect("ret void");
     m.view(body)
-        .set_name(&m, "llvm.trap")
+        .set_name(m, "llvm.trap")
         .expect("a rename may take an llvm. name");
     assert_eq!(m.view(body).intrinsic_id(), Some(IntrinsicId::TRAP));
     let before = format!("{m}");
@@ -500,7 +502,9 @@ fn a_name_with_a_nul_byte_is_refused_and_changes_nothing() {
 /// non-void instruction in the same block takes a name.
 #[test]
 fn a_void_value_refuses_a_name() -> Result<(), IrError> {
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m");
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let f = m.add_function_dyn(
@@ -508,14 +512,14 @@ fn a_void_value_refuses_a_name() -> Result<(), IrError> {
         m.function_type(m.void_type(), [i32_ty.as_type(), ptr_ty.as_type()])?,
         Linkage::External,
     )?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let v: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let p: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(1)?.try_into()?;
     let sum = b.int_add(v, 1_i32, "")?;
     let store = b.store(sum, p)?;
 
-    let refused = store.to_erased().set_name(&m, "st");
+    let refused = store.to_erased().set_name(m, "st");
     assert!(
         matches!(
             &refused,
@@ -527,10 +531,10 @@ fn a_void_value_refuses_a_name() -> Result<(), IrError> {
         "{refused:?}"
     );
     assert_eq!(store.to_erased().name(), None);
-    store.to_erased().clear_name(&m);
+    store.to_erased().clear_name(m);
     assert_eq!(store.to_erased().name(), None);
 
-    b.view(sum).set_name(&m, "sum")?;
+    b.view(sum).set_name(m, "sum")?;
     assert_eq!(b.view(sum).name().as_deref(), Some("sum"));
     Ok(())
 }
@@ -595,21 +599,23 @@ fn inline_asm_and_metadata_values_refuse_a_name() -> Result<(), IrError> {
 #[test]
 fn declaring_an_intrinsic_over_a_same_typed_definition_leaves_its_arguments_alone()
 -> Result<(), IrError> {
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m");
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let f = m.add_function_dyn(
         "f",
         m.function_type(m.void_type(), [ptr_ty.as_type(), m.i32_type().as_type()])?,
         Linkage::External,
     )?;
-    m.view(f).param(0)?.set_name(&m, "p")?;
-    m.view(f).param(1)?.set_name(&m, "mode")?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    IrBuilder::new_for::<Dyn>(&m)
+    m.view(f).param(0)?.set_name(m, "p")?;
+    m.view(f).param(1)?.set_name(m, "mode")?;
+    let entry = m.view(f).append_basic_block(m, "entry");
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(entry)
         .ret_void()?;
     m.view(f)
-        .set_name(&m, "llvm.nvvm.tensormap.replace.fill.mode.p0")?;
+        .set_name(m, "llvm.nvvm.tensormap.replace.fill.mode.p0")?;
     let id = m
         .view(f)
         .intrinsic_id()

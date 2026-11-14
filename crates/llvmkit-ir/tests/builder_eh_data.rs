@@ -13,18 +13,20 @@ use llvmkit_ir::{Dyn, IrBuilder, IrError, Linkage, module_new};
 /// `cleanup`-only landingpad (no clauses).
 #[test]
 fn landingpad_cleanup_only() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("f.no_personality", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let exception = m.view(f).append_basic_block(&m, "exception");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let exception = m.view(f).append_basic_block(m, "exception");
     {
-        let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let bb_b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
         bb_b.ret_void()?;
     }
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(exception);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(exception);
     let lp = b.landingpad(i8_ty.as_type(), true, "cleanup")?;
     let _closed = lp.finish();
     b.ret_void()?;
@@ -47,19 +49,21 @@ fn landingpad_cleanup_only() -> Result<(), IrError> {
 /// is the two-`catch` block and is *not* what this builds.)
 #[test]
 fn landingpad_cleanup_plus_catch() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("instructions.landingpad", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let catch2 = m.view(f).append_basic_block(&m, "catch2");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let catch2 = m.view(f).append_basic_block(m, "catch2");
     {
-        let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let bb_b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
         bb_b.ret_void()?;
     }
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(catch2);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(catch2);
     let null_ptr = ptr_ty.const_null();
     let lp = b.landingpad(i32_ty.as_type(), true, "")?;
     let _closed = lp.add_catch_clause(null_ptr)?.finish();
@@ -82,13 +86,15 @@ fn landingpad_cleanup_plus_catch() -> Result<(), IrError> {
 /// undef operand.
 #[test]
 fn resume_i32_undef() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let exc = m.view(f).append_basic_block(&m, "exc");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(exc);
+    let exc = m.view(f).append_basic_block(m, "exc");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(exc);
     let undef = i32_ty.as_type().undef();
     let _ = b.resume(undef, "")?;
     let text = format!("{m}");
@@ -103,13 +109,15 @@ fn resume_i32_undef() -> Result<(), IrError> {
 /// instruction.
 #[test]
 fn landingpad_followed_by_resume() -> Result<(), IrError> {
-    let m = module_new!("a")?;
+    let mut module = module_new!("a")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let exc = m.view(f).append_basic_block(&m, "exc");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(exc);
+    let exc = m.view(f).append_basic_block(m, "exc");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(exc);
     let lp = b.landingpad(i32_ty.as_type(), true, "cleanup")?;
     let _closed = lp.finish();
     let undef = i32_ty.as_type().undef();

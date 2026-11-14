@@ -266,13 +266,15 @@ Bad Rust program, from `tests/compile_fail/cross_module_value_brand.rs`:
 let left = Module::branded::<Left, _>("left").unwrap();
 let left_value = left.i64_type().const_int(1_i64);
 
-let right = Module::branded::<Right, _>("right").unwrap();
+let mut right_module = Module::branded::<Right, _>("right").unwrap();
+let mut right_key = right_module.layout_token();
+let right = right_key.module();
 let function = right
     .add_typed_function::<i64, (), _>("f", Linkage::External)
     .unwrap()
     .as_function();
-let entry = right.view(function).append_basic_block(&right, "entry");
-let builder = IrBuilder::new_for::<i64>(&right).position_at_end(entry);
+let entry = right.view(function).append_basic_block(right, "entry");
+let builder = IrBuilder::new_for::<i64>(&mut right_key).position_at_end(entry);
 
 let _ = builder.int_add(left_value, left_value, "bad");
 ```
@@ -355,13 +357,15 @@ let f = left
     .as_function();
 let left_target = left.view(f).append_basic_block(&left, "target");
 
-let right = Module::branded::<Right, _>("right").unwrap();
+let mut right_module = Module::branded::<Right, _>("right").unwrap();
+let mut right_key = right_module.layout_token();
+let right = right_key.module();
 let f = right
     .add_typed_function::<(), (), _>("right_f", Linkage::External)
     .unwrap()
     .as_function();
-let entry = right.view(f).append_basic_block(&right, "entry");
-let builder = IrBuilder::new_for::<()>(&right).position_at_end(entry);
+let entry = right.view(f).append_basic_block(right, "entry");
+let builder = IrBuilder::new_for::<()>(&mut right_key).position_at_end(entry);
 
 let _ = builder.br(left_target);
 ```

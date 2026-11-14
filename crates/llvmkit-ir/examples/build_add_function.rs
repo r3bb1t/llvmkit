@@ -20,16 +20,20 @@
 use llvmkit_ir::{IrBuilder, IrError, Linkage, module_new};
 
 fn build() -> Result<(), IrError> {
-    let m = module_new!("demo")?;
+    let mut module = module_new!("demo")?;
+    // The layout token is the permission to place instructions; builders
+    // borrow it `&mut`, and `key.module()` reads the module meanwhile.
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
 
-    let b = IrBuilder::at_end(entry);
+    let b = IrBuilder::at_end(&mut key, entry);
     let (lhs, rhs) = m.view(f).params();
     let sum = b.int_add(lhs, rhs, "sum")?;
     b.ret(sum)?;
 
-    print!("{m}");
+    print!("{module}");
     Ok(())
 }
 

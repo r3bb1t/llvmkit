@@ -617,8 +617,8 @@ pub fn reported_line_and_column(source: &[u8], error: &ParseError) -> (u32, u32)
 /// does not care about the anchor projects `.0`.
 pub fn rejection_at(source: impl AsRef<[u8]>) -> (String, (u32, u32)) {
     let source = source.as_ref();
-    let module = Module::dynamic("rejection_at");
-    let error = Parser::new(source, &module)
+    let mut module = Module::dynamic("rejection_at");
+    let error = Parser::new(source, module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect_err("source is rejected");

@@ -24,11 +24,12 @@ use llvmkit_ir::{IrError, module_new};
 /// `test/Bitcode/compatibility.ll` atomic/fence/switch print forms cited above.
 #[test]
 fn concurrent_counter_example_emits_locked_ir() -> Result<(), IrError> {
-    let m = module_new!("concurrent_counter")?;
+    let mut m = module_new!("concurrent_counter")?;
     // Function-pointer coercion: marks `main` as used without running it.
     let _: fn() -> Result<(), IrError> = concurrent_counter_example::main;
-    concurrent_counter_example::build_atomic_inc(&m)?;
-    concurrent_counter_example::build_dispatch(&m)?;
+    let mut key = m.layout_token();
+    concurrent_counter_example::build_atomic_inc(&mut key)?;
+    concurrent_counter_example::build_dispatch(&mut key)?;
     let actual = format!("{m}");
     let expected = "; ModuleID = 'concurrent_counter'\n\
     \n\

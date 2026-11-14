@@ -21,12 +21,14 @@ use llvmkit_ir::{BinaryOpcode, IntBinOpFlags, IrBuilder, IrError, Linkage, NoFol
 /// `Argument` that `PerFunctionState::getVal` minted.
 #[test]
 fn rauw_repoints_instruction_operands() -> Result<(), IrError> {
-    let m = module_new!("fwd-instruction")?;
+    let mut module = module_new!("fwd-instruction")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
 
     let placeholder = m.forward_ref_value_placeholder(i32_ty.as_type())?;
     let sum = b.int_binop_erased(
@@ -59,13 +61,15 @@ fn rauw_repoints_instruction_operands() -> Result<(), IrError> {
 /// upstream applies when RAUW reaches a constant user.
 #[test]
 fn rauw_reinterns_constant_users() -> Result<(), IrError> {
-    let m = module_new!("fwd-constant")?;
+    let mut module = module_new!("fwd-constant")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let array_ty = m.array_type_n::<i32, 2>();
     let fn_ty = m.function_type(array_ty.as_type(), [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
 
     let placeholder = m.forward_ref_value_placeholder(i32_ty.as_type())?;
     let aggregate =
@@ -97,12 +101,14 @@ fn rauw_reinterns_constant_users() -> Result<(), IrError> {
 /// rewriting a use-list entry into a self-reference rather than looping.
 #[test]
 fn rauw_survives_a_self_reference() -> Result<(), IrError> {
-    let m = module_new!("fwd-self")?;
+    let mut module = module_new!("fwd-self")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
 
     let placeholder = m.forward_ref_value_placeholder(i32_ty.as_type())?;
     let sum = b.int_binop_erased(
@@ -275,7 +281,9 @@ fn rauw_inside_a_constant_rejects_a_non_constant_replacement() -> Result<(), IrE
 /// **No upstream counterpart** at this layer (see the module comment).
 #[test]
 fn a_vector_made_a_splat_by_rauw_keeps_its_users_in_order() -> Result<(), IrError> {
-    let m = module_new!("fwd-splat")?;
+    let mut module = module_new!("fwd-splat")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let target = m.add_global("target", m.i32_type().const_int(1))?;
     let target_ptr = m.view(target).as_global_constant_ptr();
@@ -288,8 +296,8 @@ fn a_vector_made_a_splat_by_rauw_keeps_its_users_in_order() -> Result<(), IrErro
     let fn_ty = m.function_type(vector_ty.as_type(), no_params)?;
     for name in ["first", "second", "third"] {
         let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        IrBuilder::with_folder(&m, NoFolder)
+        let entry = m.view(f).append_basic_block(m, "entry");
+        IrBuilder::with_folder(&mut key, NoFolder)
             .position_at_end(entry)
             .ret(list)?;
     }

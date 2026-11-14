@@ -257,18 +257,20 @@ fn constant_expr_ptrtoaddr_round_trips() -> Result<(), IrError> {
 /// single printed `blockaddress(@f, %entry)` form exposed by llvmkit's API.
 #[test]
 fn blockaddress_constant_round_trips() -> Result<(), IrError> {
-    let m = module_new!("blockaddress_const")?;
+    let mut module = module_new!("blockaddress_const")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
     let addr = m.block_address(m.view(f), &entry)?;
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let terminator = b.ret_void()?.1;
     assert!(terminator.is_terminator());
     m.add_global("addr", addr)?;
 
-    let text = module_text(&m);
+    let text = module_text(m);
     assert_line(&text, "@addr = global ptr blockaddress(@f, %entry)");
     m.verify_borrowed()?;
     Ok(())
@@ -278,7 +280,9 @@ fn blockaddress_constant_round_trips() -> Result<(), IrError> {
 /// constant has the function pointer type, including function address space.
 #[test]
 fn blockaddress_constant_uses_function_address_space() -> Result<(), IrError> {
-    let m = module_new!("blockaddress_addrspace_const")?;
+    let mut module = module_new!("blockaddress_addrspace_const")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m
@@ -286,14 +290,14 @@ fn blockaddress_constant_uses_function_address_space() -> Result<(), IrError> {
         .linkage(Linkage::External)
         .address_space(llvmkit_ir::address_space::<2>())
         .build()?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
     let addr = m.block_address(m.view(f), &entry)?;
-    let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<()>(&mut key).position_at_end(entry);
     let terminator = b.ret_void().1;
     assert!(terminator.is_terminator());
     m.add_global("addr", addr)?;
 
-    let text = module_text(&m);
+    let text = module_text(m);
     assert_line(
         &text,
         "@addr = global ptr addrspace(2) blockaddress(@f, %entry)",

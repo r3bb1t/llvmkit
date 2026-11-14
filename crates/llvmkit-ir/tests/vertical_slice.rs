@@ -35,13 +35,15 @@ use llvmkit_ir::{
 /// build identical add+ret patterns).
 #[test]
 fn vertical_slice_compiles_and_runs() -> Result<(), IrError> {
-    let m = module_new!("demo")?;
+    let mut module = module_new!("demo")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("add", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
 
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
 
     let lhs: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
@@ -82,7 +84,9 @@ fn vertical_slice_compiles_and_runs() -> Result<(), IrError> {
 /// runtime-checked `Dyn` IrBuilder path. No upstream analog (C++ asserts).
 #[test]
 fn mismatched_widths_error_at_runtime_when_dyn() -> Result<(), IrError> {
-    let m = module_new!("demo")?;
+    let mut module = module_new!("demo")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     // With static widths the mismatch is a compile error. Verify the
     // dynamic-width path still surfaces a runtime error when callers
     // intentionally erase the width.
@@ -90,8 +94,8 @@ fn mismatched_widths_error_at_runtime_when_dyn() -> Result<(), IrError> {
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i64_ty.as_type()])?;
     let f = m.add_function_dyn("mix", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
 
     // Static narrowing rejects the i64 arg as an i32-typed IntValue.
     let _a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
@@ -200,7 +204,9 @@ fn function_builder_chains_options() -> Result<(), IrError> {
 /// types. Closest upstream reference: assertion in `IRBuilderBase::CreateRet`.
 #[test]
 fn dyn_path_keeps_runtime_return_check() -> Result<(), IrError> {
-    let m = module_new!("demo")?;
+    let mut module = module_new!("demo")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     // Building against the runtime-checked `Dyn` builder reproduces
     // the pre-A3 behaviour: feeding `ret` a value of the wrong
     // type returns `IrError::ReturnTypeMismatch` at runtime.
@@ -208,8 +214,8 @@ fn dyn_path_keeps_runtime_return_check() -> Result<(), IrError> {
     let i64_ty = m.i64_type();
     let fn_ty = m.function_type(i32_ty, [i64_ty.as_type()])?;
     let f = m.add_function_dyn("mix", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new(&mut key).position_at_end(entry);
     let arg = m.view(f).param(0)?; // i64
     let err = b
         .ret(arg)

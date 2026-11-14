@@ -12,7 +12,9 @@ use llvmkit_ir::{Constant, ConstantIntValue, Dyn, IrBuilder, IrError, Linkage, m
 /// Mirrors `test/Assembler/select.ll` for `select i1, <int>, <int>`.
 #[test]
 fn select_int_arms() -> Result<(), IrError> {
-    let m = module_new!("s")?;
+    let mut module = module_new!("s")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let bool_ty = m.bool_type();
     let fn_ty = m.function_type(
@@ -20,8 +22,8 @@ fn select_int_arms() -> Result<(), IrError> {
         [bool_ty.as_type(), i32_ty.as_type(), i32_ty.as_type()],
     )?;
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let cond: llvmkit_ir::IntValue<'_, bool, _> = m.view(f).param(0)?.try_into()?;
     let t: llvmkit_ir::IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let fl: llvmkit_ir::IntValue<'_, i32, _> = m.view(f).param(2)?.try_into()?;
@@ -38,7 +40,9 @@ fn select_int_arms() -> Result<(), IrError> {
 /// Mirrors `test/Assembler/select.ll` for `select i1, <fp>, <fp>`.
 #[test]
 fn select_fp_arms() -> Result<(), IrError> {
-    let m = module_new!("s")?;
+    let mut module = module_new!("s")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f64_ty = m.f64_type();
     let bool_ty = m.bool_type();
     let fn_ty = m.function_type(
@@ -46,8 +50,8 @@ fn select_fp_arms() -> Result<(), IrError> {
         [bool_ty.as_type(), f64_ty.as_type(), f64_ty.as_type()],
     )?;
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let cond: llvmkit_ir::IntValue<'_, bool, _> = m.view(f).param(0)?.try_into()?;
     let t: llvmkit_ir::FloatValue<'_, f64, _> = m.view(f).param(1)?.try_into()?;
     let fl: llvmkit_ir::FloatValue<'_, f64, _> = m.view(f).param(2)?.try_into()?;
@@ -64,7 +68,9 @@ fn select_fp_arms() -> Result<(), IrError> {
 /// Mirrors `test/Assembler/select.ll` for `select i1, ptr, ptr`.
 #[test]
 fn select_pointer_arms() -> Result<(), IrError> {
-    let m = module_new!("s")?;
+    let mut module = module_new!("s")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let bool_ty = m.bool_type();
     let fn_ty = m.function_type(
@@ -72,8 +78,8 @@ fn select_pointer_arms() -> Result<(), IrError> {
         [bool_ty.as_type(), ptr_ty.as_type(), ptr_ty.as_type()],
     )?;
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let cond: llvmkit_ir::IntValue<'_, bool, _> = m.view(f).param(0)?.try_into()?;
     let t: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(f).param(1)?.try_into()?;
@@ -94,12 +100,14 @@ fn select_pointer_arms() -> Result<(), IrError> {
 /// folder must fold all-constant `select` operands to the chosen arm.
 #[test]
 fn default_constant_folder_folds_select_to_chosen_arm() -> Result<(), IrError> {
-    let m = module_new!("select-fold")?;
+    let mut module = module_new!("select-fold")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("pick", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let true_arm: llvmkit_ir::IntValue<'_, i32, _> =
         i32_ty.const_int(7_i32).as_erased().try_into()?;
     let false_arm: llvmkit_ir::IntValue<'_, i32, _> =

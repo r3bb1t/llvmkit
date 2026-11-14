@@ -32,6 +32,14 @@ fn typestate_compile_fail() {
     // is gone, because every terminator-emitting build takes `self` by value.
     // Primary error is rustc's stable `E0382`.
     t.compile_fail("tests/compile_fail/builder_cannot_terminate_twice.rs");
+    // A builder holds the module's `LayoutToken` `&mut` while it lives, so a
+    // second builder over the same module cannot be minted beside it. Primary
+    // error is rustc's stable `E0499`.
+    t.compile_fail("tests/compile_fail/second_builder_while_first_lives.rs");
+    // Erasing an instruction takes the `LayoutToken` `&mut` a live builder
+    // holds, so a builder's anchor cannot be erased under it. Primary error is
+    // rustc's stable `E0499`.
+    t.compile_fail("tests/compile_fail/erase_anchor_while_builder_lives.rs");
     // An unpositioned builder has no insert point to save, so a snapshot
     // always names a block. Primary error is rustc's stable `E0277`.
     t.compile_fail("tests/compile_fail/save_insert_point_unpositioned.rs");

@@ -11,7 +11,7 @@
 
 use crate::{
     Analyses, BlockId, Dyn, FnCx, FnReport, FunctionPass, IntValue, IrBuilder, IrError, IrResult,
-    Linkage, Module, ModuleBrand, ReshapeCfg, ValueId, run_function_pass,
+    LayoutToken, Linkage, ModuleBrand, ReshapeCfg, ValueId, run_function_pass,
 };
 
 /// A `ReshapeCfg` pass that calls `edit_switch(from.id())?.remove_successor(to)` on
@@ -105,8 +105,9 @@ type SwitchMergeBuild<B> = IrResult<(
 /// `dflt` is the switch default and ends in a plain `br` (a non-switch `from`);
 /// `other` is the case-1 target — both feed the edge-op guard negatives below.
 fn build_switch_merge<'ctx, B: crate::ModuleBrand + 'ctx>(
-    m: &'ctx Module<B, crate::Unverified>,
+    key: &mut LayoutToken<'ctx, B>,
 ) -> SwitchMergeBuild<B> {
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m
         .function_type(i32_ty, [i32_ty.as_type()])
@@ -123,7 +124,7 @@ fn build_switch_merge<'ctx, B: crate::ModuleBrand + 'ctx>(
     let merge_lbl = merge.id();
 
     // entry: %e = add %a, 7 ; switch %a, default %dflt [ 0 -> merge, 1 -> other ]
-    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(key).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let e = b.int_add(a, 7_i32, "e")?;
     let (_sealed, sw) = b.switch_dyn(a, dflt_lbl, "")?;
@@ -132,17 +133,17 @@ fn build_switch_merge<'ctx, B: crate::ModuleBrand + 'ctx>(
         .finish();
 
     // dflt: %d = add %a, 9 ; br merge
-    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(dflt);
+    let b = IrBuilder::new_for::<Dyn>(key).position_at_end(dflt);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let d = b.int_add(a, 9_i32, "d")?;
     b.br(merge_lbl)?;
 
     // other: ret 0
-    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(other);
+    let b = IrBuilder::new_for::<Dyn>(key).position_at_end(other);
     b.ret(i32_ty.const_int(0_u32))?;
 
     // merge: %p = phi i32 [ %e, entry ], [ %d, dflt ] ; ret %p
-    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(merge);
+    let b = IrBuilder::new_for::<Dyn>(key).position_at_end(merge);
     let p = b
         .view(b.int_phi::<i32, _>("p"))
         .add_incoming(e, entry_lbl)?
@@ -158,10 +159,10 @@ fn build_switch_merge<'ctx, B: crate::ModuleBrand + 'ctx>(
 /// longer a predecessor) and `verify()` would fail with `PhiPredecessorMismatch`.
 #[test]
 fn remove_edge_drops_successor_phi_incoming() -> Result<(), IrError> {
-    let m = crate::module_new!("remove-edge")?;
-    let (f, _dflt_dyn, _other_dyn, merge_dyn) = build_switch_merge(&m)?;
+    let mut module = crate::module_new!("remove-edge")?;
+    let (f, _dflt_dyn, _other_dyn, merge_dyn) = build_switch_merge(&mut module.layout_token())?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let pass = RemoveSwitchEdge {
         from_name: "entry",
@@ -199,10 +200,10 @@ fn remove_edge_drops_successor_phi_incoming() -> Result<(), IrError> {
 /// the narrow itself errs.
 #[test]
 fn edit_switch_rejects_non_switch_from() -> Result<(), IrError> {
-    let m = crate::module_new!("remove-edge-non-switch")?;
-    let (f, _dflt_dyn, _other_dyn, merge_dyn) = build_switch_merge(&m)?;
+    let mut module = crate::module_new!("remove-edge-non-switch")?;
+    let (f, _dflt_dyn, _other_dyn, merge_dyn) = build_switch_merge(&mut module.layout_token())?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     // `dflt` ends in `br %merge`, not a switch — the guard trips before the
     // successor check, so `merge` as `to` is fine.
@@ -225,10 +226,10 @@ fn edit_switch_rejects_non_switch_from() -> Result<(), IrError> {
 /// must keep a default, so the `entry → dflt` default edge cannot be collapsed.
 #[test]
 fn remove_edge_rejects_default_edge() -> Result<(), IrError> {
-    let m = crate::module_new!("remove-edge-default")?;
-    let (f, dflt_dyn, _other_dyn, _merge_dyn) = build_switch_merge(&m)?;
+    let mut module = crate::module_new!("remove-edge-default")?;
+    let (f, dflt_dyn, _other_dyn, _merge_dyn) = build_switch_merge(&mut module.layout_token())?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     // `dflt` is `entry`'s switch default; removing that edge is rejected.
     let pass = RemoveSwitchEdge {
@@ -247,10 +248,10 @@ fn remove_edge_rejects_default_edge() -> Result<(), IrError> {
 /// same predecessor.
 #[test]
 fn redirect_edge_rejects_already_reaches_new() -> Result<(), IrError> {
-    let m = crate::module_new!("redirect-edge-already-reaches")?;
-    let (f, _dflt_dyn, other_dyn, merge_dyn) = build_switch_merge(&m)?;
+    let mut module = crate::module_new!("redirect-edge-already-reaches")?;
+    let (f, _dflt_dyn, other_dyn, merge_dyn) = build_switch_merge(&mut module.layout_token())?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     // `entry` already reaches `merge` (case 0); redirecting the `entry →
     // other` case-1 edge onto `merge` would double the edge. The guard
@@ -288,8 +289,9 @@ type SwitchDefaultParallelBuild<B> =
 /// DEFAULT still targeting `shared`, so `entry` survives as a predecessor of
 /// `shared` through the default — `shared`'s phi must keep one `entry` incoming.
 fn build_switch_default_parallel<'ctx, B: crate::ModuleBrand + 'ctx>(
-    m: &'ctx Module<B, crate::Unverified>,
+    key: &mut LayoutToken<'ctx, B>,
 ) -> SwitchDefaultParallelBuild<B> {
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m
         .function_type(i32_ty, [i32_ty.as_type()])
@@ -306,7 +308,7 @@ fn build_switch_default_parallel<'ctx, B: crate::ModuleBrand + 'ctx>(
     let new_lbl = new.id();
 
     // entry: %e = add %a, 7 ; switch %a, default %shared [ 0 -> shared, 1 -> mid ]
-    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(key).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let e = b.int_add(a, 7_i32, "e")?;
     let (_sealed, sw) = b.switch_dyn(a, shared_lbl, "")?;
@@ -315,13 +317,13 @@ fn build_switch_default_parallel<'ctx, B: crate::ModuleBrand + 'ctx>(
         .finish();
 
     // mid: %mv = add %a, 3 ; br shared
-    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(mid);
+    let b = IrBuilder::new_for::<Dyn>(key).position_at_end(mid);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let mv = b.int_add(a, 3_i32, "mv")?;
     b.br(shared_lbl)?;
 
     // shared: %p = phi i32 [ %e, entry ] (default), [ %e, entry ] (case 0), [ %mv, mid ] ; ret %p
-    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(shared);
+    let b = IrBuilder::new_for::<Dyn>(key).position_at_end(shared);
     let p = b
         .view(b.int_phi::<i32, _>("p"))
         .add_incoming(e, entry_lbl)?
@@ -330,7 +332,7 @@ fn build_switch_default_parallel<'ctx, B: crate::ModuleBrand + 'ctx>(
     b.ret(p.as_int_value())?;
 
     // new: ret 1  (no phi — a redirect onto it seeds an empty phi_values)
-    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(new);
+    let b = IrBuilder::new_for::<Dyn>(key).position_at_end(new);
     b.ret(i32_ty.const_int(1_u32))?;
 
     Ok((f, shared_lbl, new_lbl))
@@ -348,9 +350,9 @@ fn build_switch_default_parallel<'ctx, B: crate::ModuleBrand + 'ctx>(
 /// default.)
 #[test]
 fn redirect_successor_keeps_surviving_default_parallel_phi_incoming() -> Result<(), IrError> {
-    let m = crate::module_new!("switch-default-parallel")?;
-    let (f, shared_dyn, new_dyn) = build_switch_default_parallel(&m)?;
-    let verified = m.verify()?;
+    let mut module = crate::module_new!("switch-default-parallel")?;
+    let (f, shared_dyn, new_dyn) = build_switch_default_parallel(&mut module.layout_token())?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let pass = RedirectSwitchEdge {
         from_name: "entry",

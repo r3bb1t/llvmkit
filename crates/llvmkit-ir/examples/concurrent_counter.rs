@@ -45,14 +45,15 @@
 //! ```
 
 use llvmkit_ir::{
-    AtomicOrdering, AtomicRmwBinOp, AtomicRmwConfig, IntValue, IrBuilder, IrError, Linkage, Module,
-    ModuleBrand, Ptr, SyncScope, module_new,
+    AtomicOrdering, AtomicRmwBinOp, AtomicRmwConfig, IntValue, IrBuilder, IrError, LayoutToken,
+    Linkage, ModuleBrand, Ptr, SyncScope, module_new,
 };
 
 pub fn main() -> Result<(), IrError> {
-    let m = module_new!("concurrent_counter")?;
-    build_atomic_inc(&m)?;
-    build_dispatch(&m)?;
+    let mut m = module_new!("concurrent_counter")?;
+    let mut key = m.layout_token();
+    build_atomic_inc(&mut key)?;
+    build_dispatch(&mut key)?;
 
     let text = format!("{m}");
     print!("{text}");
@@ -73,14 +74,15 @@ pub fn main() -> Result<(), IrError> {
 ///    returns the old value.
 /// 3. `fence acquire` --- ensures subsequent reads observe other
 ///    threads' releases.
-pub fn build_atomic_inc<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
+pub fn build_atomic_inc<B: ModuleBrand>(key: &mut LayoutToken<'_, B>) -> Result<(), IrError> {
+    let m = key.module();
     let i32_ty = m.i32_type();
     // `add_typed_function::<i32, (Ptr,)>` is the typed primary: the turbofish
     // is the whole schema (returns `i32`, takes one pointer), so there is no
     // separately built `FunctionType`.
     let f = m.add_typed_function::<i32, (Ptr,), _>("atomic_inc", Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::at_end(entry);
+    let b = IrBuilder::at_end(key, entry);
 
     // fence release
     let _ = b.fence(AtomicOrdering::Release, SyncScope::System, "");
@@ -112,7 +114,8 @@ pub fn build_atomic_inc<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
 /// `Open` / `Closed` typestate on `SwitchInst`: cases are added
 /// through the chainable `add_case` API and the case list is sealed
 /// with `finish()`.
-pub fn build_dispatch<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
+pub fn build_dispatch<B: ModuleBrand>(key: &mut LayoutToken<'_, B>) -> Result<(), IrError> {
+    let m = key.module();
     let i32_ty = m.i32_type();
     // `add_typed_function::<i32, (i32, i32, i32)>` is the typed primary: the
     // turbofish *is* the signature, so no separate `FunctionType` is built.
@@ -132,29 +135,29 @@ pub fn build_dispatch<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     // Each case body computes a single arithmetic op and returns.
     let (op, a, b_op) = m.view(f).params();
     {
-        let bb = IrBuilder::at_end(do_add);
+        let bb = IrBuilder::at_end(key, do_add);
         let r = bb.int_add(a, b_op, "r_add")?;
         bb.ret(r)?;
     }
     {
-        let bb = IrBuilder::at_end(do_sub);
+        let bb = IrBuilder::at_end(key, do_sub);
         let r = bb.int_sub(a, b_op, "r_sub")?;
         bb.ret(r)?;
     }
     {
-        let bb = IrBuilder::at_end(do_mul);
+        let bb = IrBuilder::at_end(key, do_mul);
         let r = bb.int_mul(a, b_op, "r_mul")?;
         bb.ret(r)?;
     }
     {
-        let bb = IrBuilder::at_end(default_bb);
+        let bb = IrBuilder::at_end(key, default_bb);
         bb.ret(0_i32)?;
     }
 
     // Build the entry switch. `add_case` returns the same `Open` handle
     // so the chain reads top-to-bottom; `finish` consumes it to a
     // `Closed` view that no longer accepts new cases at the type level.
-    let entry_b = IrBuilder::at_end(entry);
+    let entry_b = IrBuilder::at_end(key, entry);
     let (_sealed, sw) = entry_b.switch_dyn(op, default_label, "")?;
     let _closed = sw
         .add_case(i32_ty.const_int(0_i32), do_add_label)?

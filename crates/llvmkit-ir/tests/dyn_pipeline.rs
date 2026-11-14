@@ -22,8 +22,9 @@ use std::rc::Rc;
 use llvmkit_ir::{
     Analyses, DCE, DcePass, Dyn, DynFunctionPipeline, DynModulePipeline,
     DynReadOnlyFunctionPipeline, DynReadOnlyModulePipeline, FnCx, FnReport, FunctionId,
-    FunctionPass, FunctionView, Inspect, IrBuilder, IrError, IrResult, Linkage, ModCx, ModReport,
-    Module, ModuleBrand, ModulePass, NoFolder, RewriteModule, Unverified, Verified, module_new,
+    FunctionPass, FunctionView, Inspect, IrBuilder, IrError, IrResult, LayoutToken, Linkage, ModCx,
+    ModReport, Module, ModuleBrand, ModulePass, NoFolder, RewriteModule, Unverified, Verified,
+    module_new,
 };
 
 // ==========================================================================
@@ -32,14 +33,15 @@ use llvmkit_ir::{
 
 /// Single-block `i32 @<name>()` whose entry just returns a constant.
 fn build_ret_i32_named<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<B, Unverified>,
+    key: &mut LayoutToken<'ctx, B>,
     name: &str,
 ) -> Result<FunctionId<Dyn, B>, IrError> {
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(key).position_at_end(entry);
     b.ret(i32_ty.const_int(1_u32))?;
     Ok(f)
 }
@@ -47,14 +49,15 @@ fn build_ret_i32_named<'ctx, B: ModuleBrand + 'ctx>(
 /// `i32 @<name>()` with one unused `add` named `dead` before the terminator, built
 /// with [`NoFolder`] so the constant add survives for `DcePass` to erase.
 fn build_dead_add_named<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<B, Unverified>,
+    key: &mut LayoutToken<'ctx, B>,
     name: &str,
 ) -> Result<FunctionId<Dyn, B>, IrError> {
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::with_folder(m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(key, NoFolder).position_at_end(entry);
     let _dead =
         b.int_add::<i32, _, _, _>(i32_ty.const_int(10_u32), i32_ty.const_int(20_u32), "dead")?;
     b.ret(i32_ty.const_int(1_u32))?;
@@ -199,8 +202,8 @@ impl<B: ModuleBrand> ModulePass<B> for AddNamedGlobalPass {
 
 #[test]
 fn transform_dyn_function_pipeline_downgrades_mutates_and_orders() -> Result<(), IrError> {
-    let m = module_new!("dyn-fn-transform")?;
-    let f = build_dead_add_named(&m, "f")?;
+    let mut m = module_new!("dyn-fn-transform")?;
+    let f = build_dead_add_named(&mut m.layout_token(), "f")?;
     // Entry starts with `dead` + `ret`.
     assert_eq!(
         FunctionView::from(m.view(f))
@@ -253,8 +256,8 @@ fn transform_dyn_function_pipeline_downgrades_mutates_and_orders() -> Result<(),
 
 #[test]
 fn read_only_dyn_function_pipeline_stays_verified_and_runs() -> Result<(), IrError> {
-    let m = module_new!("dyn-fn-readonly")?;
-    let f = build_ret_i32_named(&m, "f")?;
+    let mut m = module_new!("dyn-fn-readonly")?;
+    let f = build_ret_i32_named(&mut m.layout_token(), "f")?;
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
     let log = Rc::new(RefCell::new(Vec::new()));
@@ -287,8 +290,8 @@ fn read_only_dyn_function_pipeline_stays_verified_and_runs() -> Result<(), IrErr
 
 #[test]
 fn transform_dyn_module_pipeline_downgrades_and_mutates() -> Result<(), IrError> {
-    let m = module_new!("dyn-mod-transform")?;
-    let _f = build_ret_i32_named(&m, "f")?;
+    let mut m = module_new!("dyn-mod-transform")?;
+    let _f = build_ret_i32_named(&mut m.layout_token(), "f")?;
     let verified = m.verify()?;
     assert_eq!(verified.globals().len(), 0);
     let mut analyses = Analyses::new();
@@ -310,8 +313,8 @@ fn transform_dyn_module_pipeline_downgrades_and_mutates() -> Result<(), IrError>
 
 #[test]
 fn read_only_dyn_module_pipeline_stays_verified_and_runs() -> Result<(), IrError> {
-    let m = module_new!("dyn-mod-readonly")?;
-    let _f = build_ret_i32_named(&m, "f")?;
+    let mut m = module_new!("dyn-mod-readonly")?;
+    let _f = build_ret_i32_named(&mut m.layout_token(), "f")?;
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
     let ran = Rc::new(Cell::new(false));
@@ -332,8 +335,8 @@ fn read_only_dyn_module_pipeline_stays_verified_and_runs() -> Result<(), IrError
 
 #[test]
 fn runtime_assembly_variable_length_pipeline() -> Result<(), IrError> {
-    let m = module_new!("dyn-fn-runtime-assembly")?;
-    let f = build_ret_i32_named(&m, "f")?;
+    let mut m = module_new!("dyn-fn-runtime-assembly")?;
+    let f = build_ret_i32_named(&mut m.layout_token(), "f")?;
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
     let log = Rc::new(RefCell::new(Vec::new()));
@@ -365,8 +368,8 @@ fn runtime_assembly_variable_length_pipeline() -> Result<(), IrError> {
 
 #[test]
 fn runtime_assembly_module_transform_variable_length() -> Result<(), IrError> {
-    let m = module_new!("dyn-mod-runtime-assembly")?;
-    let _f = build_ret_i32_named(&m, "f")?;
+    let mut m = module_new!("dyn-mod-runtime-assembly")?;
+    let _f = build_ret_i32_named(&mut m.layout_token(), "f")?;
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
 

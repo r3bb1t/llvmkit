@@ -21,7 +21,9 @@ use llvmkit_ir::{
 /// diagnostic.
 #[test]
 fn typed_vector_binops_match_dyn_golden() {
-    let m = module_new!("vtyped").expect("fresh module");
+    let mut module = module_new!("vtyped").expect("fresh module");
+    let mut key = module.layout_token();
+    let m = key.module();
     let i64_ty = m.i64_type();
     let vec_ty = VectorType::of(i64_ty, lanes::<2>());
 
@@ -32,8 +34,8 @@ fn typed_vector_binops_match_dyn_golden() {
     let f = m
         .add_function_dyn("g", fn_ty, Linkage::External)
         .expect("g");
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
 
     // Narrow the erased `<2 x i64>` params into the statically typed handle.
     let a: VectorValue<'_, i64, Len<2>, _> = m
@@ -87,7 +89,9 @@ fn typed_vector_binops_match_dyn_golden() {
 /// the type assertion: it compiles only if the return type is exactly that.
 #[test]
 fn typed_extract_returns_typed_element() {
-    let m = module_new!("vextract").expect("fresh module");
+    let mut module = module_new!("vextract").expect("fresh module");
+    let mut key = module.layout_token();
+    let m = key.module();
     let i64_ty = m.i64_type();
     let vec_ty = VectorType::of(i64_ty, lanes::<2>());
 
@@ -97,8 +101,8 @@ fn typed_extract_returns_typed_element() {
     let f = m
         .add_function_dyn("g", fn_ty, Linkage::External)
         .expect("g");
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
 
     let a: VectorValue<'_, i64, Len<2>, _> = m
         .view(f)
@@ -129,7 +133,9 @@ fn typed_extract_returns_typed_element() {
 /// projection); `scalar: E::Value` then checks the scalar is an `IntValue<i32>`.
 #[test]
 fn typed_splat_element_from_scalar_length_free() {
-    let m = module_new!("vsplat").expect("fresh module");
+    let mut module = module_new!("vsplat").expect("fresh module");
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let fn_ty = m
@@ -138,8 +144,8 @@ fn typed_splat_element_from_scalar_length_free() {
     let f = m
         .add_function_dyn("g", fn_ty, Linkage::External)
         .expect("g");
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
 
     let scalar: IntValue<'_, i32, _> = m
         .view(f)

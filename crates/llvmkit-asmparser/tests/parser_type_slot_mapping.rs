@@ -11,8 +11,8 @@
 use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_asmparser::{SlotMapping, parse_type_at_beginning_with_slots, parse_type_with_slots};
 use llvmkit_ir::{
-    AnyTypeEnum, DynBrand, ElemDyn, LenDyn, Module, StructBodyDyn, StructType, Type, TypeKind,
-    TypeSize, VectorType,
+    AnyTypeEnum, DynBrand, ElemDyn, LayoutToken, LenDyn, Module, StructBodyDyn, StructType, Type,
+    TypeKind, TypeSize, VectorType,
 };
 
 /// Both tests' `Source`, split where upstream splits its literals.
@@ -33,8 +33,8 @@ const SOURCE: &str = concat!(
 );
 
 /// `parseAssemblyString(Source, Error, Ctx, &Mapping)`.
-fn parse_source(m: &Module<DynBrand>) -> SlotMapping<'_, DynBrand> {
-    Parser::new(SOURCE.as_bytes(), m)
+fn parse_source(key: LayoutToken<'_, DynBrand>) -> SlotMapping<'_, DynBrand> {
+    Parser::new(SOURCE.as_bytes(), key)
         .expect("lexer primes")
         .parse_module()
         .expect("`Source` parses")
@@ -70,29 +70,31 @@ fn assert_all_elements_are_i32(st: StructType<'_, StructBodyDyn, DynBrand>) {
 /// Port of `TEST(AsmParserTest, TypeWithSlotMappingParsing)`.
 #[test]
 fn upstream_type_with_slot_mapping_parsing() {
-    let m = Module::dynamic("AsmParserTest");
-    let mapping = parse_source(&m);
+    let mut module = Module::dynamic("AsmParserTest");
+    let key = module.layout_token();
+    let m = key.module();
+    let mapping = parse_source(key);
 
     // Check we properly parse integer types.
-    let ty = parse_type_with_slots(b"i32", &m, &mapping).expect("`i32` parses");
+    let ty = parse_type_with_slots(b"i32", m, &mapping).expect("`i32` parses");
     assert!(ty.is_integer());
     assert_eq!(ty.primitive_size_in_bits(), TypeSize::fixed(32));
 
     // Check we properly parse integer types with exotic size.
-    let ty = parse_type_with_slots(b"i13", &m, &mapping).expect("`i13` parses");
+    let ty = parse_type_with_slots(b"i13", m, &mapping).expect("`i13` parses");
     assert!(ty.is_integer());
     assert_eq!(ty.primitive_size_in_bits(), TypeSize::fixed(13));
 
     // Check we properly parse floating point types.
-    let ty = parse_type_with_slots(b"float", &m, &mapping).expect("`float` parses");
+    let ty = parse_type_with_slots(b"float", m, &mapping).expect("`float` parses");
     assert_eq!(ty.kind(), TypeKind::Float);
 
-    let ty = parse_type_with_slots(b"double", &m, &mapping).expect("`double` parses");
+    let ty = parse_type_with_slots(b"double", m, &mapping).expect("`double` parses");
     assert_eq!(ty.kind(), TypeKind::Double);
 
     // Check we properly parse struct types.
     // Named struct.
-    let ty = parse_type_with_slots(b"%st", &m, &mapping).expect("`%st` parses");
+    let ty = parse_type_with_slots(b"%st", m, &mapping).expect("`%st` parses");
     assert_eq!(ty.kind(), TypeKind::Struct);
 
     // Check the details of the struct.
@@ -101,7 +103,7 @@ fn upstream_type_with_slot_mapping_parsing() {
     assert_all_elements_are_i32(st);
 
     // Anonymous struct.
-    let ty = parse_type_with_slots(b"%0", &m, &mapping).expect("`%0` parses");
+    let ty = parse_type_with_slots(b"%0", m, &mapping).expect("`%0` parses");
     assert_eq!(ty.kind(), TypeKind::Struct);
 
     // Check the details of the struct.
@@ -110,7 +112,7 @@ fn upstream_type_with_slot_mapping_parsing() {
     assert_all_elements_are_i32(st);
 
     // Check we properly parse vector types.
-    let ty = parse_type_with_slots(b"<5 x i32>", &m, &mapping).expect("`<5 x i32>` parses");
+    let ty = parse_type_with_slots(b"<5 x i32>", m, &mapping).expect("`<5 x i32>` parses");
     assert!(ty.is_vector());
 
     // Check the details of the vector.
@@ -122,55 +124,54 @@ fn upstream_type_with_slot_mapping_parsing() {
     assert_eq!(ty.primitive_size_in_bits(), TypeSize::fixed(32));
 
     // Opaque struct.
-    let ty = parse_type_with_slots(b"%opaque", &m, &mapping).expect("`%opaque` parses");
+    let ty = parse_type_with_slots(b"%opaque", m, &mapping).expect("`%opaque` parses");
     assert_eq!(ty.kind(), TypeKind::Struct);
 
     let st = struct_of(ty);
     assert!(st.is_opaque());
 
     // Check we properly parse pointer types.
-    let ty = parse_type_with_slots(b"ptr", &m, &mapping).expect("`ptr` parses");
+    let ty = parse_type_with_slots(b"ptr", m, &mapping).expect("`ptr` parses");
     assert!(ty.is_pointer());
 
     // Check that we reject types with garbage.
-    parse_type_with_slots(b"i32 garbage", &m, &mapping).expect_err("trailing `garbage`");
+    parse_type_with_slots(b"i32 garbage", m, &mapping).expect_err("trailing `garbage`");
 }
 
 /// Port of `TEST(AsmParserTest, TypeAtBeginningWithSlotMappingParsing)`.
 #[test]
 fn upstream_type_at_beginning_with_slot_mapping_parsing() {
-    let m = Module::dynamic("AsmParserTest");
-    let mapping = parse_source(&m);
+    let mut module = Module::dynamic("AsmParserTest");
+    let key = module.layout_token();
+    let m = key.module();
+    let mapping = parse_source(key);
 
     // Check we properly parse integer types.
-    let (ty, read) =
-        parse_type_at_beginning_with_slots(b"i32", &m, &mapping).expect("`i32` parses");
+    let (ty, read) = parse_type_at_beginning_with_slots(b"i32", m, &mapping).expect("`i32` parses");
     assert!(ty.is_integer());
     assert_eq!(ty.primitive_size_in_bits(), TypeSize::fixed(32));
     assert_eq!(read, 3);
 
     // Check we properly parse integer types with exotic size.
-    let (ty, read) =
-        parse_type_at_beginning_with_slots(b"i13", &m, &mapping).expect("`i13` parses");
+    let (ty, read) = parse_type_at_beginning_with_slots(b"i13", m, &mapping).expect("`i13` parses");
     assert!(ty.is_integer());
     assert_eq!(ty.primitive_size_in_bits(), TypeSize::fixed(13));
     assert_eq!(read, 3);
 
     // Check we properly parse floating point types.
     let (ty, read) =
-        parse_type_at_beginning_with_slots(b"float", &m, &mapping).expect("`float` parses");
+        parse_type_at_beginning_with_slots(b"float", m, &mapping).expect("`float` parses");
     assert_eq!(ty.kind(), TypeKind::Float);
     assert_eq!(read, 5);
 
     let (ty, read) =
-        parse_type_at_beginning_with_slots(b"double", &m, &mapping).expect("`double` parses");
+        parse_type_at_beginning_with_slots(b"double", m, &mapping).expect("`double` parses");
     assert_eq!(ty.kind(), TypeKind::Double);
     assert_eq!(read, 6);
 
     // Check we properly parse struct types.
     // Named struct.
-    let (ty, read) =
-        parse_type_at_beginning_with_slots(b"%st", &m, &mapping).expect("`%st` parses");
+    let (ty, read) = parse_type_at_beginning_with_slots(b"%st", m, &mapping).expect("`%st` parses");
     assert_eq!(ty.kind(), TypeKind::Struct);
     assert_eq!(read, 3);
 
@@ -180,7 +181,7 @@ fn upstream_type_at_beginning_with_slot_mapping_parsing() {
     assert_all_elements_are_i32(st);
 
     // Anonymous struct.
-    let (ty, read) = parse_type_at_beginning_with_slots(b"%0", &m, &mapping).expect("`%0` parses");
+    let (ty, read) = parse_type_at_beginning_with_slots(b"%0", m, &mapping).expect("`%0` parses");
     assert_eq!(ty.kind(), TypeKind::Struct);
     assert_eq!(read, 2);
 
@@ -191,7 +192,7 @@ fn upstream_type_at_beginning_with_slot_mapping_parsing() {
 
     // Check we properly parse vector types.
     let (ty, read) =
-        parse_type_at_beginning_with_slots(b"<5 x i32>", &m, &mapping).expect("`<5 x i32>` parses");
+        parse_type_at_beginning_with_slots(b"<5 x i32>", m, &mapping).expect("`<5 x i32>` parses");
     assert!(ty.is_vector());
     assert_eq!(read, 9);
 
@@ -205,7 +206,7 @@ fn upstream_type_at_beginning_with_slot_mapping_parsing() {
 
     // Opaque struct.
     let (ty, read) =
-        parse_type_at_beginning_with_slots(b"%opaque", &m, &mapping).expect("`%opaque` parses");
+        parse_type_at_beginning_with_slots(b"%opaque", m, &mapping).expect("`%opaque` parses");
     assert_eq!(ty.kind(), TypeKind::Struct);
     assert_eq!(read, 7);
 
@@ -214,14 +215,13 @@ fn upstream_type_at_beginning_with_slot_mapping_parsing() {
 
     // Check we properly parse pointer types.
     // One indirection.
-    let (ty, read) =
-        parse_type_at_beginning_with_slots(b"ptr", &m, &mapping).expect("`ptr` parses");
+    let (ty, read) = parse_type_at_beginning_with_slots(b"ptr", m, &mapping).expect("`ptr` parses");
     assert!(ty.is_pointer());
     assert_eq!(read, 3);
 
     // Check that we reject types with garbage.
-    let (ty, read) = parse_type_at_beginning_with_slots(b"i32 garbage", &m, &mapping)
-        .expect("the prefix parses");
+    let (ty, read) =
+        parse_type_at_beginning_with_slots(b"i32 garbage", m, &mapping).expect("the prefix parses");
     assert!(ty.is_integer());
     assert_eq!(ty.primitive_size_in_bits(), TypeSize::fixed(32));
     // We go to the next token, i.e., we read "i32" + ' '.

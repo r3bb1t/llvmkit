@@ -33,19 +33,21 @@ fn assert_predecessors<'ctx, R, B: ModuleBrand>(
 /// and `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, CreateCondBr)`.
 #[test]
 fn unconditional_branch_cfg_edges() -> Result<(), IrError> {
-    let m = module_new!("cfg_br")?;
+    let mut module = module_new!("cfg_br")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let exit = m.view(f).append_basic_block(&m, "exit");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let exit = m.view(f).append_basic_block(m, "exit");
     let entry_label = entry.id();
     let exit_label = exit.id();
 
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(exit)
         .ret_void()?;
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(entry)
         .br(exit_label)?;
 
@@ -60,21 +62,23 @@ fn unconditional_branch_cfg_edges() -> Result<(), IrError> {
 /// and `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, CreateCondBr)`.
 #[test]
 fn conditional_branch_preserves_duplicate_edges() -> Result<(), IrError> {
-    let m = module_new!("cfg_condbr")?;
+    let mut module = module_new!("cfg_condbr")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let bool_ty = m.bool_type();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [bool_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let target = m.view(f).append_basic_block(&m, "target");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let target = m.view(f).append_basic_block(m, "target");
     let entry_label = entry.id();
     let target_label = target.id();
 
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(target)
         .ret_void()?;
     let cond: IntValue<'_, bool, _> = m.view(f).param(0)?.try_into()?;
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(entry)
         .cond_br(cond, target_label, target_label)?;
 
@@ -88,27 +92,29 @@ fn conditional_branch_preserves_duplicate_edges() -> Result<(), IrError> {
 /// `IR/Instructions.h` `SwitchInst::case_*` destination semantics.
 #[test]
 fn switch_cfg_edges_include_default_then_cases() -> Result<(), IrError> {
-    let m = module_new!("cfg_switch")?;
+    let mut module = module_new!("cfg_switch")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [i8_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let default_bb = m.view(f).append_basic_block(&m, "default");
-    let case0 = m.view(f).append_basic_block(&m, "case0");
-    let case1 = m.view(f).append_basic_block(&m, "case1");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let default_bb = m.view(f).append_basic_block(m, "default");
+    let case0 = m.view(f).append_basic_block(m, "case0");
+    let case1 = m.view(f).append_basic_block(m, "case1");
     let entry_label = entry.id();
     let default_label = default_bb.id();
     let case0_label = case0.id();
     let case1_label = case1.id();
     for bb in [default_bb, case0, case1] {
-        IrBuilder::new_for::<Dyn>(&m)
+        IrBuilder::new_for::<Dyn>(&mut key)
             .position_at_end(bb)
             .ret_void()?;
     }
 
     let val: IntValue<'_, i8, _> = m.view(f).param(0)?.try_into()?;
-    let (_sealed, switch) = IrBuilder::new_for::<Dyn>(&m)
+    let (_sealed, switch) = IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(entry)
         .switch_dyn(val, default_label, "")?;
     let _closed = switch
@@ -132,25 +138,27 @@ fn switch_cfg_edges_include_default_then_cases() -> Result<(), IrError> {
 /// `IR/Instructions.h` `IndirectBrInst::destinations` semantics.
 #[test]
 fn indirectbr_cfg_edges_are_listed_destinations() -> Result<(), IrError> {
-    let m = module_new!("cfg_indirectbr")?;
+    let mut module = module_new!("cfg_indirectbr")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let bb1 = m.view(f).append_basic_block(&m, "bb1");
-    let bb2 = m.view(f).append_basic_block(&m, "bb2");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let bb1 = m.view(f).append_basic_block(m, "bb1");
+    let bb2 = m.view(f).append_basic_block(m, "bb2");
     let entry_label = entry.id();
     let bb1_label = bb1.id();
     let bb2_label = bb2.id();
     for bb in [bb1, bb2] {
-        IrBuilder::new_for::<Dyn>(&m)
+        IrBuilder::new_for::<Dyn>(&mut key)
             .position_at_end(bb)
             .ret_void()?;
     }
 
     let addr: PointerValue<'_, llvmkit_ir::SpaceDyn, _> = m.view(f).param(0)?.try_into()?;
-    let (_sealed, ibr) = IrBuilder::new_for::<Dyn>(&m)
+    let (_sealed, ibr) = IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(entry)
         .indirectbr(addr, "")?;
     let _closed = ibr
@@ -169,25 +177,27 @@ fn indirectbr_cfg_edges_are_listed_destinations() -> Result<(), IrError> {
 /// `llvm/lib/IR/Verifier.cpp` unwind-destination validation.
 #[test]
 fn invoke_cfg_edges_are_normal_then_unwind() -> Result<(), IrError> {
-    let m = module_new!("cfg_invoke")?;
+    let mut module = module_new!("cfg_invoke")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
     let caller_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let normal = m.view(caller).append_basic_block(&m, "normal");
-    let unwind = m.view(caller).append_basic_block(&m, "unwind");
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let normal = m.view(caller).append_basic_block(m, "normal");
+    let unwind = m.view(caller).append_basic_block(m, "unwind");
     let entry_label = entry.id();
     let normal_label = normal.id();
     let unwind_label = unwind.id();
     for bb in [normal, unwind] {
-        IrBuilder::new_for::<Dyn>(&m)
+        IrBuilder::new_for::<Dyn>(&mut key)
             .position_at_end(bb)
             .ret_void()?;
     }
 
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(entry)
         .invoke_dyn(
             m.view(callee),
@@ -208,25 +218,27 @@ fn invoke_cfg_edges_are_normal_then_unwind() -> Result<(), IrError> {
 /// `test/Assembler/callbr.ll` fallthrough-plus-indirect destination order.
 #[test]
 fn callbr_cfg_edges_are_default_then_indirect_dests() -> Result<(), IrError> {
-    let m = module_new!("cfg_callbr")?;
+    let mut module = module_new!("cfg_callbr")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
     let caller_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let dflt = m.view(caller).append_basic_block(&m, "default");
-    let indirect = m.view(caller).append_basic_block(&m, "indirect");
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let dflt = m.view(caller).append_basic_block(m, "default");
+    let indirect = m.view(caller).append_basic_block(m, "indirect");
     let entry_label = entry.id();
     let dflt_label = dflt.id();
     let indirect_label = indirect.id();
     for bb in [dflt, indirect] {
-        IrBuilder::new_for::<Dyn>(&m)
+        IrBuilder::new_for::<Dyn>(&mut key)
             .position_at_end(bb)
             .ret_void()?;
     }
 
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(entry)
         .callbr(
             callee,
@@ -247,25 +259,27 @@ fn callbr_cfg_edges_are_default_then_indirect_dests() -> Result<(), IrError> {
 /// `IR/Instructions.h` `CatchReturnInst::getSuccessor` semantics.
 #[test]
 fn catchret_cfg_edge_is_target_block() -> Result<(), IrError> {
-    let m = module_new!("cfg_catchret")?;
+    let mut module = module_new!("cfg_catchret")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let cs_block = m.view(f).append_basic_block(&m, "cs");
-    let cp_block = m.view(f).append_basic_block(&m, "cp");
-    let ret_block = m.view(f).append_basic_block(&m, "ret");
+    let cs_block = m.view(f).append_basic_block(m, "cs");
+    let cp_block = m.view(f).append_basic_block(m, "cp");
+    let ret_block = m.view(f).append_basic_block(m, "ret");
     let cs_label = cs_block.id();
     let cp_label = cp_block.id();
     let ret_label = ret_block.id();
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(ret_block)
         .ret_void()?;
 
-    let (_sealed, cs) = IrBuilder::new_for::<Dyn>(&m)
+    let (_sealed, cs) = IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(cs_block)
         .catch_switch_within_none_to_caller("cs");
     let cs_closed = cs.add_handler(cp_label)?.finish();
-    let b_cp = IrBuilder::new_for::<Dyn>(&m).position_at_end(cp_block);
+    let b_cp = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(cp_block);
     let cp = b_cp.catch_pad(
         cs_closed.to_erased(),
         Vec::<llvmkit_ir::Value<'_, _>>::new(),
@@ -284,19 +298,21 @@ fn catchret_cfg_edge_is_target_block() -> Result<(), IrError> {
 /// `llvm/lib/IR/Verifier.cpp` cleanupret unwind-destination validation.
 #[test]
 fn cleanupret_cfg_edge_is_optional_unwind_dest() -> Result<(), IrError> {
-    let m = module_new!("cfg_cleanupret")?;
+    let mut module = module_new!("cfg_cleanupret")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let unwind = m.view(f).append_basic_block(&m, "unwind");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let unwind = m.view(f).append_basic_block(m, "unwind");
     let entry_label = entry.id();
     let unwind_label = unwind.id();
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(unwind)
         .ret_void()?;
 
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let cp = b.cleanup_pad_within_none(Vec::<llvmkit_ir::Value<'_, _>>::new(), "cp")?;
     b.cleanup_ret(cp.to_erased(), unwind_label, "")?;
 
@@ -310,25 +326,27 @@ fn cleanupret_cfg_edge_is_optional_unwind_dest() -> Result<(), IrError> {
 /// `IR/Instructions.h` handler-plus-unwind destination semantics.
 #[test]
 fn catchswitch_cfg_edges_are_handlers_then_unwind_dest() -> Result<(), IrError> {
-    let m = module_new!("cfg_catchswitch")?;
+    let mut module = module_new!("cfg_catchswitch")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let handler0 = m.view(f).append_basic_block(&m, "handler0");
-    let handler1 = m.view(f).append_basic_block(&m, "handler1");
-    let unwind = m.view(f).append_basic_block(&m, "unwind");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let handler0 = m.view(f).append_basic_block(m, "handler0");
+    let handler1 = m.view(f).append_basic_block(m, "handler1");
+    let unwind = m.view(f).append_basic_block(m, "unwind");
     let entry_label = entry.id();
     let handler0_label = handler0.id();
     let handler1_label = handler1.id();
     let unwind_label = unwind.id();
     for bb in [handler0, handler1, unwind] {
-        IrBuilder::new_for::<Dyn>(&m)
+        IrBuilder::new_for::<Dyn>(&mut key)
             .position_at_end(bb)
             .ret_void()?;
     }
 
-    let (_sealed, cs) = IrBuilder::new_for::<Dyn>(&m)
+    let (_sealed, cs) = IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(entry)
         .catch_switch_within_none(unwind_label, "cs")?;
     let _closed = cs
@@ -367,32 +385,34 @@ fn catchswitch_cfg_edges_are_handlers_then_unwind_dest() -> Result<(), IrError> 
 /// `AsmWriter` emits for this function, and it is the same list.
 #[test]
 fn predecessors_are_in_use_list_order_not_block_order() -> Result<(), IrError> {
-    let m = module_new!("cfg_pred_order")?;
+    let mut module = module_new!("cfg_pred_order")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let bool_ty = m.bool_type();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty.as_type(), [bool_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let a = m.view(f).append_basic_block(&m, "a");
-    let b = m.view(f).append_basic_block(&m, "b");
-    let merge = m.view(f).append_basic_block(&m, "merge");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let a = m.view(f).append_basic_block(m, "a");
+    let b = m.view(f).append_basic_block(m, "b");
+    let merge = m.view(f).append_basic_block(m, "merge");
     let a_label = a.id();
     let b_label = b.id();
     let merge_label = merge.id();
 
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(merge)
         .ret_void()?;
     // `a`'s branch registers its use of `merge` first, `b`'s second, so the
     // head-inserted use list reads `b`, then `a`.
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(a)
         .br(merge_label)?;
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(b)
         .br(merge_label)?;
     let cond: IntValue<'_, bool, _> = m.view(f).param(0)?.try_into()?;
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(entry)
         .cond_br(cond, a_label, b_label)?;
 

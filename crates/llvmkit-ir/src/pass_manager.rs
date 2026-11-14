@@ -54,16 +54,19 @@
 //! }
 //!
 //! fn main() -> Result<(), IrError> {
-//!     let m = module_new!("pass-doc")?;
-//!     // Build `i32 @f()` returning a constant.
+//!     let mut module = module_new!("pass-doc")?;
+//!     // Build `i32 @f()` returning a constant. Building borrows the module's
+//!     // layout token; `m` reads the module through it meanwhile.
+//!     let mut key = module.layout_token();
+//!     let m = key.module();
 //!     let i32_ty = m.i32_type();
 //!     let fn_ty = m.function_type_no_parameters(i32_ty)?;
 //!     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-//!     let entry = m.view(f).append_basic_block(&m, "entry");
-//!     let b = IrBuilder::at_end(entry);
+//!     let entry = m.view(f).append_basic_block(m, "entry");
+//!     let b = IrBuilder::at_end(&mut key, entry);
 //!     b.ret(i32_ty.const_int(1_u32))?;
 //!
-//!     let verified = m.verify()?;
+//!     let verified = module.verify()?;
 //!     let mut analyses = Analyses::new();
 //!     // The drivers name the function by **id**: each one consumes the
 //!     // module token, and a view would borrow the very token being moved.

@@ -25,12 +25,14 @@ use crate::{
 /// `phi_reads_back_all_incomings`).
 #[test]
 fn fp_and_pointer_phi_ids_view_back_to_typed_handles() -> Result<(), IrError> {
-    let m = crate::module_new!("phi_view_fp_ptr")?;
+    let mut module = crate::module_new!("phi_view_fp_ptr")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f64_ty = m.f64_type();
     let fn_ty = m.function_type_no_parameters(f64_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let bb = m.view(f).append_basic_block(&m, "bb");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
+    let bb = m.view(f).append_basic_block(m, "bb");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(bb);
 
     // The ids resolve to the fp and pointer handles exactly as the int id
     // resolves to `PhiInst`. No incomings are added, so both read back a
@@ -49,22 +51,24 @@ fn fp_and_pointer_phi_ids_view_back_to_typed_handles() -> Result<(), IrError> {
 /// `EXPECT_EQ(P->getNumIncomingValues(), 2)` style.
 #[test]
 fn phi_reads_back_all_incomings() -> Result<(), IrError> {
-    let m = crate::module_new!("phi_finish")?;
+    let mut module = crate::module_new!("phi_finish")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let other = m.view(f).append_basic_block(&m, "other");
-    let join = m.view(f).append_basic_block(&m, "join");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let other = m.view(f).append_basic_block(m, "other");
+    let join = m.view(f).append_basic_block(m, "join");
     let entry_label = entry.id();
     let other_label = other.id();
 
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     b.br(&join)?;
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(other);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(other);
     b.br(&join)?;
 
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(join);
     let phi = b
         .view(b.int_phi::<i32, _>("p"))
         .add_incoming(1_i32, entry_label)?
@@ -92,12 +96,14 @@ fn phi_reads_back_all_incomings() -> Result<(), IrError> {
 /// `as_int_value()` lied. Guards the core of the `PhiKind` split.
 #[test]
 fn rediscovered_phi_narrows_to_result_type() -> Result<(), IrError> {
-    let m = crate::module_new!("phi_kind_rediscovery")?;
+    let mut module = crate::module_new!("phi_kind_rediscovery")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let bb = m.view(f).append_basic_block(&m, "bb");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
+    let bb = m.view(f).append_basic_block(m, "bb");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(bb);
 
     let int_phi = b.view(b.int_phi::<i32, _>("ip"));
     let fp_phi = b.view(b.fp_phi::<f64, _>("fp"));
@@ -128,27 +134,29 @@ fn rediscovered_phi_narrows_to_result_type() -> Result<(), IrError> {
 /// construction. Exercises `int_phi_dyn` (the runtime-width path).
 #[test]
 fn build_phi_inserts_at_phi_head_not_cursor() -> Result<(), IrError> {
-    let m = crate::module_new!("phi_head")?;
+    let mut module = crate::module_new!("phi_head")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let other = m.view(f).append_basic_block(&m, "other");
-    let join = m.view(f).append_basic_block(&m, "join");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let other = m.view(f).append_basic_block(m, "other");
+    let join = m.view(f).append_basic_block(m, "join");
     let entry_label = entry.id();
     let other_label = other.id();
     let join_label = join.id();
 
     // Two predecessors so the join phi has a full incoming set.
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     b.br(join_label)?;
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(other);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(other);
     b.br(join_label)?;
 
     // In `join`, emit a NON-phi first (`%x = add`), THEN build the phi
     // while the cursor sits at the end of the block. The phi must still
     // land at the block's phi head, ahead of the add.
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(join);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let _x = b.int_add(a, 1_i32, "x")?;
     let i32_dyn = m.custom_width_int_type(32)?;
@@ -171,7 +179,7 @@ fn build_phi_inserts_at_phi_head_not_cursor() -> Result<(), IrError> {
         "phi must print before the add at the block's phi head; got:\n{text}"
     );
     // (b) the module verifies (no PhiNotAtTop).
-    m.verify()?;
+    module.verify()?;
     Ok(())
 }
 
@@ -180,23 +188,25 @@ fn build_phi_inserts_at_phi_head_not_cursor() -> Result<(), IrError> {
 /// second), and both print before the non-phi `%x = add`.
 #[test]
 fn two_phis_built_after_nonphi_keep_relative_order() -> Result<(), IrError> {
-    let m = crate::module_new!("phi_head_order")?;
+    let mut module = crate::module_new!("phi_head_order")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let other = m.view(f).append_basic_block(&m, "other");
-    let join = m.view(f).append_basic_block(&m, "join");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let other = m.view(f).append_basic_block(m, "other");
+    let join = m.view(f).append_basic_block(m, "join");
     let entry_label = entry.id();
     let other_label = other.id();
     let join_label = join.id();
 
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     b.br(join_label)?;
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(other);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(other);
     b.br(join_label)?;
 
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(join);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let _x = b.int_add(a, 1_i32, "x")?;
     // p1 then p2, both after the add. Head placement must not reverse
@@ -229,7 +239,7 @@ fn two_phis_built_after_nonphi_keep_relative_order() -> Result<(), IrError> {
         p2_pos < add_pos,
         "both phis must print before the non-phi add; got:\n{text}"
     );
-    m.verify()?;
+    module.verify()?;
     Ok(())
 }
 
@@ -240,14 +250,16 @@ fn two_phis_built_after_nonphi_keep_relative_order() -> Result<(), IrError> {
 /// phi-handle subset.
 #[test]
 fn phi_range_iterates_three_phis() -> Result<(), IrError> {
-    let m = crate::module_new!("p")?;
+    let mut module = crate::module_new!("p")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, Vec::<crate::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("p", fn_ty, Linkage::External)?;
-    let bb = m.view(f).append_basic_block(&m, "bb");
+    let bb = m.view(f).append_basic_block(m, "bb");
     let bb_label = bb.id();
 
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(bb);
     let p1 = b.view(b.int_phi::<i32, _>("phi.1"));
     let p2 = b.view(b.int_phi::<i32, _>("phi.2"));
     let p3 = b.view(b.int_phi::<i32, _>("phi.3"));
@@ -280,22 +292,24 @@ fn phi_range_iterates_three_phis() -> Result<(), IrError> {
 /// accessor stays beside it.
 #[test]
 fn phi_incomings_match_indexed_access() -> Result<(), IrError> {
-    let m = crate::module_new!("phi_incomings")?;
+    let mut module = crate::module_new!("phi_incomings")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let other = m.view(f).append_basic_block(&m, "other");
-    let join = m.view(f).append_basic_block(&m, "join");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let other = m.view(f).append_basic_block(m, "other");
+    let join = m.view(f).append_basic_block(m, "join");
     let entry_label = entry.id();
     let other_label = other.id();
 
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     b.br(&join)?;
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(other);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(other);
     b.br(&join)?;
 
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(join);
     let phi = b
         .view(b.int_phi::<i32, _>("p"))
         .add_incoming(1_i32, entry_label)?

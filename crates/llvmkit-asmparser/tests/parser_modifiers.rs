@@ -12,8 +12,8 @@ pub mod support;
 use support::reported_line_and_column;
 
 fn parse_fixture(module_name: &str, src: &[u8]) -> String {
-    let module = Module::dynamic(module_name);
-    Parser::new(src, &module)
+    let mut module = Module::dynamic(module_name);
+    Parser::new(src, module.layout_token())
         .expect("parse constructor")
         .parse_module()
         .expect("parse succeeded");
@@ -21,8 +21,8 @@ fn parse_fixture(module_name: &str, src: &[u8]) -> String {
 }
 
 fn parse_err(src: &[u8]) -> ParseError {
-    let module = Module::dynamic("parser_modifiers_err");
-    Parser::new(src, &module)
+    let mut module = Module::dynamic("parser_modifiers_err");
+    Parser::new(src, module.layout_token())
         .expect("parse constructor")
         .parse_module()
         .expect_err("parse rejected invalid modifier")
@@ -343,11 +343,11 @@ fn memory_attribute_errors_match_upstream_text() {
 /// anchored on `parseMemoryAttr` itself (D11).
 #[test]
 fn memory_attribute_tolerates_space_before_the_colon() {
-    let module = module_new!("memory_attribute_spacing").expect("fresh module");
+    let mut module = module_new!("memory_attribute_spacing").expect("fresh module");
     Parser::new(
         b"declare void @f() memory(argmem : read, inaccessiblemem :write)
 ",
-        &module,
+        module.layout_token(),
     )
     .expect("parse constructor")
     .parse_module()

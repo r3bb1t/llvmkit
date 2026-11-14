@@ -15,13 +15,15 @@ use llvmkit_ir::{Dyn, IrBuilder, IrError, Linkage, module_new};
 /// value must be usable as a `ptr addrspace(33)` operand downstream.
 #[test]
 fn gep_result_preserves_base_pointer_address_space() -> Result<(), IrError> {
-    let m = module_new!("gep_addrspace")?;
+    let mut module = module_new!("gep_addrspace")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_as33 = m.ptr_type_in::<33>();
     let fn_ty = m.function_type(m.void_type().as_type(), [ptr_as33.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(f).param(0)?.try_into()?;
     let one = i32_ty.const_int(1_i32).as_dyn();

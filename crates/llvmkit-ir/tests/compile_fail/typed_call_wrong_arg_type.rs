@@ -45,7 +45,7 @@ struct Point {
 }
 
 fn main() {
-    let m = Module::dynamic("c");
+    let mut module = Module::dynamic("c"); let mut key = module.layout_token(); let m = key.module();
     let callee = m
         .add_typed_function::<i32, (Point, i32), _>("callee", Linkage::External)
         .unwrap();
@@ -53,7 +53,7 @@ fn main() {
         .add_typed_function::<i32, (i32,), _>("caller", Linkage::External)
         .unwrap();
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(entry);
     let (x,) = m.view(caller).params();
     // `String` implements neither `IntoIntValue`/`IntoFloatValue`/
     // `IntoPointerValue` nor is one of the struct-schema blanket's

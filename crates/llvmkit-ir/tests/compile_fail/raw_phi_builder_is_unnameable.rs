@@ -22,12 +22,12 @@
 use llvmkit_ir::{Dyn, IrBuilder, Linkage, Module};
 
 fn main() {
-    let m = Module::dynamic("c");
+    let mut module = Module::dynamic("c"); let mut key = module.layout_token(); let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]).expect("valid function type");
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
     let bb = m.view(f).append_basic_block(&m, "bb");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(bb);
     // None of the three exist in a non-test build of the crate. The public path
     // is `append_block_with_params` for the block, then `br_with_args` /
     // `cond_br_with_args` to carry the incomings along each edge.

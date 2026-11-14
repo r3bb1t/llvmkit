@@ -14,10 +14,10 @@ struct Point {
 }
 
 fn main() -> Result<(), IrError> {
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m"); let mut key = module.layout_token(); let m = key.module();
     let f = m.add_typed_function::<(), (Point,), _>("f", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut key,NoFolder).position_at_end(entry);
     let (point,) = m.view(f).params();
     let _ = point.x(&b);
     Ok(())

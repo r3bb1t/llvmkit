@@ -15,16 +15,18 @@ use llvmkit_ir::{Dyn, IntValue, IrBuilder, IrError, Linkage, module_new};
 /// inspecting the AsmWriter output.
 #[test]
 fn cond_br_terminator_terminates_block() -> Result<(), IrError> {
-    let m = module_new!("cb")?;
+    let mut module = module_new!("cb")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(void_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("cb", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let then_bb = m.view(f).append_basic_block(&m, "then");
-    let else_bb = m.view(f).append_basic_block(&m, "else");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let then_bb = m.view(f).append_basic_block(m, "then");
+    let else_bb = m.view(f).append_basic_block(m, "else");
 
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let lhs: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let cond: llvmkit_ir::IntValueId<bool, _> =
         b.int_cmp(llvmkit_ir::IntPredicate::Eq, lhs, 0_i32, "cond")?;
@@ -40,9 +42,9 @@ fn cond_br_terminator_terminates_block() -> Result<(), IrError> {
     // `br i1 ..., label %then, label %else` is the canonical form
     // (matches upstream `EXPECT_EQ(TBB, TI->getSuccessor(0))` /
     // `EXPECT_EQ(FBB, TI->getSuccessor(1))`).
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(then_bb);
     b.ret_void()?;
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(else_bb);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(else_bb);
     b.ret_void()?;
     let text = format!("{m}");
     assert!(
@@ -60,16 +62,18 @@ fn cond_br_terminator_terminates_block() -> Result<(), IrError> {
 /// `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, CreateCondBr)`.
 #[test]
 fn termination_typestate_does_not_change_asm_output() -> Result<(), IrError> {
-    let m = module_new!("termination_asm")?;
+    let mut module = module_new!("termination_asm")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let fn_ty = m.function_type(void_ty, Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let exit = m.view(f).append_basic_block(&m, "exit");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let exit = m.view(f).append_basic_block(m, "exit");
 
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     b.br(&exit)?;
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(exit);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(exit);
     b.ret_void()?;
 
     let expected = "; ModuleID = 'termination_asm'\n\

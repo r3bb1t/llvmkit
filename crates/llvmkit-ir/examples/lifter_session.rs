@@ -243,7 +243,10 @@ impl<B: ModuleBrand> LifterSession<B> {
     /// terminator. Mirrors what any real lifter does before it emits —
     /// `llvm-objdump`'s `collectLocalBranchTargets` builds the branch-target
     /// part of the same set.
-    pub fn new(module: Module<B, Unverified>, program: &[(u64, Pseudo)]) -> Result<Self, IrError> {
+    pub fn new(
+        mut module: Module<B, Unverified>,
+        program: &[(u64, Pseudo)],
+    ) -> Result<Self, IrError> {
         let i32_ty = module.i32_type();
         let _ = i32_ty;
         let function = module
@@ -292,7 +295,9 @@ impl<B: ModuleBrand> LifterSession<B> {
 
         let mut state = SsaState::for_function(&module, module.view(function))?;
         let registers = {
-            let mut b = SsaBuilder::for_function(&module, module.view(function), &mut state)?;
+            let mut key = module.layout_token();
+            let m = key.module();
+            let mut b = SsaBuilder::for_function(&mut key, m.view(function), &mut state)?;
             let r0 = b.declare_int_var::<i32, _>("r0");
             let r1 = b.declare_int_var::<i32, _>("r1");
             [r0, r1]
@@ -316,9 +321,10 @@ impl<B: ModuleBrand> LifterSession<B> {
     /// Lift exactly **one** pseudo-instruction and return.
     ///
     /// Everything that borrows lives inside this method: the working
-    /// `SsaBuilder` is minted from `(&self.module, function, &mut self.state)`,
-    /// drives one instruction, and is dropped before returning. The session is
-    /// an ordinary value again the moment `step` hands control back.
+    /// `SsaBuilder` is minted from the module's layout token, the function and
+    /// `&mut self.state`, drives one instruction, and is dropped before
+    /// returning. The session is an ordinary value again the moment `step`
+    /// hands control back.
     pub fn step(&mut self) -> Result<Step, IrError> {
         let Some(&(addr, op)) = self.program.get(self.pc) else {
             return Ok(Step::Done);
@@ -328,11 +334,9 @@ impl<B: ModuleBrand> LifterSession<B> {
         let fallthrough = self.program.get(self.pc + 1).map(|&(next, _)| next);
         self.pc += 1;
 
-        let mut b = SsaBuilder::for_function(
-            &self.module,
-            self.module.view(self.function),
-            &mut self.state,
-        )?;
+        let mut key = self.module.layout_token();
+        let m = key.module();
+        let mut b = SsaBuilder::for_function(&mut key, m.view(self.function), &mut self.state)?;
 
         // --- restore the cursor the previous step parked ---
         if self.leaders.contains(&addr) {
@@ -427,11 +431,9 @@ impl<B: ModuleBrand> LifterSession<B> {
     /// owns it and can hand it to a JIT, a printer, or the next stage.
     pub fn finish(mut self) -> Result<Module<B, Verified>, IrError> {
         {
-            let b = SsaBuilder::for_function(
-                &self.module,
-                self.module.view(self.function),
-                &mut self.state,
-            )?;
+            let mut key = self.module.layout_token();
+            let m = key.module();
+            let b = SsaBuilder::for_function(&mut key, m.view(self.function), &mut self.state)?;
             b.finish()?;
         }
         self.module.verify()

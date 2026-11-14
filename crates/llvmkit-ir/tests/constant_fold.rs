@@ -857,12 +857,14 @@ fn gep_empty_indices_fold_to_base_pointer() -> Result<(), IrError> {
 /// as direct constant folding.
 #[test]
 fn analysis_instruction_fold_uses_apint_binary_folder() -> Result<(), IrError> {
-    let m = module_new!("analysis-fold")?;
+    let mut module = module_new!("analysis-fold")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ty = m.int_type_n::<257>();
     let fn_ty = m.function_type_no_parameters(ty)?;
     let f = m.add_function_dyn("wide", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let high = ty.const_ap_int(&ApInt::one_bit_set(257, 256))?;
     let value = b.int_add(high, ty.const_zero(), "sum")?;
     let instruction = InstructionView::try_from(b.view(value).as_erased())?;
@@ -880,12 +882,14 @@ fn analysis_instruction_fold_uses_apint_binary_folder() -> Result<(), IrError> {
 /// poison, exactly like non-exact `udiv`.
 #[test]
 fn analysis_instruction_fold_exact_udiv_inexact_matches_plain_udiv() -> Result<(), IrError> {
-    let m = module_new!("analysis-exact-fold")?;
+    let mut module = module_new!("analysis-exact-fold")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(ty)?;
     let f = m.add_function_dyn("exact", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let value = b.int_udiv_with_flags::<i32, _, _, _>(
         ty.const_int(7_i32),
         ty.const_int(2_i32),
@@ -907,12 +911,14 @@ fn analysis_instruction_fold_exact_udiv_inexact_matches_plain_udiv() -> Result<(
 /// exactness-threading path did.
 #[test]
 fn analysis_instruction_fold_exact_udiv_undef_identity() -> Result<(), IrError> {
-    let m = module_new!("analysis-exact-fold-identity")?;
+    let mut module = module_new!("analysis-exact-fold-identity")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(ty)?;
     let f = m.add_function_dyn("exact", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let undef = IntValue::try_from(ty.as_type().undef().as_erased())?;
     let value = b.int_udiv_with_flags::<i32, _, _, _>(
         undef,

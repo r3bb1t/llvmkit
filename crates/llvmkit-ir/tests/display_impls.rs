@@ -42,13 +42,15 @@ fn function_value_prints_declare_line() -> Result<(), IrError> {
 /// is exactly the slice the module writer emits for it.
 #[test]
 fn function_value_define_matches_module_output() -> Result<(), IrError> {
-    let m = module_new!("define_display")?;
+    let mut module = module_new!("define_display")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let f = m.add_function_dyn("add", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
 
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let lhs: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let sum = b.int_add(lhs, rhs, "sum")?;
@@ -79,16 +81,18 @@ fn function_value_define_matches_module_output() -> Result<(), IrError> {
 /// `function_value_define_matches_module_output`.
 #[test]
 fn basic_block_display_matches_the_module_printer() -> Result<(), IrError> {
-    let m = module_new!("block_display")?;
+    let mut module = module_new!("block_display")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void = m.void_type();
     let fn_ty = m.function_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let exit = m.view(f).append_basic_block(&m, "exit");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let exit = m.view(f).append_basic_block(m, "exit");
 
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     b.br(&exit)?;
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(exit);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(exit);
     b.ret_void()?;
 
     let exit_block = m.view(f).basic_blocks().nth(1).expect("two blocks");
@@ -138,15 +142,17 @@ fn global_variable_prints_definition_line() -> Result<(), IrError> {
 /// text that the module writer never emits.
 #[test]
 fn typed_handles_agree_with_erased_value() -> Result<(), IrError> {
-    let m = module_new!("agreement")?;
+    let mut module = module_new!("agreement")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
     let ptr_ty = m.ptr_type_in::<0>();
 
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let doubled = b.int_add(x, x, "doubled")?;
     b.ret(doubled)?;

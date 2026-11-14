@@ -1294,6 +1294,11 @@ pub enum IrError {
         /// The rejected integer bit width.
         bits: u32,
     },
+    /// A layout edit was handed another module's
+    /// [`LayoutToken`](crate::LayoutToken). Two modules of one shared brand
+    /// have tokens of one type, so only the module tag tells them apart.
+    #[error("layout token belongs to another module")]
+    ForeignLayoutToken,
 
     /// A type was passed where a different *kind* was expected — the shape
     /// where the expectation is fixed at the call site ("this operand must be
@@ -2309,6 +2314,7 @@ impl IrError {
             // space or value category. `InvalidIntegerWidth` is a bound LLVM
             // itself imposes — upstream's usage class folds bounds in.
             Self::InvalidIntegerWidth { .. }
+            | Self::ForeignLayoutToken
             | Self::TypeMismatch { .. }
             | Self::TypeIdentityMismatch { .. }
             | Self::OperandWidthMismatch { .. }

@@ -9,11 +9,13 @@ use llvmkit_ir::{
 /// `unittests/IR/AsmWriterTest.cpp` for add+ret printing.
 #[test]
 fn typed_function_facade_builds_signature_and_params() -> Result<(), IrError> {
-    let m = module_new!("demo")?;
+    let mut module = module_new!("demo")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
 
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(entry);
     let (lhs, rhs) = m.view(f).params();
     let sum = b.int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
     b.ret(sum)?;
@@ -54,9 +56,11 @@ fn expect_int17<'ctx, B: ModuleBrand + 'ctx>(
 /// checks.
 #[test]
 fn typed_function_facade_supports_pointer_and_float_params() -> Result<(), IrError> {
-    let m = module_new!("mixed")?;
+    let mut module = module_new!("mixed")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<i32, (Ptr, f32, Width<17>), _>("mixed", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
     let (p, x, bits) = m.view(f).params();
     let p = expect_pointer(p);
     let x = expect_float(x);
@@ -66,7 +70,7 @@ fn typed_function_facade_supports_pointer_and_float_params() -> Result<(), IrErr
     assert_eq!(x.as_erased().ty().kind_label(), TypeKindLabel::Float);
     assert_eq!(bits.as_erased().ty().kind_label(), TypeKindLabel::Integer);
 
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(entry);
     b.ret(0_i32)?;
     Ok(())
 }
@@ -123,15 +127,17 @@ type WinApiSig = unsafe extern "system" fn(Ptr, i32, f32) -> Ptr;
 /// upstream coverage is `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)`.
 #[test]
 fn function_pointer_alias_builds_typed_function_and_params() -> Result<(), IrError> {
-    let m = module_new!("alias")?;
+    let mut module = module_new!("alias")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let fn_ty = m.typed_function_type_of::<AddSig>()?;
     assert_eq!(format!("{fn_ty}"), "i32 (i32, i32)");
     let f = m.add_typed_function_of::<AddSig, _>("add", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
     let (lhs, rhs) = m.view(f).params();
     let _: IntValue<'_, i32, _> = lhs;
     let _: IntValue<'_, i32, _> = rhs;
-    let b = m.view(f).builder(&m).position_at_end(entry);
+    let b = m.view(f).builder(&mut key).position_at_end(entry);
     let sum = b.int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
     b.ret(sum)?;
     let text = format!("{m}");
@@ -181,10 +187,12 @@ fn raw_function_can_be_wrapped_with_function_pointer_signature() -> Result<(), I
 /// `unittests/IR/AsmWriterTest.cpp` for return instruction printing.
 #[test]
 fn builder_can_be_created_from_function_pointer_return_schema() -> Result<(), IrError> {
-    let m = module_new!("builder")?;
+    let mut module = module_new!("builder")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function_of::<AddSig, _>("zero", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for_return::<AddSig>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for_return::<AddSig>(&mut key).position_at_end(entry);
     b.ret(0_i32)?;
     let text = format!("{m}");
     assert!(text.contains("ret i32 0\n"), "got:\n{text}");

@@ -10,8 +10,8 @@ pub mod support;
 use support::{line_and_column, reported_line_and_column};
 
 fn parse_and_render(src: &str) -> String {
-    let module = Module::dynamic("parser_debug_metadata");
-    Parser::new(src.as_bytes(), &module)
+    let mut module = Module::dynamic("parser_debug_metadata");
+    Parser::new(src.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("parser succeeds");
@@ -225,8 +225,8 @@ entry:
 
 /// Parse `src` expecting failure, returning the error.
 fn parse_err(src: &str) -> ParseError {
-    let module = Module::dynamic("parser_debug_metadata_invalid");
-    Parser::new(src.as_bytes(), &module)
+    let mut module = Module::dynamic("parser_debug_metadata_invalid");
+    Parser::new(src.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect_err("parse must fail")
@@ -1540,8 +1540,8 @@ entry:
 /// byte-identical to upstream's.
 #[test]
 fn upstream_debug_value_list_parses_with_di_arg_list_call_arguments() {
-    let module = Module::dynamic("debug_value_list");
-    Parser::new(DEBUG_VALUE_LIST.as_bytes(), &module)
+    let mut module = Module::dynamic("debug_value_list");
+    Parser::new(DEBUG_VALUE_LIST.as_bytes(), module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("test/DebugInfo/Generic/debug_value_list.ll parses");

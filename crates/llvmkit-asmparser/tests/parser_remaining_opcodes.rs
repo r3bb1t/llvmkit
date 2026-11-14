@@ -7,8 +7,8 @@ use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_ir::Module;
 
 fn parse_fixture(src: &[u8]) -> String {
-    let module = Module::dynamic("test");
-    let _ = Parser::new(src, &module)
+    let mut module = Module::dynamic("test");
+    let _ = Parser::new(src, module.layout_token())
         .expect("parse constructor")
         .parse_module()
         .expect("parse succeeded");
@@ -328,8 +328,8 @@ fn cmpxchg_operand_must_be_integer_or_pointer_and_power_of_two_sized() {
 /// Parse `src`, run `Module::verify_borrowed` over it, and answer the failure
 /// message. Panics when the module parses *and* verifies.
 fn verify_error(src: &[u8]) -> String {
-    let module = Module::dynamic("verify");
-    Parser::new(src, &module)
+    let mut module = Module::dynamic("verify");
+    Parser::new(src, module.layout_token())
         .expect("lexer primes")
         .parse_module()
         .expect("the fixture parses; the verifier is the layer that rejects it");

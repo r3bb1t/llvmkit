@@ -20,7 +20,9 @@ use llvmkit_ir::{
 /// callee.
 #[test]
 fn call_int_returning_function() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     // declare i32 @callee(i32, i32)
     let callee = m
@@ -29,8 +31,8 @@ fn call_int_returning_function() -> Result<(), IrError> {
     // define i32 @caller(i32 %x, i32 %y) { %r = call i32 @callee(i32 %x, i32 %y); ret i32 %r }
     let caller_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let x: llvmkit_ir::IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
     let y: llvmkit_ir::IntValue<'_, i32, _> = m.view(caller).param(1)?.try_into()?;
     let inst = b.call_dyn(callee, [x.as_erased(), y.as_erased()], "r")?;
@@ -54,7 +56,9 @@ fn call_int_returning_function() -> Result<(), IrError> {
 /// counterpart.
 #[test]
 fn call_void_returning_function() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     // declare void @sink()
     let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
@@ -62,8 +66,8 @@ fn call_void_returning_function() -> Result<(), IrError> {
     // define void @caller() { call void @sink(); ret void }
     let caller_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let inst = b.call_dyn(callee, Vec::<llvmkit_ir::Value<'_, _>>::new(), "")?;
     assert!(b.view(inst).return_value().is_none());
     b.ret_void()?;
@@ -79,7 +83,9 @@ fn call_void_returning_function() -> Result<(), IrError> {
 /// (constructs a `CallInst` with mixed-type args).
 #[test]
 fn call_builder_mixed_arg_types() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let void_ty = m.void_type();
@@ -87,8 +93,8 @@ fn call_builder_mixed_arg_types() -> Result<(), IrError> {
     let callee = m.add_function_dyn("with_ptr", callee_ty, Linkage::External)?;
     let caller_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(caller).param(0)?.try_into()?;
     // Mixed-type args: an `IntValue<i32>` and a `PointerValue` go into
@@ -111,15 +117,17 @@ fn call_builder_mixed_arg_types() -> Result<(), IrError> {
 /// `unittests/IR/InstructionsTest.cpp::TEST_F(ModuleWithFunctionTest, CallInst)`.
 #[test]
 fn call_tail() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let callee = m
         .add_typed_function::<i32, (), _>("g", Linkage::External)?
         .as_function();
     let caller_ty = m.function_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let caller = m.add_function_dyn("f", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let inst = b.call_builder(m.view(callee)).tail().name("r").build()?;
     let r = b.view(inst).return_int_value();
     b.ret(r)?;
@@ -133,12 +141,14 @@ fn call_tail() -> Result<(), IrError> {
 /// direct call to it.
 #[test]
 fn intrinsic_call_inserts_declaration_and_emits_direct_call() -> Result<(), IrError> {
-    let m = module_new!("intrinsic-call")?;
+    let mut module = module_new!("intrinsic-call")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f32_ty = m.f32_type();
     let caller_ty = m.function_type(f32_ty, [f32_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let x: FloatValue<'_, f32, _> = m.view(caller).param(0)?.try_into()?;
     let descriptor = IntrinsicDescriptor::new(
         IntrinsicId::lookup("llvm.acos.f32").expect("acos intrinsic"),
@@ -169,13 +179,15 @@ fn intrinsic_call_inserts_declaration_and_emits_direct_call() -> Result<(), IrEr
 /// generated IIT signature.
 #[test]
 fn intrinsic_call_rejects_wrong_argument_type() -> Result<(), IrError> {
-    let m = module_new!("intrinsic-call-mismatch")?;
+    let mut module = module_new!("intrinsic-call-mismatch")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
     let caller_ty = m.function_type(m.void_type().as_type(), [i32_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
     let descriptor = IntrinsicDescriptor::new(
         IntrinsicId::lookup("llvm.acos.f32").expect("acos intrinsic"),
@@ -196,15 +208,17 @@ fn intrinsic_call_rejects_wrong_argument_type() -> Result<(), IrError> {
 /// specialized for a pointer-returning callee.
 #[test]
 fn call_to_pointer_returning_function() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let callee = m
         .add_typed_function::<Ptr, (), _>("alloc_ptr", Linkage::External)?
         .as_function();
     let caller_ty = m.function_type(ptr_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let caller = m.add_function_dyn("g", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let inst = b.call_dyn(callee, Vec::<llvmkit_ir::Value<'_, _>>::new(), "p")?;
     let p = b.view(inst).return_pointer_value();
     b.ret(p)?;
@@ -225,11 +239,13 @@ fn call_to_pointer_returning_function() -> Result<(), IrError> {
 /// the typed callee facade instead of a raw `FunctionValue`.
 #[test]
 fn typed_build_call_prints_like_dyn_form() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let callee = m.add_typed_function::<i32, (i32, i32), _>("callee", Linkage::External)?;
     let caller = m.add_typed_function::<i32, (i32, i32), _>("caller", Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(entry);
     let (x, y) = m.view(caller).params();
     let call = b.call(callee, (x, y), "r")?;
     let ret_val = b.view(call).result();
@@ -247,14 +263,16 @@ fn typed_build_call_prints_like_dyn_form() -> Result<(), IrError> {
 /// coverage of `CallSiteConfig`.
 #[test]
 fn typed_build_call_with_config_threads_calling_convention() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let callee = m.add_typed_function::<i32, (), _>("g", Linkage::External)?;
     m.view(callee)
         .as_function()
-        .set_calling_conv(&m, CallingConv::FAST);
+        .set_calling_conv(m, CallingConv::FAST);
     let caller = m.add_typed_function::<i32, (), _>("f", Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(entry);
     let call = b.call_with_config(
         callee,
         (),
@@ -271,11 +289,13 @@ fn typed_build_call_with_config_threads_calling_convention() -> Result<(), IrErr
 /// `call_builder` does, mirroring `call_tail`.
 #[test]
 fn typed_call_builder_chains_tail() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let callee = m.add_typed_function::<i32, (), _>("g", Linkage::External)?;
     let caller = m.add_typed_function::<i32, (), _>("f", Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(entry);
     let call = b
         .typed_call_builder(m.view(callee), ())
         .tail()
@@ -296,12 +316,14 @@ fn typed_call_builder_chains_tail() -> Result<(), IrError> {
 /// ...)`).
 #[test]
 fn typed_build_indirect_call_derives_function_type_from_schema() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let host_ty = m.function_type(ptr_ty.as_type(), [ptr_ty.as_type()])?;
     let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
-    let entry = m.view(host).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(host).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let callee_ptr = llvmkit_ir::PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(
         m.view(host).param(0).expect("callee ptr"),
     )?;
@@ -330,14 +352,16 @@ fn typed_build_indirect_call_derives_function_type_from_schema() -> Result<(), I
 /// check (`lib/IR/Instructions.cpp`, `lib/IR/Verifier.cpp`).
 #[test]
 fn call_builder_rejects_too_few_arguments() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let callee_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
     let caller_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
     let err = b
         .call_builder(m.view(callee))
@@ -364,15 +388,17 @@ fn call_builder_rejects_too_few_arguments() -> Result<(), IrError> {
 /// FTy->getParamType(i)` check.
 #[test]
 fn call_builder_rejects_wrong_argument_type() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
     let callee_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
     let caller_ty = m.function_type(i32_ty, [f32_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let x: FloatValue<'_, f32, _> = m.view(caller).param(0)?.try_into()?;
     let err = b
         .call_builder(m.view(callee))
@@ -398,15 +424,17 @@ fn call_builder_rejects_wrong_argument_type() -> Result<(), IrError> {
 /// (`Call.arg_size() >= FTy->getNumParams()`).
 #[test]
 fn call_builder_accepts_extra_arguments_for_vararg_callee() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let callee = m
         .add_typed_varargs_function::<i32, (i32,), _>("callee", Linkage::External)?
         .as_function();
     let caller_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
     let y: IntValue<'_, i32, _> = m.view(caller).param(1)?.try_into()?;
     let inst = b
@@ -431,14 +459,16 @@ fn call_builder_accepts_extra_arguments_for_vararg_callee() -> Result<(), IrErro
 /// `validate_call_site_args` gate as the direct-callee path.
 #[test]
 fn indirect_call_rejects_too_many_arguments() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let host_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()])?;
     let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
-    let entry = m.view(host).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(host).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let callee_ptr = llvmkit_ir::PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(
         m.view(host).param(0).expect("callee ptr"),
     )?;
@@ -501,13 +531,15 @@ fn varargs_facade_rejects_non_variadic_function() -> Result<(), IrError> {
 /// upstream fixture `test/Assembler/varargs.ll`-style `(...)` printing.
 #[test]
 fn build_varargs_call_lowers_fixed_prefix_and_appends_erased_tail() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let callee =
         m.add_typed_varargs_function::<i32, (i32,), _>("sum_varargs", Linkage::External)?;
     let caller = m.add_typed_function::<i32, (i32,), _>("caller", Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<i32>(&mut key).position_at_end(entry);
     let (count,) = m.view(caller).params();
     let extra_a = i32_ty.const_int(10_i32);
     let extra_b = m.f32_type().const_float(2.5_f32);
@@ -543,7 +575,9 @@ fn build_varargs_call_lowers_fixed_prefix_and_appends_erased_tail() -> Result<()
 /// `LLParser::parseCall`'s single tail expressible.
 #[test]
 fn call_erased_carries_the_call_site_configuration_for_every_callee_shape() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
@@ -557,8 +591,8 @@ fn call_erased_carries_the_call_site_configuration_for_every_callee_shape() -> R
     // define void @caller(ptr %fp, i32 %v)
     let caller_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type(), i32_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let fp =
         llvmkit_ir::PointerValue::<llvmkit_ir::SpaceDyn, _, _>::try_from(m.view(caller).param(0)?)?;
     let v = m.view(caller).param(1)?;
@@ -636,7 +670,9 @@ fn call_erased_carries_the_call_site_configuration_for_every_callee_shape() -> R
 /// `CallArgumentCountMismatch` rather than printing a differently-typed call.
 #[test]
 fn call_erased_prefers_the_call_site_type_override() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
 
@@ -648,8 +684,8 @@ fn call_erased_prefers_the_call_site_type_override() -> Result<(), IrError> {
 
     let caller_ty = m.function_type(void_ty.as_type(), [i32_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let v = m.view(caller).param(0)?;
 
     b.call_erased::<Dyn, _, _>(
@@ -685,7 +721,9 @@ fn call_erased_prefers_the_call_site_type_override() -> Result<(), IrError> {
 #[test]
 fn call_erased_refuses_fast_math_flags_on_a_call_that_is_not_floating_point() -> Result<(), IrError>
 {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
@@ -696,8 +734,8 @@ fn call_erased_refuses_fast_math_flags_on_a_call_that_is_not_floating_point() ->
 
     let caller_ty = m.function_type(void_ty.as_type(), [i32_ty.as_type(), f32_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let int_arg = m.view(caller).param(0)?;
     let float_arg = m.view(caller).param(1)?;
 
@@ -910,7 +948,9 @@ fn alter_invoke_bundles() -> Result<(), IrError> {
 /// no marker — read before either setter runs.
 #[test]
 fn call_setters_replace_what_they_name_and_nothing_else() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
@@ -918,8 +958,8 @@ fn call_setters_replace_what_they_name_and_nothing_else() -> Result<(), IrError>
     let h = m.add_function_dyn("h", float_fn_ty, Linkage::External)?;
     let caller_ty = m.function_type(void_ty.as_type(), [f32_ty.as_type()])?;
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let x = m.view(caller).param(0)?;
     let id = b.call_erased::<Dyn, _, _>(
         float_fn_ty,
@@ -942,7 +982,7 @@ fn call_setters_replace_what_they_name_and_nothing_else() -> Result<(), IrError>
     assert_eq!(call.tail_call_kind(), TailCallKind::None);
     assert!(!call.has_fn_attr(AttrKind::Cold));
 
-    call.set_tail_call_kind(&m, TailCallKind::NoTail);
+    call.set_tail_call_kind(m, TailCallKind::NoTail);
     assert_eq!(call.tail_call_kind(), TailCallKind::NoTail);
     let mut cold = AttributeStorage::new();
     cold.add(
@@ -950,7 +990,7 @@ fn call_setters_replace_what_they_name_and_nothing_else() -> Result<(), IrError>
         Attribute::<DynBrand>::enum_attr(AttrKind::Cold).expect("cold is an enum attribute"),
     );
     call.set_attributes(
-        &m,
+        m,
         CallAttributeData::new(AttributeStorage::new(), Box::new([]), cold),
     );
     assert!(call.has_fn_attr(AttrKind::Cold));
@@ -1016,7 +1056,9 @@ fn call_base_copies_each_call_site_with_other_bundles() -> Result<(), IrError> {
         );
     }
 
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m
         .function_type(i32_ty.as_type(), [i32_ty.as_type()])
@@ -1029,14 +1071,14 @@ fn call_base_copies_each_call_site_with_other_bundles() -> Result<(), IrError> {
     // blocks of their own.
     let caller = m.add_function_dyn("caller", fn_ty, Linkage::External)?;
     let x = m.view(caller).param(0)?;
-    let entry = m.view(caller).append_basic_block(&m, "entry");
-    let invoking = m.view(caller).append_basic_block(&m, "invoking");
-    let jumping = m.view(caller).append_basic_block(&m, "jumping");
-    let normal = m.view(caller).append_basic_block(&m, "normal");
-    let unwind = m.view(caller).append_basic_block(&m, "unwind");
-    let indirect = m.view(caller).append_basic_block(&m, "indirect");
+    let entry = m.view(caller).append_basic_block(m, "entry");
+    let invoking = m.view(caller).append_basic_block(m, "invoking");
+    let jumping = m.view(caller).append_basic_block(m, "jumping");
+    let normal = m.view(caller).append_basic_block(m, "normal");
+    let unwind = m.view(caller).append_basic_block(m, "unwind");
+    let indirect = m.view(caller).append_basic_block(m, "indirect");
 
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let call = m.view(
         b.call_builder(m.view(h))
             .arg(x)
@@ -1045,9 +1087,9 @@ fn call_base_copies_each_call_site_with_other_bundles() -> Result<(), IrError> {
             .build()?,
     );
     call.as_view()
-        .set_metadata(&m, MetadataAttachmentKind::Dbg, dbg)?;
+        .set_metadata(m, MetadataAttachmentKind::Dbg, dbg)?;
     b.br(&invoking)?;
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(invoking);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(invoking);
     let (_, invoke) = b.invoke_dyn_with_config::<Dyn, _, _, _, _, _>(
         m.view(h),
         [x],
@@ -1059,19 +1101,19 @@ fn call_base_copies_each_call_site_with_other_bundles() -> Result<(), IrError> {
     )?;
     invoke
         .as_view()
-        .set_metadata(&m, MetadataAttachmentKind::Dbg, dbg)?;
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(jumping);
+        .set_metadata(m, MetadataAttachmentKind::Dbg, dbg)?;
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(jumping);
     let (_, call_br) =
         b.callbr::<Dyn, _, _, _, _, _, _, _>(m.view(h), [x], &normal, [&indirect], "cb")?;
     call_br
         .as_view()
-        .set_metadata(&m, MetadataAttachmentKind::Dbg, dbg)?;
+        .set_metadata(m, MetadataAttachmentKind::Dbg, dbg)?;
     assert!(!call.has_fn_attr(AttrKind::Cold));
     assert!(!invoke.has_fn_attr(AttrKind::Cold));
     assert!(!call_br.has_fn_attr(AttrKind::Cold));
-    make_cold(&m, call);
-    make_cold(&m, invoke);
-    make_cold(&m, call_br);
+    make_cold(m, call);
+    make_cold(m, invoke);
+    make_cold(m, call_br);
 
     fn only_bundle<'ctx, B: ModuleBrand + 'ctx>(
         bundles: Vec<OperandBundleUse<'ctx, B>>,
@@ -1080,7 +1122,7 @@ fn call_base_copies_each_call_site_with_other_bundles() -> Result<(), IrError> {
         bundles[0].inputs().collect()
     }
 
-    let (call_copy_instruction, call_copy) = with_bundle(&m, call, deopt(2))?;
+    let (call_copy_instruction, call_copy) = with_bundle(m, call, deopt(2))?;
     assert_eq!(call_copy.callee(), call.callee());
     assert_eq!(call_copy.args().collect::<Vec<_>>(), vec![x.as_erased()]);
     assert_eq!(
@@ -1096,7 +1138,7 @@ fn call_base_copies_each_call_site_with_other_bundles() -> Result<(), IrError> {
     );
     assert!(call_copy.has_fn_attr(AttrKind::Cold));
 
-    let (invoke_copy_instruction, invoke_copy) = with_bundle(&m, invoke, deopt(3))?;
+    let (invoke_copy_instruction, invoke_copy) = with_bundle(m, invoke, deopt(3))?;
     assert_eq!(
         invoke_copy.normal_destination(),
         invoke.normal_destination()
@@ -1119,7 +1161,7 @@ fn call_base_copies_each_call_site_with_other_bundles() -> Result<(), IrError> {
     );
     assert!(invoke_copy.has_fn_attr(AttrKind::Cold));
 
-    let (call_br_copy_instruction, call_br_copy) = with_bundle(&m, call_br, deopt(4))?;
+    let (call_br_copy_instruction, call_br_copy) = with_bundle(m, call_br, deopt(4))?;
     assert_eq!(
         call_br_copy.default_destination(),
         call_br.default_destination()
@@ -1141,15 +1183,15 @@ fn call_base_copies_each_call_site_with_other_bundles() -> Result<(), IrError> {
         Some(dbg)
     );
     assert!(call_br_copy.has_fn_attr(AttrKind::Cold));
-    invoke_copy_instruction.drop_detached(&m);
-    call_br_copy_instruction.drop_detached(&m);
+    invoke_copy_instruction.drop_detached(m);
+    call_br_copy_instruction.drop_detached(m);
 
     // The call copy joins the function after its original.
     let anchor = call
         .as_view()
         .placed()
         .expect("the original call is in a block");
-    call_copy_instruction.insert_after(&m, anchor)?;
+    call_copy_instruction.insert_after(&mut key, anchor)?;
     // Read line by line rather than as whole call lines: between the argument
     // list and the bundle sits the call's `cold`, which llvmkit prints inline
     // where upstream prints a `#N` group (`docs/divergences.md`), and that
@@ -1185,25 +1227,27 @@ fn call_base_copies_each_call_site_with_other_bundles() -> Result<(), IrError> {
 /// control is the same invoke to plain blocks.
 #[test]
 fn a_detached_invoke_refuses_a_parameterised_destination() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()])?;
     let h = m.add_function_dyn("h", fn_ty, Linkage::External)?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let callee = m.view(h).as_erased();
-    let (with_params, _) = IrBuilder::new_for::<Dyn>(&m).append_block_with_params(
+    let (with_params, _) = IrBuilder::new_for::<Dyn>(&mut key).append_block_with_params(
         m.view(f),
         &[i32_ty.as_type()],
         "merge",
     )?;
-    let plain = m.view(f).append_basic_block(&m, "plain");
+    let plain = m.view(f).append_basic_block(m, "plain");
     let uses = callee.num_uses();
 
     for (edge, refused) in [
         (
             "normal",
             InvokeInst::<Dyn, _>::create_detached(
-                &m,
+                m,
                 fn_ty,
                 callee,
                 &with_params,
@@ -1216,7 +1260,7 @@ fn a_detached_invoke_refuses_a_parameterised_destination() -> Result<(), IrError
         (
             "unwind",
             InvokeInst::<Dyn, _>::create_detached(
-                &m,
+                m,
                 fn_ty,
                 callee,
                 &plain,
@@ -1241,7 +1285,7 @@ fn a_detached_invoke_refuses_a_parameterised_destination() -> Result<(), IrError
     assert_eq!(callee.num_uses(), uses, "a refusal creates nothing");
 
     let (created, _) = InvokeInst::<Dyn, _>::create_detached(
-        &m,
+        m,
         fn_ty,
         callee,
         &plain,
@@ -1250,7 +1294,7 @@ fn a_detached_invoke_refuses_a_parameterised_destination() -> Result<(), IrError
         CallSiteConfig::new("r"),
     )?;
     assert_eq!(callee.num_uses(), uses + 1);
-    created.drop_detached(&m);
+    created.drop_detached(m);
     Ok(())
 }
 

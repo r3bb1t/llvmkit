@@ -17,12 +17,14 @@ use llvmkit_ir::{
 };
 
 fn build_f32_fn(op: &str) -> Result<String, IrError> {
-    let m = Module::dynamic("fp");
+    let mut module = Module::dynamic("fp");
+    let mut key = module.layout_token();
+    let m = key.module();
     let f32_ty = m.f32_type();
     let fn_ty = m.function_type(f32_ty, [f32_ty.as_type(), f32_ty.as_type()])?;
     let f = m.add_function_dyn(op, fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let x: FloatValue<'_, f32, _> = m.view(f).param(0)?.try_into()?;
     let y: FloatValue<'_, f32, _> = m.view(f).param(1)?.try_into()?;
     let r = match op {
@@ -87,12 +89,14 @@ fn frem_f32() -> Result<(), IrError> {
 /// marker propagates correctly to the `fadd double` print form.
 #[test]
 fn fadd_f64() -> Result<(), IrError> {
-    let m = module_new!("fp")?;
+    let mut module = module_new!("fp")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f64_ty = m.f64_type();
     let fn_ty = m.function_type(f64_ty, [f64_ty.as_type(), f64_ty.as_type()])?;
     let f = m.add_function_dyn("fadd", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let lhs: FloatValue<'_, f64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: FloatValue<'_, f64, _> = m.view(f).param(1)?.try_into()?;
     let r = b.fp_add(lhs, rhs, "z")?;
@@ -107,12 +111,14 @@ fn fadd_f64() -> Result<(), IrError> {
 /// the default builder folder delegates FP binops to the shared APFloat folder.
 #[test]
 fn default_constant_folder_folds_fadd_to_constant() -> Result<(), IrError> {
-    let m = module_new!("fp-fold")?;
+    let mut module = module_new!("fp-fold")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ty = m.f64_type();
     let fn_ty = m.function_type(ty, Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("sum", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let result = b.fp_add::<f64, _, _, _>(ty.const_double(1.5), ty.const_double(2.25), "sum")?;
     let folded =
         ConstantFloatValue::<f64, _>::try_from(Constant::try_from(b.view(result).as_erased())?)?;

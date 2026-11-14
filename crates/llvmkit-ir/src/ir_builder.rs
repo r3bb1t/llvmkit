@@ -109,6 +109,7 @@ use super::intrinsic_inst::IntrinsicInst;
 use super::intrinsics::{BinaryIntrinsic, IntrinsicDescriptor, IntrinsicId};
 use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::folder::{IrBuilderFolder, TrustedFolder};
+use super::layout_token::LayoutToken;
 use super::marker::ExpectedRetKind;
 use super::marker::{Dyn, Ptr, ReturnMarker};
 use super::module::{
@@ -646,7 +647,13 @@ where
     R: ReturnMarker,
 {
     module: &'ctx ModuleCore,
-    _module: PhantomData<&'m Module<B, Unverified>>,
+    /// The borrow of the module's [`LayoutToken`]: every public constructor
+    /// takes the token as `&'m mut`, so the token stays mutably borrowed for
+    /// as long as the builder exists. No other builder and no
+    /// position-moving edit can run on the module meanwhile, so the insertion
+    /// point cannot go stale. The token itself carries no data the builder
+    /// needs, so only its borrow is kept.
+    _key: PhantomData<&'m mut ()>,
     insert_block: Option<BasicBlock<'ctx, R, Unterminated, B>>,
     /// Optional insertion anchor: when `Some(id)`, new instructions are
     /// inserted *before* the instruction with this id (mirrors upstream
@@ -697,10 +704,13 @@ where
     /// matches the runtime-equality `ret` path; use
     /// [`IrBuilder::new_for`] when the caller already knows the return
     /// shape statically.
-    pub fn new(module: &'ctx Module<B, Unverified>) -> Self {
+    ///
+    /// The builder holds `key` `&mut` for as long as it lives
+    /// ([`LayoutToken`]): one builder per module at a time.
+    pub fn new(key: &'m mut LayoutToken<'ctx, B>) -> Self {
         Self {
-            module: module.core_ref(),
-            _module: PhantomData,
+            module: key.module().core_ref(),
+            _key: PhantomData,
             insert_block: None,
             insert_before: None,
             folder: ConstantFolder,
@@ -715,9 +725,33 @@ where
     /// typed.
     ///
     /// ```ignore
-    /// let b = IrBuilder::new_for::<i32>(&module);
+    /// let mut key = module.layout_token()?;
+    /// let b = IrBuilder::new_for::<i32>(&mut key);
     /// ```
     pub fn new_for<R>(
+        key: &'m mut LayoutToken<'ctx, B>,
+    ) -> IrBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, R>
+    where
+        R: ReturnMarker,
+    {
+        IrBuilder {
+            module: key.module().core_ref(),
+            _key: PhantomData,
+            insert_block: None,
+            insert_before: None,
+            folder: ConstantFolder,
+            fmf: super::fmf::FastMathFlags::empty(),
+            _state: PhantomData,
+        }
+    }
+
+    /// Crate-internal: a builder over `module` that borrows no
+    /// [`LayoutToken`], its `'m` free for the caller to bind. For library
+    /// code that already holds the permission further up: a keyed edit
+    /// building its own branch (the split routines), or a pass context,
+    /// whose `builder_at` binds `'m` to a `&mut` borrow of the context.
+    /// Never handed to a caller unbound.
+    pub(crate) fn new_for_unkeyed<R>(
         module: &'ctx Module<B, Unverified>,
     ) -> IrBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, R>
     where
@@ -725,7 +759,7 @@ where
     {
         IrBuilder {
             module: module.core_ref(),
-            _module: PhantomData,
+            _key: PhantomData,
             insert_block: None,
             insert_before: None,
             folder: ConstantFolder,
@@ -737,14 +771,14 @@ where
     /// Construct an unpositioned builder from a Rust function-pointer
     /// signature's return schema.
     pub fn new_for_return<Sig>(
-        module: &'ctx Module<B, Unverified>,
+        key: &'m mut LayoutToken<'ctx, B>,
     ) -> IrBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, <Sig::Ret as FunctionReturn>::Marker>
     where
         Sig: FunctionSignature,
     {
         IrBuilder {
-            module: module.core_ref(),
-            _module: PhantomData,
+            module: key.module().core_ref(),
+            _key: PhantomData,
             insert_block: None,
             insert_before: None,
             folder: ConstantFolder,
@@ -762,9 +796,8 @@ where
     /// Create a builder already positioned at the end of `bb`, inferring the
     /// return marker `R` from the block — the block already pins it, so no
     /// turbofish is needed. Equivalent to
-    /// `new_for::<R>(module).position_at_end(bb)` but with `R` derived and the
-    /// module taken from `bb` (which carries a `ModuleRef`). Installs the
-    /// default [`ConstantFolder`], matching [`new_for`](Self::new_for).
+    /// `new_for::<R>(key).position_at_end(bb)` but with `R` derived. Installs
+    /// the default [`ConstantFolder`], matching [`new_for`](Self::new_for).
     /// [`new_for`](Self::new_for) remains for the unpositioned case (build a
     /// block first).
     ///
@@ -772,15 +805,15 @@ where
     /// [`position_at_end`](Self::position_at_end), which erases the parameter
     /// marker at the insertion point.
     pub fn at_end<Params>(
+        key: &'m mut LayoutToken<'ctx, B>,
         bb: BasicBlock<'ctx, R, Unterminated, B, Params>,
     ) -> IrBuilder<'m, 'ctx, B, ConstantFolder, PositionedAtEnd, R>
     where
         Params: BlockParams,
     {
-        let module = bb.module_ref().module();
         IrBuilder {
-            module,
-            _module: PhantomData,
+            module: key.module().core_ref(),
+            _key: PhantomData,
             insert_block: Some(bb.retag_params::<BlockParamsDyn>()),
             insert_before: None,
             folder: ConstantFolder,
@@ -796,12 +829,26 @@ where
     F: IrBuilderFolder<'ctx, B>,
     R: ReturnMarker,
 {
-    /// Construct an unpositioned builder using a caller-supplied
-    /// folder.
-    pub fn with_folder(module: &'ctx Module<B, Unverified>, folder: F) -> Self {
+    /// Crate-internal [`with_folder`](Self::with_folder) that borrows no
+    /// [`LayoutToken`]; see [`IrBuilder::new_for_unkeyed`] for who may call it.
+    pub(crate) fn with_folder_unkeyed(module: &'ctx Module<B, Unverified>, folder: F) -> Self {
         Self {
             module: module.core_ref(),
-            _module: PhantomData,
+            _key: PhantomData,
+            insert_block: None,
+            insert_before: None,
+            folder,
+            fmf: super::fmf::FastMathFlags::empty(),
+            _state: PhantomData,
+        }
+    }
+
+    /// Construct an unpositioned builder using a caller-supplied folder,
+    /// holding `key` `&mut` for as long as it lives ([`LayoutToken`]).
+    pub fn with_folder(key: &'m mut LayoutToken<'ctx, B>, folder: F) -> Self {
+        Self {
+            module: key.module().core_ref(),
+            _key: PhantomData,
             insert_block: None,
             insert_before: None,
             folder,
@@ -829,7 +876,7 @@ where
     {
         IrBuilder {
             module: self.module,
-            _module: PhantomData,
+            _key: PhantomData,
             insert_block: Some(bb.retag_params::<BlockParamsDyn>()),
             insert_before: None,
             folder: self.folder,
@@ -988,7 +1035,7 @@ where
         }
         Ok(IrBuilder {
             module: self.module,
-            _module: PhantomData,
+            _key: PhantomData,
             insert_block: Some(insert_block),
             insert_before: None,
             folder: self.folder,
@@ -1039,7 +1086,7 @@ where
         );
         Ok(IrBuilder {
             module: self.module,
-            _module: PhantomData,
+            _key: PhantomData,
             insert_block: Some(bb),
             insert_before: Some(anchor_id),
             folder: self.folder,
@@ -1093,7 +1140,7 @@ where
         Ok(match anchor {
             Some(anchor) => PastAllocas::Before(IrBuilder {
                 module: self.module,
-                _module: PhantomData,
+                _key: PhantomData,
                 insert_block: Some(insert_block),
                 insert_before: Some(anchor),
                 folder: self.folder,
@@ -1102,7 +1149,7 @@ where
             }),
             None => PastAllocas::AtEnd(IrBuilder {
                 module: self.module,
-                _module: PhantomData,
+                _key: PhantomData,
                 insert_block: Some(insert_block),
                 insert_before: None,
                 folder: self.folder,
@@ -1177,7 +1224,7 @@ where
         }
         Ok(IrBuilder {
             module: self.module,
-            _module: PhantomData,
+            _key: PhantomData,
             insert_block: Some(insert_block),
             insert_before: ip.before,
             folder: self.folder,
@@ -1521,7 +1568,7 @@ where
     {
         Self {
             module: self.module,
-            _module: PhantomData,
+            _key: PhantomData,
             insert_block: Some(bb.retag_params::<BlockParamsDyn>()),
             insert_before: None,
             folder: self.folder,
@@ -1535,7 +1582,7 @@ where
     pub fn unposition(self) -> IrBuilder<'m, 'ctx, B, F, Unpositioned, R> {
         IrBuilder {
             module: self.module,
-            _module: PhantomData,
+            _key: PhantomData,
             insert_block: None,
             insert_before: None,
             folder: self.folder,
@@ -5425,12 +5472,14 @@ where
     /// ```
     /// use llvmkit_ir::{Align, Dyn, IrBuilder, IrError, Linkage, module_new};
     ///
-    /// let m = module_new!("allocas")?;
+    /// let mut module = module_new!("allocas")?;
+    /// let mut key = module.layout_token();
+    /// let m = key.module();
     /// let i32_ty = m.i32_type();
     /// let fn_ty = m.function_type(m.void_type(), [i32_ty.as_type()])?;
     /// let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    /// let entry = m.view(f).append_basic_block(&m, "entry");
-    /// let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    /// let entry = m.view(f).append_basic_block(m, "entry");
+    /// let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     /// let n: llvmkit_ir::IntValue<'_, llvmkit_ir::IntDyn, _> = m.view(f).param(0)?.try_into()?;
     ///
     /// let buf = b
@@ -5813,12 +5862,14 @@ where
     /// ```
     /// use llvmkit_ir::{Align, AtomicOrdering, Dyn, IrBuilder, IrError, Linkage, module_new};
     ///
-    /// let m = module_new!("loads")?;
+    /// let mut module = module_new!("loads")?;
+    /// let mut key = module.layout_token();
+    /// let m = key.module();
     /// let ptr_ty = m.ptr_type_in::<0>();
     /// let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()])?;
     /// let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    /// let entry = m.view(f).append_basic_block(&m, "entry");
-    /// let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    /// let entry = m.view(f).append_basic_block(m, "entry");
+    /// let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     /// let p: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
     ///     m.view(f).param(0)?.try_into()?;
     ///
@@ -5949,13 +6000,15 @@ where
     ///     Align, AtomicOrdering, Dyn, IrBuilder, IrError, Linkage, SyncScope, module_new,
     /// };
     ///
-    /// let m = module_new!("stores")?;
+    /// let mut module = module_new!("stores")?;
+    /// let mut key = module.layout_token();
+    /// let m = key.module();
     /// let i32_ty = m.i32_type();
     /// let ptr_ty = m.ptr_type_in::<0>();
     /// let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()])?;
     /// let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    /// let entry = m.view(f).append_basic_block(&m, "entry");
-    /// let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    /// let entry = m.view(f).append_basic_block(m, "entry");
+    /// let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     /// let p: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
     ///     m.view(f).param(0)?.try_into()?;
     ///
@@ -12802,17 +12855,19 @@ mod tests {
     #[test]
     fn hostile_native_typed_override_wrong_width_rejected_by_accept_folded_int()
     -> Result<(), IrError> {
-        let m = crate::module_new!("hostile-typed-folder")?;
+        let mut module = crate::module_new!("hostile-typed-folder")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let i32_dyn_ty = m.custom_width_int_type(32)?;
         let i64_dyn_ty = m.custom_width_int_type(64)?;
         let fn_ty = m.function_type_no_parameters(m.i32_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(m, "entry");
 
         let stored: IntValue<'_, i64, _> =
             IntValue::from_value_unchecked(i64_dyn_ty.const_zero().as_erased());
         let folder = HostileTypedFolder { stored };
-        let b = IrBuilder::with_folder(&m, folder).position_at_end(entry);
+        let b = IrBuilder::with_folder(&mut key, folder).position_at_end(entry);
 
         let lhs = i32_dyn_ty.const_int_checked(1_i32)?;
         let rhs = i32_dyn_ty.const_int_checked(2_i32)?;
@@ -12845,12 +12900,14 @@ mod tests {
     /// what this test locks.
     #[test]
     fn hostile_native_typed_override_wrong_width_rejected_at_static_width() -> Result<(), IrError> {
-        let m = crate::module_new!("hostile-typed-folder-static")?;
+        let mut module = crate::module_new!("hostile-typed-folder-static")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
         let fn_ty = m.function_type_no_parameters(m.i32_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(m, "entry");
 
         // `stored`'s REAL IR type is i64; the folder hands it back as
         // `IntValue<W>` for whatever `W` the builder asks for -- here i32.
@@ -12861,7 +12918,7 @@ mod tests {
         // under test -- inside the folder's override.
         let stored: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_zero().as_erased())?;
         let folder = HostileTypedFolder { stored };
-        let b = IrBuilder::with_folder(&m, folder).position_at_end(entry);
+        let b = IrBuilder::with_folder(&mut key, folder).position_at_end(entry);
 
         let lhs = i32_ty.const_int(1_i32);
         let rhs = i32_ty.const_int(2_i32);
@@ -12892,16 +12949,18 @@ mod tests {
     #[test]
     fn hostile_native_typed_override_wrong_width_rejected_by_accept_folded_cast_int()
     -> Result<(), IrError> {
-        let m = crate::module_new!("hostile-typed-folder-cast-int")?;
+        let mut module = crate::module_new!("hostile-typed-folder-cast-int")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
         let fn_ty = m.function_type_no_parameters(m.i32_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(m, "entry");
 
         let stored: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_zero().as_erased())?;
         let folder = HostileTypedFolder { stored };
-        let b = IrBuilder::with_folder(&m, folder).position_at_end(entry);
+        let b = IrBuilder::with_folder(&mut key, folder).position_at_end(entry);
 
         let src: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_int(1_i64).as_erased())?;
         let err = b
@@ -12925,16 +12984,18 @@ mod tests {
     #[test]
     fn hostile_native_typed_override_wrong_kind_rejected_by_accept_folded_fp() -> Result<(), IrError>
     {
-        let m = crate::module_new!("hostile-typed-fp-folder")?;
+        let mut module = crate::module_new!("hostile-typed-fp-folder")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let f32_ty = m.f32_type();
         let f64_ty = m.f64_type();
         let fn_ty = m.function_type_no_parameters(m.i32_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(m, "entry");
 
         let stored: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(0.0).as_erased())?;
         let folder = HostileTypedFpFolder { stored };
-        let b = IrBuilder::with_folder(&m, folder).position_at_end(entry);
+        let b = IrBuilder::with_folder(&mut key, folder).position_at_end(entry);
 
         let lhs = f32_ty.const_float(1.0_f32);
         let rhs = f32_ty.const_float(2.0_f32);
@@ -12969,16 +13030,18 @@ mod tests {
     #[test]
     fn hostile_native_typed_override_wrong_kind_rejected_by_accept_folded_cast_fp()
     -> Result<(), IrError> {
-        let m = crate::module_new!("hostile-typed-fp-folder-cast")?;
+        let mut module = crate::module_new!("hostile-typed-fp-folder-cast")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let f32_ty = m.f32_type();
         let f64_ty = m.f64_type();
         let fn_ty = m.function_type_no_parameters(m.i32_type())?;
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(m, "entry");
 
         let stored: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(0.0).as_erased())?;
         let folder = HostileTypedFpFolder { stored };
-        let b = IrBuilder::with_folder(&m, folder).position_at_end(entry);
+        let b = IrBuilder::with_folder(&mut key, folder).position_at_end(entry);
 
         let src: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(1.0).as_erased())?;
         let err = b

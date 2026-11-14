@@ -5,10 +5,10 @@
 use llvmkit_ir::{IrBuilder, IrError, Linkage, NoFolder, Ptr, module_new};
 
 fn main() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?; let mut key = module.layout_token(); let m = key.module();
     let f = m.add_typed_function_of::<fn(Ptr, Ptr<1>, bool), _>("f", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&mut key,NoFolder).position_at_end(entry);
     let (p, q, c) = m.view(f).params();
     let _ = b.select(c, p, q, "s");
     Ok(())

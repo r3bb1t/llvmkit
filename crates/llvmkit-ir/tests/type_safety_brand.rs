@@ -9,12 +9,14 @@ use llvmkit_ir::{
     IrBuilder, IrResult, Linkage, Module, ModuleBrand, Unverified, Value, module_new,
 };
 
-fn exercise_tables<'ctx, B: ModuleBrand + 'ctx>(module: Module<B, Unverified>) -> IrResult<()> {
-    let i64_ty = module.i64_type();
-    let fn_ty = module.function_type(i64_ty.as_type(), [i64_ty.as_type()])?;
-    let function = module.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = module.view(function).append_basic_block(&module, "entry");
-    let parameter: IntValue<'_, i64, _> = module.view(function).param(0)?.try_into()?;
+fn exercise_tables<'ctx, B: ModuleBrand + 'ctx>(mut module: Module<B, Unverified>) -> IrResult<()> {
+    let mut key = module.layout_token();
+    let m = key.module();
+    let i64_ty = m.i64_type();
+    let fn_ty = m.function_type(i64_ty.as_type(), [i64_ty.as_type()])?;
+    let function = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(function).append_basic_block(m, "entry");
+    let parameter: IntValue<'_, i64, _> = m.view(function).param(0)?.try_into()?;
 
     let mut values = HashMap::<&str, Value<'_, _>>::new();
     values.insert("parameter", parameter.as_erased());
@@ -23,11 +25,11 @@ fn exercise_tables<'ctx, B: ModuleBrand + 'ctx>(module: Module<B, Unverified>) -
 
     let lhs = *integers.get("parameter").expect("int value");
     let rhs: IntValue<'_, i64, _> = (*values.get("parameter").expect("value")).try_into()?;
-    let builder = IrBuilder::new_for::<Dyn>(&module).position_at_end(entry);
+    let builder = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let sum = builder.int_add(lhs, rhs, "sum")?;
     builder.ret(sum)?;
 
-    let text = format!("{module}");
+    let text = format!("{m}");
     assert!(text.contains("add i64"));
     Ok(())
 }
@@ -50,15 +52,17 @@ fn format_generic_function<'ctx, B: ModuleBrand + 'ctx>(
 /// module brand instead of pinning one of its own.
 #[test]
 fn generic_function_display_preserves_brand() -> IrResult<()> {
-    let module = module_new!("function-display-brand")?;
-    let function = module
+    let mut module = module_new!("function-display-brand")?;
+    let mut key = module.layout_token();
+    let m = key.module();
+    let function = m
         .add_typed_function::<(), (), _>("f", Linkage::External)?
         .as_function();
-    let entry = module.view(function).append_basic_block(&module, "entry");
-    IrBuilder::new_for::<()>(&module)
+    let entry = m.view(function).append_basic_block(m, "entry");
+    IrBuilder::new_for::<()>(&mut key)
         .position_at_end(entry)
         .ret_void();
-    assert!(format_generic_function(module.view(function)).contains("define void @f()"));
+    assert!(format_generic_function(m.view(function)).contains("define void @f()"));
     Ok(())
 }
 

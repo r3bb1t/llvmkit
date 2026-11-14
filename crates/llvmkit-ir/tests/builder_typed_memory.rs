@@ -24,10 +24,12 @@ struct CpuState {
 #[test]
 fn typed_alloca_load_store_round_trip_prints_identically_to_erased() -> IrResult<()> {
     let typed = {
-        let m = module_new!("m")?;
+        let mut module = module_new!("m")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let f = m.add_typed_function::<i32, (i32,), _>("f", Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = m.view(f).builder(&m).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = m.view(f).builder(&mut key).position_at_end(entry);
         let (x,) = m.view(f).params();
         let slot = b.typed_alloca::<i32, _>("slot")?;
         // A `u32` pointee has the signless `i32` layout: the same slot type,
@@ -40,10 +42,12 @@ fn typed_alloca_load_store_round_trip_prints_identically_to_erased() -> IrResult
         format!("{m}")
     };
     let erased = {
-        let m = module_new!("m")?;
+        let mut module = module_new!("m")?;
+        let mut key = module.layout_token();
+        let m = key.module();
         let f = m.add_typed_function::<i32, (i32,), _>("f", Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = m.view(f).builder(&m).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(m, "entry");
+        let b = m.view(f).builder(&mut key).position_at_end(entry);
         let (x,) = m.view(f).params();
         let slot = b.alloca(m.i32_type(), "slot")?;
         let unsigned = b.alloca(m.i32_type(), "unsigned")?;
@@ -75,10 +79,12 @@ fn field_gep_projects_field_type_at_compile_time() -> IrResult<()> {
     assert_eq!(cpu_state.flags, 0);
     assert_eq!(cpu_state.pc, 0);
 
-    let m = module_new!("m")?;
+    let mut module = module_new!("m")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m.add_typed_function::<i64, (), _>("f", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = m.view(f).builder(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = m.view(f).builder(&mut key).position_at_end(entry);
     let cpu = b.typed_alloca::<CpuState, _>("cpu")?;
     let pc_ptr = b.field_gep::<CpuState, _, 1, _>(cpu, "pc.ptr")?; // TypedPointerValue<i64, SpaceDyn>
     let pc = b.typed_load(pc_ptr, "pc")?; // IntValue<'_, i64, _>

@@ -14,22 +14,22 @@ use llvmkit_ir::{
 };
 
 fn main() {
-    let m = Module::dynamic("m");
+    let mut module = Module::dynamic("m"); let mut key = module.layout_token(); let m = key.module();
     let f32_ty = m.f32_type();
     let f = m
         .add_function_dyn("f", m.function_type_no_parameters(f32_ty).expect("valid function type"), Linkage::External)
         .expect("f");
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let (join, params) = IrBuilder::new_for::<Dyn>(&m)
+    let (join, params) = IrBuilder::new_for::<Dyn>(&mut key)
         .append_block_with_params(m.view(f), &[f32_ty.as_type()], "join")
         .expect("join");
     let join_label = join.id();
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(entry)
         .br_with_args(join_label, &[f32_ty.const_float(1.0_f32).as_erased()])
         .expect("br");
     let parameter = params[0].id();
-    IrBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(join)
         .ret(m.view(parameter))
         .expect("ret");
@@ -40,7 +40,7 @@ fn main() {
         panic!("the parameter is a float phi");
     };
     let phi = phi.id();
-    let m = m.verify().expect("verifies");
+    let m = module.verify().expect("verifies");
     m.view(phi)
         .set_fast_math_flags(FastMathFlags::fast())
         .expect("set");

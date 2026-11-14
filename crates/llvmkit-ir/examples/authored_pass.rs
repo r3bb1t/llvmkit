@@ -57,17 +57,19 @@ impl AddMarkerGlobal {
 }
 
 fn main() -> Result<(), IrError> {
-    let m = module_new!("authored-pass-demo")?;
+    let mut module = module_new!("authored-pass-demo")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     // Build `i32 @f()` returning a constant. `add_typed_function` is the
     // typed primary: the turbofish `<i32, ()>` *is* the schema (return
     // `i32`, no parameters) — no separately built `FunctionType`.
     let i32_ty = m.i32_type();
     let f = m.add_typed_function::<i32, (), _>("f", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::at_end(&mut key, entry);
     b.ret(i32_ty.const_int(1_u32))?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
 
     // The `Inspect` function pass keeps the module verified (compile-time

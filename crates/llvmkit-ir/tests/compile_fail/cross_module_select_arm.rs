@@ -20,21 +20,21 @@ struct Right;
 impl ModuleBrand for Right {}
 
 fn main() {
-    let left = Module::branded::<Left, _>("left").unwrap();
+    let mut left_module = Module::branded::<Left, _>("left").unwrap(); let mut left_key = left_module.layout_token(); let left = left_key.module();
     let i32_ty = left.i32_type();
     let f = left
         .add_typed_function::<i32, (), _>("left_f", Linkage::External)
         .unwrap()
         .as_function();
     let entry = left.view(f).append_basic_block(&left, "entry");
-    let left_builder = IrBuilder::new_for::<i32>(&left).position_at_end(entry);
+    let left_builder = IrBuilder::new_for::<i32>(&mut left_key).position_at_end(entry);
     let left_arm = left_builder.view(
         left_builder
             .int_add(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "left")
             .unwrap(),
     );
 
-    let right = Module::branded::<Right, _>("right").unwrap();
+    let mut right_module = Module::branded::<Right, _>("right").unwrap(); let mut right_key = right_module.layout_token(); let right = right_key.module();
     let i1_ty = right.bool_type();
     let i32_ty = right.i32_type();
     let cond = i1_ty.const_int(true);
@@ -43,7 +43,7 @@ fn main() {
         .unwrap()
         .as_function();
     let entry = right.view(f).append_basic_block(&right, "entry");
-    let builder = IrBuilder::new_for::<i32>(&right).position_at_end(entry);
+    let builder = IrBuilder::new_for::<i32>(&mut right_key).position_at_end(entry);
     let right_arm = builder
         .int_add(i32_ty.const_int(3_i32), i32_ty.const_int(4_i32), "right")
         .unwrap();

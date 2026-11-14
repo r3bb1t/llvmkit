@@ -21,6 +21,19 @@ accumulated every cycle since; the oldest sections are still organised that way.
 
 ## A placement witness proves *was placed*, not *is placed* — the layout session that would close it (found 2026-09-20, error-surface cleanup Task 24)
 
+> **Partly closed (2026-11-14) by the layout token.** See
+> [`design/layout-token-design.md`](design/layout-token-design.md).
+> `Module::layout_token` hands out the module's one `LayoutToken`, borrowing
+> the module `&mut`. Every builder, and every edit that can move a position
+> (inserting, erasing, detaching or moving an instruction; splitting or
+> splicing a block), takes it `&mut`. So a *builder's* position can no
+> longer go stale: erasing its anchor, or terminating its block from a
+> second builder, is a borrow error (`E0499`). What stays as this entry
+> describes is the *witness* half. The five witness entries take the token
+> `&mut`, so a witness borrowing it shared cannot be passed to them, and they
+> keep their run-time re-check. Folding the token into the witness is
+> recorded in that design's §8, decision 6.
+
 `PlacedInstruction<'ctx, B>` (`crates/llvmkit-ir/src/instruction.rs`) pairs an
 instruction with the block it was in, and the five entries that insert or move
 relative to an instruction take it, so "this instruction was never in a block"
@@ -1086,11 +1099,13 @@ this probe (written for the measurement and not kept in the tree):
 use llvmkit_ir::{Dyn, IntValue, IrBuilder, IrError, Linkage, iter::BlockCursor, module_new};
 
 fn run(k: usize, reverse: bool) -> Result<(), IrError> {
-    let m = module_new!("e")?;
+    let mut module = module_new!("e")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let fn_ty = m.function_type(m.void_type(), [m.i32_type().as_type()])?;
     let f = m.add_function_dyn("foo", fn_ty, Linkage::External)?;
-    let bb = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
+    let bb = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(bb);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     for _ in 0..k {
         b.int_add(x, 0_i32, "")?;
@@ -1107,7 +1122,7 @@ fn run(k: usize, reverse: bool) -> Result<(), IrError> {
     }
     let t = std::time::Instant::now();
     for inst in insts {
-        inst.erase_from_parent(&m);
+        inst.erase_from_parent(&mut key)?;
     }
     println!("k={k} reverse={reverse} erase={:?}", t.elapsed());
     Ok(())

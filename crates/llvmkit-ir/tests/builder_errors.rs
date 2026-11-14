@@ -32,7 +32,9 @@ fn refusal<T>(result: Result<T, IrError>, entry: &str) -> IrError {
 /// opcode as one of the other family.
 #[test]
 fn integer_operand_refusals_name_their_operation() -> Result<(), IrError> {
-    let m = module_new!("builder-errors-int")?;
+    let mut module = module_new!("builder-errors-int")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let fn_ty = m.function_type(
         m.void_type(),
         [
@@ -42,8 +44,8 @@ fn integer_operand_refusals_name_their_operation() -> Result<(), IrError> {
         ],
     )?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let i32_arg = m.view(f).param(0)?.as_erased();
     let i64_arg = m.view(f).param(1)?.as_erased();
     let float_arg = m.view(f).param(2)?.as_erased();
@@ -114,7 +116,9 @@ fn integer_operand_refusals_name_their_operation() -> Result<(), IrError> {
 /// integer opcode as one of the other family.
 #[test]
 fn floating_point_operand_refusals_name_their_operation() -> Result<(), IrError> {
-    let m = module_new!("builder-errors-fp")?;
+    let mut module = module_new!("builder-errors-fp")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let fn_ty = m.function_type(
         m.void_type(),
         [
@@ -124,8 +128,8 @@ fn floating_point_operand_refusals_name_their_operation() -> Result<(), IrError>
         ],
     )?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let float_arg = m.view(f).param(0)?.as_erased();
     let double_arg = m.view(f).param(1)?.as_erased();
     let i32_arg = m.view(f).param(2)?.as_erased();
@@ -192,7 +196,9 @@ fn floating_point_operand_refusals_name_their_operation() -> Result<(), IrError>
 /// own variant, and fast-math flags on a non-floating-point result.
 #[test]
 fn select_refusals_name_the_broken_rule() -> Result<(), IrError> {
-    let m = module_new!("builder-errors-select")?;
+    let mut module = module_new!("builder-errors-select")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let bool_vector = m.vector_type(m.i1_type(), lanes::<2>())?;
     let int_vector = m.vector_type(m.i32_type(), lanes::<4>())?;
     let fn_ty = m.function_type(
@@ -205,8 +211,8 @@ fn select_refusals_name_the_broken_rule() -> Result<(), IrError> {
         ],
     )?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let flag = m.view(f).param(0)?.as_erased();
     let i32_arg = m.view(f).param(1)?.as_erased();
     let bool_vector_arg = m.view(f).param(2)?.as_erased();
@@ -250,7 +256,9 @@ fn select_refusals_name_the_broken_rule() -> Result<(), IrError> {
 /// operands with the variant naming the instruction and the rule.
 #[test]
 fn aggregate_shuffle_and_ptrtoaddr_refusals() -> Result<(), IrError> {
-    let m = module_new!("builder-errors-shapes")?;
+    let mut module = module_new!("builder-errors-shapes")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let ptr_ty = m.ptr_type_in::<0>();
     let int_vector = m.vector_type(m.i32_type(), lanes::<4>())?;
     let fn_ty = m.function_type(
@@ -262,8 +270,8 @@ fn aggregate_shuffle_and_ptrtoaddr_refusals() -> Result<(), IrError> {
         ],
     )?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let i32_arg = m.view(f).param(0)?.as_erased();
     let ptr_arg = m.view(f).param(1)?.as_erased();
     let int_vector_arg = m.view(f).param(2)?.as_erased();
@@ -320,14 +328,16 @@ fn aggregate_shuffle_and_ptrtoaddr_refusals() -> Result<(), IrError> {
 /// and carries the index it was asked for.
 #[test]
 fn struct_gep_refuses_an_index_wider_than_i32() -> Result<(), IrError> {
-    let m = module_new!("builder-errors-struct-gep")?;
+    let mut module = module_new!("builder-errors-struct-gep")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let s_ty = m.get_or_insert_named_struct("S");
     m.set_struct_body_dyn(s_ty, [m.i32_type().as_type()], false)?;
     let ptr_ty = m.ptr_type_in::<0>();
     let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, llvmkit_ir::SpaceDyn, _> =
         m.view(f).param(0)?.try_into()?;
     let err = refusal(
@@ -341,76 +351,35 @@ fn struct_gep_refuses_an_index_wider_than_i32() -> Result<(), IrError> {
     Ok(())
 }
 
-/// A builder positioned before an instruction that is then erased refuses its
-/// next build, and leaves the module as it was; a snapshot saved there
-/// refuses to restore. This was an `unreachable!` panic: the builder holds
-/// `&Module`, so nothing stops the anchor leaving the block after the builder
-/// was positioned. Upstream's `IRBuilder` keeps a raw iterator and is
-/// undefined there.
+/// A snapshot saved before an instruction that is then erased refuses to
+/// restore. Upstream's `IRBuilder` keeps a raw iterator and is undefined
+/// there.
 ///
-/// An unpositioned builder has no insert point to save at all, which
-/// `tests/compile_fail/save_insert_point_unpositioned.rs` pins.
+/// The builder that saved the snapshot must be gone first. Erasing takes the
+/// module's `LayoutToken` `&mut`, which a live builder holds, so a build
+/// through a builder whose anchor was erased does not compile
+/// (`tests/compile_fail/erase_anchor_while_builder_lives.rs`). A saved
+/// `InsertPoint` is plain data that outlives its builder, which is why its
+/// restore is where a stale anchor is still checked at run time. An
+/// unpositioned builder has no insert point to save at all
+/// (`tests/compile_fail/save_insert_point_unpositioned.rs`).
 #[test]
-fn a_builder_before_an_erased_anchor_refuses_to_build() -> Result<(), IrError> {
-    let m = module_new!("builder-errors-stale-anchor")?;
-    let i32_ty = m.i32_type();
-    let fn_ty = m.function_type(m.void_type(), [i32_ty.as_type()])?;
+fn a_snapshot_before_an_erased_anchor_refuses_to_restore() -> Result<(), IrError> {
+    let mut module = module_new!("builder-errors-stale-anchor")?;
+    let mut key = module.layout_token();
+    let m = key.module();
+    let fn_ty = m.function_type(m.void_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let (_, ret) = IrBuilder::new_for::<Dyn>(&m)
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let (_, ret) = IrBuilder::new_for::<Dyn>(&mut key)
         .position_at_end(entry)
         .ret_void()?;
-    let before_ret = IrBuilder::new_for::<Dyn>(&m).position_before(ret.placed())?;
-    let saved = before_ret.save_insert_point();
-    ret.erase_from_parent(&m);
-    let printed = format!("{m}");
-
-    let arg: llvmkit_ir::IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+    let saved = IrBuilder::new_for::<Dyn>(&mut key)
+        .position_before(ret.placed())?
+        .save_insert_point();
+    ret.erase_from_parent(&mut key)?;
     let err = refusal(
-        before_ret.int_add(arg, 1_i32, "sum"),
-        "an add before an erased anchor",
-    );
-    assert_eq!(err, IrError::from(BlockError::AnchorNotInBlock));
-    assert_eq!(format!("{m}"), printed, "a refused build adds nothing");
-    assert!(
-        !arg.as_erased().has_uses(),
-        "the refusal comes before the instruction is created, so `%0` gains no use"
-    );
-    // An intrinsic call inserts its declaration before it appends the call:
-    // the anchor is checked first, so the refusal declares nothing.
-    let umax = llvmkit_ir::IntrinsicId::lookup("llvm.umax").expect("llvm.umax is an intrinsic");
-    let err = refusal(
-        before_ret.intrinsic_call_by_signature(
-            i32_ty.as_type(),
-            umax,
-            [arg.as_erased(), arg.as_erased()],
-            "max",
-        ),
-        "an intrinsic call before an erased anchor",
-    );
-    assert_eq!(err, IrError::from(BlockError::AnchorNotInBlock));
-    assert_eq!(
-        format!("{m}"),
-        printed,
-        "a refused intrinsic call declares nothing"
-    );
-    // A phi is placed at the block's phi head, not before the anchor, but a
-    // stale insertion point is refused by every build.
-    let err = refusal(
-        before_ret.phi_dyn(i32_ty.as_type(), "p"),
-        "a phi through a builder whose anchor was erased",
-    );
-    assert_eq!(err, IrError::from(BlockError::AnchorNotInBlock));
-    assert_eq!(format!("{m}"), printed, "a refused phi adds nothing");
-    let err = refusal(
-        before_ret.ret_void(),
-        "a `ret void` before an erased anchor",
-    );
-    assert_eq!(err, IrError::from(BlockError::AnchorNotInBlock));
-    assert_eq!(format!("{m}"), printed, "a refused build adds nothing");
-
-    let err = refusal(
-        IrBuilder::new_for::<Dyn>(&m).restore_insert_point(saved),
+        IrBuilder::new_for::<Dyn>(&mut key).restore_insert_point(saved),
         "restoring a snapshot before an erased anchor",
     );
     assert_eq!(err, IrError::from(BlockError::AnchorNotInBlock));
@@ -423,11 +392,13 @@ fn a_builder_before_an_erased_anchor_refuses_to_build() -> Result<(), IrError> {
 /// refusal is its own.
 #[test]
 fn position_past_allocas_refuses_a_declaration() -> Result<(), IrError> {
-    let m = module_new!("builder-errors-past-allocas-declaration")?;
+    let mut module = module_new!("builder-errors-past-allocas-declaration")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let fn_ty = m.function_type(m.void_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let declaration = m.add_function_dyn("declared", fn_ty, Linkage::External)?;
     let err = refusal(
-        IrBuilder::new_for::<Dyn>(&m).position_past_allocas(m.view(declaration)),
+        IrBuilder::new_for::<Dyn>(&mut key).position_past_allocas(m.view(declaration)),
         "positioning past the allocas of a declaration",
     );
     assert_eq!(err, IrError::from(BuilderError::FunctionWithoutBlocks));
@@ -445,16 +416,19 @@ fn position_past_allocas_refuses_a_declaration() -> Result<(), IrError> {
 /// refusal is its own.
 #[test]
 fn position_past_allocas_refuses_another_modules_function() -> Result<(), IrError> {
-    let builder_module = llvmkit_ir::Module::dynamic("builder-module");
-    let other = llvmkit_ir::Module::dynamic("other-module");
+    let mut builder_module = llvmkit_ir::Module::dynamic("builder-module");
+    let mut builder_key = builder_module.layout_token();
+    let mut other_module = llvmkit_ir::Module::dynamic("other-module");
+    let mut other_key = other_module.layout_token();
+    let other = other_key.module();
     let fn_ty = other.function_type(other.void_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
     let f = other.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = other.view(f).append_basic_block(&other, "entry");
-    IrBuilder::new_for::<Dyn>(&other)
+    let entry = other.view(f).append_basic_block(other, "entry");
+    IrBuilder::new_for::<Dyn>(&mut other_key)
         .position_at_end(entry)
         .ret_void()?;
     let err = refusal(
-        IrBuilder::new_for::<Dyn>(&builder_module).position_past_allocas(other.view(f)),
+        IrBuilder::new_for::<Dyn>(&mut builder_key).position_past_allocas(other.view(f)),
         "positioning past the allocas of another module's function",
     );
     assert_eq!(err, IrError::ForeignValueId);
@@ -465,14 +439,16 @@ fn position_past_allocas_refuses_another_modules_function() -> Result<(), IrErro
 /// instruction, and an instruction that is not a `phi`.
 #[test]
 fn phi_target_refusals() -> Result<(), IrError> {
-    let m = module_new!("builder-errors-position")?;
+    let mut module = module_new!("builder-errors-position")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(m.void_type(), [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
     let entry_id = entry.id();
 
-    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let arg = m.view(f).param(0)?.as_erased();
     let err = refusal(
         b.phi_add_incoming_from_value(arg, arg, entry_id),

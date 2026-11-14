@@ -6,11 +6,11 @@
 use llvmkit_ir::{IrError, Linkage, Ptr, SsaBuilder, SsaState, module_new};
 
 fn main() -> Result<(), IrError> {
-    let m = module_new!("c")?;
+    let mut module = module_new!("c")?; let mut key = module.layout_token(); let m = key.module();
     let typed = m.add_typed_function::<(), (Ptr<1>,), _>("f", Linkage::External)?;
     let f = typed.as_function();
     let mut state = SsaState::for_function(&m, m.view(f))?;
-    let mut b = SsaBuilder::for_function(&m, m.view(f), &mut state)?;
+    let mut b = SsaBuilder::for_function(&mut key,m.view(f), &mut state)?;
     let entry = b.create_block("entry");
     let zero = b.declare_pointer_var("zero");
     b.switch_to_block(entry)?;

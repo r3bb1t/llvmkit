@@ -10,7 +10,7 @@
 use llvmkit_ir::{IrBuilder, Linkage, Module};
 
 fn main() {
-    let m = Module::dynamic("c");
+    let mut module = Module::dynamic("c"); let mut key = module.layout_token(); let m = key.module();
     let void_ty = m.void_type();
     let callee = m
         .add_typed_function::<(), (), _>("sink", Linkage::External)
@@ -19,7 +19,7 @@ fn main() {
     let caller_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<_>>::new()).expect("valid function type");
     let caller = m.add_function_dyn("c", caller_ty, Linkage::External).unwrap();
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&mut key).position_at_end(entry);
     let inst = b
         .call_dyn(callee, Vec::<llvmkit_ir::Value<_>>::new(), "")
         .unwrap();

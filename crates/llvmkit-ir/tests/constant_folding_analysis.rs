@@ -648,7 +648,9 @@ fn libfunc_from_name_recognizes_constant_folding_switch_names() {
 /// DataLayout-aware public analysis APIs are exported and usable from callers.
 #[test]
 fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrError> {
-    let m = module_new!("analysis-api-surface")?;
+    let mut module = module_new!("analysis-api-surface")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let dl = DataLayout::parse("e-p:64:64:64")?;
     let tli = TargetLibraryInfo::default();
     let bool_ty = m.bool_type();
@@ -762,8 +764,8 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
 
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("api_fold_inst", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let add = b.int_add::<i32, _, _, _>(c2_i, c5_i, "sum")?;
     let instruction = InstructionView::try_from(b.view(add).as_erased())?;
     assert_eq!(
@@ -801,13 +803,15 @@ fn crate_root_constant_offset_from_global_resolves_global_pointer() -> Result<()
 /// fold through `isGuaranteedNotToBeUndefOrPoison`.
 #[test]
 fn freeze_folds_only_non_undef_non_poison_constants() -> Result<(), IrError> {
-    let m = module_new!("analysis-freeze")?;
+    let mut module = module_new!("analysis-freeze")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let dl = DataLayout::default();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type_no_parameters(i32_ty)?;
     let f = m.add_function_dyn("freeze_fold", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
 
     let concrete = b.freeze(i32_ty.const_int(42_i32), "concrete")?;
     let undef = b.freeze(i32_ty.as_type().undef(), "undef")?;
@@ -838,15 +842,17 @@ fn freeze_folds_only_non_undef_non_poison_constants() -> Result<(), IrError> {
 /// llvmkit-specific (D11): no upstream fixture freezes these constants.
 #[test]
 fn freeze_folds_a_vector_constant_but_no_other_aggregate() -> Result<(), IrError> {
-    let m = module_new!("analysis-freeze-aggregates")?;
+    let mut module = module_new!("analysis-freeze-aggregates")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let dl = DataLayout::default();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type_in::<0>();
     let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
     let fn_ty = m.function_type_no_parameters(m.void_type())?;
     let f = m.add_function_dyn("freeze_aggregates", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let one = i32_ty.const_int(1_i32).as_constant();
     let two = i32_ty.const_int(2_i32).as_constant();
     let undef = i32_ty.as_type().undef().as_constant();
@@ -909,15 +915,17 @@ fn freeze_folds_a_vector_constant_but_no_other_aggregate() -> Result<(), IrError
 /// routine, deleted in that commit, had folded both.
 #[test]
 fn freeze_reads_a_compact_constant_as_the_expression_it_prints_as() -> Result<(), IrError> {
-    let m = module_new!("analysis-freeze-compact")?;
+    let mut module = module_new!("analysis-freeze-compact")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let dl = DataLayout::default();
     let i32_ty = m.i32_type();
     let a = m.add_global_constant("a", i32_ty.const_int(0_i32))?;
     let other = m.add_global_constant("b", i32_ty.const_int(0_i32))?;
     let fn_ty = m.function_type_no_parameters(m.void_type())?;
     let f = m.add_function_dyn("freeze_compact", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let folds = |operand: Constant<'_, _>| -> Result<bool, IrError> {
         let frozen = b.freeze(operand, "frozen")?;
         Ok(constant_fold_instruction(&b.view(frozen).as_view(), &dl, None)? == Some(operand))
@@ -1045,21 +1053,23 @@ fn non_integral_pointer_load_through_bitcast_declines() -> Result<(), IrError> {
 /// generic `denormal-fp-math` mode for f32 operations.
 #[test]
 fn function_denormal_f32_attribute_overrides_generic_mode() -> Result<(), IrError> {
-    let m = module_new!("analysis-denormal-attrs")?;
+    let mut module = module_new!("analysis-denormal-attrs")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let dl = DataLayout::default();
     let f32_ty = m.f32_type();
     let fn_ty = m.function_type_no_parameters(f32_ty)?;
     let f = m.add_function_dyn("denormal_attr", fn_ty, Linkage::External)?;
     m.view(f)
-        .set_string_attribute(&m, AttrIndex::Function, "denormal-fp-math", "ieee,ieee");
+        .set_string_attribute(m, AttrIndex::Function, "denormal-fp-math", "ieee,ieee");
     m.view(f).set_string_attribute(
-        &m,
+        m,
         AttrIndex::Function,
         "denormal-fp-math-f32",
         "positive-zero,positive-zero",
     );
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let denormal = ApFloat::from_bits(ApFloatSemantics::IeeeSingle, &ApInt::from_words(32, &[1]))?;
     assert!(denormal.is_denormal());
     let lhs = f32_ty.const_ap_float(&denormal)?;
@@ -1080,7 +1090,9 @@ fn function_denormal_f32_attribute_overrides_generic_mode() -> Result<(), IrErro
 /// attribute groups participate in the same denormal lookup as inline attrs.
 #[test]
 fn function_denormal_attribute_group_overrides_generic_mode() -> Result<(), IrError> {
-    let m = module_new!("analysis-denormal-attr-group")?;
+    let mut module = module_new!("analysis-denormal-attr-group")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let dl = DataLayout::default();
     let f32_ty = m.f32_type();
     let fn_ty = m.function_type_no_parameters(f32_ty)?;
@@ -1099,8 +1111,8 @@ fn function_denormal_attribute_group_overrides_generic_mode() -> Result<(), IrEr
         .linkage(Linkage::External)
         .function_attr_group(0)
         .build()?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let denormal = ApFloat::from_bits(ApFloatSemantics::IeeeSingle, &ApInt::from_words(32, &[1]))?;
     let lhs = f32_ty.const_ap_float(&denormal)?;
     let rhs = f32_ty.const_ap_float(&denormal)?;
@@ -1181,13 +1193,15 @@ fn determinism_deny_declines_host_libm_but_keeps_apfloat_sqrt() -> Result<(), Ir
 /// `constant_fold_fp_inst_operands`.
 #[test]
 fn deny_declines_fp_binop_with_nsz_flag() -> Result<(), IrError> {
-    let m = module_new!("analysis-fp-determinism-nsz")?;
+    let mut module = module_new!("analysis-fp-determinism-nsz")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let dl = DataLayout::default();
     let f32_ty = m.f32_type();
     let fn_ty = m.function_type_no_parameters(f32_ty)?;
     let f = m.add_function_dyn("nsz_fadd", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = IrBuilder::with_folder(&mut key, NoFolder).position_at_end(entry);
     let one = f32_ty.const_float(1.0);
     let two = f32_ty.const_float(2.0);
     let add = b.fp_add_fmf::<f32, _, _, _>(one, two, FastMathFlags::NO_SIGNED_ZEROS, "sum")?;

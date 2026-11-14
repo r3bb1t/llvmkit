@@ -19,7 +19,7 @@
 
 use crate::{
     Analyses, BlockId, Dyn, FnCx, FnReport, FunctionPass, IntValue, IrBuilder, IrError, IrResult,
-    Linkage, Module, ModuleBrand, ReshapeCfg, VerifierRule, run_function_pass,
+    LayoutToken, Linkage, ModuleBrand, ReshapeCfg, VerifierRule, run_function_pass,
 };
 
 /// `Dyn`-marked block id in the fixture's brand: the storable branch-target
@@ -105,8 +105,9 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectEmptyEdge<B> {
 /// other:    ret 0
 /// ```
 fn build_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
-    m: &'ctx Module<B, crate::Unverified>,
+    key: &mut LayoutToken<'ctx, B>,
 ) -> IrResult<(crate::FunctionId<Dyn, B>, BlockId<Dyn, B>)> {
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -119,14 +120,14 @@ fn build_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
     let other_lbl = other.id();
 
     // entry: %x = add %a, 7 ; %c = icmp slt %a, 5 ; cond_br %c, to, other
-    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(key).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let x = b.int_add(a, 7_i32, "x")?;
     let c = b.icmp_slt(a, 5_i32, "c")?;
     b.cond_br(c, to_lbl, other_lbl)?;
 
     // to: %p = phi i32 [ %x, entry ] ; %u = add %p, 1 ; ret %u
-    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(to);
+    let b = IrBuilder::new_for::<Dyn>(key).position_at_end(to);
     let p = b
         .view(b.int_phi::<i32, _>("p"))
         .add_incoming(x, entry_lbl)?;
@@ -134,7 +135,7 @@ fn build_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
     b.ret(u)?;
 
     // other: ret 0
-    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(other);
+    let b = IrBuilder::new_for::<Dyn>(key).position_at_end(other);
     b.ret(i32_ty.const_int(0_u32))?;
 
     Ok((f, to_lbl))
@@ -152,10 +153,10 @@ fn build_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
 /// So the `!contains("phi")` assertion below fails.
 #[test]
 fn remove_edge_emptying_phi_erases_it_with_poison() -> Result<(), IrError> {
-    let m = crate::module_new!("remove-edge-empty-phi")?;
-    let (f, _to_dyn) = build_single_pred_phi(&m)?;
+    let mut module = crate::module_new!("remove-edge-empty-phi")?;
+    let (f, _to_dyn) = build_single_pred_phi(&mut module.layout_token())?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let pass = RemoveEdge { from_name: "entry" };
     let out = run_function_pass(pass, verified, f, &mut analyses)?;
@@ -199,8 +200,9 @@ fn remove_edge_emptying_phi_erases_it_with_poison() -> Result<(), IrError> {
 /// new_to:   ret 1   ; no leading phi -> redirect's `phi_values` slice is empty
 /// ```
 fn build_redirect_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
-    m: &'ctx Module<B, crate::Unverified>,
+    key: &mut LayoutToken<'ctx, B>,
 ) -> IrResult<RedirectFixture<'ctx, B>> {
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -215,14 +217,14 @@ fn build_redirect_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
     let new_to_lbl = new_to.id();
 
     // entry: %x = add %a, 7 ; %c = icmp slt %a, 5 ; cond_br %c, old_to, other
-    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(key).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let x = b.int_add(a, 7_i32, "x")?;
     let c = b.icmp_slt(a, 5_i32, "c")?;
     b.cond_br(c, old_to_lbl, other_lbl)?;
 
     // old_to: %p = phi i32 [ %x, entry ] ; %u = add %p, 1 ; ret %u
-    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(old_to);
+    let b = IrBuilder::new_for::<Dyn>(key).position_at_end(old_to);
     let p = b
         .view(b.int_phi::<i32, _>("p"))
         .add_incoming(x, entry_lbl)?;
@@ -230,11 +232,11 @@ fn build_redirect_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
     b.ret(u)?;
 
     // other: ret 0
-    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(other);
+    let b = IrBuilder::new_for::<Dyn>(key).position_at_end(other);
     b.ret(i32_ty.const_int(0_u32))?;
 
     // new_to: ret 1  (no leading phi -> redirect's `phi_values` slice is empty)
-    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(new_to);
+    let b = IrBuilder::new_for::<Dyn>(key).position_at_end(new_to);
     b.ret(i32_ty.const_int(1_u32))?;
 
     Ok((f, old_to_lbl, new_to_lbl))
@@ -259,10 +261,10 @@ fn build_redirect_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
 /// assertions below fail — red-without-the-fix by construction.
 #[test]
 fn redirect_edge_emptying_phi_erases_it_with_poison() -> Result<(), IrError> {
-    let m = crate::module_new!("redirect-edge-empty-phi")?;
-    let (f, _old_to_dyn, new_to_dyn) = build_redirect_single_pred_phi(&m)?;
+    let mut module = crate::module_new!("redirect-edge-empty-phi")?;
+    let (f, _old_to_dyn, new_to_dyn) = build_redirect_single_pred_phi(&mut module.layout_token())?;
 
-    let verified = m.verify()?;
+    let verified = module.verify()?;
     let mut analyses = Analyses::new();
     let pass = RedirectEmptyEdge {
         from_name: "entry",
@@ -310,20 +312,22 @@ fn redirect_edge_emptying_phi_erases_it_with_poison() -> Result<(), IrError> {
 /// `llvm/test/Verifier/*.ll` fixture matches.
 #[test]
 fn zero_incoming_phi_in_a_block_with_a_predecessor_is_rejected() -> Result<(), IrError> {
-    let m = crate::module_new!("zero_incoming_reachable")?;
+    let mut module = crate::module_new!("zero_incoming_reachable")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = m.view(f).append_basic_block(&m, "b");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let b = m.view(f).append_basic_block(m, "b");
     let b_label = b.id();
 
     // entry: br b   (so `b` has exactly one predecessor)
-    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let bld = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     bld.br(b_label)?;
 
     // b: %p = phi i32   (no add_incoming) ; ret 0
-    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(b);
+    let bld = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(b);
     let _p = bld.view(bld.int_phi::<i32, _>("p"));
     bld.ret(i32_ty.const_int(0_u32))?;
 
@@ -368,21 +372,23 @@ fn zero_incoming_phi_in_a_block_with_a_predecessor_is_rejected() -> Result<(), I
 ///   directly.
 #[test]
 fn zero_incoming_phi_without_predecessors_verifies() -> Result<(), IrError> {
-    let m = crate::module_new!("zero_incoming_no_preds")?;
+    let mut module = crate::module_new!("zero_incoming_no_preds")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
     // `u` has no edge into it — unreachable from entry.
-    let u = m.view(f).append_basic_block(&m, "u");
+    let u = m.view(f).append_basic_block(m, "u");
 
     // entry: %e = phi i32   (no add_incoming) ; ret 0
-    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let bld = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let _e = bld.view(bld.int_phi::<i32, _>("e"));
     bld.ret(i32_ty.const_int(0_u32))?;
 
     // u: %q = phi i32   (no add_incoming) ; ret 0
-    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(u);
+    let bld = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(u);
     let _q = bld.view(bld.int_phi::<i32, _>("q"));
     bld.ret(i32_ty.const_int(0_u32))?;
 
@@ -406,12 +412,14 @@ fn zero_incoming_phi_without_predecessors_verifies() -> Result<(), IrError> {
 /// asserted on the shape the verifier rule above stopped rejecting.
 #[test]
 fn an_empty_phi_prints_its_type_and_no_pairs() -> Result<(), IrError> {
-    let m = crate::module_new!("empty_phi_round_trip")?;
+    let mut module = crate::module_new!("empty_phi_round_trip")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let bld = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     let _e = bld.view(bld.int_phi::<i32, _>("e"));
     bld.ret(i32_ty.const_int(0_u32))?;
 

@@ -4266,15 +4266,17 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// use llvmkit_ir::{Dyn, IrBuilder, IntValue, Linkage, Module};
     ///
     /// # fn main() -> Result<(), llvmkit_ir::IrError> {
-    /// let m = Module::dynamic("count");
+    /// let mut module = Module::dynamic("count");
+    /// let mut key = module.layout_token();
+    /// let m = key.module();
     /// assert_eq!(m.instruction_count(), 0);
     ///
     /// let i32_ty = m.i32_type();
     /// let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()])?;
     /// let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    /// let entry = m.view(f).append_basic_block(&m, "entry");
+    /// let entry = m.view(f).append_basic_block(m, "entry");
     ///
-    /// let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    /// let b = IrBuilder::new_for::<Dyn>(&mut key).position_at_end(entry);
     /// let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     /// let sum = b.int_add(n, 1_i32, "sum")?;
     /// b.ret(m.view(sum))?;
@@ -6288,6 +6290,28 @@ impl<B: ModuleBrand> Module<B, Verified> {
 }
 
 impl<B: ModuleBrand> Module<B, Unverified> {
+    /// The permission to change this module's layout: which instructions are
+    /// in which block and in what order. Every builder, and every edit that
+    /// can invalidate a position (inserting, erasing, detaching or moving an
+    /// instruction; splitting or splicing a block), borrows it `&mut`, so at
+    /// most one editor works on the module at a time and the borrow checker
+    /// says so. See `docs/design/layout-token-design.md`.
+    ///
+    /// The token borrows the module `&mut`, so it names exactly this module,
+    /// at most one exists at a time, it cannot outlive the module, and
+    /// [`verify`](Module::verify) cannot run while it is alive — all four by
+    /// the borrow checker, with nothing checked at run time. Read the module
+    /// through the token while it lives:
+    ///
+    /// ```ignore
+    /// let mut key = module.layout_token();
+    /// let m = key.module();          // `&Module`, usable while builders hold `key`
+    /// let b = IrBuilder::new(&mut key);
+    /// ```
+    pub fn layout_token(&mut self) -> crate::LayoutToken<'_, B> {
+        crate::LayoutToken::over(self)
+    }
+
     /// Re-stamp this token `Verified` **without re-running the verifier**.
     ///
     /// Crate-internal plumbing for the read-only `Dyn…` pass pipelines
