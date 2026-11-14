@@ -6,16 +6,16 @@
 //! `ConstantExpr` constructors for LLVM's desirable constant-expression groups.
 
 use super::constant_fold::{
-    constant_fold_binary_instruction_trusting_same_module,
+    GepFold, constant_fold_binary_instruction_trusting_same_module,
     constant_fold_cast_instruction_trusting_same_module,
     constant_fold_compare_instruction_trusting_same_module,
     constant_fold_extract_element_instruction_trusting_same_module,
-    constant_fold_extract_value_instruction, constant_fold_get_element_ptr_of_result_type,
+    constant_fold_extract_value_instruction,
     constant_fold_insert_element_instruction_trusting_same_module,
     constant_fold_insert_value_instruction_trusting_same_module,
     constant_fold_select_instruction_trusting_same_module,
     constant_fold_shuffle_vector_instruction_trusting_same_module, constant_fold_unary_instruction,
-    gep_result_type,
+    fold_get_element_ptr,
 };
 use super::folder::{IrBuilderFolder, TrustedFolder, trusted_folder_sealed};
 use super::{
@@ -152,19 +152,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
             operands.push(index.as_erased());
             index_constants.push(index);
         }
-        // `ConstantFoldGetElementPtr`'s first fold: a GEP without indices is
-        // its base.
-        if index_constants.is_empty() {
-            return Ok(Some(ptr.as_erased()));
-        }
-        // The result type is computed once, for the fold and for the
-        // expression built when nothing folds.
-        let result_ty = gep_result_type(ptr.ty(), &index_constants)?;
-        if let Some(folded) =
-            constant_fold_get_element_ptr_of_result_type(result_ty, ptr, &index_constants, None)?
-        {
-            return Ok(Some(folded.as_erased()));
-        }
+        // `ConstantFolder::FoldGEP`: `ConstantFoldGetElementPtr`, else
+        // `ConstantExpr::getGetElementPtr`. The fold hands back the result
+        // type it computed, so the expression reuses it.
+        let result_ty = match fold_get_element_ptr(ptr, &index_constants, None)? {
+            GepFold::Folded(folded) => return Ok(Some(folded.as_erased())),
+            GepFold::NoResultType(error) => return Err(error.into()),
+            GepFold::Unfolded { result_ty } => result_ty,
+        };
         let module = ptr.module;
         module
             .constant_expr_with_options(
@@ -685,11 +680,7 @@ fn fold_cast<'ctx, B: ModuleBrand + 'ctx>(
         Ok(value) => value,
         Err(_) => return Ok(None),
     };
-    if opcode.is_desirable_constant_expr() {
-        let Some(expr_opcode) = ConstantExprOpcode::from_cast_opcode(opcode) else {
-            return constant_fold_cast_instruction_trusting_same_module(opcode, value, dest_ty)
-                .map(|folded| folded.map(Constant::as_erased));
-        };
+    if let Some(expr_opcode) = ConstantExprOpcode::from_cast_opcode(opcode) {
         return value
             .module
             .constant_expr(
@@ -725,10 +716,7 @@ fn fold_binary_constants<'ctx, B: ModuleBrand + 'ctx>(
     rhs: Constant<'ctx, B>,
     flags: ConstantExprFlags,
 ) -> IrResult<Option<Value<'ctx, B>>> {
-    if opcode.is_desirable_constant_expr() {
-        let Some(expr_opcode) = ConstantExprOpcode::from_binary_opcode(opcode) else {
-            return Ok(None);
-        };
+    if let Some(expr_opcode) = ConstantExprOpcode::from_binary_opcode(opcode) {
         return lhs
             .module
             .constant_expr(

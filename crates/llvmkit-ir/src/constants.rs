@@ -1726,9 +1726,11 @@ fn fold_constant_expr_data<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             constant_fold_cast_instruction_trusting_same_module(opcode, *operand, result_ty)
         }
         ConstantExprOpcode::GetElementPtr => {
-            let Some(source_ty) = data.source_ty.map(|id| Type::new(id, module)) else {
+            // An expression without a source type is not one
+            // `ConstantFoldGetElementPtr` is handed.
+            if data.source_ty.is_none() {
                 return Ok(None);
-            };
+            }
             let Some((base, indices)) = operands.split_first() else {
                 return Ok(None);
             };
@@ -1736,7 +1738,7 @@ fn fold_constant_expr_data<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
                 ConstantExprFlags::Gep(flags) => flags.in_range(),
                 _ => None,
             };
-            constant_fold_get_element_ptr_trusting_same_module(source_ty, *base, indices, in_range)
+            constant_fold_get_element_ptr_trusting_same_module(*base, indices, in_range)
         }
         ConstantExprOpcode::ExtractElement => {
             let [vector, index] = operands.as_slice() else {

@@ -9538,7 +9538,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 // (`LLParser::parseValID`'s `lltok::kw_ptrauth` arm), which
                 // `ParseError::Constant` renders verbatim.
                 IrError::Constant(error) => ParseError::Constant { error, loc: id_loc },
-                other => self.builder_err("ptrauth", other),
+                other => self.builder_err_at(id_loc, "valid ptrauth", other),
             })
     }
 
@@ -9977,7 +9977,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     loc: id_loc,
                 },
                 IrError::Constant(error) => ParseError::Constant { error, loc: id_loc },
-                other => self.builder_err("constant expression", other),
+                other => self.builder_err_at(id_loc, "valid constant expression", other),
             })
     }
 

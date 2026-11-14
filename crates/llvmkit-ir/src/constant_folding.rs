@@ -1052,10 +1052,7 @@ pub(crate) fn constant_fold_cast_operand_trusting_same_module<
         CastOpcode::BitCast => return fold_bitcast_with_layout(operand, dest_ty, dl),
     }
 
-    if opcode.is_desirable_constant_expr() {
-        let Some(expr_opcode) = ConstantExprOpcode::from_cast_opcode(opcode) else {
-            return Ok(None);
-        };
+    if let Some(expr_opcode) = ConstantExprOpcode::from_cast_opcode(opcode) {
         return operand
             .module
             .constant_expr(
@@ -1561,7 +1558,7 @@ where
             {
                 return Ok(Some(folded));
             }
-            constant_fold_get_element_ptr_trusting_same_module(source_ty, *pointer, indices, None)
+            constant_fold_get_element_ptr_trusting_same_module(*pointer, indices, None)
         }
         InstructionKindData::Load(load) => {
             if load.volatile {
@@ -3057,7 +3054,7 @@ fn constant_fold_constant_expr_operands<'ctx, B: ModuleBrand + 'ctx, C: Capabili
                 return Ok(None);
             };
             let Some(opcode) = expr.opcode.binary_opcode() else {
-                return Ok(None);
+                unreachable!("each opcode of this arm is a binary operator (invariant)");
             };
             constant_fold_binary_op_operands_trusting_same_module(opcode, *lhs, *rhs, dl)
         }
@@ -3078,9 +3075,7 @@ fn constant_fold_constant_expr_operands<'ctx, B: ModuleBrand + 'ctx, C: Capabili
             {
                 return Ok(Some(folded));
             }
-            constant_fold_get_element_ptr_trusting_same_module(
-                source_ty, *pointer, indices, in_range,
-            )
+            constant_fold_get_element_ptr_trusting_same_module(*pointer, indices, in_range)
         }
         ConstantExprOpcode::ShuffleVector => {
             let [lhs, rhs, mask] = operands else {
@@ -3110,7 +3105,7 @@ fn constant_fold_constant_expr_operands<'ctx, B: ModuleBrand + 'ctx, C: Capabili
                 return Ok(None);
             };
             let Some(opcode) = expr.opcode.cast_opcode() else {
-                return Ok(None);
+                unreachable!("each opcode of this arm is a cast (invariant)");
             };
             constant_fold_cast_operand_trusting_same_module(
                 opcode,

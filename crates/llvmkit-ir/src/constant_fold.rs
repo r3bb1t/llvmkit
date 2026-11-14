@@ -205,7 +205,7 @@ where
             if source_ty.is_scalable() {
                 return Ok(None);
             }
-            constant_fold_get_element_ptr_trusting_same_module(source_ty, pointer, &indices, None)
+            constant_fold_get_element_ptr_trusting_same_module(pointer, &indices, None)
         }
         InstructionKindData::Add(_)
         | InstructionKindData::Sub(_)
@@ -604,10 +604,7 @@ fn build_binary_constant_or_expr<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     lhs: Constant<'ctx, B, C>,
     rhs: Constant<'ctx, B, C>,
 ) -> IrResult<Option<Constant<'ctx, B, C>>> {
-    if opcode.is_desirable_constant_expr() {
-        let Some(expr_opcode) = ConstantExprOpcode::from_binary_opcode(opcode) else {
-            return Ok(None);
-        };
+    if let Some(expr_opcode) = ConstantExprOpcode::from_binary_opcode(opcode) {
         return lhs
             .module
             .constant_expr(
@@ -668,6 +665,18 @@ pub(crate) fn constant_fold_cast_instruction_trusting_same_module<
     if !cast_is_valid(opcode, operand.ty(), dest_ty) {
         return Ok(None);
     }
+    fold_valid_cast(opcode, operand, dest_ty)
+}
+
+/// `ConstantFoldCastInstruction` for a cast already known valid: the entry
+/// above checked it, or it is a cast that follows from one it checked — a
+/// lane of a valid vector cast, or the pair `isEliminableCastPair` folds two
+/// valid casts into — so the recursion does not re-validate each.
+fn fold_valid_cast<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+    opcode: CastOpcode,
+    operand: Constant<'ctx, B, C>,
+    dest_ty: Type<'ctx, B, C>,
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     if is_poison(operand) {
         return Ok(Some(poison_for(dest_ty)));
     }
@@ -823,10 +832,7 @@ fn fold_maybe_undesirable_cast<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     value: Constant<'ctx, B, C>,
     dest_ty: Type<'ctx, B, C>,
 ) -> IrResult<Option<Constant<'ctx, B, C>>> {
-    if opcode.is_desirable_constant_expr() {
-        let Some(expr_opcode) = ConstantExprOpcode::from_cast_opcode(opcode) else {
-            return Ok(None);
-        };
+    if let Some(expr_opcode) = ConstantExprOpcode::from_cast_opcode(opcode) {
         return value
             .module
             .constant_expr(
@@ -839,7 +845,7 @@ fn fold_maybe_undesirable_cast<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             )
             .map(Some);
     }
-    constant_fold_cast_instruction_trusting_same_module(opcode, value, dest_ty)
+    fold_valid_cast(opcode, value, dest_ty)
 }
 
 /// Fold an integer or floating-point compare instruction.
@@ -2046,7 +2052,8 @@ pub fn constant_fold_get_element_ptr<'ctx, B: ModuleBrand + 'ctx, C: Capability>
     for index in indices {
         index.slot_in(owner)?;
     }
-    constant_fold_get_element_ptr_trusting_same_module(source_ty, pointer, indices, in_range)
+    // `PointeeTy` is admitted above and read by no fold llvmkit ports.
+    constant_fold_get_element_ptr_trusting_same_module(pointer, indices, in_range)
 }
 
 /// [`constant_fold_get_element_ptr`] for operands of one module.
@@ -2055,41 +2062,51 @@ pub(crate) fn constant_fold_get_element_ptr_trusting_same_module<
     B: ModuleBrand + 'ctx,
     C: Capability,
 >(
-    _source_ty: Type<'ctx, B, C>,
     pointer: Constant<'ctx, B, C>,
     indices: &[Constant<'ctx, B, C>],
     in_range: Option<&ConstantExprInRange>,
 ) -> IrResult<Option<Constant<'ctx, B, C>>> {
-    if indices.is_empty() {
-        return Ok(Some(pointer));
-    }
-
     // A GEP whose result type cannot be formed does not fold. The refusal is
     // a `GepConstantError` and nothing else, so every refusal declines.
-    let Ok(result_ty) = gep_result_type(pointer.ty(), indices) else {
-        return Ok(None);
-    };
-    constant_fold_get_element_ptr_of_result_type(result_ty, pointer, indices, in_range)
+    Ok(match fold_get_element_ptr(pointer, indices, in_range)? {
+        GepFold::Folded(folded) => Some(folded),
+        GepFold::Unfolded { .. } | GepFold::NoResultType(_) => None,
+    })
 }
 
-/// The folds of [`constant_fold_get_element_ptr_trusting_same_module`] for a
-/// GEP with at least one index whose [`gep_result_type`] is `result_ty`, for
-/// a caller that needs that type itself and computes it once.
-pub(crate) fn constant_fold_get_element_ptr_of_result_type<
-    'ctx,
-    B: ModuleBrand + 'ctx,
-    C: Capability,
->(
-    result_ty: Type<'ctx, B, C>,
+/// What `ConstantFoldGetElementPtr` found for a constant `getelementptr`.
+pub(crate) enum GepFold<'ctx, B: ModuleBrand, C: Capability> {
+    /// The GEP folds to this constant.
+    Folded(Constant<'ctx, B, C>),
+    /// The GEP does not fold; an expression of it has this result type.
+    Unfolded {
+        /// The [`gep_result_type`] of the operands.
+        result_ty: Type<'ctx, B, C>,
+    },
+    /// The operands form no result type.
+    NoResultType(GepConstantError),
+}
+
+/// `ConstantFoldGetElementPtr`: the one copy of its folds, telling a caller
+/// that builds the expression when nothing folds the result type it computed.
+pub(crate) fn fold_get_element_ptr<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     pointer: Constant<'ctx, B, C>,
     indices: &[Constant<'ctx, B, C>],
     in_range: Option<&ConstantExprInRange>,
-) -> IrResult<Option<Constant<'ctx, B, C>>> {
+) -> IrResult<GepFold<'ctx, B, C>> {
+    if indices.is_empty() {
+        return Ok(GepFold::Folded(pointer));
+    }
+    let result_ty = match gep_result_type(pointer.ty(), indices) {
+        Ok(result_ty) => result_ty,
+        Err(error) => return Ok(GepFold::NoResultType(error)),
+    };
+
     if is_poison(pointer) {
-        return Ok(Some(poison_for(result_ty)));
+        return Ok(GepFold::Folded(poison_for(result_ty)));
     }
     if is_undef(pointer) {
-        return Ok(Some(result_ty.undef().as_constant()));
+        return Ok(GepFold::Folded(result_ty.undef().as_constant()));
     }
 
     let is_noop = in_range.is_none()
@@ -2099,12 +2116,15 @@ pub(crate) fn constant_fold_get_element_ptr_of_result_type<
             .all(|index| Constant::is_null_value(index) || is_undef_or_poison(index));
     if is_noop {
         if result_ty.data().as_vector().is_some() && pointer.ty().data().as_vector().is_none() {
-            return vector_splat_constant(result_ty, pointer);
+            return Ok(match vector_splat_constant(result_ty, pointer)? {
+                Some(splat) => GepFold::Folded(splat),
+                None => GepFold::Unfolded { result_ty },
+            });
         }
-        return Ok(Some(pointer));
+        return Ok(GepFold::Folded(pointer));
     }
 
-    Ok(None)
+    Ok(GepFold::Unfolded { result_ty })
 }
 
 /// The result type of a constant-expression `getelementptr`, i.e.

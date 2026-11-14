@@ -130,7 +130,7 @@ impl ConstantExprOpcode {
     /// keeps no constant expression of (`ConstantExpr::isDesirableBinOp`'s
     /// complement: `mul`, the divisions, shifts, `and` / `or`, the
     /// floating-point operators).
-    pub(crate) fn from_binary_opcode(opcode: BinaryOpcode) -> Option<Self> {
+    pub(crate) const fn from_binary_opcode(opcode: BinaryOpcode) -> Option<Self> {
         match opcode {
             BinaryOpcode::Add => Some(Self::Add),
             BinaryOpcode::Sub => Some(Self::Sub),
@@ -156,7 +156,7 @@ impl ConstantExprOpcode {
     /// The expression opcode of a cast, or `None` for one LLVM 22 keeps no
     /// constant expression of (`ConstantExpr::isDesirableCastOp`'s
     /// complement: the extensions and the floating-point casts).
-    pub(crate) fn from_cast_opcode(opcode: CastOpcode) -> Option<Self> {
+    pub(crate) const fn from_cast_opcode(opcode: CastOpcode) -> Option<Self> {
         match opcode {
             CastOpcode::Trunc => Some(Self::Trunc),
             CastOpcode::PtrToAddr => Some(Self::PtrToAddr),

@@ -113,12 +113,15 @@ fn test_sources() -> String {
         .join("\n")
 }
 
-/// Whether `code` names `path` as a whole path: an occurrence whose next
-/// character cannot continue an identifier, so `BuilderError::OperandType` is
-/// not found inside `BuilderError::OperandTypesDiffer`.
+/// Whether `code` names `path` as a whole path: an occurrence that no
+/// identifier character precedes or follows, so `BuilderError::OperandType`
+/// is not found inside `BuilderError::OperandTypesDiffer`, nor
+/// `ConstantError::X` inside `GepConstantError::X`.
 fn names(code: &str, path: &str) -> bool {
+    let continues_identifier = |c: char| c.is_ascii_alphanumeric() || c == '_';
     code.match_indices(path).any(|(start, _)| {
-        !code[start + path.len()..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+        !code[..start].ends_with(continues_identifier)
+            && !code[start + path.len()..].starts_with(continues_identifier)
     })
 }
 
@@ -159,7 +162,9 @@ pub enum Next {
 }
 
 /// A variant whose name is a prefix of another's is not counted as named by
-/// the longer one, and is counted where it appears whole.
+/// the longer one, a variant of an enum whose name is a suffix of another
+/// enum's is not counted as named by the other enum's variant, and each is
+/// counted where it appears whole.
 ///
 /// **No upstream counterpart**: the positive control for the path match of
 /// [`every_typed_error_variant_is_asserted`].
@@ -173,6 +178,12 @@ fn a_prefix_variant_is_not_named_by_the_longer_one() {
     assert!(names(
         "Err(GepConstantError::OperandTypes)",
         "GepConstantError::OperandTypes"
+    ));
+    let gep_only = "IrError::from(GepConstantError::VectorWidthMismatch)";
+    assert!(!names(gep_only, "ConstantError::VectorWidthMismatch"));
+    assert!(names(
+        "IrError::Constant(ConstantError::NoCfiTarget)",
+        "ConstantError::NoCfiTarget"
     ));
 }
 

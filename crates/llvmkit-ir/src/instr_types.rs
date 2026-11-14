@@ -101,8 +101,11 @@ impl BinaryOpcode {
         matches!(self, Self::Udiv | Self::Sdiv | Self::Urem | Self::Srem)
     }
 
+    /// Mirrors `ConstantExpr::isDesirableBinOp`: whether LLVM 22 keeps a
+    /// constant expression of this operator. Answered by the one opcode map
+    /// the folders build expressions from, so the two cannot disagree.
     pub const fn is_desirable_constant_expr(self) -> bool {
-        matches!(self, Self::Add | Self::Sub | Self::Xor)
+        crate::constant::ConstantExprOpcode::from_binary_opcode(self).is_some()
     }
 
     pub const fn is_supported_constant_expr(self) -> bool {
@@ -741,16 +744,11 @@ impl CastOpcode {
         }
     }
 
+    /// Mirrors `ConstantExpr::isDesirableCastOp`: whether LLVM 22 keeps a
+    /// constant expression of this cast. Answered by the one opcode map the
+    /// folders build expressions from, so the two cannot disagree.
     pub const fn is_desirable_constant_expr(self) -> bool {
-        matches!(
-            self,
-            Self::Trunc
-                | Self::PtrToAddr
-                | Self::PtrToInt
-                | Self::IntToPtr
-                | Self::BitCast
-                | Self::AddrSpaceCast
-        )
+        crate::constant::ConstantExprOpcode::from_cast_opcode(self).is_some()
     }
 
     pub const fn is_supported_constant_expr(self) -> bool {

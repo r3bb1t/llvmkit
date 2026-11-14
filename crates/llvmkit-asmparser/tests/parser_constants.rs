@@ -619,9 +619,16 @@ fn constant_expr_shufflevector_rejects_out_of_range_mask() {
 /// Ports the anchors of `LLParser::parseValID`'s `kw_ptrauth`,
 /// `kw_getelementptr`, `kw_extractelement`, `kw_insertelement` and
 /// `kw_shufflevector` arms; the texts are upstream's. The shufflevector case
-/// is the mask-range refusal the IR raises after the parser's own guard,
-/// which upstream's single `isValidOperands` call reports at the same
-/// `ID.Loc`.
+/// whose mask is out of range is the refusal the IR raises after the
+/// parser's own guard, which upstream's single `isValidOperands` call
+/// reports at the same `ID.Loc`.
+///
+/// Every re-anchored site parsed text can reach has a case, the GEP base
+/// check on an empty operand list among them (`getelementptr (i8, )`, which
+/// `parse_global_value_vector` returns empty). Two are unreachable from text
+/// and have none: the `AnyTypeEnum::Vector` fallbacks that follow
+/// `is_valid_shufflevector` / `is_valid_extractelement`, which those guards
+/// already require to be vectors.
 #[test]
 fn constant_expression_refusals_are_anchored_at_the_expression() {
     for (source, message, anchor) in [
@@ -650,9 +657,64 @@ fn constant_expression_refusals_are_anchored_at_the_expression() {
             "getelementptr",
         ),
         (
+            "@p = global ptr getelementptr (i8, )\n@next = global i32 0\n",
+            "base of getelementptr must be a pointer",
+            "getelementptr",
+        ),
+        (
+            "@g = external global i8\n\
+             @p = global ptr getelementptr (i8, ptr @g, float 0.0)\n\
+             @next = global i32 0\n",
+            "getelementptr index must be an integer",
+            "getelementptr",
+        ),
+        (
+            "@p = global <2 x ptr> getelementptr (i8, <2 x ptr> zeroinitializer, \
+             <4 x i64> zeroinitializer)\n@next = global i32 0\n",
+            "getelementptr vector index has a wrong number of elements",
+            "getelementptr",
+        ),
+        (
+            "%T = type opaque\n@g = external global i8\n\
+             @p = global ptr getelementptr (%T, ptr @g, i64 1)\n\
+             @next = global i32 0\n",
+            "base element of getelementptr must be sized",
+            "getelementptr",
+        ),
+        (
+            "@g = external global i8\n\
+             @p = global ptr getelementptr (<vscale x 2 x i32>, ptr @g, i64 1)\n\
+             @next = global i32 0\n",
+            "invalid base element for constant getelementptr",
+            "getelementptr",
+        ),
+        (
+            "@x = global <2 x i32> shufflevector (<2 x i32> zeroinitializer, \
+             <2 x i32> zeroinitializer)\n@next = global i32 0\n",
+            "expected three operands to shufflevector",
+            "shufflevector",
+        ),
+        (
+            "@x = global <2 x i32> shufflevector (<2 x i32> zeroinitializer, \
+             <2 x i64> zeroinitializer, <2 x i32> zeroinitializer)\n@next = global i32 0\n",
+            "invalid operands to shufflevector",
+            "shufflevector",
+        ),
+        (
+            "@x = global i32 extractelement (<2 x i32> zeroinitializer)\n@next = global i32 0\n",
+            "expected two operands to extractelement",
+            "extractelement",
+        ),
+        (
             "@x = global i32 extractelement (i32 0, i32 0)\n@next = global i32 0\n",
             "invalid extractelement operands",
             "extractelement",
+        ),
+        (
+            "@x = global <2 x i32> insertelement (<2 x i32> zeroinitializer, i32 0)\n\
+             @next = global i32 0\n",
+            "expected three operands to insertelement",
+            "insertelement",
         ),
         (
             "@x = global <2 x i32> insertelement (<2 x i32> zeroinitializer, i64 0, i32 0)\n\
