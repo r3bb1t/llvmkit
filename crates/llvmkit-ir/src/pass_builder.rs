@@ -75,39 +75,61 @@ impl<B: ModuleBrand> FunctionPass<B> for NoOpFunctionPass {
     }
 }
 
-/// A module pass a textual pipeline can name: the `MODULE_PASS` rows of
-/// upstream's `PassRegistry.def` that llvmkit ports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RegisteredModulePass {
-    /// `no-op-module`: [`NoOpModulePass`].
-    NoOp,
+/// Declares a closed name table: the enum, its every variant in declaration
+/// order (`all()`), and each variant's spelling (`$spelling_fn`), all from one
+/// list. A variant cannot exist without appearing in `all()`, so it cannot be
+/// left out of name resolution.
+macro_rules! name_table {
+    (
+        $(#[$meta:meta])*
+        pub enum $name:ident {
+            $(
+                $(#[$variant_meta:meta])*
+                $variant:ident => $spelling:expr,
+            )+
+        }
+        $(#[$spelling_meta:meta])*
+        pub const fn $spelling_fn:ident(self) -> $spelling_ty:ty;
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum $name {
+            $(
+                $(#[$variant_meta])*
+                $variant,
+            )+
+        }
+
+        impl $name {
+            const ALL: &'static [Self] = &[$(Self::$variant),+];
+
+            /// Every variant, in declaration order.
+            pub fn all() -> impl Iterator<Item = Self> {
+                Self::ALL.iter().copied()
+            }
+
+            $(#[$spelling_meta])*
+            pub const fn $spelling_fn(self) -> $spelling_ty {
+                match self {
+                    $(Self::$variant => $spelling,)+
+                }
+            }
+        }
+    };
+}
+
+name_table! {
+    /// A module pass a textual pipeline can name: the `MODULE_PASS` rows of
+    /// upstream's `PassRegistry.def` that llvmkit ports, in that file's order.
+    pub enum RegisteredModulePass {
+        /// `no-op-module`: [`NoOpModulePass`].
+        NoOp => NO_OP_MODULE,
+    }
+    /// The name a textual pipeline spells this pass with.
+    pub const fn name(self) -> PassName<ModulePassScope>;
 }
 
 impl RegisteredModulePass {
-    /// The first registered module pass in `PassRegistry.def` order.
-    const FIRST: Self = Self::NoOp;
-
-    /// The pass after this one in `PassRegistry.def` order. The match is
-    /// exhaustive, so a new variant must be placed in the chain before it
-    /// compiles, and [`Self::all`] then reaches it.
-    const fn next(self) -> Option<Self> {
-        match self {
-            Self::NoOp => None,
-        }
-    }
-
-    /// Every registered module pass, in `PassRegistry.def` order.
-    pub fn all() -> impl Iterator<Item = Self> {
-        core::iter::successors(Some(Self::FIRST), |pass| pass.next())
-    }
-
-    /// The name a textual pipeline spells this pass with.
-    pub const fn name(self) -> PassName<ModulePassScope> {
-        match self {
-            Self::NoOp => NO_OP_MODULE,
-        }
-    }
-
     /// The registered pass named `name`, as a `MODULE_PASS` row matches it
     /// (`Name == NAME`).
     pub fn from_name(name: &str) -> Option<Self> {
@@ -122,47 +144,23 @@ impl RegisteredModulePass {
     }
 }
 
-/// A function pass a textual pipeline can name: the `FUNCTION_PASS` rows of
-/// upstream's `PassRegistry.def` that llvmkit ports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RegisteredFunctionPass {
-    /// `dce`: [`DcePass`].
-    Dce,
-    /// `instsimplify`: [`InstSimplifyPass`].
-    InstSimplify,
-    /// `no-op-function`: [`NoOpFunctionPass`].
-    NoOp,
+name_table! {
+    /// A function pass a textual pipeline can name: the `FUNCTION_PASS` rows
+    /// of upstream's `PassRegistry.def` that llvmkit ports, in that file's
+    /// order.
+    pub enum RegisteredFunctionPass {
+        /// `dce`: [`DcePass`].
+        Dce => DCE,
+        /// `instsimplify`: [`InstSimplifyPass`].
+        InstSimplify => INSTSIMPLIFY,
+        /// `no-op-function`: [`NoOpFunctionPass`].
+        NoOp => NO_OP_FUNCTION,
+    }
+    /// The name a textual pipeline spells this pass with.
+    pub const fn name(self) -> PassName<FunctionPassScope>;
 }
 
 impl RegisteredFunctionPass {
-    /// The first registered function pass in `PassRegistry.def` order.
-    const FIRST: Self = Self::Dce;
-
-    /// The pass after this one in `PassRegistry.def` order. The match is
-    /// exhaustive, so a new variant must be placed in the chain before it
-    /// compiles, and [`Self::all`] then reaches it.
-    const fn next(self) -> Option<Self> {
-        match self {
-            Self::Dce => Some(Self::InstSimplify),
-            Self::InstSimplify => Some(Self::NoOp),
-            Self::NoOp => None,
-        }
-    }
-
-    /// Every registered function pass, in `PassRegistry.def` order.
-    pub fn all() -> impl Iterator<Item = Self> {
-        core::iter::successors(Some(Self::FIRST), |pass| pass.next())
-    }
-
-    /// The name a textual pipeline spells this pass with.
-    pub const fn name(self) -> PassName<FunctionPassScope> {
-        match self {
-            Self::Dce => DCE,
-            Self::InstSimplify => INSTSIMPLIFY,
-            Self::NoOp => NO_OP_FUNCTION,
-        }
-    }
-
     /// The registered pass named `name`, as a `FUNCTION_PASS` row matches it
     /// (`Name == NAME`).
     pub fn from_name(name: &str) -> Option<Self> {
@@ -226,43 +224,26 @@ impl fmt::Display for PipelineEntryKind {
     }
 }
 
-/// A pass manager upstream's textual pipeline accepts and llvmkit does not
-/// model: llvmkit has no CGSCC, loop or machine-function layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum UnmodeledPassManager {
-    /// `cgscc(...)`: the call-graph SCC pass manager.
-    Cgscc,
-    /// `coro-cond(...)`: the coroutine-conditional module wrapper.
-    CoroCond,
-    /// `loop(...)`: the loop pass manager.
-    Loop,
-    /// `loop-mssa(...)`: the loop pass manager with MemorySSA.
-    LoopMssa,
-    /// `machine-function(...)`: the machine-function pass manager.
-    MachineFunction,
+name_table! {
+    /// A pass manager upstream's textual pipeline accepts and llvmkit does
+    /// not model: llvmkit has no CGSCC, loop or machine-function layer.
+    pub enum UnmodeledPassManager {
+        /// `cgscc(...)`: the call-graph SCC pass manager.
+        Cgscc => "cgscc",
+        /// `coro-cond(...)`: the coroutine-conditional module wrapper.
+        CoroCond => "coro-cond",
+        /// `loop(...)`: the loop pass manager.
+        Loop => "loop",
+        /// `loop-mssa(...)`: the loop pass manager with MemorySSA.
+        LoopMssa => "loop-mssa",
+        /// `machine-function(...)`: the machine-function pass manager.
+        MachineFunction => "machine-function",
+    }
+    /// The name a textual pipeline spells this manager with.
+    pub const fn as_str(self) -> &'static str;
 }
 
 impl UnmodeledPassManager {
-    /// The first manager of the chain [`Self::all`] walks.
-    const FIRST: Self = Self::Cgscc;
-
-    /// The manager after this one. The match is exhaustive, so a new variant
-    /// must be placed in the chain before it compiles.
-    const fn next(self) -> Option<Self> {
-        match self {
-            Self::Cgscc => Some(Self::CoroCond),
-            Self::CoroCond => Some(Self::Loop),
-            Self::Loop => Some(Self::LoopMssa),
-            Self::LoopMssa => Some(Self::MachineFunction),
-            Self::MachineFunction => None,
-        }
-    }
-
-    /// Every unmodeled pass manager.
-    pub fn all() -> impl Iterator<Item = Self> {
-        core::iter::successors(Some(Self::FIRST), |manager| manager.next())
-    }
-
     /// The manager a textual pipeline names `name`.
     pub fn from_name(name: &str) -> Option<Self> {
         Self::all().find(|manager| manager.as_str() == name)
@@ -275,17 +256,6 @@ impl UnmodeledPassManager {
         match self {
             Self::Cgscc | Self::CoroCond => PassLayer::WholeModule,
             Self::Loop | Self::LoopMssa | Self::MachineFunction => PassLayer::PerFunction,
-        }
-    }
-
-    /// The name a textual pipeline spells this manager with.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Cgscc => "cgscc",
-            Self::CoroCond => "coro-cond",
-            Self::Loop => "loop",
-            Self::LoopMssa => "loop-mssa",
-            Self::MachineFunction => "machine-function",
         }
     }
 }

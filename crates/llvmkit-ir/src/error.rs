@@ -1877,15 +1877,17 @@ pub enum IrError {
     /// from `PassBuilder::parseModulePass`.
     #[error("cannot have a no-rerun module to function adaptor")]
     NoRerunFunctionAdaptor,
-    /// A pass pipeline, as text or as composed `Dyn` pipelines, nests
-    /// pipelines more than [`crate::MAX_PASS_PIPELINE_NESTING`] levels deep.
-    /// Upstream has no bound: its recursive parse, run and teardown exhaust
-    /// the stack first.
-    #[error("pass pipeline nests more than {limit} levels deep")]
-    PassPipelineTooDeep {
-        /// The nesting bound, [`crate::MAX_PASS_PIPELINE_NESTING`].
-        limit: usize,
-    },
+    /// A pass pipeline nests pipelines more than
+    /// [`crate::MAX_PASS_PIPELINE_NESTING`] levels deep: composed `Dyn`
+    /// pipelines, or text (or a parsed element) that could resolve to one,
+    /// since resolution can wrap a bare function pass in one more level than
+    /// the text's parentheses. Upstream has no bound: its recursive parse,
+    /// run and teardown exhaust the stack first.
+    #[error(
+        "pass pipeline nests more than {} levels deep",
+        crate::MAX_PASS_PIPELINE_NESTING
+    )]
+    PassPipelineTooDeep,
     /// A textual pipeline names a pass manager upstream accepts and llvmkit
     /// does not model (no CGSCC, loop or machine-function layer).
     #[error("pass manager '{manager}' is not modeled")]
@@ -2343,7 +2345,7 @@ impl IrError {
             | Self::UnknownPipelineEntry { .. }
             | Self::PassUsedAsPipeline { .. }
             | Self::NoRerunFunctionAdaptor
-            | Self::PassPipelineTooDeep { .. }
+            | Self::PassPipelineTooDeep
             | Self::UnmodeledPassManager { .. } => Blame::UsageError,
 
             // The broad LangRef-rule family, classified as one class: its sites

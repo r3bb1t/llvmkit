@@ -1227,8 +1227,10 @@ where
     {
         // The inner pipeline invalidates `fam` per member itself, and its
         // report preserves every function analysis, so the per-function
-        // invalidation from it returns at once; the force-preserved set keeps
-        // the module loop's `fam.invalidate_module` from invalidating twice.
+        // invalidation from it returns at once unless a member abandoned an
+        // analysis (then each cached result is consulted, as upstream's
+        // are); the force-preserved set keeps the module loop's
+        // `fam.invalidate_module` from invalidating twice.
         for_each_definition(
             module,
             fam,
@@ -2163,9 +2165,7 @@ pub enum PipelineOutline<'a> {
 /// refusal when that passes [`MAX_PASS_PIPELINE_NESTING`].
 fn nested_depth(depth: usize) -> IrResult<usize> {
     if depth >= MAX_PASS_PIPELINE_NESTING {
-        return Err(IrError::PassPipelineTooDeep {
-            limit: MAX_PASS_PIPELINE_NESTING,
-        });
+        return Err(IrError::PassPipelineTooDeep);
     }
     Ok(depth + 1)
 }

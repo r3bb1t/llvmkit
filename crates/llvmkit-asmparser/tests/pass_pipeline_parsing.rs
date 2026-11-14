@@ -22,7 +22,8 @@ use llvmkit_asmparser::parser;
 use llvmkit_ir::{
     Analyses, DominatorTreeAnalysis, DynBrand, DynFunctionPipeline, DynModulePipeline, FnCx,
     FnReport, FunctionAdaptorInvalidation, FunctionPass, Inspect, IrError, IrResult,
-    MAX_PASS_PIPELINE_NESTING, Module, ModuleBrand, NoOpFunctionPass, PipelineOutline,
+    MAX_PASS_PIPELINE_NESTING, MAX_PASS_PIPELINE_TEXT_NESTING, Module, ModuleBrand,
+    NoOpFunctionPass, NoOpModulePass, PassPipelineElement, PassPipelineTextName, PipelineOutline,
     RegisteredFunctionPass, RegisteredModulePass, UnmodeledPassManager, Unverified,
     parse_function_pass_pipeline, parse_module_pass_pipeline,
 };
@@ -199,63 +200,128 @@ fn a_textual_pipeline_runs_its_passes() -> Result<(), IrError> {
     Ok(())
 }
 
-/// `function(…)` nested `depth` deep around `no-op-function`.
-fn nested_text(depth: usize) -> String {
+/// `<wrapper>(` nested `depth` deep around `inner`.
+fn nested_text(wrapper: &str, depth: usize, inner: &str) -> String {
     format!(
-        "{}no-op-function{}",
-        "function(".repeat(depth),
+        "{}{inner}{}",
+        format!("{wrapper}(").repeat(depth),
         ")".repeat(depth)
     )
 }
 
-/// Pipelines nest at most `MAX_PASS_PIPELINE_NESTING` deep, in text and in
-/// composition: the bound resolves and runs, one more level is refused, and
-/// text nested 200,000 deep is refused at once rather than overflowing the
-/// stack in resolution, run or drop.
+fn assert_too_deep<T: core::fmt::Debug>(result: Result<T, IrError>, what: &str) {
+    match result {
+        Err(IrError::PassPipelineTooDeep) => {}
+        other => panic!("{what}: expected PassPipelineTooDeep, got {other:?}"),
+    }
+}
+
+/// Resolves `passes` and runs it over the fixture.
+fn resolves_and_runs(passes: &str) -> Result<(), IrError> {
+    let module = fixture();
+    let mut analyses = Analyses::new();
+    let mut pipeline: DynModulePipeline<'_, DynBrand> = parse_module_pass_pipeline(passes)?;
+    pipeline.run(module.verify()?, &mut analyses)?.verify()?;
+    Ok(())
+}
+
+/// Pipelines nest at most `MAX_PASS_PIPELINE_NESTING` levels, and text at
+/// most `MAX_PASS_PIPELINE_TEXT_NESTING` parentheses, one less, since
+/// resolution can wrap a bare function pass in one more level. Text at its
+/// bound resolves and runs, in both shapes that gain that level (a bare pass
+/// innermost in `module(…)`, and a pipeline that starts with a function
+/// pass). One more parenthesis is refused, and so is text nested 200,000
+/// deep, at once, rather than overflowing the stack in resolution, run or
+/// drop. The parsed AST's public constructor and each composition entry
+/// (`push_pipeline` on both containers, `push_function_pipeline`) hold the
+/// same bounds.
 ///
 /// **No upstream counterpart**: upstream has no bound, and its recursive
 /// parse, run and teardown exhaust the stack on such text
 /// (`docs/divergences.md` D44).
 #[test]
 fn nesting_is_bounded_in_text_and_in_composition() -> Result<(), IrError> {
+    let text_limit = MAX_PASS_PIPELINE_TEXT_NESTING;
     let limit = MAX_PASS_PIPELINE_NESTING;
-    let module = fixture();
-    let mut analyses = Analyses::new();
-    let mut deepest: DynModulePipeline<'_, DynBrand> =
-        parse_module_pass_pipeline(&nested_text(limit))?;
-    deepest.run(module.verify()?, &mut analyses)?.verify()?;
-    for depth in [limit + 1, 200_000] {
-        match parse_module_pass_pipeline::<DynBrand>(&nested_text(depth)) {
-            Err(IrError::PassPipelineTooDeep { limit: refused_at }) => {
-                assert_eq!(refused_at, limit)
-            }
-            other => panic!("{depth} levels: expected PassPipelineTooDeep, got {other:?}"),
+    assert_eq!(text_limit + 1, limit);
+
+    resolves_and_runs(&nested_text("function", text_limit, "no-op-function"))?;
+    resolves_and_runs(&nested_text("module", text_limit, "no-op-function"))?;
+    resolves_and_runs(&format!(
+        "no-op-function,{}",
+        nested_text("function", text_limit, "no-op-function")
+    ))?;
+    for depth in [text_limit + 1, 200_000] {
+        for wrapper in ["function", "module"] {
+            assert_too_deep(
+                parse_module_pass_pipeline::<DynBrand>(&nested_text(
+                    wrapper,
+                    depth,
+                    "no-op-function",
+                )),
+                &format!("{wrapper}( x{depth}"),
+            );
         }
     }
 
-    // Composition: a function pipeline nested `limit` deep is the deepest
-    // that may be nested again.
-    let mut pipeline = DynFunctionPipeline::<'_, DynBrand>::new();
-    pipeline.push(NoOpFunctionPass);
+    // The AST's public constructor holds the text bound.
+    let name = |text: &str| PassPipelineTextName::try_new(text);
+    let mut element = PassPipelineElement::new(name("no-op-function")?, [])?;
+    for _ in 0..text_limit {
+        element = PassPipelineElement::new(name("function")?, [element])?;
+    }
+    assert_too_deep(
+        PassPipelineElement::new(name("function")?, [element]),
+        "an element one past the text bound",
+    );
+
+    // Composition: a pipeline `limit` levels deep may not be nested again,
+    // through any of the three entries.
+    let mut function_pipeline = DynFunctionPipeline::<'_, DynBrand>::new();
+    function_pipeline.push(NoOpFunctionPass);
     for _ in 0..limit {
         let mut outer = DynFunctionPipeline::new();
-        outer.push_pipeline(pipeline)?;
-        pipeline = outer;
+        outer.push_pipeline(function_pipeline)?;
+        function_pipeline = outer;
     }
-    let mut outer = DynFunctionPipeline::<'_, DynBrand>::new();
-    match outer.push_pipeline(pipeline) {
-        Err(IrError::PassPipelineTooDeep { limit: refused_at }) => assert_eq!(refused_at, limit),
-        other => panic!("expected PassPipelineTooDeep, got {other:?}"),
+    assert_too_deep(
+        DynFunctionPipeline::<'_, DynBrand>::new().push_pipeline(function_pipeline),
+        "DynFunctionPipeline::push_pipeline",
+    );
+
+    let mut function_pipeline = DynFunctionPipeline::<'_, DynBrand>::new();
+    function_pipeline.push(NoOpFunctionPass);
+    for _ in 0..limit {
+        let mut outer = DynFunctionPipeline::new();
+        outer.push_pipeline(function_pipeline)?;
+        function_pipeline = outer;
     }
+    assert_too_deep(
+        DynModulePipeline::<'_, DynBrand>::new()
+            .push_function_pipeline(function_pipeline, FunctionAdaptorInvalidation::FromReport),
+        "DynModulePipeline::push_function_pipeline",
+    );
+
+    let mut module_pipeline = DynModulePipeline::<'_, DynBrand>::new();
+    module_pipeline.push(NoOpModulePass);
+    for _ in 0..limit {
+        let mut outer = DynModulePipeline::new();
+        outer.push_pipeline(module_pipeline)?;
+        module_pipeline = outer;
+    }
+    assert_too_deep(
+        DynModulePipeline::<'_, DynBrand>::new().push_pipeline(module_pipeline),
+        "DynModulePipeline::push_pipeline",
+    );
     Ok(())
 }
 
-/// The registry's chains reach every registered pass and manager, in
+/// The registry lists every registered pass and manager, in
 /// `PassRegistry.def` order, and each name resolves back to its pass.
 ///
-/// **No upstream counterpart**: llvmkit-specific. The registry is closed
-/// enums whose `all()` walks an exhaustive successor match, so a variant
-/// must be placed in the chain to compile; this pins the chain itself.
+/// **No upstream counterpart**: llvmkit-specific. Each registry enum, its
+/// `all()` list and its spellings come from one `name_table!` list, so a
+/// variant cannot be missing from `all()`; this pins the lists themselves.
 #[test]
 fn the_registry_resolves_every_name_it_lists() {
     let module_names: Vec<&str> = RegisteredModulePass::all()

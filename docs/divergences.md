@@ -1548,11 +1548,14 @@ refuse three kinds of text that upstream accepts:
   wraps a pipeline that starts with a CGSCC, loop-nest, loop or machine-function pass name in
   that layer's adaptor. No such name is registered here, so the first name is "unknown pass
   name" (or "unknown pipeline name").
-- **Nesting deeper than `MAX_PASS_PIPELINE_NESTING` (64).** Text that opens more parentheses
-  at once, and `Dyn` pipelines composed deeper, are refused with
-  `IrError::PassPipelineTooDeep`. Upstream has no bound, but its parse, run and teardown
-  recurse once per level, so deep enough text exhausts its stack. llvmkit's resolution, run,
-  outline and drop recurse the same way.
+- **Nesting past the bound.** `Dyn` pipelines composed more than `MAX_PASS_PIPELINE_NESTING`
+  (64) levels deep are refused with `IrError::PassPipelineTooDeep`, a level being a nested
+  pipeline or a function adaptor. So are text and parsed elements with more than
+  `MAX_PASS_PIPELINE_TEXT_NESTING` (63) parentheses open at once. The text bound is one less
+  because resolution can wrap a bare function pass in one more level than its parentheses,
+  so all accepted text resolves within the composition bound. Upstream has no bound, but
+  its parse, run and teardown recurse once per level, so deep enough text exhausts its
+  stack. llvmkit's resolution, run, outline and drop recurse the same way.
 
 Nothing that resolves runs differently from upstream: the nested managers, the
 module-to-function adaptor (with `eager-inv`, and `no-rerun` refused with upstream's message)

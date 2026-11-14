@@ -166,7 +166,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for AlwaysStaleFunct
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for AlwaysStaleFunctionResult {}
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for AlwaysStaleFunctionResult {
+    fn invalidate<'v>(
+        &mut self,
+        _function: FunctionView<'v, B>,
+        _pa: &PreservedAnalyses,
+        _inv: &mut FunctionAnalysisInvalidator<'_, 'ctx, B>,
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v,
+    {
+        Ok(true)
+    }
+}
 
 /// The module-level twin of [`AlwaysStaleFunctionAnalysis`].
 #[derive(Clone, Copy)]
@@ -190,7 +202,67 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysis<'ctx, B> for AlwaysStaleModuleA
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisResult<'ctx, B> for AlwaysStaleModuleResult {}
+impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisResult<'ctx, B> for AlwaysStaleModuleResult {
+    fn invalidate<'v>(
+        &mut self,
+        _module: ModuleView<'v, B>,
+        _pa: &PreservedAnalyses,
+        _inv: &mut ModuleAnalysisInvalidator<'_, 'ctx, B>,
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v,
+    {
+        Ok(true)
+    }
+}
+
+/// A function analysis whose result keeps the default `invalidate` hook.
+#[derive(Clone, Copy)]
+struct DefaultHookFunctionAnalysis;
+
+#[derive(Debug)]
+struct DefaultHookFunctionResult;
+
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for DefaultHookFunctionAnalysis {
+    type Result = DefaultHookFunctionResult;
+
+    fn run<'v>(
+        &self,
+        _function: FunctionView<'v, B>,
+        _am: &mut FunctionAnalysisManager<'ctx, B>,
+    ) -> IrResult<Self::Result>
+    where
+        'ctx: 'v,
+    {
+        Ok(DefaultHookFunctionResult)
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for DefaultHookFunctionResult {}
+
+/// The module-level twin of [`DefaultHookFunctionAnalysis`].
+#[derive(Clone, Copy)]
+struct DefaultHookModuleAnalysis;
+
+#[derive(Debug)]
+struct DefaultHookModuleResult;
+
+impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysis<'ctx, B> for DefaultHookModuleAnalysis {
+    type Result = DefaultHookModuleResult;
+
+    fn run<'v>(
+        &self,
+        _module: ModuleView<'v, B>,
+        _am: &mut ModuleAnalysisManager<'ctx, B>,
+    ) -> IrResult<Self::Result>
+    where
+        'ctx: 'v,
+    {
+        Ok(DefaultHookModuleResult)
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisResult<'ctx, B> for DefaultHookModuleResult {}
 
 /// The shared fixture is a helper, not a `#[test]` body: the harness runs
 /// tests in parallel, so a `module_new!` brand minted here would be claimed by
@@ -593,8 +665,6 @@ fn function_analysis_runs_once_caches_and_invalidates() -> Result<(), IrError> {
     })
 }
 
-/// Ports `unittests/IR/PassManagerTest.cpp` local module-analysis cache and
-/// invalidation behavior.
 /// When a report preserves every analysis of the unit, invalidation consults
 /// no result: a result whose hook always asks to be dropped survives a report
 /// that preserves the whole set, and is dropped by `none()`.
@@ -645,6 +715,69 @@ fn invalidation_returns_early_when_the_whole_set_is_preserved() -> Result<(), Ir
     })
 }
 
+/// A result that keeps the default `invalidate` hook survives a report that
+/// preserves its analysis by name, or through the unit's whole set while
+/// another analysis is abandoned (so the manager does not return early), and
+/// is dropped by a report that preserves neither.
+///
+/// **No upstream test isolates it.** It pins the default hook,
+/// `AnalysisResultModel::invalidate`
+/// (`llvm/include/llvm/IR/PassManagerInternal.h`):
+/// `!PAC.preserved() && !PAC.preservedSet<AllAnalysesOn<IRUnitT>>()`.
+#[test]
+fn the_default_result_hook_asks_whether_its_analysis_is_preserved() -> Result<(), IrError> {
+    with_sample_module(|m| {
+        let f = m.view(m.function_dyn("f").expect("sample has f"));
+        let mut fam = FunctionAnalysisManager::new();
+        fam.register_pass(DefaultHookFunctionAnalysis);
+        fam.result::<DefaultHookFunctionAnalysis, _>(f)?;
+        let mut by_name = PreservedAnalyses::none();
+        by_name.preserve::<DefaultHookFunctionAnalysis>();
+        fam.invalidate(f, &by_name)?;
+        let mut by_set = PreservedAnalyses::none();
+        by_set.preserve_set::<AllAnalysesOnFunction>();
+        by_set.abandon::<CountFunctionAnalysis>();
+        fam.invalidate(f, &by_set)?;
+        assert!(
+            fam.cached_result::<DefaultHookFunctionAnalysis, _>(f)
+                .is_some()
+        );
+        let mut other = PreservedAnalyses::none();
+        other.preserve::<CountFunctionAnalysis>();
+        fam.invalidate(f, &other)?;
+        assert!(
+            fam.cached_result::<DefaultHookFunctionAnalysis, _>(f)
+                .is_none()
+        );
+
+        let verified = m.verify()?;
+        let mut mam = ModuleAnalysisManager::new();
+        mam.register_pass(DefaultHookModuleAnalysis);
+        mam.result::<DefaultHookModuleAnalysis>(&verified)?;
+        let mut by_name = PreservedAnalyses::none();
+        by_name.preserve::<DefaultHookModuleAnalysis>();
+        mam.invalidate(verified.as_view(), &by_name)?;
+        let mut by_set = PreservedAnalyses::none();
+        by_set.preserve_set::<AllAnalysesOnModule>();
+        by_set.abandon::<CountModuleAnalysis>();
+        mam.invalidate(verified.as_view(), &by_set)?;
+        assert!(
+            mam.cached_result::<DefaultHookModuleAnalysis, _>(verified.as_view())
+                .is_some()
+        );
+        let mut other = PreservedAnalyses::none();
+        other.preserve::<CountModuleAnalysis>();
+        mam.invalidate(verified.as_view(), &other)?;
+        assert!(
+            mam.cached_result::<DefaultHookModuleAnalysis, _>(verified.as_view())
+                .is_none()
+        );
+        Ok(())
+    })
+}
+
+/// Ports `unittests/IR/PassManagerTest.cpp` local module-analysis cache and
+/// invalidation behavior.
 #[test]
 fn module_analysis_runs_once_caches_and_invalidates() -> Result<(), IrError> {
     with_sample_module(|m| {

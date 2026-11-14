@@ -244,6 +244,15 @@ impl PreservedAnalyses {
         }
     }
 
+    /// Build a checker for the analysis whose type id is `analysis`.
+    fn checker_for_type(&self, analysis: TypeId) -> PreservedAnalysisChecker<'_> {
+        PreservedAnalysisChecker {
+            pa: self,
+            analysis,
+            key: None,
+        }
+    }
+
     /// Build a checker for an explicit analysis key.
     pub fn checker_for_key(&self, key: AnalysisKeyId) -> PreservedAnalysisChecker<'_> {
         PreservedAnalysisChecker {
@@ -337,16 +346,20 @@ pub trait ModuleAnalysis<'ctx, B: ModuleBrand>: 'static {
 /// Cached module-analysis result.
 pub trait ModuleAnalysisResult<'ctx, B: ModuleBrand>: 'static {
     /// Return `true` when this result should be invalidated.
+    ///
+    /// The default mirrors upstream's `AnalysisResultModel::invalidate`
+    /// (PassManagerInternal.h): invalidated unless the report preserves this
+    /// result's analysis, by name or through `AllAnalysesOnModule`.
     fn invalidate<'v>(
         &mut self,
         _module: ModuleView<'v, B>,
         _pa: &PreservedAnalyses,
-        _inv: &mut ModuleAnalysisInvalidator<'_, 'ctx, B>,
+        inv: &mut ModuleAnalysisInvalidator<'_, 'ctx, B>,
     ) -> IrResult<bool>
     where
         'ctx: 'v,
     {
-        Ok(true)
+        Ok(!inv.consulted_result_preserved())
     }
 }
 
@@ -396,16 +409,20 @@ pub trait PrefetchableAnalysis<'ctx, B: ModuleBrand>: FunctionAnalysis<'ctx, B> 
 /// Cached function-analysis result.
 pub trait FunctionAnalysisResult<'ctx, B: ModuleBrand>: 'static {
     /// Return `true` when this result should be invalidated.
+    ///
+    /// The default mirrors upstream's `AnalysisResultModel::invalidate`
+    /// (PassManagerInternal.h): invalidated unless the report preserves this
+    /// result's analysis, by name or through `AllAnalysesOnFunction`.
     fn invalidate<'v>(
         &mut self,
         _function: FunctionView<'v, B>,
         _pa: &PreservedAnalyses,
-        _inv: &mut FunctionAnalysisInvalidator<'_, 'ctx, B>,
+        inv: &mut FunctionAnalysisInvalidator<'_, 'ctx, B>,
     ) -> IrResult<bool>
     where
         'ctx: 'v,
     {
-        Ok(true)
+        Ok(!inv.consulted_result_preserved())
     }
 }
 
@@ -683,6 +700,8 @@ pub struct FunctionAnalysisInvalidator<'a, 'ctx, B: ModuleBrand> {
     function_slot: ValueSlot,
     pa: &'a PreservedAnalyses,
     snapshot: &'a FunctionAnalysisSnapshot,
+    /// The analysis whose result is being consulted.
+    consulted: TypeId,
     _brand: PhantomData<fn(B) -> B>,
     _ctx: PhantomData<&'ctx ()>,
 }
@@ -705,6 +724,15 @@ impl<'a, 'ctx, B: ModuleBrand> FunctionAnalysisInvalidator<'a, 'ctx, B> {
         let checker = self.pa.checker::<A>();
         Ok(!(checker.preserved() || checker.preserved_set::<AllAnalysesOnFunction>()))
     }
+
+    /// Whether the report preserves the analysis whose result is being
+    /// consulted, by name or through `AllAnalysesOnFunction`: the answer
+    /// upstream's default result hook gives
+    /// (`AnalysisResultModel::invalidate`, PassManagerInternal.h).
+    pub fn consulted_result_preserved(&self) -> bool {
+        let checker = self.pa.checker_for_type(self.consulted);
+        checker.preserved() || checker.preserved_set::<AllAnalysesOnFunction>()
+    }
 }
 
 /// Invalidator passed to module-analysis results. Holds the module *key* rather
@@ -716,6 +744,8 @@ pub struct ModuleAnalysisInvalidator<'a, 'ctx, B: ModuleBrand> {
     module_id: ModuleId,
     pa: &'a PreservedAnalyses,
     snapshot: &'a ModuleAnalysisSnapshot,
+    /// The analysis whose result is being consulted.
+    consulted: TypeId,
     _brand: PhantomData<fn(B) -> B>,
     _ctx: PhantomData<&'ctx ()>,
 }
@@ -737,6 +767,15 @@ impl<'a, 'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisInvalidator<'a, 'ctx, B> {
         }
         let checker = self.pa.checker::<A>();
         Ok(!(checker.preserved() || checker.preserved_set::<AllAnalysesOnModule>()))
+    }
+
+    /// Whether the report preserves the analysis whose result is being
+    /// consulted, by name or through `AllAnalysesOnModule`: the answer
+    /// upstream's default result hook gives
+    /// (`AnalysisResultModel::invalidate`, PassManagerInternal.h).
+    pub fn consulted_result_preserved(&self) -> bool {
+        let checker = self.pa.checker_for_type(self.consulted);
+        checker.preserved() || checker.preserved_set::<AllAnalysesOnModule>()
     }
 }
 
@@ -932,9 +971,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
     ///
     /// Mirrors `AnalysisManager::invalidate` (PassManagerImpl.h), including
     /// its first statement: when `pa` preserves every function analysis,
-    /// nothing is consulted and nothing is dropped, so the function adaptor's
+    /// nothing is consulted and nothing is dropped. The function adaptor's
     /// invalidation after a function pipeline (whose report preserves that
-    /// set) costs nothing.
+    /// set) returns there unless a member abandoned an analysis; an
+    /// abandoned analysis makes the set not wholly preserved, and every
+    /// cached result of the function is then consulted, as upstream's are.
     pub fn invalidate<'v, F>(&mut self, function: F, pa: &PreservedAnalyses) -> IrResult<()>
     where
         F: Into<FunctionView<'v, B>>,
@@ -1328,6 +1369,7 @@ where
         function_slot: handle.slot_trusting_same_module(),
         pa,
         snapshot,
+        consulted: TypeId::of::<A>(),
         _brand: PhantomData,
         _ctx: PhantomData,
     };
@@ -1372,6 +1414,7 @@ where
         module_id: module.id(),
         pa,
         snapshot,
+        consulted: TypeId::of::<A>(),
         _brand: PhantomData,
         _ctx: PhantomData,
     };
