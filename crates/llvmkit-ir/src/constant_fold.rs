@@ -47,7 +47,10 @@ use super::type_components::lanes;
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{IsValue, Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use super::vec_len::LenDyn;
-use super::{Dyn, FunctionValue, IrError, IrResult, RoundingMode};
+use super::{
+    ConstantError, ConstantExprError, Dyn, FunctionValue, GepConstantError, IrError, IrResult,
+    RoundingMode,
+};
 
 /// Dispatch an instruction to the target-independent pure-constant folds
 /// mirrored from `llvm/lib/IR/ConstantFold.cpp`.
@@ -2137,7 +2140,10 @@ pub(crate) fn constant_fold_get_element_ptr_trusting_same_module<
 
     let result_ty = match gep_result_type(pointer.ty(), indices) {
         Ok(ty) => ty,
-        Err(IrError::InvalidOperation { .. }) => return Ok(None),
+        // A GEP whose result type cannot be formed does not fold.
+        Err(IrError::Constant(ConstantError::Expression(ConstantExprError::GetElementPtr(_)))) => {
+            return Ok(None);
+        }
         Err(err) => return Err(err),
     };
 
@@ -2174,9 +2180,7 @@ pub(crate) fn gep_result_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     indices: &[Constant<'ctx, B, C>],
 ) -> IrResult<Type<'ctx, B, C>> {
     let Some(addr_space) = pointer_address_space(pointer_ty) else {
-        return Err(IrError::InvalidOperation {
-            message: "invalid getelementptr constant expression",
-        });
+        return Err(GepConstantError::OperandTypes.into());
     };
     let scalar_ptr_ty = pointer_ty.module.ptr_type(addr_space).as_type();
     let Some(count) = gep_operand_element_count(pointer_ty, indices)? else {
@@ -2202,9 +2206,7 @@ fn gep_operand_element_count<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         };
         match shape {
             Some(current) if current != index_shape => {
-                return Err(IrError::InvalidOperation {
-                    message: "invalid getelementptr constant expression",
-                });
+                return Err(GepConstantError::VectorWidthMismatch.into());
             }
             Some(_) => {}
             None => shape = Some(index_shape),
@@ -2658,7 +2660,9 @@ fn fold_bitcast<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             ConstantExprFlags::none(),
         ) {
             Ok(folded) => Ok(Some(folded)),
-            Err(IrError::InvalidOperation { .. }) => Ok(None),
+            // A `bitcast` the constant-expression validator refuses does not
+            // fold; any other error is a real one.
+            Err(IrError::Constant(ConstantError::Expression(_))) => Ok(None),
             Err(err) => Err(err),
         };
     }

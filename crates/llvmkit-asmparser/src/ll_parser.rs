@@ -47,14 +47,14 @@ use std::collections::HashMap;
 use llvmkit_ir::{AddressSpace, ArrayType, DataLayout, FunctionValue, IsValue};
 use llvmkit_ir::{
     Align, AnyTypeEnum, ApFloat, ApFloatSemantics, ApFloatSign, ApInt, AtomicOrdering,
-    AtomicRmwBinOp, CallingConv, CastOperation, Constant, ConstantExprFlags, ConstantExprInRange,
-    ConstantExprOpcode, ConstantExprOptions, DllStorageClass, Dyn, FastMathFlags, FloatPredicate,
-    FpClassTest, GepNoWrapFlags, IntDyn, IntType, IntValue, IntrinsicNameResolution, IrBuilder,
-    IrError, IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue,
-    Positioned, RoundingMode, SelectionKind, Signedness, StructType, SyncScope, ThreadLocalMode,
-    TruncFlags, Type, TypeKind, UiToFpFlags, UnnamedAddr, Unverified, ValueCategory, VectorType,
-    Visibility, ZextFlags, derived_types::PointerType, resolve_intrinsic_name,
-    shufflevector_mask_from_constant,
+    AtomicRmwBinOp, CallingConv, CastOperation, Constant, ConstantError, ConstantExprError,
+    ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions,
+    DllStorageClass, Dyn, FastMathFlags, FloatPredicate, FpClassTest, GepNoWrapFlags, IntDyn,
+    IntType, IntValue, IntrinsicNameResolution, IrBuilder, IrError, IrResult, Linkage, MaybeAlign,
+    Module, ModuleBrand, NoFolder, PointerValue, Positioned, RoundingMode, SelectionKind,
+    Signedness, StructType, SyncScope, ThreadLocalMode, TruncFlags, Type, TypeKind, UiToFpFlags,
+    UnnamedAddr, Unverified, ValueCategory, VectorType, Visibility, ZextFlags,
+    derived_types::PointerType, resolve_intrinsic_name, shufflevector_mask_from_constant,
 };
 use llvmkit_macros::Branded;
 use llvmkit_support::{Span, Spanned};
@@ -9534,7 +9534,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 // `Constants::ptr_auth` carries upstream's own wording
                 // (`LLParser::parseValID`'s `lltok::kw_ptrauth` arm), so the
                 // message is rendered verbatim rather than as `expected ...`.
-                IrError::InvalidOperation { message } => self.message(message),
+                IrError::Constant(error) => self.message(error.to_string()),
                 other => self.builder_err("ptrauth", other),
             })
     }
@@ -9931,15 +9931,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 options,
             )
             .map_err(|e| match e {
-                IrError::InvalidOperation { message }
-                    if matches!(opcode, ConstantExprOpcode::ShuffleVector)
-                        && message == "invalid shufflevector constant expression" =>
-                {
-                    ParseError::Message {
-                        message: "invalid operands to shufflevector".into(),
-                        loc: self.loc(),
-                    }
-                }
+                IrError::Constant(ConstantError::Expression(
+                    ConstantExprError::InvalidOperands {
+                        opcode: ConstantExprOpcode::ShuffleVector,
+                    },
+                )) => ParseError::Message {
+                    message: "invalid operands to shufflevector".into(),
+                    loc: self.loc(),
+                },
+                IrError::Constant(error) => ParseError::Expected {
+                    expected: error.to_string().into(),
+                    loc: self.loc(),
+                },
                 IrError::InvalidOperation { message } => ParseError::Expected {
                     expected: message.into(),
                     loc: self.loc(),

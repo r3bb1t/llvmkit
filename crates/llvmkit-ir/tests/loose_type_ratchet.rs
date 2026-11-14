@@ -57,7 +57,7 @@ impl Pattern {
 /// The site counts at the ceiling, measured by this test on `33b2aaaf` with
 /// the rule added. Lower one whenever its count falls; never raise one.
 const CEILINGS: [(Pattern, usize); 4] = [
-    (Pattern::InvalidOperationSite, 169),
+    (Pattern::InvalidOperationSite, 103),
     (Pattern::StringParseDiagnostic, 506),
     (Pattern::PublicTupleReturn, 47),
     (Pattern::PublicBoolParameter, 43),

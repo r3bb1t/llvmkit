@@ -46,7 +46,10 @@ use super::derived_types::{
     TargetExtType, VectorType,
 };
 use super::element::VecElem;
-use super::error::{IrError, IrResult, TypeKindLabel};
+use super::error::{
+    ConstantError, ConstantExprError, GepConstantError, IrError, IrResult, PtrAuthRequirement,
+    TypeKindLabel,
+};
 use super::function::FunctionValue;
 use super::instr_types::{BinaryOpcode, CastOpcode};
 use super::instruction::{rewrite_debug_record_value, rewrite_operand_cells};
@@ -569,9 +572,9 @@ impl<'ctx, B: ModuleBrand + 'ctx, Cap: Capability> TryFrom<Constant<'ctx, B, Cap
             (TypeData::Integer { .. }, ValueKindData::Constant(ConstantData::Int(_))) => {
                 Ok(Self::from_parts_typed(c))
             }
-            (TypeData::Integer { .. }, _) => Err(IrError::InvalidOperation {
-                message: "constant is not an integer constant",
-            }),
+            (TypeData::Integer { .. }, _) => {
+                Err(IrError::Constant(ConstantError::NotAnIntegerConstant))
+            }
             _ => Err(IrError::TypeMismatch {
                 expected: TypeKindLabel::Integer,
                 got: ty.kind_label(),
@@ -595,9 +598,7 @@ macro_rules! impl_constant_int_static_try_from {
                         Ok(Self::from_parts_typed(c))
                     }
                     (TypeData::Integer { bits }, _) if *bits == $bits => {
-                        Err(IrError::InvalidOperation {
-                            message: "constant is not an integer constant",
-                        })
+                        Err(IrError::Constant(ConstantError::NotAnIntegerConstant))
                     }
                     (TypeData::Integer { bits }, _) => Err(IrError::OperandWidthMismatch {
                         lhs: $bits,
@@ -796,9 +797,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, Cap: Capability> TryFrom<Constant<'ctx, B, Cap
                 | TypeData::Fp128
                 | TypeData::PpcFp128,
                 _,
-            ) => Err(IrError::InvalidOperation {
-                message: "constant is not a floating-point constant",
-            }),
+            ) => Err(IrError::Constant(ConstantError::NotAFloatingPointConstant)),
             _ => Err(IrError::TypeMismatch {
                 expected: TypeKindLabel::Float,
                 got: ty.kind_label(),
@@ -819,9 +818,9 @@ macro_rules! impl_constant_float_static_try_from {
                     (TypeData::$variant, ValueKindData::Constant(ConstantData::Float(_))) => {
                         Ok(Self::from_parts_typed(c))
                     }
-                    (TypeData::$variant, _) => Err(IrError::InvalidOperation {
-                        message: "constant is not a floating-point constant",
-                    }),
+                    (TypeData::$variant, _) => {
+                        Err(IrError::Constant(ConstantError::NotAFloatingPointConstant))
+                    }
                     _ => Err(IrError::TypeMismatch {
                         expected: TypeKindLabel::$label,
                         got: ty.kind_label(),
@@ -1275,10 +1274,7 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx, Cap: Capability>
             && let Some(first) = ids.first().copied()
             && ids.iter().any(|id| *id != first)
         {
-            return Err(IrError::InvalidOperation {
-                message: "a scalable vector constant must be a splat: every lane \
-                          the same constant, as `ConstantVector::getSplat` builds it",
-            });
+            return Err(IrError::Constant(ConstantError::ScalableVectorNotSplat));
         }
         Ok(intern_aggregate(self.as_type(), ids.into_boxed_slice()))
     }
@@ -1468,9 +1464,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
             .map(|f| f.slot_trusting_same_module())
             != Some(function_slot)
         {
-            return Err(IrError::InvalidOperation {
-                message: "blockaddress block must belong to function",
-            });
+            return Err(IrError::Constant(ConstantError::BlockAddressOfForeignBlock));
         }
         let ty = self
             .ptr_type(function.address_space())
@@ -1525,9 +1519,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
             _ => false,
         };
         if !is_function_like {
-            return Err(IrError::InvalidOperation {
-                message: "dso_local_equivalent expects a function, alias to function, or ifunc",
-            });
+            return Err(IrError::Constant(ConstantError::DsoLocalEquivalentTarget));
         }
         let ty = global_value_type(value).slot_trusting_same_module();
         let id = self
@@ -1573,9 +1565,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
             | ValueKindData::GlobalAlias(_)
             | ValueKindData::GlobalIfunc(_) => {}
             _ => {
-                return Err(IrError::InvalidOperation {
-                    message: "no_cfi expects a global value",
-                });
+                return Err(IrError::Constant(ConstantError::NoCfiTarget));
             }
         }
         let ty = global_value_type(value).slot_trusting_same_module();
@@ -1612,42 +1602,30 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
         let addr_discriminator_slot = addr_discriminator.slot_in(owner)?;
         let deactivation_symbol_slot = deactivation_symbol.slot_in(owner)?;
         if !pointer.ty().is_pointer() {
-            return Err(IrError::InvalidOperation {
-                message: "constant ptrauth base pointer must be a pointer",
-            });
+            return Err(PtrAuthRequirement::BasePointer.into());
         }
         if !is_int_constant_with_type(
             self.module(),
             key_slot,
             self.i32_type().as_type().slot_trusting_same_module(),
         ) {
-            return Err(IrError::InvalidOperation {
-                message: "constant ptrauth key must be i32 constant",
-            });
+            return Err(PtrAuthRequirement::Key.into());
         }
         if !is_int_constant_with_type(
             self.module(),
             discriminator_slot,
             self.i64_type().as_type().slot_trusting_same_module(),
         ) {
-            return Err(IrError::InvalidOperation {
-                message: "constant ptrauth integer discriminator must be i64 constant",
-            });
+            return Err(PtrAuthRequirement::IntegerDiscriminator.into());
         }
         if !addr_discriminator.ty().is_pointer() {
-            return Err(IrError::InvalidOperation {
-                message: "constant ptrauth address discriminator must be a pointer",
-            });
+            return Err(PtrAuthRequirement::AddressDiscriminator.into());
         }
         if !deactivation_symbol.ty().is_pointer() {
-            return Err(IrError::InvalidOperation {
-                message: "constant ptrauth deactivation symbol must be a pointer",
-            });
+            return Err(PtrAuthRequirement::DeactivationSymbolType.into());
         }
         if !is_global_value_or_null_constant(self.module(), deactivation_symbol_slot) {
-            return Err(IrError::InvalidOperation {
-                message: "constant ptrauth deactivation symbol must be a global value or null",
-            });
+            return Err(PtrAuthRequirement::DeactivationSymbolValue.into());
         }
         let ty = pointer.ty().slot_trusting_same_module();
         let id = self.context().intern_constant_ptrauth(
@@ -1679,9 +1657,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, C: Capability> ModuleRef<'ctx, B, C> {
             got: ty.kind_label(),
         })?;
         if !target_ty.has_property(TargetExtProperty::HasZeroInit) {
-            return Err(IrError::InvalidOperation {
-                message: "invalid type for null constant",
-            });
+            return Err(IrError::Constant(ConstantError::NullOfTypeWithoutZeroInit));
         }
         let id = self.context().intern_constant_target_ext_none(ty_slot);
         Ok(constant_handle::<B, _, _>(id, self, ty_slot))
@@ -1705,9 +1681,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleRef<'ctx, B, Mutable> {
     ) -> IrResult<ForwardRefValue<'ctx, B>> {
         let ty_slot = ty.slot_in(self.id())?;
         if !ty.is_first_class() {
-            return Err(IrError::InvalidOperation {
-                message: "forward-reference placeholder must have first-class type",
-            });
+            return Err(IrError::Constant(
+                ConstantError::ForwardReferenceNotFirstClass,
+            ));
         }
         let id = self
             .context()
@@ -2002,9 +1978,7 @@ fn canonicalize_gep_operands(module: &ModuleCore, data: &mut ConstantExprData) -
         if let Some(index_count) = index_count
             && index_count != result_count
         {
-            return Err(IrError::InvalidOperation {
-                message: "invalid getelementptr constant expression",
-            });
+            return Err(GepConstantError::VectorWidthMismatch.into());
         }
         if is_struct_index {
             if index_count.is_some()
@@ -2246,9 +2220,7 @@ fn replace_value_uses_with(
             }
             ValueUse::Constant(user_id) => {
                 if !is_constant_value(module, replacement_id) {
-                    return Err(IrError::InvalidOperation {
-                        message: "a value embedded in a constant can only be replaced by a constant",
-                    });
+                    return Err(IrError::Constant(ConstantError::NonConstantReplacement));
                 }
                 replace_constant_operand(
                     module,
@@ -2940,9 +2912,7 @@ fn validate_constant_expr_flags(data: &ConstantExprData) -> IrResult<()> {
             ConstantExprFlags::None,
         ) => {}
         _ => {
-            return Err(IrError::InvalidOperation {
-                message: "invalid constant expression flags",
-            });
+            return Err(ConstantExprError::FlagsForOpcode.into());
         }
     }
 
@@ -2950,9 +2920,7 @@ fn validate_constant_expr_flags(data: &ConstantExprData) -> IrResult<()> {
         && let Some(in_range) = flags.in_range()
         && !in_range.is_non_empty()
     {
-        return Err(IrError::InvalidOperation {
-            message: "expected end to be larger than start",
-        });
+        return Err(ConstantExprError::EmptyInRange.into());
     }
 
     Ok(())
@@ -2975,21 +2943,24 @@ pub(super) fn validate_constant_expr_data(
             // Each cast arm asks `CastInst::castIsValid`, as each
             // `ConstantExpr::get*` cast constructor asserts it.
             let [src_ty] = operand_tys.as_slice() else {
-                return Err(IrError::InvalidOperation {
-                    message: "trunc constant expression expects one operand",
-                });
+                return Err(ConstantExprError::OperandCount {
+                    opcode: ConstantExprOpcode::Trunc,
+                }
+                .into());
             };
             if !cast_is_valid(CastOpcode::Trunc, *src_ty, result_ty) {
-                return Err(IrError::InvalidOperation {
-                    message: "invalid trunc constant expression",
-                });
+                return Err(ConstantExprError::InvalidOperands {
+                    opcode: ConstantExprOpcode::Trunc,
+                }
+                .into());
             }
         }
         ConstantExprOpcode::PtrToAddr | ConstantExprOpcode::PtrToInt => {
             let [src_ty] = operand_tys.as_slice() else {
-                return Err(IrError::InvalidOperation {
-                    message: "ptrtoaddr/ptrtoint constant expression expects one operand",
-                });
+                return Err(ConstantExprError::OperandCount {
+                    opcode: data.opcode,
+                }
+                .into());
             };
             let opcode = if matches!(data.opcode, ConstantExprOpcode::PtrToAddr) {
                 CastOpcode::PtrToAddr
@@ -2997,45 +2968,52 @@ pub(super) fn validate_constant_expr_data(
                 CastOpcode::PtrToInt
             };
             if !cast_is_valid(opcode, *src_ty, result_ty) {
-                return Err(IrError::InvalidOperation {
-                    message: "invalid ptrtoaddr/ptrtoint constant expression",
-                });
+                return Err(ConstantExprError::InvalidOperands {
+                    opcode: data.opcode,
+                }
+                .into());
             }
         }
         ConstantExprOpcode::IntToPtr => {
             let [src_ty] = operand_tys.as_slice() else {
-                return Err(IrError::InvalidOperation {
-                    message: "inttoptr constant expression expects one operand",
-                });
+                return Err(ConstantExprError::OperandCount {
+                    opcode: ConstantExprOpcode::IntToPtr,
+                }
+                .into());
             };
             if !cast_is_valid(CastOpcode::IntToPtr, *src_ty, result_ty) {
-                return Err(IrError::InvalidOperation {
-                    message: "invalid inttoptr constant expression",
-                });
+                return Err(ConstantExprError::InvalidOperands {
+                    opcode: ConstantExprOpcode::IntToPtr,
+                }
+                .into());
             }
         }
         ConstantExprOpcode::BitCast => {
             let [src_ty] = operand_tys.as_slice() else {
-                return Err(IrError::InvalidOperation {
-                    message: "bitcast constant expression expects one operand",
-                });
+                return Err(ConstantExprError::OperandCount {
+                    opcode: ConstantExprOpcode::BitCast,
+                }
+                .into());
             };
             if !cast_is_valid(CastOpcode::BitCast, *src_ty, result_ty) {
-                return Err(IrError::InvalidOperation {
-                    message: "invalid bitcast constant expression",
-                });
+                return Err(ConstantExprError::InvalidOperands {
+                    opcode: ConstantExprOpcode::BitCast,
+                }
+                .into());
             }
         }
         ConstantExprOpcode::AddrSpaceCast => {
             let [src_ty] = operand_tys.as_slice() else {
-                return Err(IrError::InvalidOperation {
-                    message: "addrspacecast constant expression expects one operand",
-                });
+                return Err(ConstantExprError::OperandCount {
+                    opcode: ConstantExprOpcode::AddrSpaceCast,
+                }
+                .into());
             };
             if !cast_is_valid(CastOpcode::AddrSpaceCast, *src_ty, result_ty) {
-                return Err(IrError::InvalidOperation {
-                    message: "invalid addrspacecast constant expression",
-                });
+                return Err(ConstantExprError::InvalidOperands {
+                    opcode: ConstantExprOpcode::AddrSpaceCast,
+                }
+                .into());
             }
         }
         ConstantExprOpcode::GetElementPtr => {
@@ -3043,90 +3021,101 @@ pub(super) fn validate_constant_expr_data(
         }
         ConstantExprOpcode::ExtractElement => {
             let [vector_ty, index_ty] = operand_tys.as_slice() else {
-                return Err(IrError::InvalidOperation {
-                    message: "extractelement constant expression expects two operands",
-                });
+                return Err(ConstantExprError::OperandCount {
+                    opcode: ConstantExprOpcode::ExtractElement,
+                }
+                .into());
             };
             let Some((elem, _, _)) = module
                 .context()
                 .type_data(vector_ty.slot_trusting_same_module())
                 .as_vector()
             else {
-                return Err(IrError::InvalidOperation {
-                    message: "invalid extractelement constant expression",
-                });
+                return Err(ConstantExprError::InvalidOperands {
+                    opcode: ConstantExprOpcode::ExtractElement,
+                }
+                .into());
             };
             if !index_ty.is_integer() || Type::new(elem, module) != result_ty {
-                return Err(IrError::InvalidOperation {
-                    message: "invalid extractelement constant expression",
-                });
+                return Err(ConstantExprError::InvalidOperands {
+                    opcode: ConstantExprOpcode::ExtractElement,
+                }
+                .into());
             }
         }
         ConstantExprOpcode::InsertElement => {
             let [vector_ty, value_ty, index_ty] = operand_tys.as_slice() else {
-                return Err(IrError::InvalidOperation {
-                    message: "insertelement constant expression expects three operands",
-                });
+                return Err(ConstantExprError::OperandCount {
+                    opcode: ConstantExprOpcode::InsertElement,
+                }
+                .into());
             };
             let Some((elem, _, _)) = module
                 .context()
                 .type_data(vector_ty.slot_trusting_same_module())
                 .as_vector()
             else {
-                return Err(IrError::InvalidOperation {
-                    message: "invalid insertelement constant expression",
-                });
+                return Err(ConstantExprError::InvalidOperands {
+                    opcode: ConstantExprOpcode::InsertElement,
+                }
+                .into());
             };
             if !index_ty.is_integer()
                 || *vector_ty != result_ty
                 || Type::new(elem, module) != *value_ty
             {
-                return Err(IrError::InvalidOperation {
-                    message: "invalid insertelement constant expression",
-                });
+                return Err(ConstantExprError::InvalidOperands {
+                    opcode: ConstantExprOpcode::InsertElement,
+                }
+                .into());
             }
         }
         ConstantExprOpcode::ShuffleVector => {
             let [lhs_ty, rhs_ty, mask_ty] = operand_tys.as_slice() else {
-                return Err(IrError::InvalidOperation {
-                    message: "shufflevector constant expression expects three operands",
-                });
+                return Err(ConstantExprError::OperandCount {
+                    opcode: ConstantExprOpcode::ShuffleVector,
+                }
+                .into());
             };
             let Some((lhs_elem, lhs_lanes, lhs_scalable)) = module
                 .context()
                 .type_data(lhs_ty.slot_trusting_same_module())
                 .as_vector()
             else {
-                return Err(IrError::InvalidOperation {
-                    message: "invalid shufflevector constant expression",
-                });
+                return Err(ConstantExprError::InvalidOperands {
+                    opcode: ConstantExprOpcode::ShuffleVector,
+                }
+                .into());
             };
             let Some((rhs_elem, rhs_lanes, rhs_scalable)) = module
                 .context()
                 .type_data(rhs_ty.slot_trusting_same_module())
                 .as_vector()
             else {
-                return Err(IrError::InvalidOperation {
-                    message: "invalid shufflevector constant expression",
-                });
+                return Err(ConstantExprError::InvalidOperands {
+                    opcode: ConstantExprOpcode::ShuffleVector,
+                }
+                .into());
             };
             let Some((mask_elem, mask_lanes, mask_scalable)) = module
                 .context()
                 .type_data(mask_ty.slot_trusting_same_module())
                 .as_vector()
             else {
-                return Err(IrError::InvalidOperation {
-                    message: "invalid shufflevector constant expression",
-                });
+                return Err(ConstantExprError::InvalidOperands {
+                    opcode: ConstantExprOpcode::ShuffleVector,
+                }
+                .into());
             };
             let Some((result_elem, result_lanes, result_scalable)) = module
                 .context()
                 .type_data(result_ty.slot_trusting_same_module())
                 .as_vector()
             else {
-                return Err(IrError::InvalidOperation {
-                    message: "invalid shufflevector constant expression",
-                });
+                return Err(ConstantExprError::InvalidOperands {
+                    opcode: ConstantExprOpcode::ShuffleVector,
+                }
+                .into());
             };
             let mask_id = data.operands[2];
             if !data.mask.is_empty()
@@ -3149,24 +3138,27 @@ pub(super) fn validate_constant_expr_data(
                 || result_lanes != mask_lanes
                 || result_scalable != mask_scalable
             {
-                return Err(IrError::InvalidOperation {
-                    message: "invalid shufflevector constant expression",
-                });
+                return Err(ConstantExprError::InvalidOperands {
+                    opcode: ConstantExprOpcode::ShuffleVector,
+                }
+                .into());
             }
         }
         ConstantExprOpcode::Add | ConstantExprOpcode::Sub | ConstantExprOpcode::Xor => {
             let [lhs_ty, rhs_ty] = operand_tys.as_slice() else {
-                return Err(IrError::InvalidOperation {
-                    message: "binary constant expression expects two operands",
-                });
+                return Err(ConstantExprError::OperandCount {
+                    opcode: data.opcode,
+                }
+                .into());
             };
             if lhs_ty != rhs_ty
                 || *lhs_ty != result_ty
                 || !is_int_or_int_vector(module, lhs_ty.slot_trusting_same_module())
             {
-                return Err(IrError::InvalidOperation {
-                    message: "invalid binary constant expression",
-                });
+                return Err(ConstantExprError::InvalidOperands {
+                    opcode: data.opcode,
+                }
+                .into());
             }
         }
     }
@@ -3181,9 +3173,10 @@ pub(super) fn verify_constant_expr_data(
     if matches!(data.opcode, ConstantExprOpcode::PtrToAddr) {
         let result_ty = Type::<DynBrand, ReadOnly>::new(data.result_ty, module);
         let [src] = data.operands.as_ref() else {
-            return Err(IrError::InvalidOperation {
-                message: "ptrtoaddr constant expression expects one operand",
-            });
+            return Err(ConstantExprError::OperandCount {
+                opcode: ConstantExprOpcode::PtrToAddr,
+            }
+            .into());
         };
         let src_ty = Type::<DynBrand, ReadOnly>::new(module.context().value_data(*src).ty, module);
         let addr_bits = pointer_address_space(
@@ -3192,9 +3185,7 @@ pub(super) fn verify_constant_expr_data(
         )
         .map(|as_id| module.data_layout().index_size_in_bits(as_id));
         if addr_bits != scalar_int_bits(module, result_ty.slot_trusting_same_module()) {
-            return Err(IrError::InvalidOperation {
-                message: "PtrToAddr result must be address width",
-            });
+            return Err(ConstantExprError::PtrToAddrResultWidth.into());
         }
     }
     Ok(())
@@ -3210,21 +3201,18 @@ fn validate_gep_constant_expr(
         .source_ty
         .map(|id| Type::<DynBrand, ReadOnly>::new(id, module))
     else {
-        return Err(IrError::InvalidOperation {
-            message: "getelementptr constant expression missing source type",
-        });
+        return Err(GepConstantError::MissingSourceType.into());
     };
     let Some((base_ty, index_tys)) = operand_tys.split_first() else {
-        return Err(IrError::InvalidOperation {
-            message: "getelementptr constant expression expects a pointer base",
-        });
+        return Err(ConstantExprError::OperandCount {
+            opcode: ConstantExprOpcode::GetElementPtr,
+        }
+        .into());
     };
     // `ConstantExpr::isSupportedGetElementPtr` — the source element type may
     // not be or contain a scalable vector.
     if source_ty.is_scalable() {
-        return Err(IrError::InvalidOperation {
-            message: "invalid base element for constant getelementptr",
-        });
+        return Err(GepConstantError::ScalableSourceElement.into());
     }
     if !is_ptr_or_ptr_vector(module, base_ty.slot_trusting_same_module())
         || !is_ptr_or_ptr_vector(module, result_ty.slot_trusting_same_module())
@@ -3233,35 +3221,27 @@ fn validate_gep_constant_expr(
             .iter()
             .any(|ty| !is_int_or_int_vector(module, ty.slot_trusting_same_module()))
     {
-        return Err(IrError::InvalidOperation {
-            message: "invalid getelementptr constant expression",
-        });
+        return Err(GepConstantError::OperandTypes.into());
     }
     let Some(base_addr_space) = pointer_address_space(
         module,
         scalar_type_slot(module, base_ty.slot_trusting_same_module()),
     ) else {
-        return Err(IrError::InvalidOperation {
-            message: "invalid getelementptr constant expression",
-        });
+        return Err(GepConstantError::OperandTypes.into());
     };
     if pointer_address_space(
         module,
         scalar_type_slot(module, result_ty.slot_trusting_same_module()),
     ) != Some(base_addr_space)
     {
-        return Err(IrError::InvalidOperation {
-            message: "invalid getelementptr constant expression",
-        });
+        return Err(GepConstantError::AddressSpaceMismatch.into());
     }
     if let ConstantExprFlags::Gep(flags) = &data.flags
         && let Some(in_range) = flags.in_range()
     {
         let index_bit_width = module.data_layout().index_size_in_bits(base_addr_space);
         if in_range.bit_width() != index_bit_width {
-            return Err(IrError::InvalidOperation {
-                message: "invalid getelementptr inrange bit width",
-            });
+            return Err(GepConstantError::InRangeBitWidth.into());
         }
     }
     let element_count = |ty: TypeSlot| module.context().type_data(ty).element_count();
@@ -3270,18 +3250,14 @@ fn validate_gep_constant_expr(
         if let Some(index_shape) = element_count(index_ty.slot_trusting_same_module()) {
             match gep_width {
                 Some(pointer_shape) if index_shape != pointer_shape => {
-                    return Err(IrError::InvalidOperation {
-                        message: "invalid getelementptr constant expression",
-                    });
+                    return Err(GepConstantError::VectorWidthMismatch.into());
                 }
                 _ => gep_width = Some(index_shape),
             }
         }
     }
     if element_count(result_ty.slot_trusting_same_module()) != gep_width {
-        return Err(IrError::InvalidOperation {
-            message: "invalid getelementptr constant expression",
-        });
+        return Err(GepConstantError::VectorWidthMismatch.into());
     }
     validate_gep_indices(
         module,
@@ -3321,32 +3297,22 @@ fn validate_gep_indices(
             TypeData::FixedVector { elem, .. } => current = *elem,
             TypeData::Struct(s) => {
                 let Some(field_index) = const_index_u64(module, *index) else {
-                    return Err(IrError::InvalidOperation {
-                        message: "invalid getelementptr indices",
-                    });
+                    return Err(GepConstantError::InvalidIndices.into());
                 };
                 let Ok(field_index) = usize::try_from(field_index) else {
-                    return Err(IrError::InvalidOperation {
-                        message: "invalid getelementptr indices",
-                    });
+                    return Err(GepConstantError::InvalidIndices.into());
                 };
                 let body = s.body.borrow();
                 let Some(body) = body.as_ref() else {
-                    return Err(IrError::InvalidOperation {
-                        message: "invalid getelementptr indices",
-                    });
+                    return Err(GepConstantError::InvalidIndices.into());
                 };
                 let Some(field_ty) = body.elements.get(field_index).copied() else {
-                    return Err(IrError::InvalidOperation {
-                        message: "invalid getelementptr indices",
-                    });
+                    return Err(GepConstantError::InvalidIndices.into());
                 };
                 current = field_ty;
             }
             _ => {
-                return Err(IrError::InvalidOperation {
-                    message: "invalid getelementptr indices",
-                });
+                return Err(GepConstantError::InvalidIndices.into());
             }
         }
     }

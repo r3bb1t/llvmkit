@@ -266,7 +266,8 @@ pub use derived_types::{
 };
 pub use dominator_tree::{DominatorTree, DominatorTreeAnalysis, DominatorTreeBlock};
 pub use error::{
-    Blame, BrandError, DataLayoutError, InvalidValueNameReason, IrError, IrResult, RenderedType,
+    Blame, BrandError, ConstantError, ConstantExprError, DataLayoutError, GepConstantError,
+    InvalidValueNameReason, IrError, IrResult, PtrAuthRequirement, RenderedType,
     TargetExtParameterRule, TypeKindLabel, TypePosition, ValueCategoryLabel, VerifierRule,
     VerifierSubject,
 };

@@ -19,6 +19,7 @@
 use core::fmt;
 
 use crate::addr_space::AddressSpace;
+use crate::constant::ConstantExprOpcode;
 use crate::instr_types::{CastOpcode, OperandBundleTag};
 use crate::pass_builder::{PassLayer, PipelineEntryKind, UnmodeledPassManager};
 use crate::pass_pipeline::PipelineNestingBound;
@@ -2257,6 +2258,9 @@ pub enum IrError {
     /// an operation with one.
     #[error(transparent)]
     DataLayout(#[from] DataLayoutError),
+    /// A constant that cannot be built as asked; see [`ConstantError`].
+    #[error(transparent)]
+    Constant(#[from] ConstantError),
 }
 
 impl IrError {
@@ -2413,9 +2417,188 @@ impl IrError {
 
             Self::Brand(error) => error.blame(),
             Self::DataLayout(error) => error.blame(),
+            // Every constant refusal rejects operands the caller (or the
+            // text it parsed) supplied.
+            Self::Constant(_) => Blame::UsageError,
         }
     }
 }
 
 /// Crate-wide `Result` alias.
 pub type IrResult<T> = core::result::Result<T, IrError>;
+
+/// A constant that cannot be built as asked: refused where upstream's
+/// constant constructors (`ConstantInt::get`, `ConstantExpr::get*`,
+/// `BlockAddress::get`, `ConstantPtrAuth::get`, ...) assert, or where
+/// `LLParser::parseValID` reports the same condition. Each variant's
+/// `Display` is the text the condition was reported with, upstream's own
+/// where `LLParser` spells one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum ConstantError {
+    /// A typed integer handle asked of a constant of integer type that is
+    /// not a `ConstantInt` (a constant expression, `poison`, ...).
+    #[error("constant is not an integer constant")]
+    NotAnIntegerConstant,
+    /// A typed floating-point handle asked of a constant of floating-point
+    /// type that is not a `ConstantFP`.
+    #[error("constant is not a floating-point constant")]
+    NotAFloatingPointConstant,
+    /// A scalable vector constant built from lanes that are not all the same
+    /// constant: `ConstantVector::getSplat` is the only way upstream builds
+    /// one.
+    #[error(
+        "a scalable vector constant must be a splat: every lane the same constant, as \
+         `ConstantVector::getSplat` builds it"
+    )]
+    ScalableVectorNotSplat,
+    /// `blockaddress(@f, %bb)` with `%bb` not a block of `@f`.
+    #[error("blockaddress block must belong to function")]
+    BlockAddressOfForeignBlock,
+    /// `dso_local_equivalent` of a value that is not a function, an alias to
+    /// a function, or an ifunc.
+    #[error("dso_local_equivalent expects a function, alias to function, or ifunc")]
+    DsoLocalEquivalentTarget,
+    /// `no_cfi` of a value that is not a global value.
+    #[error("no_cfi expects a global value")]
+    NoCfiTarget,
+    /// A `ptrauth` operand that breaks its rule (`LLParser::parseValID`'s
+    /// `kw_ptrauth` arm).
+    #[error(transparent)]
+    PtrAuth(#[from] PtrAuthRequirement),
+    /// `zeroinitializer` / `none` of a target extension type without the
+    /// `HasZeroInit` property.
+    #[error("invalid type for null constant")]
+    NullOfTypeWithoutZeroInit,
+    /// A forward-reference placeholder of a type that is not first-class.
+    #[error("forward-reference placeholder must have first-class type")]
+    ForwardReferenceNotFirstClass,
+    /// A value used inside a constant replaced by a value that is not a
+    /// constant: a constant's operands are constants.
+    #[error("a value embedded in a constant can only be replaced by a constant")]
+    NonConstantReplacement,
+    /// A constant expression whose operands, flags or shape do not fit its
+    /// opcode.
+    #[error(transparent)]
+    Expression(#[from] ConstantExprError),
+}
+
+impl From<ConstantExprError> for IrError {
+    fn from(error: ConstantExprError) -> Self {
+        Self::Constant(ConstantError::Expression(error))
+    }
+}
+
+impl From<GepConstantError> for IrError {
+    fn from(error: GepConstantError) -> Self {
+        Self::Constant(ConstantError::Expression(ConstantExprError::GetElementPtr(
+            error,
+        )))
+    }
+}
+
+impl From<PtrAuthRequirement> for IrError {
+    fn from(error: PtrAuthRequirement) -> Self {
+        Self::Constant(ConstantError::PtrAuth(error))
+    }
+}
+
+/// The rule a `ptrauth` constant's operand broke, each with
+/// `LLParser::parseValID`'s message for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum PtrAuthRequirement {
+    /// The signed value is not a pointer.
+    #[error("constant ptrauth base pointer must be a pointer")]
+    BasePointer,
+    /// The key is not an `i32` constant.
+    #[error("constant ptrauth key must be i32 constant")]
+    Key,
+    /// The integer discriminator is not an `i64` constant.
+    #[error("constant ptrauth integer discriminator must be i64 constant")]
+    IntegerDiscriminator,
+    /// The address discriminator is not a pointer.
+    #[error("constant ptrauth address discriminator must be a pointer")]
+    AddressDiscriminator,
+    /// The deactivation symbol is not a pointer.
+    #[error("constant ptrauth deactivation symbol must be a pointer")]
+    DeactivationSymbolType,
+    /// The deactivation symbol is neither a global value nor `null`.
+    #[error("constant ptrauth deactivation symbol must be a global value or null")]
+    DeactivationSymbolValue,
+}
+
+/// Why a constant expression was refused: the asserts of upstream's
+/// `ConstantExpr::get*` constructors (`CastInst::castIsValid`,
+/// `ExtractElementInst::isValidOperands`, `ShuffleVectorInst::isValidOperands`,
+/// ...), and the checks `LLParser::parseValID` makes before calling them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum ConstantExprError {
+    /// The expression was given the wrong number of operands for its opcode.
+    #[error(
+        "{} constant expression expects {}",
+        opcode.keyword(),
+        opcode.expected_operands()
+    )]
+    OperandCount {
+        /// The expression's opcode.
+        opcode: ConstantExprOpcode,
+    },
+    /// The operands' or result's types do not fit the opcode: a cast
+    /// `castIsValid` refuses, a non-vector `extractelement` /
+    /// `insertelement` / `shufflevector` operand, mismatched element types,
+    /// a binary operator over non-integer operands.
+    #[error("invalid {} constant expression", opcode.keyword())]
+    InvalidOperands {
+        /// The expression's opcode.
+        opcode: ConstantExprOpcode,
+    },
+    /// Flags that do not belong to the opcode (`nuw` on `xor`, GEP flags on
+    /// a cast, ...).
+    #[error("invalid constant expression flags")]
+    FlagsForOpcode,
+    /// A GEP `inrange(start, end)` whose range is empty
+    /// (`LLParser::parseValID`'s wording).
+    #[error("expected end to be larger than start")]
+    EmptyInRange,
+    /// A `ptrtoaddr` whose result is not the width of its pointer's address
+    /// (`Verifier::visitPtrToAddrInst`'s wording).
+    #[error("PtrToAddr result must be address width")]
+    PtrToAddrResultWidth,
+    /// A `getelementptr` that does not fit its source type, base or
+    /// indices.
+    #[error(transparent)]
+    GetElementPtr(#[from] GepConstantError),
+}
+
+/// Why a `getelementptr` constant expression was refused. Each condition is
+/// its own variant; several share upstream's one message for them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum GepConstantError {
+    /// No source element type was given.
+    #[error("getelementptr constant expression missing source type")]
+    MissingSourceType,
+    /// The source element type is, or contains, a scalable vector
+    /// (`ConstantExpr::isSupportedGetElementPtr`).
+    #[error("invalid base element for constant getelementptr")]
+    ScalableSourceElement,
+    /// The base or the result is not a pointer or pointer vector, the source
+    /// type is unsized while indices are given, or an index is not an
+    /// integer or integer vector.
+    #[error("invalid getelementptr constant expression")]
+    OperandTypes,
+    /// The result's address space differs from the base's.
+    #[error("invalid getelementptr constant expression")]
+    AddressSpaceMismatch,
+    /// An index vector's lane count differs from the pointer vector's, or the
+    /// result's from the expression's.
+    #[error("invalid getelementptr constant expression")]
+    VectorWidthMismatch,
+    /// The `inrange` bounds are not the width of the base's index type.
+    #[error("invalid getelementptr inrange bit width")]
+    InRangeBitWidth,
+    /// An index does not select an element of the type it steps into: a
+    /// struct index that is not a constant in range, an opaque struct, or a
+    /// step into a type that has no elements (`LLParser::parseValID`'s
+    /// "invalid getelementptr indices").
+    #[error("invalid getelementptr indices")]
+    InvalidIndices,
+}

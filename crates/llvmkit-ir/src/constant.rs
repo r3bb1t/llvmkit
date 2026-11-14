@@ -85,6 +85,22 @@ impl ConstantExprOpcode {
         }
     }
 
+    /// The operands an expression of this opcode takes, as
+    /// [`crate::ConstantExprError::OperandCount`] states them.
+    pub(crate) fn expected_operands(self) -> &'static str {
+        match self {
+            Self::Trunc
+            | Self::PtrToAddr
+            | Self::PtrToInt
+            | Self::IntToPtr
+            | Self::BitCast
+            | Self::AddrSpaceCast => "one operand",
+            Self::Add | Self::Sub | Self::Xor | Self::ExtractElement => "two operands",
+            Self::InsertElement | Self::ShuffleVector => "three operands",
+            Self::GetElementPtr => "a pointer base",
+        }
+    }
+
     pub(crate) fn is_cast(self) -> bool {
         matches!(
             self,
