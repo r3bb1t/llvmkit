@@ -13,7 +13,7 @@
 //! No upstream counterpart: LLVM's `Constant *` is a C++ type that cannot hold
 //! an `Argument`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Checks `ValueKindData::Constant(_)` on the slot before wrapping it.
 const GUARDED: &str = "checks ValueKindData::Constant before wrapping";
@@ -87,26 +87,9 @@ const AUDITED: &[(&str, &str, usize, &str)] = &[
 /// The mint's call spelling; the definition reads `fn from_parts`.
 const MINT_CALL: &str = "Constant::from_parts(";
 
-/// Every `.rs` file under `dir`, recursively, sorted.
-fn rust_files(dir: &Path) -> Vec<PathBuf> {
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                walk(&path, out);
-            } else if path.extension().is_some_and(|extension| extension == "rs") {
-                out.push(path);
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(dir, &mut out);
-    out.sort();
-    out
-}
+#[path = "support/source_files.rs"]
+mod source_files;
+use source_files::rust_files;
 
 /// The name of the function whose body holds line `index`: the nearest
 /// earlier line that declares one, comments skipped.

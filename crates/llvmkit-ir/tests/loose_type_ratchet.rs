@@ -78,30 +78,26 @@ const CEILINGS: [(Pattern, usize); 5] = [
     (Pattern::PublicTupleAlias, 13),
 ];
 
-/// Every `.rs` file under `dir`, recursively.
-fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            rust_files(&path, out);
-        } else if path.extension().is_some_and(|extension| extension == "rs") {
-            out.push(path);
-        }
-    }
-}
+#[path = "support/source_files.rs"]
+mod walker;
+use walker::rust_files;
 
-/// The workspace crates' `src/` files.
+/// The workspace crates' `src/` files. An entry of `crates/` with no `src/`
+/// is no crate and is skipped; one whose `src/` cannot be read fails the
+/// test (the shared walker panics), never shrinks the scan.
 fn source_files() -> Vec<PathBuf> {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut files = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&crates) else {
-        panic!("the workspace's crates directory is readable");
-    };
-    for entry in entries.flatten() {
-        rust_files(&entry.path().join("src"), &mut files);
+    let entries = std::fs::read_dir(&crates)
+        .unwrap_or_else(|error| panic!("the workspace's crates directory reads: {error}"));
+    for entry in entries {
+        let src = entry
+            .unwrap_or_else(|error| panic!("an entry of the crates directory reads: {error}"))
+            .path()
+            .join("src");
+        if src.is_dir() {
+            files.extend(rust_files(&src));
+        }
     }
     files.sort();
     files

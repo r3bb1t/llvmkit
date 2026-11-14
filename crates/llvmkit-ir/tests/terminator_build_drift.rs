@@ -20,28 +20,11 @@
 //! file. No upstream counterpart: LLVM's `IRBuilder` has no positioning
 //! typestate.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-/// Every `.rs` file under `dir`, recursively, sorted. A directory that cannot
-/// be read is an error, not an empty scan. (The same walker as
-/// `position_door_drift.rs`'s; integration tests share no module.)
-fn rust_files(dir: &Path) -> Vec<PathBuf> {
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-        let entries = std::fs::read_dir(dir).expect("a source directory reads");
-        for entry in entries {
-            let path = entry.expect("a directory entry reads").path();
-            if path.is_dir() {
-                walk(&path, out);
-            } else if path.extension().is_some_and(|ext| ext == "rs") {
-                out.push(path);
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(dir, &mut out);
-    out.sort();
-    out
-}
+#[path = "support/source_files.rs"]
+mod source_files;
+use source_files::rust_files;
 
 /// The source of `relative`, under this crate's `src/`.
 fn source(relative: &str) -> String {
@@ -68,12 +51,33 @@ fn terminator_kinds(instruction_rs: &str) -> Vec<String> {
 }
 
 /// `line` without a trailing `//` comment (the whole line, for a comment
-/// line, is empty). No header or build in this tree holds `//` in a string.
+/// line, is empty). It cuts at the first `//`, which is right only when no
+/// `//` opens inside a string; [`slashes_in_strings`] is the check the test
+/// runs over every scanned file that it does not.
 fn without_trailing_comment(line: &str) -> &str {
     match line.find("//") {
         Some(start) => &line[..start],
         None => line,
     }
+}
+
+/// The 1-based lines of `source` whose first `//` sits inside a string
+/// literal: an odd number of unescaped `"` before it. A line that is a
+/// comment from its start is never one.
+fn slashes_in_strings(source: &str) -> Vec<usize> {
+    source
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim_start().starts_with("//"))
+        .filter_map(|(index, line)| {
+            let start = line.find("//")?;
+            let quotes = line[..start]
+                .char_indices()
+                .filter(|&(at, c)| c == '"' && !line[..at].ends_with('\\'))
+                .count();
+            (quotes % 2 == 1).then_some(index + 1)
+        })
+        .collect()
 }
 
 /// Whether `code` bounds `S: Terminating` itself — the whole trait name, so
@@ -98,14 +102,15 @@ fn bounds_s_terminating(code: &str) -> bool {
 ///
 /// A build is a code line (not a `//` comment) containing
 /// `InstructionKindData::Kind(`. An impl starts at a column-0 `impl<` or
-/// `impl ` line; its header runs to the first line ending in `{`, and the
-/// impl is a `Terminating` one when a header line bounds `S: Terminating`
-/// (the whole trait name). An impl whose line ends in `{}` opens and closes
-/// there. Any other column-0 code line — the impl's closing `}`, a free `fn`,
-/// a macro definition or call (`impl_thing!(..)` included), a `mod` — leaves
-/// every impl, so a build there counts as outside. Every line is read without
-/// its `//` comment, so a comment line or a trailing comment neither bounds
-/// an impl nor hides the `{` that closes a header.
+/// `impl ` line; its header runs to the first line holding a `{` (so
+/// `impl .. {}` and `impl .. { fn f() {} }` end it on their own line), and
+/// the impl is a `Terminating` one when a header line bounds `S: Terminating`
+/// (the whole trait name). Any other column-0 code line — the impl's closing
+/// `}`, a free `fn`, a macro definition or call (`impl_thing!(..)` included),
+/// a `mod` — leaves every impl, so a build there counts as outside; a
+/// column-0 comment does not. Every line is read without its `//` comment, so
+/// a comment line or a trailing comment neither bounds an impl nor hides the
+/// `{` that closes a header.
 fn builds_outside_terminating_impls(source: &str, kinds: &[String]) -> (Vec<usize>, usize) {
     let lines: Vec<&str> = source.lines().collect();
     let mut outside = Vec::new();
@@ -127,15 +132,17 @@ fn builds_outside_terminating_impls(source: &str, kinds: &[String]) -> (Vec<usiz
         } else if column_zero_code && !in_header {
             in_terminating_impl = false;
         }
-        if in_header && !is_comment {
+        // A comment line's `code` is blank, so it neither bounds the impl nor
+        // closes the header.
+        if in_header {
             if bounds_s_terminating(code) {
                 in_terminating_impl = true;
             }
-            let end = code.trim_end();
-            if end.ends_with("{}") {
-                in_header = false;
-                in_terminating_impl = false;
-            } else if end.ends_with('{') {
+            // The header ends at the first line holding a `{`, wherever on
+            // the line it is: `impl .. {}` and `impl .. { fn f() {} }` end
+            // their header on their own line, so the next column-0 item
+            // leaves the impl.
+            if code.contains('{') {
                 in_header = false;
             }
         }
@@ -160,12 +167,16 @@ fn builds_outside_terminating_impls(source: &str, kinds: &[String]) -> (Vec<usiz
 /// `S: Terminating`, so a lent `InPass` builder can reach none of them.
 /// Positive control: the kind reader finds `Ret` and `Unreachable`; in
 /// synthetic sources the scanner flags a build in a `S: Positioning` impl
-/// and accepts one in a `S: Terminating` impl; and seven more controls each
-/// pin one scanner rule (an impl's closing `}`, `impl<` / `impl ` only, a
-/// one-line `impl .. {}`, a comment line, a trailing comment, a `{` before a
-/// trailing comment, the whole trait name), each checked to fail with only
-/// its rule removed. And the tree has builds to check, so a rename cannot
-/// make the test pass vacuously.
+/// and accepts one in a `S: Terminating` impl; and ten more controls pin the
+/// scanner's six rules — an impl's closing `}` (one control); `impl<` /
+/// `impl ` only (one); a header ends at its first `{` (two: `impl .. {}`, a
+/// whole body on the header line); comment stripping (three: a comment line,
+/// a trailing comment, a `{` before a trailing comment); the whole trait
+/// name (two: a longer name after `S`, and before it); a column-0 comment is
+/// no item (one). Each control was checked by breaking only the mechanism it
+/// names and seeing its assertion fail. The precondition check
+/// ([`slashes_in_strings`]) has its own control. And the tree has builds to
+/// check, so a rename cannot make the test pass vacuously.
 ///
 /// No upstream counterpart: llvmkit-specific regression for the lent-builder
 /// terminator law (`docs/design/layout-token-design.md` decisions 9 and 10).
@@ -205,20 +216,22 @@ fn every_terminator_payload_is_built_in_a_terminating_impl() {
         builds_outside_terminating_impls(macro_call, &kinds),
         (vec![5], 1)
     );
-    // Rule: a one-line `impl .. {}` closes its own header, so a following
-    // fn's `where S: Terminating` marks nothing.
+    // Rule: a header ends at the first line holding a `{`: a one-line
+    // `impl .. {}` closes its own header, so a following fn's
+    // `where S: Terminating` marks nothing ...
     let empty_impl = "impl Marker for State {}\nfn helper<S>() -> K\nwhere\n    S: Terminating,\n{\n    InstructionKindData::Br(p)\n}\n";
     assert_eq!(
         builds_outside_terminating_impls(empty_impl, &kinds),
         (vec![6], 1)
     );
-    // Rule: a comment line in a header bounds nothing.
+    // Rule: every line is read without its `//` comment, so a comment line
+    // in a header bounds nothing ...
     let comment_line = "impl<S> X<S>\nwhere\n    S: Positioning,\n    // unlike an impl bounded S: Terminating\n{\n    fn f(&self) {\n        InstructionKindData::Br(p);\n    }\n}\n";
     assert_eq!(
         builds_outside_terminating_impls(comment_line, &kinds),
         (vec![7], 1)
     );
-    // Rule: a trailing comment bounds nothing ...
+    // ... a trailing comment bounds nothing ...
     let trailing_comment = "impl<S> X<S>\nwhere\n    S: Positioning, // unlike S: Terminating\n{\n    fn f(&self) {\n        InstructionKindData::Br(p);\n    }\n}\n";
     assert_eq!(
         builds_outside_terminating_impls(trailing_comment, &kinds),
@@ -236,6 +249,32 @@ fn every_terminator_payload_is_built_in_a_terminating_impl() {
         builds_outside_terminating_impls(longer_name, &kinds),
         (vec![6], 1)
     );
+    // ... on both sides of `S`.
+    let longer_before = "impl<S> X<S>\nwhere\n    XS: Terminating,\n{\n    fn f(&self) {\n        InstructionKindData::Br(p);\n    }\n}\n";
+    assert_eq!(
+        builds_outside_terminating_impls(longer_before, &kinds),
+        (vec![6], 1)
+    );
+    // Rule: a column-0 comment inside an impl is no column-0 item, so it
+    // does not end the impl.
+    let column_zero_comment = "impl<S> X<S>\nwhere\n    S: Terminating,\n{\n// a note at column 0\n    fn f(self) {\n        InstructionKindData::Br(p);\n    }\n}\n";
+    assert_eq!(
+        builds_outside_terminating_impls(column_zero_comment, &kinds),
+        (Vec::new(), 1)
+    );
+    // The precondition check: a `//` inside a string is found; a comment
+    // line, and a trailing comment after a closed string, are not.
+    assert_eq!(
+        slashes_in_strings("let s = \"a//b\";\n// fine\nlet t = \"x\"; // fine\n"),
+        vec![1]
+    );
+    // ... and so does a header line carrying a whole body, so the next free
+    // fn is outside the impl.
+    let one_line_body = "impl<S> X<S> where S: Terminating { fn f() {} }\nfn helper() -> K {\n    InstructionKindData::Br(p)\n}\n";
+    assert_eq!(
+        builds_outside_terminating_impls(one_line_body, &kinds),
+        (vec![3], 1)
+    );
 
     let mut files = vec![String::from("ir_builder.rs")];
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -248,9 +287,18 @@ fn every_terminator_payload_is_built_in_a_terminating_impl() {
     let mut builds = 0;
     let mut violations = Vec::new();
     for file in &files {
-        let (outside, seen) = builds_outside_terminating_impls(&source(file), &kinds);
+        let text = source(file);
+        let (outside, seen) = builds_outside_terminating_impls(&text, &kinds);
         builds += seen;
         violations.extend(outside.into_iter().map(|line| format!("{file}:{line}")));
+        // The scanner's precondition: no `//` opens inside a string, which
+        // `without_trailing_comment` would mistake for a comment and cut a
+        // build away with.
+        violations.extend(
+            slashes_in_strings(&text).into_iter().map(|line| {
+                format!("{file}:{line} (`//` inside a string; the scanner would cut it)")
+            }),
+        );
     }
     assert!(
         builds > 0,

@@ -17,7 +17,7 @@
 //! No upstream counterpart: upstream stores every lane of a fixed vector, so
 //! a walk over them costs what building them already did.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Reads one lane, at an index it is given.
 const ONE_LANE: &str = "reads one lane";
@@ -164,26 +164,9 @@ fn fills(code: &str) -> usize {
     repeats + code.matches(".map(|_|").count()
 }
 
-/// Every `.rs` file under `dir`, recursively, sorted.
-fn rust_files(dir: &Path) -> Vec<PathBuf> {
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                walk(&path, out);
-            } else if path.extension().is_some_and(|extension| extension == "rs") {
-                out.push(path);
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(dir, &mut out);
-    out.sort();
-    out
-}
+#[path = "support/source_files.rs"]
+mod source_files;
+use source_files::rust_files;
 
 /// The name of the function whose body holds line `index`: the nearest
 /// earlier line that declares one, comments skipped.

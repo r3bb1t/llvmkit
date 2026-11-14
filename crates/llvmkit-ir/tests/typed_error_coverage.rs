@@ -98,45 +98,47 @@ fn variants<'s>(source: &'s str, name: &str) -> Vec<&'s str> {
         .collect()
 }
 
-/// Every `.rs` file under `dir`, recursively.
-fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            rust_files(&path, out);
-        } else if path.extension().is_some_and(|extension| extension == "rs") {
-            out.push(path);
-        }
-    }
-}
+#[path = "support/source_files.rs"]
+mod walker;
+use walker::rust_files;
 
 /// The text of every test file in the workspace crates but this one: each
-/// crate's `tests/`, and each `src/*_tests/` test-module directory.
+/// crate's `tests/`, and each `src/*_tests/` test-module directory. A crate
+/// with no `tests/` (or an entry of `crates/` with no `src/`) is skipped; a
+/// directory that exists but cannot be read fails the test, never shrinks
+/// the scan.
 fn test_sources() -> String {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let mut files = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&crates) else {
-        panic!("the workspace's crates directory is readable");
-    };
-    for entry in entries.flatten() {
-        rust_files(&entry.path().join("tests"), &mut files);
+    let mut files: Vec<PathBuf> = Vec::new();
+    let entries = std::fs::read_dir(&crates)
+        .unwrap_or_else(|error| panic!("the workspace's crates directory reads: {error}"));
+    for entry in entries {
+        let crate_dir = entry
+            .unwrap_or_else(|error| panic!("an entry of the crates directory reads: {error}"))
+            .path();
+        let tests = crate_dir.join("tests");
+        if tests.is_dir() {
+            files.extend(rust_files(&tests));
+        }
         // The in-crate test modules under `src/` that live in a directory of
         // their own (`src/phi_raw_tests/`): the rest of `src/` raises the
         // variants, so it cannot count as asserting them.
-        let Ok(src_entries) = std::fs::read_dir(entry.path().join("src")) else {
+        let src = crate_dir.join("src");
+        if !src.is_dir() {
             continue;
-        };
-        for src_entry in src_entries.flatten() {
-            let path = src_entry.path();
+        }
+        let src_entries = std::fs::read_dir(&src)
+            .unwrap_or_else(|error| panic!("{} reads: {error}", src.display()));
+        for src_entry in src_entries {
+            let path = src_entry
+                .unwrap_or_else(|error| panic!("an entry of {} reads: {error}", src.display()))
+                .path();
             if path.is_dir()
                 && path
                     .file_name()
                     .is_some_and(|name| name.to_string_lossy().ends_with("_tests"))
             {
-                rust_files(&path, &mut files);
+                files.extend(rust_files(&path));
             }
         }
     }

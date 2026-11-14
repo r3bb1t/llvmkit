@@ -445,3 +445,19 @@ the function.
      `ForeignLayoutToken` (it takes no token); the two drift tests' file
      walkers are one strict walker (a directory that cannot be read fails
      the test); the `Blame` group comment names layout tokens.
+13. **Review of `6fbbff7d`.** Decision 12's "seven rules, each red-checked"
+   was still one short: the comment-line control pinned no rule of its own
+   (the stripping already blanked the line), and the whole-name rule was
+   checked on one side only. The scanner now has six rules, each named
+   with its controls in the test's doc and each control red-checked by
+   breaking only its mechanism: an impl's closing `}`; `impl<` / `impl `
+   only; a header ends at the first line holding a `{` (so a header line
+   carrying a whole body ends it, the case that used to leak into the next
+   free fn); comment stripping (comment line, trailing comment, `{` before
+   a trailing comment); the whole trait name, on both sides; a column-0
+   comment is no item. The stripping's precondition — no `//` inside a
+   string — is now checked over every scanned file, not stated. The
+   token-first test snapshots the token's module as well as the edited
+   one. Every drift test that walks source files shares one strict walker
+   (`tests/support/source_files.rs`, included by `#[path]`), so none skips
+   an unreadable directory.

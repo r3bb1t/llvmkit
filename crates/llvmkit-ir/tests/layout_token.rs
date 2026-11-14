@@ -12,10 +12,12 @@
 //! `grep -rn -B6 "key: &'[a-z]* mut \(crate::\)\?LayoutToken\|key: &mut \(crate::\)\?LayoutToken" crates/llvmkit-ir/src --include=*.rs | grep -oE "pub (\(crate\) )?fn [a-z_]+" | sort | uniq -c`:
 //! the ten layout edits (`erase_from_parent`, `detach_from_parent`,
 //! `move_before`, `move_after`, `insert_before`, `insert_after`, `append_to`,
-//! `split_at`, `split_before`, `splice_into`) are the first test; the entries
-//! that bind a builder to a handle (`IrBuilder::at_end`,
-//! `BasicBlock::builder`, `SsaBuilder::for_function` /
-//! `with_folder_for_function`) are the second. The rest take a token and no
+//! `split_at`, `split_before`, `splice_into`) are the first test, and the
+//! eight of them that take a second handle (all but `erase_from_parent` and
+//! `detach_from_parent`) the second; the entries that bind a builder to a
+//! handle (`IrBuilder::at_end`, `BasicBlock::builder`,
+//! `SsaBuilder::for_function` / `with_folder_for_function`) are the third.
+//! The rest take a token and no
 //! handle (`IrBuilder::new` / `new_for` / `new_for_return` / `with_folder`,
 //! and the two `TypedFunctionValue::builder`s, which read only the function's
 //! type): they return an unpositioned builder, and positioning it is where a
@@ -159,12 +161,14 @@ fn every_keyed_edit_refuses_another_modules_token() {
     );
 }
 
-/// Each of the eight layout edits that take a second handle (an anchor, a
-/// destination block, a split point) refuses a foreign token with
+/// Each of the eight layout edits that take a second handle — the ten in the
+/// file header but `erase_from_parent` and `detach_from_parent`; an anchor, a
+/// destination block or a split point — refuses a foreign token with
 /// `IrError::ForeignLayoutToken` even when that second handle is foreign
 /// too: the token is checked first, so the error names the token argument.
 /// The second handles here are all of the token's module, which is not the
-/// edited one; checked second, they would answer `ForeignValueId`.
+/// edited one; checked second, they would answer `ForeignValueId`. Neither
+/// module changes.
 #[test]
 fn a_foreign_token_is_named_before_a_foreign_second_handle() {
     let mut owner_module = Module::dynamic("token-owner");
@@ -205,6 +209,7 @@ fn a_foreign_token_is_named_before_a_foreign_second_handle() {
     let split_before = returning(&mut edited_key, "split_before").block;
     let spliced = returning(&mut edited_key, "spliced").block;
     let before = format!("{edited}");
+    let owner_before = format!("{owner}");
 
     let outcomes: Vec<(&str, Result<(), IrError>)> = vec![
         (
@@ -263,6 +268,11 @@ fn a_foreign_token_is_named_before_a_foreign_second_handle() {
         format!("{edited}"),
         before,
         "a refused edit changes nothing"
+    );
+    assert_eq!(
+        format!("{owner}"),
+        owner_before,
+        "a refused edit changes nothing on its second handle's side either"
     );
 }
 

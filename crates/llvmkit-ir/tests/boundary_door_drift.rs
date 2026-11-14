@@ -14,7 +14,7 @@
 //! No upstream counterpart: LLVM's `BasicBlock *` carries no module tag and has
 //! no door to keep honest.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// The exception door's call spelling.
 const DOOR_CALL: &str = ".slot_unchecked_at_marked_boundary()";
@@ -28,26 +28,9 @@ const MARKERS: [&str; 2] = [
     concat!("// boundary ", "(F2): Task 27"),
 ];
 
-/// Every `.rs` file under `dir`, recursively.
-fn rust_files(dir: &Path) -> Vec<PathBuf> {
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                walk(&path, out);
-            } else if path.extension().is_some_and(|ext| ext == "rs") {
-                out.push(path);
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(dir, &mut out);
-    out.sort();
-    out
-}
+#[path = "support/source_files.rs"]
+mod source_files;
+use source_files::rust_files;
 
 /// The 1-based line numbers of the door calls in `source` that are **not**
 /// under a marker, and the number of calls seen.
