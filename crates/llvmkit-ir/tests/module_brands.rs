@@ -48,7 +48,7 @@ fn bare_brand_builds_a_module() {
         .add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)
         .expect("declare");
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::at_end(&mut key, entry);
+    let b = IrBuilder::at_end(&mut key, entry).expect("the block is the token's module's");
     let (lhs, rhs) = m.view(f).params();
     let sum = b.int_add(lhs, rhs, "sum").expect("add");
     b.ret(sum).expect("ret");

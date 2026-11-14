@@ -63,7 +63,7 @@
 //!     let fn_ty = m.function_type_no_parameters(i32_ty)?;
 //!     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
 //!     let entry = m.view(f).append_basic_block(m, "entry");
-//!     let b = IrBuilder::at_end(&mut key, entry);
+//!     let b = IrBuilder::at_end(&mut key, entry)?;
 //!     b.ret(i32_ty.const_int(1_u32))?;
 //!
 //!     let verified = module.verify()?;
@@ -201,7 +201,8 @@ pub trait FunctionPass<B: ModuleBrand> {
 
 /// A pass over one module at capability rung [`Self::Access`]. The module-level
 /// mirror of [`FunctionPass`]. A module pass reaches per-function bodies by
-/// iterating `rewrite.patch_functions()` / `rewrite.reshape_functions()` inline,
+/// walking `rewrite.patch_functions()` / `rewrite.reshape_functions()` inline
+/// (lending cursors: `while let Some(patch) = functions.step()`),
 /// so there is no `FnAccess`/`FnRequires` associated type here — the function
 /// rung is the method name, chosen at the call site.
 pub trait ModulePass<B: ModuleBrand> {

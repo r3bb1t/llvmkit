@@ -66,7 +66,7 @@ pub fn build<B: ModuleBrand>(key: &mut LayoutToken<'_, B>) -> Result<(), IrError
         .build()?;
 
     let entry = m.view(add_fn).append_basic_block(m, "entry");
-    let b = IrBuilder::at_end(key, entry);
+    let b = IrBuilder::at_end(key, entry)?;
 
     let rax: IntValue<'_, i64, _> = m.view(add_fn).param(0)?.try_into()?;
     let rbx: IntValue<'_, i64, _> = m.view(add_fn).param(1)?.try_into()?;
@@ -92,7 +92,7 @@ pub fn build<B: ModuleBrand>(key: &mut LayoutToken<'_, B>) -> Result<(), IrError
         .return_attribute(AttrKind::NoUndef)
         .build()?;
     let entry = m.view(main_fn).append_basic_block(m, "entry");
-    let b = IrBuilder::at_end(key, entry);
+    let b = IrBuilder::at_end(key, entry)?;
     let one = i32_ty.const_int(1_i32);
     let one_v = IntValue::<i32, _>::try_from(one.as_erased())?;
     b.ret(one_v)?;

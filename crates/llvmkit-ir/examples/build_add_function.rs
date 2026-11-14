@@ -28,7 +28,7 @@ fn build() -> Result<(), IrError> {
     let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
 
-    let b = IrBuilder::at_end(&mut key, entry);
+    let b = IrBuilder::at_end(&mut key, entry)?;
     let (lhs, rhs) = m.view(f).params();
     let sum = b.int_add(lhs, rhs, "sum")?;
     b.ret(sum)?;

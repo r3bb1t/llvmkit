@@ -41,7 +41,7 @@ fn main() {
         .unwrap()
         .as_function();
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = llvmkit_ir::IrBuilder::at_end(&mut key, entry);
+    let b = llvmkit_ir::IrBuilder::at_end(&mut key, entry).unwrap();
     b.ret_void();
     let node = m.metadata_string("attached");
 
@@ -56,7 +56,7 @@ fn main() {
         .unwrap()
         .as_function();
     let n_entry = n.view(g).append_basic_block(&n, "entry");
-    llvmkit_ir::IrBuilder::at_end(&mut n_key, n_entry).ret_void();
+    llvmkit_ir::IrBuilder::at_end(&mut n_key, n_entry).unwrap().ret_void();
     let inst = n
         .view(g)
         .entry_block()

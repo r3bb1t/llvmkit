@@ -107,17 +107,17 @@ pub fn build<B: ModuleBrand>(key: &mut LayoutToken<'_, B>) -> Result<(), IrError
 
     let (cond, x, y) = m.view(f).params();
 
-    IrBuilder::at_end(key, entry).cond_br(cond, then_label, else_label)?;
+    IrBuilder::at_end(key, entry)?.cond_br(cond, then_label, else_label)?;
 
-    let bt = IrBuilder::at_end(key, then_bb);
+    let bt = IrBuilder::at_end(key, then_bb)?;
     let add_xy = bt.int_add(x, y, "add_xy")?;
     bt.br_with_args(merge_label, &[m.view(add_xy).as_erased()])?;
 
-    let be = IrBuilder::at_end(key, else_bb);
+    let be = IrBuilder::at_end(key, else_bb)?;
     let sub_xy = be.int_sub(x, y, "sub_xy")?;
     be.br_with_args(merge_label, &[m.view(sub_xy).as_erased()])?;
 
-    let bm = IrBuilder::at_end(key, merge);
+    let bm = IrBuilder::at_end(key, merge)?;
     // `params[0]` is `merge`'s head-phi, seeded with `[ %add_xy, %then ]` and
     // `[ %sub_xy, %else ]` by the two block-argument branches above.
     let result: IntValue<'_, i32, _> = params[0].try_into()?;

@@ -9,7 +9,7 @@ error[E0382]: use of moved value: `b`
 31 |     let (_again, _term2) = b.ret_void();
    |                            ^ value used here after move
    |
-note: `IrBuilder::<'m, 'ctx, B, F, PositionedAtEnd, ()>::ret_void` takes ownership of the receiver `self`, which moves `b`
+note: `IrBuilder::<'m, 'ctx, B, F, S, ()>::ret_void` takes ownership of the receiver `self`, which moves `b`
   --> src/ir_builder.rs
    |
    |     pub fn ret_void(self) -> VoidReturnInst<'ctx, B> {

@@ -77,7 +77,7 @@ use super::instruction::{
     Instruction, InstructionView, NonTerminator, PlacedInstruction, TerminatorKind, state,
 };
 use super::ir_builder::constant_folder::ConstantFolder;
-use super::ir_builder::{InsertPoint, IrBuilder, Positioning};
+use super::ir_builder::{InsertPoint, IrBuilder, PositionedBefore, Positioning};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::pass_access::{
@@ -910,25 +910,53 @@ where
     /// `pub(crate)` on purpose: this token carries the module's declaration
     /// surface, which the `PatchBody` floor ("everything but the body of this
     /// function is preserved") does not account for. Pass authors reach types
-    /// through [`Self::module`], a positioned builder through
-    /// [`Self::builder_at`], and instruction construction through
-    /// [`IrBuilder::at_end`].
+    /// through [`Self::module`], and a positioned builder through
+    /// [`Self::builder_before`] (before one of this function's instructions)
+    /// or [`Self::builder_at`] (a saved [`InsertPoint`]).
     #[inline]
     pub(crate) fn module_mut(&self) -> &'m Module<B, Unverified> {
         self.module
     }
 
+    /// A builder positioned before `anchor`, an instruction of this function.
+    /// Mirrors constructing `IRBuilder<> B(I)` inside a pass: new
+    /// instructions go in front of `anchor`. The builder borrows this context
+    /// `&mut`, exactly as [`Self::builder_at`]'s does, so no other edit runs
+    /// on the function while it lives. Its return marker is [`Dyn`]: this
+    /// context sees the function erased, so `ret` checks the type at run time.
+    ///
+    /// Witnesses the dirty flag on success, for [`Self::builder_at`]'s reason.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::ForeignValueId`] for an anchor of another module,
+    /// [`IrError::InstructionHasNoParent`] for one detached since its witness
+    /// was made, and [`BlockError::BlockNotInFunction`] for one in another
+    /// function: a function pass builds into its own function and no other.
+    #[inline]
+    pub fn builder_before<C2: Capability>(
+        &mut self,
+        anchor: PlacedInstruction<'m, B, C2>,
+    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, PositionedBefore, Dyn>> {
+        let builder = IrBuilder::new_for_unkeyed::<Dyn>(self.module).position_before(anchor)?;
+        // Internal: the pass's own function, read in its own module.
+        let own_function = self.function.as_function().slot_trusting_same_module();
+        if builder.insert_block().parent_id() != Some(own_function) {
+            return Err(BlockError::BlockNotInFunction.into());
+        }
+        self.dirty.set(true);
+        Ok(builder)
+    }
+
     /// A builder restored at a previously saved [`InsertPoint`], anchored in
-    /// this function's module. The first-class replacement for the
-    /// `IrBuilder::new(module_mut())` spelling that the now-crate-private
-    /// `module_mut` used to enable: it hands back exactly a positioned
-    /// builder, never the module's declaration surface, in the state the
-    /// insert point was saved in. Errors the same way
+    /// this function's module, in the state the insert point was saved in.
+    /// It hands back exactly a positioned builder, never the module's
+    /// declaration surface. Errors the same way
     /// [`IrBuilder::restore_insert_point`] does: a block that has since grown
     /// a terminator, or an anchor that has since left its block. And a block
     /// of another function in this module, or of no function, is refused with
     /// [`BlockError::BlockNotInFunction`]: a function pass builds into its own
-    /// function and no other.
+    /// function and no other. The builder borrows this context `&mut`.
     ///
     /// Handing out a positioned builder over the mutable module token is
     /// intent-to-mutate, so the dirty flag is witnessed here on success. Unlike
@@ -1315,6 +1343,17 @@ where
     #[inline]
     pub fn module(&self) -> ModuleView<'m, B> {
         self.patch.module()
+    }
+
+    /// A builder positioned before `anchor`, an instruction of this function.
+    /// Delegated from the inner [`FnPatch::builder_before`], with the same
+    /// refusals.
+    #[inline]
+    pub fn builder_before<C2: Capability>(
+        &mut self,
+        anchor: PlacedInstruction<'m, B, C2>,
+    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, PositionedBefore, Dyn>> {
+        self.patch.builder_before(anchor)
     }
 
     /// A builder restored at a previously saved [`InsertPoint`]. Delegated from
@@ -3297,14 +3336,16 @@ where
         R::select(&self.results)
     }
 
-    /// Iterate every function *definition* in module order as a [`PatchBody`]
+    /// Walk every function *definition* in module order as a [`PatchBody`]
     /// mutator built from this module's mutation token. Declarations (no entry
     /// block) are skipped. This is the load-bearing module→function descent for
     /// hand-written module passes:
     ///
     /// ```ignore
-    /// for patch in rewrite.patch_functions() {
-    ///     // `?`, `continue` and `break` all just work — this is a plain `for`.
+    /// let m = rewrite.module_mut();          // fetched first: `&'m Module`
+    /// let mut functions = rewrite.patch_functions();
+    /// while let Some(patch) = functions.step() {
+    ///     // one `FnPatch` at a time; `m` stays usable for module-level edits
     /// }
     /// ```
     ///
@@ -3312,29 +3353,35 @@ where
     /// method name rather than a turbofished access marker, so nothing here is
     /// generic over the rung and no `MutatingFn::Mutator` GAT has to be spelled.
     ///
-    /// The returned iterator borrows nothing from `self` — it copies the module
-    /// token and holds the same function *snapshot*
-    /// [`ModuleView::functions`](crate::ModuleView::functions) always takes — so
-    /// [`Self::module_mut`] stays callable inside the loop (declaring a global
-    /// per patched function is the sanitizer shape) and functions added while
-    /// iterating are simply not visited.
+    /// The cursor borrows `self` `&mut`, and each [`PatchFunctions::step`]
+    /// lends one mutator borrowing the cursor, so a pass holds at most one
+    /// function mutator at a time. That is what makes a mutator's builder the
+    /// module's one editor: two mutators alive at once could each make a
+    /// builder, and one could erase the other's anchor (see
+    /// [`LayoutToken`](crate::LayoutToken)). The cursor walks the same function
+    /// *snapshot* [`ModuleView::functions`](crate::ModuleView::functions)
+    /// always takes, so functions added while walking are not visited.
+    /// [`Self::module_mut`] returns a `&'m Module` that does not borrow `self`,
+    /// so fetch it before the walk to keep module-level edits (declaring a
+    /// global per patched function is the sanitizer shape) inside the loop.
     ///
     /// Per-function analysis prefetch is deliberately future work: each mutator
     /// is built with empty results `()`, so a [`FnPatch::analysis`] call inside
     /// the loop has no members to select. A future revision threads a
     /// per-function `Requires` list through here.
     #[inline]
-    pub fn patch_functions(&self) -> PatchFunctions<'m, 'ctx, B> {
+    pub fn patch_functions(&mut self) -> PatchFunctions<'_, 'm, 'ctx, B> {
         PatchFunctions {
             token: self.token,
             functions: ModuleFunctionViews::new(self.module()),
+            _rewrite: PhantomData,
             _ctx: PhantomData,
         }
     }
 
-    /// Iterate every function *definition* in module order as a [`ReshapeCfg`]
+    /// Walk every function *definition* in module order as a [`ReshapeCfg`]
     /// mutator — the CFG-editing twin of [`Self::patch_functions`], with the
-    /// same snapshot and skip-declarations semantics.
+    /// same one-at-a-time lending, snapshot and skip-declarations semantics.
     ///
     /// A yielded [`FnReshape`]'s recorded [`CfgUpdate`] log does not reach the
     /// driver's witnessed flush: this rung's own [`Self::done`] floor is already
@@ -3344,10 +3391,11 @@ where
     /// [`Self::module_mut`] hands out unwitnessed module-structural mutation —
     /// deliberately, since that is the [`RewriteModule`] rung's reason to exist.
     #[inline]
-    pub fn reshape_functions(&self) -> ReshapeFunctions<'m, 'ctx, B> {
+    pub fn reshape_functions(&mut self) -> ReshapeFunctions<'_, 'm, 'ctx, B> {
         ReshapeFunctions {
             token: self.token,
             functions: ModuleFunctionViews::new(self.module()),
+            _rewrite: PhantomData,
             _ctx: PhantomData,
         }
     }
@@ -3360,88 +3408,75 @@ where
     }
 }
 
-/// Iterator over per-function [`FnPatch`] mutators, one per function
+/// Cursor over per-function [`FnPatch`] mutators, one per function
 /// *definition* in module order. Returned by [`ModRewrite::patch_functions`].
 ///
-/// Yielding a mutator out of an iterator (rather than into a closure) is sound
-/// because a mutator borrows the *module*, not the iterator: it holds a copy of
-/// the shared `&'m Module<Unverified>` token plus its own witnessed state, and
-/// IR mutation flows through that token's interior-mutable arena. So the items
-/// are independent of `next`'s `&mut self` — no lending iterator is needed, and
-/// several may be alive at once (they address distinct functions).
+/// A lending cursor, not an `Iterator`: [`step`](Self::step) lends one
+/// mutator borrowing the cursor, and the cursor borrows the [`ModRewrite`]
+/// `&mut`, so at most one function mutator of a module pass is alive at a
+/// time. Two at once could each hand out a builder (`builder_at`), and one
+/// mutator's edit could then invalidate the other's builder, which the
+/// [`LayoutToken`](crate::LayoutToken) design rules out.
 ///
-/// Dropping a yielded mutator without calling its `done()` discards that
+/// Dropping a lent mutator without calling its `done()` discards that
 /// function's report. Sound by construction: [`ModRewrite::done`]'s floor is
 /// `none()`, so the module report already claims nothing.
 #[derive(Branded)]
 #[branded(Debug)]
-pub struct PatchFunctions<'m, 'ctx, B: ModuleBrand + 'ctx>
+pub struct PatchFunctions<'a, 'm, 'ctx, B: ModuleBrand + 'ctx>
 where
     'ctx: 'm,
 {
     token: &'m Module<B, Unverified>,
     functions: ModuleFunctionViews<'m, B>,
-    /// The yielded mutator's analysis region. Named only in `Item`, so it needs
-    /// a marker to stay a parameter of this struct.
+    /// The `&mut` borrow of the [`ModRewrite`] this cursor walks, which keeps
+    /// a second cursor from existing alongside it.
+    _rewrite: PhantomData<&'a mut ()>,
+    /// The lent mutator's analysis region.
     _ctx: PhantomData<fn() -> &'ctx ()>,
 }
 
-impl<'m, 'ctx, B: ModuleBrand + 'ctx> Iterator for PatchFunctions<'m, 'ctx, B> {
-    // The `'r` (prefetched-results) slot is bound to `'m`: the `Requires` list
-    // is `()`, so the slot carries no borrow to keep separate.
-    type Item = FnPatch<'m, 'm, 'ctx, B, ()>;
-
+impl<'a, 'm, 'ctx, B: ModuleBrand + 'ctx> PatchFunctions<'a, 'm, 'ctx, B> {
+    /// The next function definition's mutator, or `None` once every one has
+    /// been lent. The mutator borrows this cursor, so it is gone before the
+    /// next one is lent. Named `step`, like the other cursors
+    /// ([`BlockCursor::step`](crate::iter::BlockCursor::step)), because it is
+    /// not `Iterator::next`. The `'r` (prefetched-results) slot is the same
+    /// borrow: the `Requires` list is `()`, so it carries nothing.
     #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
+    pub fn step(&mut self) -> Option<FnPatch<'_, '_, 'ctx, B, ()>> {
         let function = self.functions.find(|f| f.entry_block().is_some())?;
         Some(FnPatch::new(self.token, function, ()))
     }
-
-    /// Lower bound 0 — the declarations skipped by [`Self::next`] are not known
-    /// until they are reached. The upper bound is the module's function count.
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (0, self.functions.size_hint().1)
-    }
 }
 
-// `find` over a fused iterator (`ModuleFunctionViews`) keeps returning `None`.
-impl<'m, 'ctx, B: ModuleBrand + 'ctx> FusedIterator for PatchFunctions<'m, 'ctx, B> {}
-
-/// Iterator over per-function [`FnReshape`] mutators, one per function
+/// Cursor over per-function [`FnReshape`] mutators, one per function
 /// *definition* in module order. Returned by
 /// [`ModRewrite::reshape_functions`]; the CFG-editing twin of
-/// [`PatchFunctions`], with the same soundness argument.
+/// [`PatchFunctions`], lending one mutator at a time for the same reason.
 #[derive(Branded)]
 #[branded(Debug)]
-pub struct ReshapeFunctions<'m, 'ctx, B: ModuleBrand + 'ctx>
+pub struct ReshapeFunctions<'a, 'm, 'ctx, B: ModuleBrand + 'ctx>
 where
     'ctx: 'm,
 {
     token: &'m Module<B, Unverified>,
     functions: ModuleFunctionViews<'m, B>,
-    /// The yielded mutator's analysis region. Named only in `Item`, so it needs
-    /// a marker to stay a parameter of this struct.
+    /// The `&mut` borrow of the [`ModRewrite`] this cursor walks.
+    _rewrite: PhantomData<&'a mut ()>,
+    /// The lent mutator's analysis region.
     _ctx: PhantomData<fn() -> &'ctx ()>,
 }
 
-impl<'m, 'ctx, B: ModuleBrand + 'ctx> Iterator for ReshapeFunctions<'m, 'ctx, B> {
-    type Item = FnReshape<'m, 'm, 'ctx, B, ()>;
-
+impl<'a, 'm, 'ctx, B: ModuleBrand + 'ctx> ReshapeFunctions<'a, 'm, 'ctx, B> {
+    /// The next function definition's mutator, or `None` once every one has
+    /// been lent; see [`PatchFunctions::step`].
     #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
+    pub fn step(&mut self) -> Option<FnReshape<'_, '_, 'ctx, B, ()>> {
         let function = self.functions.find(|f| f.entry_block().is_some())?;
         Some(FnReshape::new(self.token, function, ()))
     }
-
-    /// Lower bound 0 — see [`PatchFunctions::size_hint`].
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (0, self.functions.size_hint().1)
-    }
 }
-
-impl<'m, 'ctx, B: ModuleBrand + 'ctx> FusedIterator for ReshapeFunctions<'m, 'ctx, B> {}
 
 impl MutatingModule for RewriteModule {
     type Mutator<'m, 'r, 'ctx, B, R>
@@ -4122,31 +4157,38 @@ mod tests {
 
         let cx: ModCx<'_, '_, '_, '_, _, RewriteModule, ()> =
             ModCx::new(module, m, (), &mam, &mut fam);
-        let r = cx.mutate();
+        let mut r = cx.mutate();
 
-        let mut visited: Vec<FunctionView<'_, _>> = Vec::new();
-        for (i, p) in r.patch_functions().enumerate() {
+        // `module_mut` returns a `&'m Module` that does not borrow `r`, so
+        // fetched before the walk it keeps the module's declaration surface
+        // reachable mid-loop — the sanitizer shape (a global per patched
+        // function) — while the cursor holds `r` `&mut`.
+        let declarations = r.module_mut();
+        // The cursor lends one mutator at a time, so its views do not outlive
+        // the step; the walk records storable ids instead.
+        let id_of = |view: FunctionView<'_, _>| view.as_function().id();
+        let mut visited = Vec::new();
+        let mut functions = r.patch_functions();
+        let mut i = 0_usize;
+        while let Some(p) = functions.step() {
             let fv = p.function();
-            visited.push(fv);
+            visited.push(id_of(fv));
             for (f, dead) in &dead_by_fn {
-                if *f == fv {
+                if id_of(*f) == id_of(fv) {
                     p.erase(&dead.as_non_terminator().expect("dead is a non-terminator"));
                 }
             }
-            // The iterator holds no borrow of `r`, so the module's own
-            // declaration surface stays reachable mid-loop — the sanitizer
-            // shape (a global per patched function).
-            r.module_mut()
-                .add_global(format!("seen.{i}"), i32_ty.const_zero())?;
+            declarations.add_global(format!("seen.{i}"), i32_ty.const_zero())?;
+            i += 1;
         }
 
         // Both definitions were visited; the declaration was skipped.
         assert_eq!(visited.len(), 2);
         // One global per visited definition, declared from inside the loop.
         assert_eq!(module.globals().count(), 2);
-        assert!(visited.contains(&fv1));
-        assert!(visited.contains(&fv2));
-        assert!(!visited.contains(&decl_view));
+        assert!(visited.contains(&id_of(fv1)));
+        assert!(visited.contains(&id_of(fv2)));
+        assert!(!visited.contains(&id_of(decl_view)));
 
         // Each visited def now holds only `ret` — the dead `add` is gone.
         assert_eq!(fv1.entry_block().expect("def").instruction_count(), 1);

@@ -1,0 +1,9 @@
+error[E0499]: cannot borrow `functions` as mutable more than once at a time
+  --> tests/compile_fail/module_pass_holds_one_function_mutator.rs:31:22
+   |
+30 |         let first = functions.step();
+   |                     --------- first mutable borrow occurs here
+31 |         let second = functions.step();
+   |                      ^^^^^^^^^ second mutable borrow occurs here
+32 |         let _ = (first, second);
+   |                  ----- first borrow later used here

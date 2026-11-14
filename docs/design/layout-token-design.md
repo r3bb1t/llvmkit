@@ -265,11 +265,40 @@ the function.
    (`Function::move_basic_block_to_end`) changes no block's contents, so it
    is not keyed either.
 4. **The builder's `'m`** (today an unused `PhantomData<&'m Module>`)
-   becomes the token borrow: `key: &'m mut LayoutToken<'ctx, B>`. The
-   builder's type parameters are unchanged.
-5. **Pass contexts** own the token the driver took. `builder_at` borrows the
-   context `&mut`, so no context edit can run while a pass's builder lives.
+   becomes the token borrow. As built, the builder keeps only the borrow
+   (`_key: PhantomData<&'m mut ()>`), since the token carries no data the
+   builder needs. Public constructors take `&'m mut LayoutToken<'ctx, B>`,
+   and crate-private unkeyed ones serve library code that holds the
+   permission further up. The builder's type parameters are unchanged.
+5. **Pass contexts hold no token.** The driver owns the module, so no user
+   token can be alive while a pass runs. Inside the pass, `builder_at` /
+   `builder_before` borrow the context `&mut`, so no context edit runs while
+   a pass's builder lives, and a module pass's function cursor lends one
+   mutator at a time (decision 7).
 6. **Witnesses (§3.6) are deferred.** The five witness entries need
    `&mut LayoutToken`, so a witness that borrows the token shared cannot be
    passed to them. They keep their run-time re-check, which stays correct.
    Folding the token into the witness is a later step.
+7. **Review of `24540903`.**
+   - **One function mutator at a time.** `ModRewrite::patch_functions` /
+     `reshape_functions` are lending cursors. `step` lends one mutator
+     borrowing the cursor, which borrows the rewrite context `&mut`. Before
+     this, two mutators over one function could be alive at once, and one's
+     edit could invalidate the other's builder. That route was the last that
+     could make a live builder's anchor stale, so the run-time stale-anchor
+     check is gone and before-anchor builds are infallible where nothing
+     else can refuse.
+   - **`builder_before`.** `FnPatch` / `FnReshape::builder_before(anchor)` is
+     how a pass starts a builder at one of its own instructions; before it,
+     a pass could only restore an `InsertPoint` saved outside.
+   - **`IrBuilder::at_end` / `BasicBlock::builder` return `IrResult`.** They
+     refuse a block of another module than the token's
+     (`ForeignLayoutToken`). Before this design they took the module from
+     the block; taking it from the token without a check would have written
+     into the wrong arena.
+   - **Remaining gap.** `position_at_end(bb)` is still infallible and does not
+     compare `bb`'s module with the builder's. It is one of the counted F1
+     boundaries (`docs/leftover-api-rewrite-work.md` §6, Task 26), whose fix
+     is a `Result` per site. Under a shared brand, a builder over one module
+     positioned at another module's block is outside the token's guarantee
+     until that task lands.

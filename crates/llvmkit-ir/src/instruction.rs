@@ -1447,8 +1447,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// Takes a [`PlacedInstruction`], so an anchor that was never in a block
     /// cannot reach this call (D1).
     ///
-    /// Errors with [`IrError::ForeignValueId`] if `other` belongs to another
-    /// module, and with [`IrError::InstructionHasNoParent`] if it was
+    /// Errors with [`IrError::ForeignLayoutToken`] if `key` is another
+    /// module's, with [`IrError::ForeignValueId`] if `other` belongs to
+    /// another module, and with [`IrError::InstructionHasNoParent`] if it was
     /// detached after the witness was made.
     pub fn move_before<C2: Capability>(
         self,
@@ -1508,8 +1509,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     ///
     /// Takes a [`PlacedInstruction`], as [`Self::move_before`] does.
     ///
-    /// Errors with [`IrError::ForeignValueId`] if `other` belongs to another
-    /// module, and with [`IrError::InstructionHasNoParent`] if it was
+    /// Errors with [`IrError::ForeignLayoutToken`] if `key` is another
+    /// module's, with [`IrError::ForeignValueId`] if `other` belongs to
+    /// another module, and with [`IrError::InstructionHasNoParent`] if it was
     /// detached after the witness was made.
     pub fn move_after<C2: Capability>(
         self,
@@ -1570,8 +1572,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     ///
     /// Takes a [`PlacedInstruction`], as the move entries do.
     ///
-    /// Errors with [`IrError::ForeignValueId`] if `other` belongs to another
-    /// module, and with [`IrError::InstructionHasNoParent`] if it was
+    /// Errors with [`IrError::ForeignLayoutToken`] if `key` is another
+    /// module's, with [`IrError::ForeignValueId`] if `other` belongs to
+    /// another module, and with [`IrError::InstructionHasNoParent`] if it was
     /// detached after the witness was made.
     pub fn insert_before<C2: Capability>(
         self,
@@ -1608,8 +1611,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     ///
     /// Takes a [`PlacedInstruction`], as the move entries do.
     ///
-    /// Errors with [`IrError::ForeignValueId`] if `other` belongs to another
-    /// module, and with [`IrError::InstructionHasNoParent`] if it was
+    /// Errors with [`IrError::ForeignLayoutToken`] if `key` is another
+    /// module's, with [`IrError::ForeignValueId`] if `other` belongs to
+    /// another module, and with [`IrError::InstructionHasNoParent`] if it was
     /// detached after the witness was made.
     pub fn insert_after<C2: Capability>(
         self,
@@ -1644,8 +1648,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     /// Append this detached instruction to the end of `block`'s
     /// instruction list. Mirrors `Instruction::insertInto(BB, BB->end())`.
     ///
-    /// Errors with [`IrError::ForeignValueId`] if `block` belongs to another
-    /// module.
+    /// Errors with [`IrError::ForeignLayoutToken`] if `key` is another
+    /// module's, and with [`IrError::ForeignValueId`] if `block` belongs to
+    /// another module.
     pub fn append_to<R: ReturnMarker>(
         self,
         key: &mut LayoutToken<'ctx, B>,

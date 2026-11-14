@@ -206,7 +206,7 @@ fn build() -> Result<(), IrError> {
     let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
 
-    let b = IrBuilder::at_end(&mut key, entry);
+    let b = IrBuilder::at_end(&mut key, entry)?;
     let (lhs, rhs) = m.view(f).params();
     let sum = b.int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
     b.ret(sum)?;
@@ -242,14 +242,14 @@ fn build_typed_call() -> Result<(), IrError> {
     let m = key.module();
     let callee = m.add_typed_function::<i32, (i32, i32), _>("add_inner", Linkage::External)?;
     let entry = m.view(callee).append_basic_block(m, "entry");
-    let b = IrBuilder::at_end(&mut key, entry);
+    let b = IrBuilder::at_end(&mut key, entry)?;
     let (lhs, rhs) = m.view(callee).params();
     let sum = b.int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
     b.ret(sum)?;
 
     let caller = m.add_typed_function::<i32, (i32, i32), _>("caller", Linkage::External)?;
     let entry = m.view(caller).append_basic_block(m, "entry");
-    let b = IrBuilder::at_end(&mut key, entry);
+    let b = IrBuilder::at_end(&mut key, entry)?;
     let (x, y) = m.view(caller).params();
 
     // `call` hands back a storable `TypedCallInstId`; `b.view(..)` reaches
@@ -396,7 +396,7 @@ fn typed_vec() -> Result<(), IrError> {
     let fn_ty = m.function_type(m.i32_type().as_type(), [v4i32.as_type(), v4i32.as_type()])?;
     let f = m.add_function_dyn("vadd", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::at_end(&mut key, entry);
+    let b = IrBuilder::at_end(&mut key, entry)?;
 
     // `try_into` checks element (i32) AND lane count (4) before stamping the markers.
     let a: VectorValue<'_, i32, Len<4>, _> =

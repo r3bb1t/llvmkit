@@ -82,7 +82,7 @@ pub fn build_atomic_inc<B: ModuleBrand>(key: &mut LayoutToken<'_, B>) -> Result<
     // separately built `FunctionType`.
     let f = m.add_typed_function::<i32, (Ptr,), _>("atomic_inc", Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::at_end(key, entry);
+    let b = IrBuilder::at_end(key, entry)?;
 
     // fence release
     let _ = b.fence(AtomicOrdering::Release, SyncScope::System, "");
@@ -135,29 +135,29 @@ pub fn build_dispatch<B: ModuleBrand>(key: &mut LayoutToken<'_, B>) -> Result<()
     // Each case body computes a single arithmetic op and returns.
     let (op, a, b_op) = m.view(f).params();
     {
-        let bb = IrBuilder::at_end(key, do_add);
+        let bb = IrBuilder::at_end(key, do_add)?;
         let r = bb.int_add(a, b_op, "r_add")?;
         bb.ret(r)?;
     }
     {
-        let bb = IrBuilder::at_end(key, do_sub);
+        let bb = IrBuilder::at_end(key, do_sub)?;
         let r = bb.int_sub(a, b_op, "r_sub")?;
         bb.ret(r)?;
     }
     {
-        let bb = IrBuilder::at_end(key, do_mul);
+        let bb = IrBuilder::at_end(key, do_mul)?;
         let r = bb.int_mul(a, b_op, "r_mul")?;
         bb.ret(r)?;
     }
     {
-        let bb = IrBuilder::at_end(key, default_bb);
+        let bb = IrBuilder::at_end(key, default_bb)?;
         bb.ret(0_i32)?;
     }
 
     // Build the entry switch. `add_case` returns the same `Open` handle
     // so the chain reads top-to-bottom; `finish` consumes it to a
     // `Closed` view that no longer accepts new cases at the type level.
-    let entry_b = IrBuilder::at_end(key, entry);
+    let entry_b = IrBuilder::at_end(key, entry)?;
     let (_sealed, sw) = entry_b.switch_dyn(op, default_label, "")?;
     let _closed = sw
         .add_case(i32_ty.const_int(0_i32), do_add_label)?

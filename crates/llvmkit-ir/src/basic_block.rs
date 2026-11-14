@@ -29,7 +29,7 @@ use super::instruction::{
     InstructionKindData, InstructionView, PlacedInstruction, absorb_debug_records,
 };
 use super::ir_builder::constant_folder::ConstantFolder;
-use super::ir_builder::{IrBuilder, PositionedAtEnd, at_end_infallible};
+use super::ir_builder::{IrBuilder, PositionedAtEnd};
 use super::keyed_list::KeyedList;
 use super::layout_token::LayoutToken;
 use super::marker::{Dyn, ReturnMarker};
@@ -614,10 +614,15 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     /// — the return marker `R` is inferred from the block, so no turbofish is
     /// needed. Reads better when `bb` is already in hand.
     #[inline]
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::ForeignLayoutToken`] if this block is not in `key`'s
+    /// module, as [`IrBuilder::at_end`](crate::IrBuilder::at_end) refuses.
     pub fn builder<'m>(
         self,
         key: &'m mut LayoutToken<'ctx, B>,
-    ) -> IrBuilder<'m, 'ctx, B, ConstantFolder, PositionedAtEnd, R> {
+    ) -> IrResult<IrBuilder<'m, 'ctx, B, ConstantFolder, PositionedAtEnd, R>> {
         IrBuilder::at_end(key, self)
     }
 }
@@ -1235,6 +1240,11 @@ impl<
     /// end. After the call, `self` is empty and every moved instruction's
     /// `parent` field has been re-pointed at `dest`. Mirrors
     /// `BasicBlock::splice` in `lib/IR/BasicBlock.cpp`.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::ForeignLayoutToken`] if `key` is another module's, and
+    /// [`IrError::ForeignValueId`] if `dest` is.
     pub fn splice_into<R2: ReturnMarker, S2: BlockTerminationState>(
         self,
         key: &mut LayoutToken<'ctx, B>,
@@ -1403,6 +1413,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
     ///
     /// Every refusal happens before anything is created, moved or rewritten:
     ///
+    /// - [`IrError::ForeignLayoutToken`] if `key` is another module's.
     /// - [`IrError::ForeignValueId`] if `before` belongs to another module.
     /// - [`BlockError`] (inside [`IrError::Block`]) if this block has no
     ///   terminator (upstream's `assert(getTerminator())`; a `Terminated` handle is not
@@ -1484,13 +1495,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
         }
 
         // BranchInst *BI = BranchInst::Create(New, this);
-        let (_, branch) = at_end_infallible(
-            IrBuilder::new_for_unkeyed::<R>(module_token)
-                .position_at_end(BasicBlock::<'ctx, R, Unterminated, B>::from_parts(
-                    self.id, own, self.ty,
-                ))
-                .br_to_slot_unchecked(new_id),
-        );
+        let (_, branch) = IrBuilder::new_for_unkeyed::<R>(module_token)
+            .position_at_end(BasicBlock::<'ctx, R, Unterminated, B>::from_parts(
+                self.id, own, self.ty,
+            ))
+            .br_to_slot_unchecked(new_id);
         // The splice left `I`'s records at this block's end, and inserting the
         // branch there adopts them (`Instruction::insertBefore`).
         // Internal: the branch was minted in this module just above.
@@ -1522,6 +1531,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
     ///
     /// Every refusal happens before anything is created, moved or retargeted:
     ///
+    /// - [`IrError::ForeignLayoutToken`] if `key` is another module's.
     /// - [`IrError::ForeignValueId`] if `before` belongs to another module.
     /// - [`BlockError`] (inside [`IrError::Block`]) if this block has no
     ///   terminator (upstream's `assert(getTerminator())`, which a `Terminated` handle does
@@ -1619,11 +1629,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
         }
 
         // BranchInst *BI = BranchInst::Create(this, New);
-        let (_, branch) = at_end_infallible(
-            IrBuilder::new_for::<R>(key)
-                .position_at_end(new_block)
-                .br_to_slot_unchecked(self.id),
-        );
+        let (_, branch) = IrBuilder::new_for::<R>(key)
+            .position_at_end(new_block)
+            .br_to_slot_unchecked(self.id);
         // The splice moved `I`'s records to the new block's end, and inserting
         // the branch there adopts them (`Instruction::insertBefore`).
         // Internal: the branch was minted in this module just above.

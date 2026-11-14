@@ -40,13 +40,13 @@ fn typestate_compile_fail() {
     // holds, so a builder's anchor cannot be erased under it. Primary error is
     // rustc's stable `E0499`.
     t.compile_fail("tests/compile_fail/erase_anchor_while_builder_lives.rs");
+    // A module pass's function cursor lends one mutator at a time, so it
+    // cannot hold two (each could hand out a builder). Primary error is
+    // rustc's stable `E0499`.
+    t.compile_fail("tests/compile_fail/module_pass_holds_one_function_mutator.rs");
     // An unpositioned builder has no insert point to save, so a snapshot
     // always names a block. Primary error is rustc's stable `E0277`.
     t.compile_fail("tests/compile_fail/save_insert_point_unpositioned.rs");
-    // A builder positioned before an instruction returns an `IrResult` from
-    // `ret_void`, the anchor having possibly left its block. Primary error is
-    // rustc's stable `E0308`.
-    t.compile_fail("tests/compile_fail/positioned_before_ret_void_is_fallible.rs");
     t.compile_fail("tests/compile_fail/retained_unterminated_block_cannot_reposition.rs");
     t.compile_fail("tests/compile_fail/terminated_block_cannot_start_cursor.rs");
     // Slice 7 "the break": the raw typed-phi builders and the open-phi

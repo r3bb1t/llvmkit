@@ -88,7 +88,7 @@ pub fn build<B: ModuleBrand>(key: &mut LayoutToken<'_, B>) -> Result<(), IrError
     // entry: %is_zero = icmp eq i32 %n, 0; then branch to `base` with no
     // arguments, or into `loop` carrying the header-phis' initial values
     // `[ acc = 1, i = %n ]`.
-    let b = IrBuilder::at_end(key, entry);
+    let b = IrBuilder::at_end(key, entry)?;
     let is_zero = b.int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
     b.cond_br_with_args(
         is_zero,
@@ -99,14 +99,14 @@ pub fn build<B: ModuleBrand>(key: &mut LayoutToken<'_, B>) -> Result<(), IrError
     )?;
 
     // base: ret i32 1
-    let b = IrBuilder::at_end(key, base);
+    let b = IrBuilder::at_end(key, base)?;
     b.ret(1_i32)?;
 
     // loop: `params[0]`/`params[1]` are the `%acc`/`%i` head-phis. Compute the
     // back-edge values from them, then re-enter `loop` carrying
     // `[ next_acc, next_i ]`. Those values are defined before the latch
     // terminator, so they dominate the branch that carries them.
-    let b = IrBuilder::at_end(key, loop_bb);
+    let b = IrBuilder::at_end(key, loop_bb)?;
     let acc: IntValue<'_, i32, _> = params[0].try_into()?;
     let i: IntValue<'_, i32, _> = params[1].try_into()?;
     let next_acc = b.int_mul(acc, i, "next_acc")?;
@@ -121,7 +121,7 @@ pub fn build<B: ModuleBrand>(key: &mut LayoutToken<'_, B>) -> Result<(), IrError
     )?;
 
     // exit: ret i32 %next_acc
-    let b = IrBuilder::at_end(key, exit);
+    let b = IrBuilder::at_end(key, exit)?;
     b.ret(next_acc)?;
     Ok(())
 }

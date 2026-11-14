@@ -8,9 +8,12 @@
 //! - `S` ([`Unpositioned`] / [`PositionedAtEnd`] / [`PositionedBefore`]) —
 //!   whether the builder has an insertion point, and if so, where. The
 //!   emitter methods are available on both positioned states (the
-//!   [`Positioning`] bound). A [`PositionedAtEnd`] build with nothing else
-//!   to refuse is infallible. A [`PositionedBefore`] build returns
-//!   [`IrResult`], because its anchor can leave the block after positioning.
+//!   [`Positioning`] bound). A build with nothing else to refuse is
+//!   infallible in both states: the builder holds the module's
+//!   [`LayoutToken`] `&mut` for its life, so no edit can move a
+//!   [`PositionedBefore`] builder's anchor out of its block meanwhile. Only
+//!   restoring a saved [`InsertPoint`], which outlives its builder,
+//!   re-checks the anchor.
 //! - `R: ReturnMarker` — the parent function's return shape. The
 //!   typed `ret` methods are dispatched on `R` so calling
 //!   `ret(int_value)` against a `void`-returning builder is a
@@ -255,10 +258,11 @@ pub struct Unpositioned;
 
 /// Type-state marker: the builder inserts at the end of its block.
 ///
-/// Nothing in the block can move out from under this insertion point, so the
-/// builds that have nothing else to refuse (`ret void`, `unreachable`,
-/// `fence`, the schema field reads and writes) return their result directly
-/// here. Mirrors `IRBuilder::SetInsertPoint(BasicBlock*)`.
+/// The builds that have nothing else to refuse (`ret void`, `unreachable`,
+/// `fence`, the schema field reads and writes) return their result directly,
+/// as they do in [`PositionedBefore`]. An [`InsertPoint`] saved in this state
+/// restores only to a block that has not been terminated since. Mirrors
+/// `IRBuilder::SetInsertPoint(BasicBlock*)`.
 #[derive(Debug, Clone, Copy)]
 pub struct PositionedAtEnd;
 
@@ -266,12 +270,15 @@ pub struct PositionedAtEnd;
 /// (or, from [`IrBuilder::position_past_allocas`], at a point chosen at run
 /// time).
 ///
-/// The builder holds `&Module`, so the anchor can leave the block after the
-/// builder was positioned: moved by a split or `move_before`, or erased.
-/// Every build in this state therefore returns an [`IrResult`], refusing
-/// with [`BlockError::AnchorNotInBlock`] instead of inserting into a list the
-/// anchor no longer belongs to. Upstream's `IRBuilder` keeps a raw iterator
-/// and is undefined there. Mirrors `IRBuilder::SetInsertPoint(Instruction*)`.
+/// The builder holds the module's [`LayoutToken`] `&mut` for as long as it
+/// lives, and every edit that moves an instruction out of its block (erase,
+/// detach, move, split, splice) needs that token, so the anchor cannot leave
+/// the block while the builder exists. The builds that have nothing else to
+/// refuse are therefore infallible here too. Upstream's `IRBuilder` keeps a
+/// raw iterator and is undefined once its instruction leaves; that state is
+/// unreachable here. An [`InsertPoint`] saved in this state outlives its
+/// builder, so [`IrBuilder::restore_insert_point`] still checks that the
+/// anchor is in the block. Mirrors `IRBuilder::SetInsertPoint(Instruction*)`.
 #[derive(Debug, Clone, Copy)]
 pub struct PositionedBefore;
 
@@ -288,22 +295,6 @@ where
     Before(IrBuilder<'m, 'ctx, B, F, PositionedBefore, R>),
     /// At the end of the entry block, which holds only `alloca`s.
     AtEnd(IrBuilder<'m, 'ctx, B, F, PositionedAtEnd, R>),
-}
-
-/// The result of a build an at-end builder makes through the fallible core
-/// it shares with a [`PositionedBefore`] builder.
-///
-/// The core's one refusal is [`BlockError::AnchorNotInBlock`], and a
-/// [`PositionedAtEnd`] builder holds no anchor (`IrBuilder::insert_before`'s
-/// invariant, kept by every constructor of that state), so the refusal is
-/// provably dead here.
-pub(crate) fn at_end_infallible<T>(built: IrResult<T>) -> T {
-    match built {
-        Ok(value) => value,
-        Err(_) => unreachable!(
-            "an at-end builder holds no anchor, so its anchor check cannot refuse (invariant)"
-        ),
-    }
 }
 
 /// Sealed marker for the type-state generic so external crates cannot
@@ -341,7 +332,9 @@ impl Positioning for PositionedBefore {}
 ///
 /// `S` is the state the builder was saved in, and
 /// [`IrBuilder::restore_insert_point`] restores to it: an at-end snapshot
-/// restores an at-end builder, whose builds need no anchor check. Only a
+/// restores an at-end builder. A snapshot outlives the builder it was saved
+/// from, and so its hold on the [`LayoutToken`], which is why restoring one
+/// re-checks it against the live module. Only a
 /// positioned builder saves one, so a snapshot always names a block (upstream's
 /// empty `InsertPoint` has no counterpart).
 #[derive(Branded)]
@@ -661,9 +654,10 @@ where
     /// instructions append to the end of `insert_block`.
     ///
     /// Invariant: `None` whenever `S` is [`Unpositioned`] or
-    /// [`PositionedAtEnd`]. The field is private and every constructor of those
-    /// states writes `None`, which is what lets an at-end builder's builds be
-    /// infallible.
+    /// [`PositionedAtEnd`]; the field is private and every constructor of those
+    /// states writes `None`. When `Some`, the anchor is in `insert_block` for
+    /// the builder's whole life: the builder holds the [`LayoutToken`] that
+    /// every position-moving edit needs (see `_key`).
     insert_before: Option<ValueSlot>,
     folder: F,
     fmf: super::fmf::FastMathFlags,
@@ -708,15 +702,7 @@ where
     /// The builder holds `key` `&mut` for as long as it lives
     /// ([`LayoutToken`]): one builder per module at a time.
     pub fn new(key: &'m mut LayoutToken<'ctx, B>) -> Self {
-        Self {
-            module: key.module().core_ref(),
-            _key: PhantomData,
-            insert_block: None,
-            insert_before: None,
-            folder: ConstantFolder,
-            fmf: super::fmf::FastMathFlags::empty(),
-            _state: PhantomData,
-        }
+        IrBuilder::with_folder_unkeyed(key.module(), ConstantFolder)
     }
 
     /// Construct an unpositioned, typed-return builder. Use this
@@ -725,7 +711,7 @@ where
     /// typed.
     ///
     /// ```ignore
-    /// let mut key = module.layout_token()?;
+    /// let mut key = module.layout_token();
     /// let b = IrBuilder::new_for::<i32>(&mut key);
     /// ```
     pub fn new_for<R>(
@@ -734,15 +720,7 @@ where
     where
         R: ReturnMarker,
     {
-        IrBuilder {
-            module: key.module().core_ref(),
-            _key: PhantomData,
-            insert_block: None,
-            insert_before: None,
-            folder: ConstantFolder,
-            fmf: super::fmf::FastMathFlags::empty(),
-            _state: PhantomData,
-        }
+        IrBuilder::with_folder_unkeyed(key.module(), ConstantFolder)
     }
 
     /// Crate-internal: a builder over `module` that borrows no
@@ -757,15 +735,7 @@ where
     where
         R: ReturnMarker,
     {
-        IrBuilder {
-            module: module.core_ref(),
-            _key: PhantomData,
-            insert_block: None,
-            insert_before: None,
-            folder: ConstantFolder,
-            fmf: super::fmf::FastMathFlags::empty(),
-            _state: PhantomData,
-        }
+        IrBuilder::with_folder_unkeyed(module, ConstantFolder)
     }
 
     /// Construct an unpositioned builder from a Rust function-pointer
@@ -776,15 +746,7 @@ where
     where
         Sig: FunctionSignature,
     {
-        IrBuilder {
-            module: key.module().core_ref(),
-            _key: PhantomData,
-            insert_block: None,
-            insert_before: None,
-            folder: ConstantFolder,
-            fmf: super::fmf::FastMathFlags::empty(),
-            _state: PhantomData,
-        }
+        IrBuilder::with_folder_unkeyed(key.module(), ConstantFolder)
     }
 }
 
@@ -804,22 +766,23 @@ where
     /// Accepts a block carrying any parameter schema `Params` — mirroring
     /// [`position_at_end`](Self::position_at_end), which erases the parameter
     /// marker at the insertion point.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::ForeignLayoutToken`] if `bb` belongs to another module than
+    /// `key`. Two modules of a shared brand (every `Module::dynamic` is
+    /// `DynBrand`) have tokens of one type, so only the module tag tells a
+    /// block of one from the other's token, and a builder over the token's
+    /// module must not write into another module's block.
     pub fn at_end<Params>(
         key: &'m mut LayoutToken<'ctx, B>,
         bb: BasicBlock<'ctx, R, Unterminated, B, Params>,
-    ) -> IrBuilder<'m, 'ctx, B, ConstantFolder, PositionedAtEnd, R>
+    ) -> IrResult<IrBuilder<'m, 'ctx, B, ConstantFolder, PositionedAtEnd, R>>
     where
         Params: BlockParams,
     {
-        IrBuilder {
-            module: key.module().core_ref(),
-            _key: PhantomData,
-            insert_block: Some(bb.retag_params::<BlockParamsDyn>()),
-            insert_before: None,
-            folder: ConstantFolder,
-            fmf: super::fmf::FastMathFlags::empty(),
-            _state: PhantomData,
-        }
+        key.admit(bb.module_ref().id())?;
+        Ok(IrBuilder::new_for_unkeyed::<R>(key.module()).position_at_end(bb))
     }
 }
 
@@ -846,15 +809,7 @@ where
     /// Construct an unpositioned builder using a caller-supplied folder,
     /// holding `key` `&mut` for as long as it lives ([`LayoutToken`]).
     pub fn with_folder(key: &'m mut LayoutToken<'ctx, B>, folder: F) -> Self {
-        Self {
-            module: key.module().core_ref(),
-            _key: PhantomData,
-            insert_block: None,
-            insert_before: None,
-            folder,
-            fmf: super::fmf::FastMathFlags::empty(),
-            _state: PhantomData,
-        }
+        Self::with_folder_unkeyed(key.module(), folder)
     }
 
     /// Position the builder at the end of `bb`. Mirrors
@@ -952,10 +907,9 @@ where
     /// `FunctionParam::ir_type`, …).
     ///
     /// Those traits used to be declared against `&Module<Unverified>`, and the
-    /// builder — which stores only `&'ctx ModuleCore`, because
-    /// [`IrBuilder::at_end`] constructs a builder from a *block* alone with no
-    /// module token in scope — had to fabricate an ephemeral borrowed `Module`
-    /// to call them, then re-anchor every answer from that local region back to
+    /// builder — which stores only `&'ctx ModuleCore` beside the borrow of its
+    /// [`LayoutToken`] — had to fabricate an ephemeral borrowed `Module` to
+    /// call them, then re-anchor every answer from that local region back to
     /// `'ctx` through its id. Declaring the schema traits against the view
     /// deletes both the fabricated token and the re-anchoring: a view is
     /// already `'ctx`-anchored, so the type it hands back is directly usable.
@@ -968,12 +922,15 @@ where
     /// builder mints, and every operand it admits, is re-minted at.
     #[inline]
     pub(crate) fn mutable_ref(&self) -> ModuleRef<'ctx, B, Mutable> {
-        // capability (proof): an IrBuilder is minted from a
-        // `&Module<B, Unverified>` (`IrBuilder::new` / `new_for` /
-        // `new_for_return` / `with_folder`) or from a `Mutable` block
-        // (`IrBuilder::at_end`), which only a holder of that authority can
-        // mint; every other constructor moves an existing builder's module.
-        // So it holds the module's mutation authority for its whole life.
+        // capability (proof): an IrBuilder is minted from the module's
+        // `LayoutToken`, borrowed `&mut` (`IrBuilder::new` / `new_for` /
+        // `new_for_return` / `with_folder`, and `IrBuilder::at_end`, which
+        // also refuses a block of another module with
+        // `IrError::ForeignLayoutToken`), or, crate-internally, from a
+        // `&Module<B, Unverified>` (`new_for_unkeyed` / `with_folder_unkeyed`);
+        // only a holder of the module's mutation authority has either. Every
+        // other constructor moves an existing builder's module. So it holds
+        // the module's mutation authority for its whole life.
         ModuleRef::from(self.schema_view()).mutable_at_marked_boundary()
     }
 
@@ -1591,43 +1548,22 @@ where
         }
     }
 
-    /// Refuse a stale insertion point: a builder positioned before an anchor
-    /// that has since left its block. An at-end builder holds no anchor and
-    /// always passes.
-    ///
-    /// Every build calls this before its first change to the module — the
-    /// instruction, an intrinsic declaration, a schema's named struct type —
-    /// so a refused build leaves the module as it was.
-    fn refuse_stale_anchor(&self) -> IrResult<()> {
-        match self.insert_before {
-            Some(anchor) if !self.insert_block().holds_instruction(anchor) => {
-                Err(BlockError::AnchorNotInBlock.into())
-            }
-            Some(_) | None => Ok(()),
-        }
-    }
-
     /// The type of field kind `T`, minted in this builder's module from its
-    /// layout — so it needs no admission. Minting a schema layout can add a
-    /// named struct type to the module, so the insertion point is checked
-    /// first.
+    /// layout — so it needs no admission.
     #[inline]
     fn schema_ir_type<T>(&self) -> IrResult<Type<'ctx, B>>
     where
         T: IrField,
     {
-        self.refuse_stale_anchor()?;
         self.mutable_ref().mint_layout::<T::Layout>()
     }
 
-    /// Schema `Sch`'s struct type, minted in this builder's module, after the
-    /// insertion point is checked (see [`Self::schema_ir_type`]).
+    /// Schema `Sch`'s struct type, minted in this builder's module.
     #[inline]
     fn schema_struct_type<Sch>(&self) -> IrResult<StructType<'ctx, StructBodyDyn, B>>
     where
         Sch: StructSchema,
     {
-        self.refuse_stale_anchor()?;
         let module = self.mutable_ref();
         let ty = module.mint_layout::<Sch>()?;
         Ok(StructType::new(ty.slot_trusting_same_module(), module))
@@ -2320,7 +2256,7 @@ where
         if let Some(folded) = folded {
             return self.accept_folded_int(folded, lhs);
         }
-        self.append_int_like(lhs, kind_ctor(payload), name)
+        Ok(self.append_int_like(lhs, kind_ctor(payload), name))
     }
 
     /// Crate-internal helper: emit a binary op given a callback that
@@ -2351,7 +2287,7 @@ where
             lhs.slot_trusting_same_module(),
             rhs.slot_trusting_same_module(),
         );
-        self.append_int_like(lhs, kind_ctor(payload), name)
+        Ok(self.append_int_like(lhs, kind_ctor(payload), name))
     }
 
     // ---- Type-erased integer binops (scalar OR integer-vector operands) ----
@@ -2462,7 +2398,7 @@ where
             lhs.ty().slot_trusting_same_module(),
             kind_ctor(payload),
             name,
-        )?;
+        );
         Ok(inst.to_erased())
     }
 
@@ -2588,7 +2524,7 @@ where
         }
         let payload = CastOpData::new(opcode, src.slot_trusting_same_module());
         operation.write_flags(&payload);
-        let inst = self.append_instruction(dst_slot, InstructionKindData::Cast(payload), name)?;
+        let inst = self.append_instruction(dst_slot, InstructionKindData::Cast(payload), name);
         Ok(inst.to_erased().id())
     }
 
@@ -2638,7 +2574,7 @@ where
             result_ty.slot_trusting_same_module(),
             InstructionKindData::Icmp(payload),
             name,
-        )?;
+        );
         Ok(inst.to_erased().id())
     }
 
@@ -2756,8 +2692,7 @@ where
             false_v.slot_trusting_same_module(),
         );
         payload.fmf.set(fmf);
-        let inst =
-            self.append_instruction(result_ty, InstructionKindData::Select(payload), name)?;
+        let inst = self.append_instruction(result_ty, InstructionKindData::Select(payload), name);
         Ok(inst.to_erased().id())
     }
 
@@ -2826,7 +2761,7 @@ where
             lhs.ty().slot_trusting_same_module(),
             kind_ctor(payload),
             name,
-        )?;
+        );
         Ok(inst.to_erased().id())
     }
 
@@ -2877,7 +2812,7 @@ where
             result_ty.slot_trusting_same_module(),
             InstructionKindData::Fcmp(payload),
             name,
-        )?;
+        );
         Ok(inst.to_erased().id())
     }
 
@@ -2912,7 +2847,7 @@ where
             value.ty().slot_trusting_same_module(),
             InstructionKindData::Fneg(payload),
             name,
-        )?;
+        );
         Ok(inst.to_erased().id())
     }
 
@@ -3360,7 +3295,7 @@ where
         // `IRBuilderBase::setFPAttrs` in `IRBuilder.h`, which calls
         // `I->setFastMathFlags(FMF)` on every FP-math instruction).
         payload.fmf = self.fmf;
-        self.append_fp_like(lhs, kind_ctor(payload), name)
+        Ok(self.append_fp_like(lhs, kind_ctor(payload), name))
     }
 
     /// Crate-internal helper for float binops with an explicit
@@ -3392,7 +3327,7 @@ where
             rhs.slot_trusting_same_module(),
         );
         payload.fmf = fmf;
-        self.append_fp_like(lhs, kind_ctor(payload), name)
+        Ok(self.append_fp_like(lhs, kind_ctor(payload), name))
     }
 
     /// `fadd` with an explicit [`crate::fmf::FastMathFlags`] parameter.
@@ -3550,7 +3485,7 @@ where
         );
         payload.fmf = fmf;
         Ok(self
-            .append_int_at(i1, InstructionKindData::Fcmp(payload), name)?
+            .append_int_at(i1, InstructionKindData::Fcmp(payload), name)
             .id())
     }
 
@@ -3583,7 +3518,7 @@ where
         // Apply builder-context FMF (`fcmp` is an `FPMathOperator` upstream).
         payload.fmf = self.fmf;
         Ok(self
-            .append_int_at(i1, InstructionKindData::Fcmp(payload), name)?
+            .append_int_at(i1, InstructionKindData::Fcmp(payload), name)
             .id())
     }
 
@@ -3851,7 +3786,7 @@ where
         }
         let payload = FnegInstData::new(v.slot_trusting_same_module(), fmf);
         Ok(self
-            .append_fp_like(v, InstructionKindData::Fneg(payload), name)?
+            .append_fp_like(v, InstructionKindData::Fneg(payload), name)
             .id())
     }
 
@@ -3871,7 +3806,7 @@ where
             v.ty().slot_trusting_same_module(),
             InstructionKindData::Freeze(payload),
             name,
-        )?;
+        );
         Ok(FreezeInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -3896,8 +3831,7 @@ where
         // Boundary: the caller's result type, admitted before the append.
         let result_slot = result_ty.slot_in(self.module.id())?;
         let payload = VaArgInstData::new(list_ptr.slot_trusting_same_module());
-        let inst =
-            self.append_instruction(result_slot, InstructionKindData::VaArg(payload), name)?;
+        let inst = self.append_instruction(result_slot, InstructionKindData::VaArg(payload), name);
         Ok(VaArgInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -3965,7 +3899,7 @@ where
         }
         let payload = ExtractValueInstData::new(agg.slot_trusting_same_module(), indices.to_vec());
         let inst =
-            self.append_instruction(leaf_ty, InstructionKindData::ExtractValue(payload), name)?;
+            self.append_instruction(leaf_ty, InstructionKindData::ExtractValue(payload), name);
         Ok(inst.to_erased().id())
     }
 
@@ -4044,8 +3978,7 @@ where
             val.slot_trusting_same_module(),
             indices.to_vec(),
         );
-        let inst =
-            self.append_instruction(agg_ty, InstructionKindData::InsertValue(payload), name)?;
+        let inst = self.append_instruction(agg_ty, InstructionKindData::InsertValue(payload), name);
         Ok(inst.to_erased().id())
     }
 
@@ -4110,15 +4043,12 @@ where
     /// Mirrors `IRBuilderBase::CreateExtractValue`, which always consults its
     /// folder (`Folder.FoldExtractValue`) first. Any brand and any folder read
     /// through [`extract_field`](Self::extract_field) instead, which checks.
-    ///
-    /// This is the core both positioned states share; its one refusal is the
-    /// insertion point's ([`BlockError::AnchorNotInBlock`]), which an at-end
-    /// builder cannot meet.
-    fn read_field_at_point<Schema, const I: u32, Name>(
+    /// Nor can the insertion point refuse, in either positioned state.
+    pub fn read_field<Schema, const I: u32, Name>(
         &self,
         aggregate: SchemaValue<'ctx, Schema, B, impl Capability>,
         name: Name,
-    ) -> IrResult<<FieldOf<Schema, I> as IrField>::Value<'ctx, B, Mutable>>
+    ) -> <FieldOf<Schema, I> as IrField>::Value<'ctx, B, Mutable>
     where
         Schema: StructSchema,
         Schema::Fields: StructFieldAt<I>,
@@ -4145,15 +4075,15 @@ where
                 });
                 let payload =
                     ExtractValueInstData::new(aggregate.slot_trusting_same_module(), vec![I]);
-                self.append_instruction(leaf_ty, InstructionKindData::ExtractValue(payload), name)?
+                self.append_instruction(leaf_ty, InstructionKindData::ExtractValue(payload), name)
                     .to_erased()
             }
         };
         // The read has field `I`'s type — the element of `Schema`'s body, or a
         // trusted fold of it — and that is `FieldOf<Schema, I>`'s layout type.
-        Ok(<FieldOf<Schema, I> as IrField>::wrap(
+        <FieldOf<Schema, I> as IrField>::wrap(
             <<FieldOf<Schema, I> as IrField>::Layout as FieldLayout>::value_of(read, CrateOnly(())),
-        ))
+        )
     }
 
     /// `poison` of schema `S`'s struct type — the aggregate a derived build
@@ -4222,17 +4152,14 @@ where
     /// `IRBuilderBase::CreateInsertValue`, which consults its folder
     /// (`Folder.FoldInsertValue`) first. Any brand, any folder and any
     /// argument its field admits write through
-    /// [`insert_field`](Self::insert_field) instead, which checks.
-    ///
-    /// This is the core both positioned states share; its one refusal is the
-    /// insertion point's ([`BlockError::AnchorNotInBlock`]), which an at-end
-    /// builder cannot meet.
-    fn write_field_at_point<Schema, const I: u32, Arg, Name>(
+    /// [`insert_field`](Self::insert_field) instead, which checks. Nor can
+    /// the insertion point refuse, in either positioned state.
+    pub fn write_field<Schema, const I: u32, Arg, Name>(
         &self,
         aggregate: SchemaValue<'ctx, Schema, B, impl Capability>,
         value: Arg,
         name: Name,
-    ) -> IrResult<SchemaValue<'ctx, Schema, B, Mutable>>
+    ) -> SchemaValue<'ctx, Schema, B, Mutable>
     where
         Schema: StructSchema,
         Schema::Fields: StructFieldAt<I>,
@@ -4263,15 +4190,13 @@ where
                     aggregate.ty().slot_trusting_same_module(),
                     InstructionKindData::InsertValue(payload),
                     name,
-                )?
+                )
                 .to_erased()
             }
         };
         // The write has `aggregate`'s type — the instruction's result type,
         // or a trusted fold that rebuilds it — and that is `Schema`'s.
-        Ok(SchemaValue::new_unchecked(
-            StructValue::from_value_unchecked(written),
-        ))
+        SchemaValue::new_unchecked(StructValue::from_value_unchecked(written))
     }
 
     /// Insert a typed field value into a named-struct schema aggregate.
@@ -4341,7 +4266,7 @@ where
             idx.slot_trusting_same_module(),
         );
         let inst =
-            self.append_instruction(elem_ty, InstructionKindData::ExtractElement(payload), name)?;
+            self.append_instruction(elem_ty, InstructionKindData::ExtractElement(payload), name);
         Ok(inst.to_erased().id())
     }
 
@@ -4376,7 +4301,7 @@ where
             idx.slot_trusting_same_module(),
         );
         let inst =
-            self.append_instruction(vec_ty, InstructionKindData::InsertElement(payload), name)?;
+            self.append_instruction(vec_ty, InstructionKindData::InsertElement(payload), name);
         Ok(inst.to_erased().id())
     }
 
@@ -4454,7 +4379,7 @@ where
             result_ty_id,
             InstructionKindData::ShuffleVector(payload),
             name,
-        )?;
+        );
         Ok(inst.to_erased().id())
     }
 
@@ -4773,15 +4698,15 @@ where
 
     // ---- Atomic ops: fence / cmpxchg / atomicrmw ----
 
-    /// `fence <ordering>` (or `fence syncscope("...") <ordering>`) through
-    /// either positioned state; the one refusal is the insertion point's
-    /// ([`BlockError::AnchorNotInBlock`]).
-    fn fence_at_point<Name>(
+    /// Produce `fence <ordering>` (or `fence syncscope("...") <ordering>`).
+    /// Mirrors `IRBuilder::CreateFence`, which cannot fail; nothing refuses
+    /// it here either, in either positioned state.
+    pub fn fence<Name>(
         &self,
         ordering: AtomicOrdering,
         sync_scope: SyncScope,
         name: Name,
-    ) -> IrResult<FenceInst<'ctx, B>>
+    ) -> FenceInst<'ctx, B>
     where
         Name: AsRef<str>,
     {
@@ -4791,12 +4716,12 @@ where
             .void_type::<B>()
             .as_type()
             .slot_trusting_same_module();
-        let inst = self.append_instruction(void_ty, InstructionKindData::Fence(payload), name)?;
-        Ok(FenceInst::from_raw(
+        let inst = self.append_instruction(void_ty, InstructionKindData::Fence(payload), name);
+        FenceInst::from_raw(
             inst.to_erased().slot_trusting_same_module(),
             self.mutable_ref(),
             void_ty,
-        ))
+        )
     }
 
     /// Produce `cmpxchg [weak] [volatile] <ptr-ty> <ptr>, <cmp-ty> <cmp>,
@@ -4844,7 +4769,7 @@ where
         );
         let result_id = result_ty.as_type().slot_trusting_same_module();
         let inst =
-            self.append_instruction(result_id, InstructionKindData::AtomicCmpXchg(payload), name)?;
+            self.append_instruction(result_id, InstructionKindData::AtomicCmpXchg(payload), name);
         Ok(AtomicCmpXchgInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -4883,7 +4808,7 @@ where
             v.ty().slot_trusting_same_module(),
             InstructionKindData::AtomicRmw(payload),
             name,
-        )?;
+        );
         Ok(AtomicRmwInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -4934,7 +4859,7 @@ where
         }
         let payload = CastOpData::new(CastOpcode::Trunc, value.slot_trusting_same_module());
         Ok(self
-            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)?
+            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
     }
 
@@ -4976,7 +4901,7 @@ where
         payload.nuw.set(flags.nuw);
         payload.nsw.set(flags.nsw);
         Ok(self
-            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)?
+            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
     }
 
@@ -5009,7 +4934,7 @@ where
         }
         let payload = CastOpData::new(CastOpcode::Zext, value.slot_trusting_same_module());
         Ok(self
-            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)?
+            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
     }
 
@@ -5044,7 +4969,7 @@ where
         let payload = CastOpData::new(CastOpcode::Zext, value.slot_trusting_same_module());
         payload.nneg.set(flags.nneg);
         Ok(self
-            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)?
+            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
     }
 
@@ -5077,7 +5002,7 @@ where
         }
         let payload = CastOpData::new(CastOpcode::Sext, value.slot_trusting_same_module());
         Ok(self
-            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)?
+            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
     }
 
@@ -5118,7 +5043,7 @@ where
         }
         let payload = CastOpData::new(CastOpcode::Trunc, value.slot_trusting_same_module());
         Ok(self
-            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)?
+            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
     }
 
@@ -5160,7 +5085,7 @@ where
         payload.nuw.set(flags.nuw);
         payload.nsw.set(flags.nsw);
         Ok(self
-            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)?
+            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
     }
 
@@ -5219,7 +5144,7 @@ where
         let payload = CastOpData::new(CastOpcode::Zext, src.slot_trusting_same_module());
         payload.nneg.set(flags.nneg);
         Ok(self
-            .append_int_at(dst, InstructionKindData::Cast(payload), name)?
+            .append_int_at(dst, InstructionKindData::Cast(payload), name)
             .id())
     }
 
@@ -5272,7 +5197,7 @@ where
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded));
         }
         let payload = CastOpData::new(opcode, value.slot_trusting_same_module());
-        self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
+        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     // ---- Memory: alloca / load / store ----
@@ -5455,7 +5380,7 @@ where
         let payload =
             AllocaInstData::new_with_flags(allocated_ty, num_elements, align, addr_space, flags);
         Ok(self
-            .append_ptr(ptr_ty, InstructionKindData::Alloca(payload), name)?
+            .append_ptr(ptr_ty, InstructionKindData::Alloca(payload), name)
             .id())
     }
 
@@ -5604,7 +5529,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        Ok(self.append_int_load(ty, payload, name)?.id())
+        Ok(self.append_int_load(ty, payload, name).id())
     }
 
     /// Runtime-width integer load. Takes the type explicitly because
@@ -5632,7 +5557,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        Ok(self.append_int_load(ty, payload, name)?.id())
+        Ok(self.append_int_load(ty, payload, name).id())
     }
 
     /// Typed float load: `load <fpty>, ptr <ptr>`. Marker-only.
@@ -5652,7 +5577,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        Ok(self.append_fp_load(ty, payload, name)?.id())
+        Ok(self.append_fp_load(ty, payload, name).id())
     }
 
     /// Runtime-kind float load. Takes the type explicitly because
@@ -5680,7 +5605,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        Ok(self.append_fp_load(ty, payload, name)?.id())
+        Ok(self.append_fp_load(ty, payload, name).id())
     }
 
     /// Pointer-typed load: `load ptr, ptr <ptr>`. The loaded pointer is in
@@ -5719,7 +5644,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        Ok(self.append_ptr_load(ty, payload, name)?.id())
+        Ok(self.append_ptr_load(ty, payload, name).id())
     }
 
     /// Same as [`Self::int_load`] plus an explicit alignment.
@@ -5744,7 +5669,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         );
-        Ok(self.append_int_load(ty, payload, name)?.id())
+        Ok(self.append_int_load(ty, payload, name).id())
     }
 
     /// Typed `load`: the result type is derived from the pointer's
@@ -5808,9 +5733,9 @@ where
     {
         if payload.align.align().is_none() {
             let pointee = self.sized(payload.pointee_ty)?;
-            return self.load_sized(payload, pointee, name);
+            return Ok(self.load_sized(payload, pointee, name));
         }
-        self.append_load(payload, name)
+        Ok(self.append_load(payload, name))
     }
 
     /// Append a load of a type proven sized, materialising the DataLayout
@@ -5823,7 +5748,7 @@ where
         mut payload: LoadInstData,
         pointee: SizedType<'ctx, B>,
         name: N,
-    ) -> IrResult<Instruction<'ctx, Attached, B>>
+    ) -> Instruction<'ctx, Attached, B>
     where
         N: AsRef<str>,
     {
@@ -5834,11 +5759,7 @@ where
         self.append_load(payload, name)
     }
 
-    fn append_load<N>(
-        &self,
-        payload: LoadInstData,
-        name: N,
-    ) -> IrResult<Instruction<'ctx, Attached, B>>
+    fn append_load<N>(&self, payload: LoadInstData, name: N) -> Instruction<'ctx, Attached, B>
     where
         N: AsRef<str>,
     {
@@ -5926,7 +5847,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         )?;
-        self.store_inner(payload)
+        Ok(self.store_inner(payload))
     }
 
     /// Same as `store` plus an explicit alignment slot.
@@ -5948,7 +5869,7 @@ where
             AtomicOrdering::NotAtomic,
             SyncScope::System,
         )?;
-        self.store_inner(payload)
+        Ok(self.store_inner(payload))
     }
 
     /// Typed `store`: the value lifts through the schema's
@@ -6047,18 +5968,18 @@ where
     /// Inner store: caller has already computed the payload and validated
     /// the pointer/value modules. Single-arg helper used by the four
     /// public store builders.
-    fn store_inner(&self, payload: StoreInstData) -> IrResult<StoreInst<'ctx, B>> {
+    fn store_inner(&self, payload: StoreInstData) -> StoreInst<'ctx, B> {
         let void_ty = self
             .module
             .void_type::<B>()
             .as_type()
             .slot_trusting_same_module();
-        let inst = self.append_instruction(void_ty, InstructionKindData::Store(payload), "")?;
-        Ok(StoreInst::from_raw(
+        let inst = self.append_instruction(void_ty, InstructionKindData::Store(payload), "");
+        StoreInst::from_raw(
             inst.to_erased().slot_trusting_same_module(),
             self.mutable_ref(),
             inst.ty().slot_trusting_same_module(),
-        ))
+        )
     }
 
     fn store_payload<V, P>(
@@ -6181,7 +6102,7 @@ where
             f.return_type().slot_trusting_same_module(),
             InstructionKindData::Call(payload),
             name,
-        )?;
+        );
         Ok(TypedCallInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -6218,7 +6139,7 @@ where
             f.return_type().slot_trusting_same_module(),
             InstructionKindData::Call(payload),
             name,
-        )?;
+        );
         Ok(TypedCallInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -6299,7 +6220,7 @@ where
             f.return_type().slot_trusting_same_module(),
             InstructionKindData::Call(payload),
             name,
-        )?;
+        );
         Ok(TypedCallInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -6357,8 +6278,6 @@ where
         &self,
         descriptor: &IntrinsicDescriptor<'ctx, B, C>,
     ) -> IrResult<IntrinsicCallBuilder<'_, 'm, 'ctx, B, F, S, R>> {
-        // Before the declaration is inserted: a refused call adds nothing.
-        self.refuse_stale_anchor()?;
         let callee = self
             .mutable_ref()
             .get_or_insert_intrinsic_declaration(descriptor)?;
@@ -6400,8 +6319,6 @@ where
     where
         Name: AsRef<str>,
     {
-        // Before the declaration is inserted: a refused call adds nothing.
-        self.refuse_stale_anchor()?;
         let callee = self.intrinsic_callee_by_id(id, intrinsic_name)?;
         let descriptor =
             callee
@@ -6476,8 +6393,6 @@ where
         V: IntoErasedValue<'ctx, B>,
         Name: AsRef<str>,
     {
-        // Before the declaration is inserted: a refused call adds nothing.
-        self.refuse_stale_anchor()?;
         let module = self.mutable_ref();
         let args = args
             .into_iter()
@@ -6633,7 +6548,7 @@ where
             fmf,
             parts,
         );
-        let inst = self.append_instruction(return_ty, InstructionKindData::Call(payload), name)?;
+        let inst = self.append_instruction(return_ty, InstructionKindData::Call(payload), name);
         Ok(CallInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -6690,7 +6605,7 @@ where
             fn_ty.return_type().slot_trusting_same_module(),
             InstructionKindData::Call(payload),
             name,
-        )?;
+        );
         Ok(TypedCallInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -7075,7 +6990,7 @@ where
             result_ty.slot_trusting_same_module(),
             InstructionKindData::Gep(payload),
             name,
-        )?;
+        );
         Ok(inst.to_erased().id())
     }
 
@@ -7135,7 +7050,7 @@ where
             flags,
         );
         Ok(self
-            .append_ptr(result_ptr_ty, InstructionKindData::Gep(payload), name)?
+            .append_ptr(result_ptr_ty, InstructionKindData::Gep(payload), name)
             .id())
     }
 
@@ -7235,7 +7150,7 @@ where
         let payload = CastOpData::new(CastOpcode::FpTrunc, v.slot_trusting_same_module());
         payload.fmf.set(fmf);
         Ok(self
-            .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)?
+            .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
     }
 
@@ -7295,7 +7210,7 @@ where
         let payload = CastOpData::new(CastOpcode::FpExt, v.slot_trusting_same_module());
         payload.fmf.set(fmf);
         Ok(self
-            .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)?
+            .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
     }
 
@@ -7319,7 +7234,7 @@ where
             return self.accept_folded_cast_fp(folded, dst_ty);
         }
         let payload = CastOpData::new(opcode, v.slot_trusting_same_module());
-        self.append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
+        Ok(self.append_fp_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// Produce `fptoui <value> to <dst>`. Mirrors
@@ -7379,7 +7294,7 @@ where
             return self.accept_folded_cast_int(folded, dst_ty);
         }
         let payload = CastOpData::new(opcode, v.slot_trusting_same_module());
-        self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
+        Ok(self.append_int_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     /// Produce `uitofp <value> to <dst>`. Mirrors
@@ -7427,7 +7342,7 @@ where
         let payload = CastOpData::new(CastOpcode::UiToFp, v.slot_trusting_same_module());
         payload.nneg.set(flags.nneg);
         Ok(self
-            .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)?
+            .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
     }
 
@@ -7479,7 +7394,7 @@ where
         let payload = CastOpData::new(CastOpcode::UiToFp, src.slot_trusting_same_module());
         payload.nneg.set(flags.nneg);
         Ok(self
-            .append_fp_at(dst, InstructionKindData::Cast(payload), name)?
+            .append_fp_at(dst, InstructionKindData::Cast(payload), name)
             .id())
     }
 
@@ -7502,7 +7417,7 @@ where
             return self.accept_folded_cast_fp(folded, dst_ty);
         }
         let payload = CastOpData::new(opcode, v.slot_trusting_same_module());
-        self.append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
+        Ok(self.append_fp_at(dst_ty, InstructionKindData::Cast(payload), name))
     }
 
     // ---- Pointer casts ----
@@ -7554,7 +7469,7 @@ where
             return self.checked_folded_value(folded, dst_slot).map(|v| v.id());
         }
         let payload = CastOpData::new(CastOpcode::PtrToAddr, value.slot_trusting_same_module());
-        let inst = self.append_instruction(dst_slot, InstructionKindData::Cast(payload), name)?;
+        let inst = self.append_instruction(dst_slot, InstructionKindData::Cast(payload), name);
         Ok(inst.to_erased().id())
     }
 
@@ -7583,7 +7498,7 @@ where
         }
         let payload = CastOpData::new(CastOpcode::PtrToInt, v.slot_trusting_same_module());
         Ok(self
-            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)?
+            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
     }
 
@@ -7616,7 +7531,7 @@ where
         }
         let payload = CastOpData::new(CastOpcode::IntToPtr, v.slot_trusting_same_module());
         Ok(self
-            .append_ptr(dst_ty, InstructionKindData::Cast(payload), name)?
+            .append_ptr(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
     }
 
@@ -7663,7 +7578,7 @@ where
             v_value.slot_trusting_same_module(),
         );
         Ok(self
-            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)?
+            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
     }
 
@@ -7705,7 +7620,7 @@ where
             v_value.slot_trusting_same_module(),
         );
         Ok(self
-            .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)?
+            .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
     }
 
@@ -7748,7 +7663,7 @@ where
             v_value.slot_trusting_same_module(),
         );
         Ok(self
-            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)?
+            .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
     }
 
@@ -7790,7 +7705,7 @@ where
             v_value.slot_trusting_same_module(),
         );
         Ok(self
-            .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)?
+            .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
     }
 
@@ -7826,7 +7741,7 @@ where
             super::instr_types::CastOpcode::BitCast,
             value.slot_trusting_same_module(),
         );
-        let inst = self.append_instruction(dst_slot, InstructionKindData::Cast(payload), name)?;
+        let inst = self.append_instruction(dst_slot, InstructionKindData::Cast(payload), name);
         Ok(inst.to_erased().id())
     }
 
@@ -7858,7 +7773,7 @@ where
         }
         let payload = CastOpData::new(CastOpcode::AddrSpaceCast, v.slot_trusting_same_module());
         Ok(self
-            .append_ptr(dst_ty, InstructionKindData::Cast(payload), name)?
+            .append_ptr(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
     }
 
@@ -7903,7 +7818,7 @@ where
         }
         let payload = CastOpData::new(opcode, v.slot_trusting_same_module());
         Ok(self
-            .append_ptr(dst_ty, InstructionKindData::Cast(payload), name)?
+            .append_ptr(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
     }
 
@@ -7989,7 +7904,7 @@ where
         );
         let i1 = self.mutable_ref().bool_type();
         Ok(self
-            .append_int_at(i1, InstructionKindData::Icmp(payload), name)?
+            .append_int_at(i1, InstructionKindData::Icmp(payload), name)
             .id())
     }
 
@@ -8137,7 +8052,7 @@ where
             rhs.slot_trusting_same_module(),
         );
         Ok(self
-            .append_int_at(i1, InstructionKindData::Icmp(payload), name)?
+            .append_int_at(i1, InstructionKindData::Icmp(payload), name)
             .id())
     }
 
@@ -8177,7 +8092,7 @@ where
         );
         payload.samesign = flags.samesign;
         Ok(self
-            .append_int_at(i1, InstructionKindData::Icmp(payload), name)?
+            .append_int_at(i1, InstructionKindData::Icmp(payload), name)
             .id())
     }
 
@@ -8210,7 +8125,7 @@ where
         );
         payload.samesign = flags.samesign;
         Ok(self
-            .append_int_at(i1, InstructionKindData::Icmp(payload), name)?
+            .append_int_at(i1, InstructionKindData::Icmp(payload), name)
             .id())
     }
 
@@ -8429,13 +8344,11 @@ where
     {
         let ty = W::ir_type(self.mutable_ref());
         let payload = PhiData::new();
-        let inst = self
-            .append_phi_instruction(
-                ty.slot_trusting_same_module(),
-                InstructionKindData::Phi(payload),
-                name,
-            )
-            .expect("the raw-phi tests build at a live insertion point");
+        let inst = self.append_phi_instruction(
+            ty.slot_trusting_same_module(),
+            InstructionKindData::Phi(payload),
+            name,
+        );
         PhiInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -8463,7 +8376,7 @@ where
             ty.slot_in(self.module.id())?,
             InstructionKindData::Phi(payload),
             name,
-        )?;
+        );
         Ok(PhiInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -8489,13 +8402,11 @@ where
     {
         let ty = K::ir_type(self.mutable_ref());
         let payload = super::instr_types::PhiData::new();
-        let inst = self
-            .append_phi_instruction(
-                ty.slot_trusting_same_module(),
-                InstructionKindData::Phi(payload),
-                name,
-            )
-            .expect("the raw-phi tests build at a live insertion point");
+        let inst = self.append_phi_instruction(
+            ty.slot_trusting_same_module(),
+            InstructionKindData::Phi(payload),
+            name,
+        );
         FpPhiInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -8523,7 +8434,7 @@ where
             ty.slot_in(self.module.id())?,
             InstructionKindData::Phi(payload),
             name,
-        )?;
+        );
         Ok(FpPhiInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -8547,13 +8458,11 @@ where
     {
         let ty = self.module.ptr_type::<B>(crate::AddressSpace::DEFAULT);
         let payload = super::instr_types::PhiData::new();
-        let inst = self
-            .append_phi_instruction(
-                ty.slot_trusting_same_module(),
-                InstructionKindData::Phi(payload),
-                name,
-            )
-            .expect("the raw-phi tests build at a live insertion point");
+        let inst = self.append_phi_instruction(
+            ty.slot_trusting_same_module(),
+            InstructionKindData::Phi(payload),
+            name,
+        );
         PointerPhiInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -8582,7 +8491,7 @@ where
             ty.slot_in(self.module.id())?,
             InstructionKindData::Phi(payload),
             name,
-        )?;
+        );
         Ok(PointerPhiInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -8633,7 +8542,7 @@ where
             ty.slot_in(self.module.id())?,
             InstructionKindData::Phi(payload),
             name,
-        )?;
+        );
         Ok(OtherPhiInstId::from_raw(
             self.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -8709,7 +8618,7 @@ where
         T: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let target = target.into_basic_block_label(self.mutable_ref())?;
-        self.br_to_slot_unchecked(target.slot_trusting_same_module())
+        Ok(self.br_to_slot_unchecked(target.slot_trusting_same_module()))
     }
 
     /// Emit `br label %target` for a `target` slot the caller has already
@@ -8722,10 +8631,7 @@ where
     /// block it is splitting, whose phis it has already rewritten to name the
     /// branch's block. Taking the slot rather than a label keeps both free of a
     /// fallible conversion after their first mutation.
-    pub(crate) fn br_to_slot_unchecked(
-        self,
-        target: ValueSlot,
-    ) -> IrResult<TerminatedBlockInst<'ctx, R, B>> {
+    pub(crate) fn br_to_slot_unchecked(self, target: ValueSlot) -> TerminatedBlockInst<'ctx, R, B> {
         let payload = BranchInstData {
             kind: core::cell::RefCell::new(BranchKind::Unconditional(target)),
         };
@@ -8734,9 +8640,9 @@ where
             .void_type::<B>()
             .as_type()
             .slot_trusting_same_module();
-        let inst = self.append_instruction(void_ty, InstructionKindData::Br(payload), "")?;
+        let inst = self.append_instruction(void_ty, InstructionKindData::Br(payload), "");
         let bb = self.into_insert_block();
-        Ok((bb.retag_termination::<Terminated>(), inst))
+        (bb.retag_termination::<Terminated>(), inst)
     }
 
     /// Produce `br i1 <cond>, label %then, label %else`. Mirrors
@@ -8797,7 +8703,7 @@ where
             .void_type::<B>()
             .as_type()
             .slot_trusting_same_module();
-        let inst = self.append_instruction(void_ty, InstructionKindData::Br(payload), "")?;
+        let inst = self.append_instruction(void_ty, InstructionKindData::Br(payload), "");
         let bb = self.into_insert_block();
         Ok((bb.retag_termination::<Terminated>(), inst))
     }
@@ -9130,7 +9036,7 @@ where
             .as_type()
             .slot_trusting_same_module();
         let payload = SwitchInstData::new(cond_id, default_target.slot_trusting_same_module());
-        let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name)?;
+        let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
@@ -9366,8 +9272,7 @@ where
             .as_type()
             .slot_trusting_same_module();
         let payload = IndirectBrInstData::new(addr_v.slot_trusting_same_module());
-        let inst =
-            self.append_instruction(void_ty, InstructionKindData::IndirectBr(payload), name)?;
+        let inst = self.append_instruction(void_ty, InstructionKindData::IndirectBr(payload), name);
         let module_ref = self.mutable_ref();
         let bb = self.into_insert_block();
         Ok((
@@ -9540,7 +9445,7 @@ where
             parts,
         );
         let ret_ty = f.return_type().slot_trusting_same_module();
-        let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name)?;
+        let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
         let module_ref = self.mutable_ref();
         let bb = self.into_insert_block();
         Ok((
@@ -9717,7 +9622,7 @@ where
             unwind_dest.slot_trusting_same_module(),
             parts,
         );
-        let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name)?;
+        let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
         let module_ref = self.mutable_ref();
         let bb = self.into_insert_block();
         Ok((
@@ -9789,7 +9694,7 @@ where
             unwind_dest.slot_trusting_same_module(),
             parts,
         );
-        let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name)?;
+        let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
         let module_ref = self.mutable_ref();
         let bb = self.into_insert_block();
         Ok((
@@ -9880,7 +9785,7 @@ where
             unwind_dest.slot_trusting_same_module(),
             parts,
         );
-        let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name)?;
+        let inst = self.append_instruction(ret_ty, InstructionKindData::Invoke(payload), name);
         let module_ref = self.mutable_ref();
         let bb = self.into_insert_block();
         Ok((
@@ -9978,7 +9883,7 @@ where
             indirect_ids,
             parts,
         );
-        let inst = self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), name)?;
+        let inst = self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), name);
         let module_ref = self.mutable_ref();
         let bb = self.into_insert_block();
         Ok((
@@ -10059,7 +9964,7 @@ where
             indirect_ids,
             parts,
         );
-        let inst = self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), name)?;
+        let inst = self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), name);
         let module_ref = self.mutable_ref();
         let bb = self.into_insert_block();
         Ok((
@@ -10156,7 +10061,7 @@ where
             indirect_ids,
             parts,
         );
-        let inst = self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), name)?;
+        let inst = self.append_instruction(ret_ty, InstructionKindData::CallBr(payload), name);
         let module_ref = self.mutable_ref();
         let bb = self.into_insert_block();
         Ok((
@@ -10189,7 +10094,7 @@ where
         let result_slot = result_ty.slot_in(self.module.id())?;
         let payload = LandingPadInstData::new(cleanup);
         let inst =
-            self.append_instruction(result_slot, InstructionKindData::LandingPad(payload), name)?;
+            self.append_instruction(result_slot, InstructionKindData::LandingPad(payload), name);
         Ok(LandingPadInst::<Open, B>::from_raw(
             inst.to_erased().slot_trusting_same_module(),
             self.mutable_ref(),
@@ -10211,7 +10116,7 @@ where
             .as_type()
             .slot_trusting_same_module();
         let payload = ResumeInstData::new(v.slot_trusting_same_module());
-        let inst = self.append_instruction(void_ty, InstructionKindData::Resume(payload), name)?;
+        let inst = self.append_instruction(void_ty, InstructionKindData::Resume(payload), name);
         let bb = self.into_insert_block();
         Ok((bb.retag_termination::<Terminated>(), inst))
     }
@@ -10274,7 +10179,7 @@ where
             .as_type()
             .slot_trusting_same_module();
         let inst =
-            self.append_instruction(token_ty, InstructionKindData::CleanupPad(payload), name)?;
+            self.append_instruction(token_ty, InstructionKindData::CleanupPad(payload), name);
         Ok(CleanupPadInst::<B>::from_raw(
             inst.to_erased().slot_trusting_same_module(),
             self.mutable_ref(),
@@ -10311,8 +10216,7 @@ where
             .token_type::<B>()
             .as_type()
             .slot_trusting_same_module();
-        let inst =
-            self.append_instruction(token_ty, InstructionKindData::CatchPad(payload), name)?;
+        let inst = self.append_instruction(token_ty, InstructionKindData::CatchPad(payload), name);
         Ok(CatchPadInst::<B>::from_raw(
             inst.to_erased().slot_trusting_same_module(),
             self.mutable_ref(),
@@ -10345,7 +10249,7 @@ where
             target.slot_trusting_same_module(),
         );
         let inst =
-            self.append_instruction(void_ty, InstructionKindData::CatchReturn(payload), name)?;
+            self.append_instruction(void_ty, InstructionKindData::CatchReturn(payload), name);
         let bb = self.into_insert_block();
         Ok((bb.retag_termination::<Terminated>(), inst))
     }
@@ -10365,11 +10269,11 @@ where
     {
         let cleanup_pad = cleanup_pad.into_erased_value(self.mutable_ref())?;
         let unwind_dest = unwind_dest.into_basic_block_label(self.mutable_ref())?;
-        self.cleanup_ret_raw(
+        Ok(self.cleanup_ret_raw(
             cleanup_pad.slot_trusting_same_module(),
             Some(unwind_dest.slot_trusting_same_module()),
             name,
-        )
+        ))
     }
 
     /// Produce `cleanupret from <cleanuppad> unwind to caller`.
@@ -10384,7 +10288,7 @@ where
         Pad: IntoErasedValue<'ctx, B>,
     {
         let cleanup_pad = cleanup_pad.into_erased_value(self.mutable_ref())?;
-        self.cleanup_ret_raw(cleanup_pad.slot_trusting_same_module(), None, name)
+        Ok(self.cleanup_ret_raw(cleanup_pad.slot_trusting_same_module(), None, name))
     }
 
     fn cleanup_ret_raw<Name>(
@@ -10392,7 +10296,7 @@ where
         cleanup_pad_id: ValueSlot,
         unwind_id: Option<ValueSlot>,
         name: Name,
-    ) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
+    ) -> TerminatedBlockInst<'ctx, R, B>
     where
         Name: AsRef<str>,
     {
@@ -10403,9 +10307,9 @@ where
             .slot_trusting_same_module();
         let payload = CleanupReturnInstData::new(cleanup_pad_id, unwind_id);
         let inst =
-            self.append_instruction(void_ty, InstructionKindData::CleanupReturn(payload), name)?;
+            self.append_instruction(void_ty, InstructionKindData::CleanupReturn(payload), name);
         let bb = self.into_insert_block();
-        Ok((bb.retag_termination::<Terminated>(), inst))
+        (bb.retag_termination::<Terminated>(), inst)
     }
 
     /// Produce `catchswitch within <parent> [...] unwind label <bb>`.
@@ -10423,11 +10327,11 @@ where
     {
         let parent_pad = parent_pad.into_erased_value(self.mutable_ref())?;
         let unwind_dest = unwind_dest.into_basic_block_label(self.mutable_ref())?;
-        self.catch_switch_raw(
+        Ok(self.catch_switch_raw(
             Some(parent_pad.slot_trusting_same_module()),
             Some(unwind_dest.slot_trusting_same_module()),
             name,
-        )
+        ))
     }
 
     /// Produce `catchswitch within <parent> [...] unwind to caller`.
@@ -10442,7 +10346,7 @@ where
         Pad: IntoErasedValue<'ctx, B>,
     {
         let parent_pad = parent_pad.into_erased_value(self.mutable_ref())?;
-        self.catch_switch_raw(Some(parent_pad.slot_trusting_same_module()), None, name)
+        Ok(self.catch_switch_raw(Some(parent_pad.slot_trusting_same_module()), None, name))
     }
 
     /// Produce `catchswitch within none [...] unwind label <bb>`.
@@ -10457,18 +10361,17 @@ where
         Name: AsRef<str>,
     {
         let unwind_dest = unwind_dest.into_basic_block_label(self.mutable_ref())?;
-        self.catch_switch_raw(None, Some(unwind_dest.slot_trusting_same_module()), name)
+        Ok(self.catch_switch_raw(None, Some(unwind_dest.slot_trusting_same_module()), name))
     }
 
-    /// Produce `catchswitch within none [...] unwind to caller`.
-    /// `catchswitch within none [...] unwind to caller` through either
-    /// positioned state. With no parent pad and no unwind block there is no
-    /// operand to admit; the one refusal is the insertion point's
-    /// ([`BlockError::AnchorNotInBlock`]).
-    fn catch_switch_within_none_to_caller_at_point<Name>(
+    /// Produce `catchswitch within none [...] unwind to caller`. Mirrors
+    /// `IRBuilder::CreateCatchSwitch`. With no parent pad and no unwind block
+    /// there is no operand to admit, and nothing else can refuse it in
+    /// either positioned state.
+    pub fn catch_switch_within_none_to_caller<Name>(
         self,
         name: Name,
-    ) -> IrResult<TerminatedBlockCatchSwitch<'ctx, R, B>>
+    ) -> TerminatedBlockCatchSwitch<'ctx, R, B>
     where
         Name: AsRef<str>,
     {
@@ -10480,7 +10383,7 @@ where
         parent_id: Option<ValueSlot>,
         unwind_id: Option<ValueSlot>,
         name: Name,
-    ) -> IrResult<TerminatedBlockCatchSwitch<'ctx, R, B>>
+    ) -> TerminatedBlockCatchSwitch<'ctx, R, B>
     where
         Name: AsRef<str>,
     {
@@ -10491,32 +10394,31 @@ where
             .slot_trusting_same_module();
         let payload = CatchSwitchInstData::new(parent_id, unwind_id);
         let inst =
-            self.append_instruction(token_ty, InstructionKindData::CatchSwitch(payload), name)?;
+            self.append_instruction(token_ty, InstructionKindData::CatchSwitch(payload), name);
         let module_ref = self.mutable_ref();
         let bb = self.into_insert_block();
-        Ok((
+        (
             bb.retag_termination::<Terminated>(),
             CatchSwitchInst::<Open, B>::from_raw(
                 inst.to_erased().slot_trusting_same_module(),
                 module_ref,
                 token_ty,
             ),
-        ))
+        )
     }
 
-    /// `unreachable` through either positioned state; the one refusal is the
-    /// insertion point's ([`BlockError::AnchorNotInBlock`]).
-    fn unreachable_at_point(self) -> IrResult<TerminatedBlockInst<'ctx, R, B>> {
+    /// Produce `unreachable`. Mirrors `IRBuilder::CreateUnreachable`. Nothing
+    /// can refuse it, in either positioned state.
+    pub fn unreachable(self) -> TerminatedBlockInst<'ctx, R, B> {
         let payload = UnreachableInstData;
         let void_ty = self
             .module
             .void_type::<B>()
             .as_type()
             .slot_trusting_same_module();
-        let inst =
-            self.append_instruction(void_ty, InstructionKindData::Unreachable(payload), "")?;
+        let inst = self.append_instruction(void_ty, InstructionKindData::Unreachable(payload), "");
         let bb = self.into_insert_block();
-        Ok((bb.retag_termination::<Terminated>(), inst))
+        (bb.retag_termination::<Terminated>(), inst)
     }
 
     // ---- Internal helpers ----
@@ -10525,26 +10427,24 @@ where
     /// insertion block. `name` populates the value-symbol-table when
     /// non-empty.
     ///
-    /// Refuses with [`BlockError::AnchorNotInBlock`] when the builder was
-    /// positioned before an instruction that has since left the insertion
-    /// block: moved by a split or `move_before`, or erased. The builder holds
-    /// `&Module`, so nothing stops the module changing under it. Upstream's
-    /// `IRBuilder` keeps a raw iterator and is undefined there. The anchor is
-    /// checked before the instruction is created, so a refusal leaves the
-    /// module as it was.
+    /// Infallible: a builder positioned before an anchor holds the module's
+    /// [`LayoutToken`] `&mut` for its whole life, and every edit that moves
+    /// an instruction out of its block (erase, detach, move, split, splice)
+    /// needs that token, so the anchor is still in the insertion block here.
+    /// Upstream's `IRBuilder` keeps a raw iterator, undefined once its
+    /// instruction leaves; here that state is unreachable.
     fn append_instruction<N: AsRef<str>>(
         &self,
         ty: TypeSlot,
         kind: InstructionKindData,
         name: N,
-    ) -> IrResult<Instruction<'ctx, Attached, B>> {
+    ) -> Instruction<'ctx, Attached, B> {
         let name = name.as_ref();
         let bb = self.insert_block();
         // The insert block came from an infallible positioning call, which
         // cannot refuse a block of another module.
         // boundary (F1): refused by Task 26
         let bb_id = bb.to_erased().slot_trusting_same_module();
-        self.refuse_stale_anchor()?;
         // The operands' uses are registered as the instruction is created,
         // and its name is entered in the function's table below, once it is
         // in a block.
@@ -10552,9 +10452,13 @@ where
         match self.insert_before {
             Some(anchor) => {
                 // Mirrors `IRBuilder::SetInsertPoint(Instruction*)`: new
-                // instruction is inserted before the anchor, which was
-                // checked to be in the block above.
-                bb.insert_instruction_before(id, anchor)?;
+                // instruction is inserted before the anchor.
+                if bb.insert_instruction_before(id, anchor).is_err() {
+                    unreachable!(
+                        "a builder's anchor stays in its block while the builder holds \
+                         the layout token (invariant)"
+                    );
+                }
             }
             None => bb.append_instruction(id),
         }
@@ -10566,7 +10470,7 @@ where
                 FunctionValue::<Dyn, B>::from_parts_unchecked(parent_fn_id, self.mutable_ref());
             parent_fn.set_local_value_name(id, Some(name));
         }
-        Ok(Instruction::from_parts(id, self.mutable_ref()))
+        Instruction::from_parts(id, self.mutable_ref())
     }
 
     /// Append `kind` at `like`'s type and wrap the result as width-`W`.
@@ -10581,10 +10485,10 @@ where
         like: IntValue<'ctx, W, B>,
         kind: InstructionKindData,
         name: N,
-    ) -> IrResult<IntValue<'ctx, W, B>> {
+    ) -> IntValue<'ctx, W, B> {
         // Internal: `like` is an operand its caller has already admitted.
-        let inst = self.append_instruction(like.ty().slot_trusting_same_module(), kind, name)?;
-        Ok(IntValue::<W, B>::from_value_unchecked(inst.to_erased()))
+        let inst = self.append_instruction(like.ty().slot_trusting_same_module(), kind, name);
+        IntValue::<W, B>::from_value_unchecked(inst.to_erased())
     }
 
     /// Float analogue of `append_int_like`. Sound by construction: appended at `like.ty()`,
@@ -10594,10 +10498,10 @@ where
         like: FloatValue<'ctx, K, B>,
         kind: InstructionKindData,
         name: N,
-    ) -> IrResult<FloatValue<'ctx, K, B>> {
+    ) -> FloatValue<'ctx, K, B> {
         // Internal: `like` is an operand its caller has already admitted.
-        let inst = self.append_instruction(like.ty().slot_trusting_same_module(), kind, name)?;
-        Ok(FloatValue::<K, B>::from_value_unchecked(inst.to_erased()))
+        let inst = self.append_instruction(like.ty().slot_trusting_same_module(), kind, name);
+        FloatValue::<K, B>::from_value_unchecked(inst.to_erased())
     }
 
     /// Append `kind` at `ty` and wrap the result as width-`W`.
@@ -10613,11 +10517,11 @@ where
         ty: IntType<'ctx, W, B>,
         kind: InstructionKindData,
         name: N,
-    ) -> IrResult<IntValue<'ctx, W, B>> {
+    ) -> IntValue<'ctx, W, B> {
         // Internal: every caller mints `ty`, or admits a caller's type at its
         // own entry before any folder or append sees it.
-        let inst = self.append_instruction(ty.slot_trusting_same_module(), kind, name)?;
-        Ok(IntValue::<W, B>::from_value_unchecked(inst.to_erased()))
+        let inst = self.append_instruction(ty.slot_trusting_same_module(), kind, name);
+        IntValue::<W, B>::from_value_unchecked(inst.to_erased())
     }
 
     /// Float analogue of `append_int_at`. Sound: appended at `ty`, `ty: FloatType<'ctx, K, B>`
@@ -10627,11 +10531,11 @@ where
         ty: FloatType<'ctx, K, B>,
         kind: InstructionKindData,
         name: N,
-    ) -> IrResult<FloatValue<'ctx, K, B>> {
+    ) -> FloatValue<'ctx, K, B> {
         // Internal: every caller mints `ty`, or admits a caller's type at its
         // own entry before any folder or append sees it.
-        let inst = self.append_instruction(ty.slot_trusting_same_module(), kind, name)?;
-        Ok(FloatValue::<K, B>::from_value_unchecked(inst.to_erased()))
+        let inst = self.append_instruction(ty.slot_trusting_same_module(), kind, name);
+        FloatValue::<K, B>::from_value_unchecked(inst.to_erased())
     }
 
     /// Build and append a `load`, re-stamping the payload's pointee to `ty` and
@@ -10650,10 +10554,10 @@ where
         ty: IntType<'ctx, W, B>,
         payload: LoadInstData,
         name: N,
-    ) -> IrResult<IntValue<'ctx, W, B>> {
+    ) -> IntValue<'ctx, W, B> {
         // Internal: every caller mints `ty` or admits it at its own entry.
-        let inst = self.load_sized(payload, SizedType::from(ty), name)?;
-        Ok(IntValue::<W, B>::from_value_unchecked(inst.to_erased()))
+        let inst = self.load_sized(payload, SizedType::from(ty), name);
+        IntValue::<W, B>::from_value_unchecked(inst.to_erased())
     }
 
     /// Float analogue of `append_int_load`. Re-stamps `payload.pointee_ty` with `ty`
@@ -10665,10 +10569,10 @@ where
         ty: FloatType<'ctx, K, B>,
         payload: LoadInstData,
         name: N,
-    ) -> IrResult<FloatValue<'ctx, K, B>> {
+    ) -> FloatValue<'ctx, K, B> {
         // Internal: every caller mints `ty` or admits it at its own entry.
-        let inst = self.load_sized(payload, SizedType::from(ty), name)?;
-        Ok(FloatValue::<K, B>::from_value_unchecked(inst.to_erased()))
+        let inst = self.load_sized(payload, SizedType::from(ty), name);
+        FloatValue::<K, B>::from_value_unchecked(inst.to_erased())
     }
 
     /// Append `kind` at `ptr_ty` and wrap the result as a `PointerValue`.
@@ -10683,11 +10587,11 @@ where
         ptr_ty: PointerType<'ctx, A, B>,
         kind: InstructionKindData,
         name: N,
-    ) -> IrResult<PointerValue<'ctx, A, B>> {
+    ) -> PointerValue<'ctx, A, B> {
         // Internal: every caller mints `ptr_ty`, derives it from an admitted
         // operand, or admits a caller's type at its own entry.
-        let inst = self.append_instruction(ptr_ty.slot_trusting_same_module(), kind, name)?;
-        Ok(PointerValue::from_value_unchecked(inst.to_erased()))
+        let inst = self.append_instruction(ptr_ty.slot_trusting_same_module(), kind, name);
+        PointerValue::from_value_unchecked(inst.to_erased())
     }
 
     /// Pointer load: build+append a `load` whose pointee is `ptr_ty`, routed through
@@ -10699,9 +10603,9 @@ where
         ptr_ty: PointerType<'ctx, A, B>,
         payload: LoadInstData,
         name: N,
-    ) -> IrResult<PointerValue<'ctx, A, B>> {
-        let inst = self.load_sized(payload, SizedType::from(ptr_ty), name)?;
-        Ok(PointerValue::from_value_unchecked(inst.to_erased()))
+    ) -> PointerValue<'ctx, A, B> {
+        let inst = self.load_sized(payload, SizedType::from(ptr_ty), name);
+        PointerValue::from_value_unchecked(inst.to_erased())
     }
 
     /// Crate-internal: append a freshly-built phi to the insertion block.
@@ -10711,18 +10615,12 @@ where
     /// [`BasicBlock::insert_instruction_at_phi_head`], regardless of the
     /// builder's cursor, so phis stay grouped at the top of the block by
     /// construction rather than only by a verifier check.
-    ///
-    /// The placement does not read the anchor, but a builder whose anchor has
-    /// left its block is refused all the same
-    /// ([`BlockError::AnchorNotInBlock`]): a stale insertion point is refused
-    /// by every build, not by every build but a phi.
     fn append_phi_instruction<N: AsRef<str>>(
         &self,
         ty: TypeSlot,
         kind: InstructionKindData,
         name: N,
-    ) -> IrResult<Instruction<'ctx, Attached, B>> {
-        self.refuse_stale_anchor()?;
+    ) -> Instruction<'ctx, Attached, B> {
         let name = name.as_ref();
         let bb = self.insert_block();
         // The insert block came from an infallible positioning call, which
@@ -10753,7 +10651,7 @@ where
                 FunctionValue::<Dyn, B>::from_parts_unchecked(parent_fn_id, self.mutable_ref());
             parent_fn.set_local_value_name(id, Some(name));
         }
-        Ok(Instruction::from_parts(id, self.mutable_ref()))
+        Instruction::from_parts(id, self.mutable_ref())
     }
 
     fn int_type_for_bits(&self, bits: u32) -> IrResult<IntType<'ctx, IntDyn, B>> {
@@ -10917,10 +10815,7 @@ where
     /// Build the `ret` payload and append. Crate-internal: the typed
     /// `ret` methods funnel here after their per-marker
     /// validation. Cannot fail by construction.
-    fn append_ret(
-        &self,
-        value: Option<Value<'ctx, B>>,
-    ) -> IrResult<Instruction<'ctx, Attached, B>> {
+    fn append_ret(&self, value: Option<Value<'ctx, B>>) -> Instruction<'ctx, Attached, B> {
         // Internal: every caller lifted `value` against this module.
         let payload = ReturnOpData::new(value.map(|v| v.slot_trusting_same_module()));
         let void_ty = self
@@ -11057,7 +10952,7 @@ where
                 });
             }
         }
-        let inst = self.append_ret(Some(v))?;
+        let inst = self.append_ret(Some(v));
         let bb = self.into_insert_block();
         Ok((bb.retag_termination::<Terminated>(), inst))
     }
@@ -11084,233 +10979,16 @@ where
     F: IrBuilderFolder<'ctx, B>,
     S: Positioning,
 {
-    /// `ret void` through either positioned state; the one refusal is the
-    /// insertion point's ([`BlockError::AnchorNotInBlock`]).
-    fn ret_void_at_point(self) -> IrResult<VoidReturnInst<'ctx, B>> {
-        let inst = self.append_ret(None)?;
-        let bb = self.into_insert_block();
-        Ok((bb.retag_termination::<Terminated>(), inst))
-    }
-}
-
-impl<'m, 'ctx, B, F> IrBuilder<'m, 'ctx, B, F, PositionedAtEnd, ()>
-where
-    B: ModuleBrand + 'ctx,
-    F: IrBuilderFolder<'ctx, B>,
-{
     /// Produce `ret void`. Mirrors `IRBuilder::CreateRetVoid`. The
     /// `()` builder does not expose `ret(value)` at all (no
     /// `IntoReturnValue<'ctx, ()>` impls exist), so `ret_void`
-    /// is the only return option. At the end of a block nothing can refuse
-    /// it; [`PositionedBefore`]'s `ret_void` returns an [`IrResult`].
+    /// is the only return option. Nothing can refuse it, in either
+    /// positioned state: the builder holds the module's [`LayoutToken`]
+    /// `&mut`, so its insertion point cannot go stale.
     pub fn ret_void(self) -> VoidReturnInst<'ctx, B> {
-        at_end_infallible(self.ret_void_at_point())
-    }
-}
-
-// --------------------------------------------------------------------------
-// The builds that have nothing to refuse but the insertion point: direct at
-// the end of a block, an `IrResult` before an anchor.
-// --------------------------------------------------------------------------
-
-impl<'m, 'ctx, B, F, R> IrBuilder<'m, 'ctx, B, F, PositionedAtEnd, R>
-where
-    B: ModuleBrand + 'ctx,
-    F: IrBuilderFolder<'ctx, B>,
-    R: ReturnMarker,
-{
-    /// Produce `unreachable`. Mirrors `IRBuilder::CreateUnreachable`. At the
-    /// end of a block nothing can refuse it.
-    pub fn unreachable(self) -> TerminatedBlockInst<'ctx, R, B> {
-        at_end_infallible(self.unreachable_at_point())
-    }
-
-    /// Produce `fence <ordering>` (or `fence syncscope("...") <ordering>`).
-    /// Mirrors `IRBuilder::CreateFence`, which cannot fail; at the end of a
-    /// block nothing refuses it here either.
-    pub fn fence<Name>(
-        &self,
-        ordering: AtomicOrdering,
-        sync_scope: SyncScope,
-        name: Name,
-    ) -> FenceInst<'ctx, B>
-    where
-        Name: AsRef<str>,
-    {
-        at_end_infallible(self.fence_at_point(ordering, sync_scope, name))
-    }
-
-    /// Produce `catchswitch within none [...] unwind to caller`. Mirrors
-    /// `IRBuilder::CreateCatchSwitch`. With no parent pad and no unwind block
-    /// there is no operand to admit, and at the end of a block nothing else
-    /// can refuse it.
-    pub fn catch_switch_within_none_to_caller<Name>(
-        self,
-        name: Name,
-    ) -> TerminatedBlockCatchSwitch<'ctx, R, B>
-    where
-        Name: AsRef<str>,
-    {
-        at_end_infallible(self.catch_switch_within_none_to_caller_at_point(name))
-    }
-
-    /// Read field `I` of a schema value — `extractvalue %S %aggregate, I`,
-    /// folded by the builder's folder — with no `Result`. The derived
-    /// getters' entry: a struct's `point.x(&b)` is
-    /// `b.read_field::<Point, 0, _>(…)`.
-    ///
-    /// Nothing here can fail: the aggregate and the index need no check (see
-    /// the core this wraps), the folder is llvmkit's own ([`TrustedFolder`]),
-    /// and at the end of a block the insertion point cannot refuse. Any brand
-    /// and any folder read through [`extract_field`](Self::extract_field),
-    /// which checks.
-    pub fn read_field<Schema, const I: u32, Name>(
-        &self,
-        aggregate: SchemaValue<'ctx, Schema, B, impl Capability>,
-        name: Name,
-    ) -> <FieldOf<Schema, I> as IrField>::Value<'ctx, B, Mutable>
-    where
-        Schema: StructSchema,
-        Schema::Fields: StructFieldAt<I>,
-        B: crate::UniqueBrand,
-        F: TrustedFolder<'ctx, B>,
-        Name: AsRef<str>,
-    {
-        at_end_infallible(self.read_field_at_point::<Schema, I, Name>(aggregate, name))
-    }
-
-    /// Write field `I` of a schema value — `insertvalue %S %aggregate, %value,
-    /// I`, folded by the builder's folder — with no `Result`. The derived
-    /// builds' step: `point.build(&b, x, 7_i32, "p")` is a
-    /// [`struct_poison`](Self::struct_poison) and one `write_field` per field.
-    ///
-    /// Nothing here can fail, by [`read_field`](Self::read_field)'s argument
-    /// and the field's own ([`FieldArg`] lowers only to its layout). Any
-    /// brand, any folder and any argument its field admits write through
-    /// [`insert_field`](Self::insert_field), which checks.
-    pub fn write_field<Schema, const I: u32, Arg, Name>(
-        &self,
-        aggregate: SchemaValue<'ctx, Schema, B, impl Capability>,
-        value: Arg,
-        name: Name,
-    ) -> SchemaValue<'ctx, Schema, B, Mutable>
-    where
-        Schema: StructSchema,
-        Schema::Fields: StructFieldAt<I>,
-        B: crate::UniqueBrand,
-        F: TrustedFolder<'ctx, B>,
-        Arg: FieldArg<'ctx, <FieldOf<Schema, I> as IrField>::Layout, B>,
-        Name: AsRef<str>,
-    {
-        at_end_infallible(self.write_field_at_point::<Schema, I, Arg, Name>(aggregate, value, name))
-    }
-}
-
-impl<'m, 'ctx, B, F, R> IrBuilder<'m, 'ctx, B, F, PositionedBefore, R>
-where
-    B: ModuleBrand + 'ctx,
-    F: IrBuilderFolder<'ctx, B>,
-    R: ReturnMarker,
-{
-    /// Produce `unreachable` before the anchor. Mirrors
-    /// `IRBuilder::CreateUnreachable`.
-    ///
-    /// # Errors
-    ///
-    /// [`BlockError::AnchorNotInBlock`] if the anchor has left the block.
-    pub fn unreachable(self) -> IrResult<TerminatedBlockInst<'ctx, R, B>> {
-        self.unreachable_at_point()
-    }
-
-    /// Produce `fence <ordering>` before the anchor. Mirrors
-    /// `IRBuilder::CreateFence`.
-    ///
-    /// # Errors
-    ///
-    /// [`BlockError::AnchorNotInBlock`] if the anchor has left the block.
-    pub fn fence<Name>(
-        &self,
-        ordering: AtomicOrdering,
-        sync_scope: SyncScope,
-        name: Name,
-    ) -> IrResult<FenceInst<'ctx, B>>
-    where
-        Name: AsRef<str>,
-    {
-        self.fence_at_point(ordering, sync_scope, name)
-    }
-
-    /// Produce `catchswitch within none [...] unwind to caller` before the
-    /// anchor. Mirrors `IRBuilder::CreateCatchSwitch`.
-    ///
-    /// # Errors
-    ///
-    /// [`BlockError::AnchorNotInBlock`] if the anchor has left the block.
-    pub fn catch_switch_within_none_to_caller<Name>(
-        self,
-        name: Name,
-    ) -> IrResult<TerminatedBlockCatchSwitch<'ctx, R, B>>
-    where
-        Name: AsRef<str>,
-    {
-        self.catch_switch_within_none_to_caller_at_point(name)
-    }
-
-    /// Read field `I` of a schema value before the anchor.
-    ///
-    /// # Errors
-    ///
-    /// [`BlockError::AnchorNotInBlock`] if the anchor has left the block.
-    pub fn read_field<Schema, const I: u32, Name>(
-        &self,
-        aggregate: SchemaValue<'ctx, Schema, B, impl Capability>,
-        name: Name,
-    ) -> IrResult<<FieldOf<Schema, I> as IrField>::Value<'ctx, B, Mutable>>
-    where
-        Schema: StructSchema,
-        Schema::Fields: StructFieldAt<I>,
-        B: crate::UniqueBrand,
-        F: TrustedFolder<'ctx, B>,
-        Name: AsRef<str>,
-    {
-        self.read_field_at_point::<Schema, I, Name>(aggregate, name)
-    }
-
-    /// Write field `I` of a schema value before the anchor.
-    ///
-    /// # Errors
-    ///
-    /// [`BlockError::AnchorNotInBlock`] if the anchor has left the block.
-    pub fn write_field<Schema, const I: u32, Arg, Name>(
-        &self,
-        aggregate: SchemaValue<'ctx, Schema, B, impl Capability>,
-        value: Arg,
-        name: Name,
-    ) -> IrResult<SchemaValue<'ctx, Schema, B, Mutable>>
-    where
-        Schema: StructSchema,
-        Schema::Fields: StructFieldAt<I>,
-        B: crate::UniqueBrand,
-        F: TrustedFolder<'ctx, B>,
-        Arg: FieldArg<'ctx, <FieldOf<Schema, I> as IrField>::Layout, B>,
-        Name: AsRef<str>,
-    {
-        self.write_field_at_point::<Schema, I, Arg, Name>(aggregate, value, name)
-    }
-}
-
-impl<'m, 'ctx, B, F> IrBuilder<'m, 'ctx, B, F, PositionedBefore, ()>
-where
-    B: ModuleBrand + 'ctx,
-    F: IrBuilderFolder<'ctx, B>,
-{
-    /// Produce `ret void` before the anchor. Mirrors `IRBuilder::CreateRetVoid`.
-    ///
-    /// # Errors
-    ///
-    /// [`BlockError::AnchorNotInBlock`] if the anchor has left the block.
-    pub fn ret_void(self) -> IrResult<VoidReturnInst<'ctx, B>> {
-        self.ret_void_at_point()
+        let inst = self.append_ret(None);
+        let bb = self.into_insert_block();
+        (bb.retag_termination::<Terminated>(), inst)
     }
 }
 
@@ -11334,7 +11012,7 @@ where
                 got: TypeKindLabel::Void,
             });
         }
-        let inst = self.append_ret(None)?;
+        let inst = self.append_ret(None);
         let bb = self.into_insert_block();
         Ok((bb.retag_termination::<Terminated>(), inst))
     }
@@ -11567,12 +11245,12 @@ where
                 operand_bundles,
             },
         );
-        self.parent.append_instruction(
+        Ok(self.parent.append_instruction(
             // Internal: read from the callee or the override, both admitted above.
             self.return_ty.slot_trusting_same_module(),
             InstructionKindData::Call(payload),
             self.name,
-        )
+        ))
     }
 }
 
@@ -11767,7 +11445,7 @@ where
             f.return_type().slot_trusting_same_module(),
             InstructionKindData::Call(payload),
             self.name,
-        )?;
+        );
         Ok(TypedCallInstId::from_raw(
             self.parent.module.id(),
             inst.to_erased().slot_trusting_same_module(),
@@ -12022,7 +11700,7 @@ where
         let parent = self.parent;
         let ty = W::ir_type(parent.mutable_ref());
         let payload = self.payload(ty.as_type().slot_trusting_same_module())?;
-        Ok(parent.append_int_load(ty, payload, name)?.id())
+        Ok(parent.append_int_load(ty, payload, name).id())
     }
 
     /// Emit with the result typed by the static float-kind marker `K`.
@@ -12033,7 +11711,7 @@ where
         let parent = self.parent;
         let ty = K::ir_type(parent.mutable_ref());
         let payload = self.payload(ty.as_type().slot_trusting_same_module())?;
-        Ok(parent.append_fp_load(ty, payload, name)?.id())
+        Ok(parent.append_fp_load(ty, payload, name).id())
     }
 
     /// Emit a `ptr`-typed load in the default address space. Other
@@ -12044,7 +11722,7 @@ where
         let parent = self.parent;
         let ty = parent.mutable_ref().ptr_type_in::<0>();
         let payload = self.payload(ty.as_type().slot_trusting_same_module())?;
-        Ok(parent.append_ptr_load(ty, payload, name)?.id())
+        Ok(parent.append_ptr_load(ty, payload, name).id())
     }
 
     /// Emit with the result type derived from the pointee schema `T`,
@@ -12204,7 +11882,7 @@ where
             self.ordering,
             self.sync_scope,
         )?;
-        parent.store_inner(payload)
+        Ok(parent.store_inner(payload))
     }
 }
 
@@ -12553,7 +12231,7 @@ where
             true_v.slot_trusting_same_module(),
             false_v.slot_trusting_same_module(),
         );
-        let inst = self.append_instruction(true_ty, InstructionKindData::Select(payload), name)?;
+        let inst = self.append_instruction(true_ty, InstructionKindData::Select(payload), name);
         Ok(A::from_select_value(inst.to_erased(), &SelectNarrow::new()))
     }
 }

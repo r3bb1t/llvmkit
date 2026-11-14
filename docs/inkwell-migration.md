@@ -113,14 +113,18 @@ End to end, a two-argument `add` — the shape every row below composes into:
 use llvmkit_ir::{IrBuilder, IrError, Linkage, module_new};
 
 fn build() -> Result<(), IrError> {
-    let m = module_new!("demo")?;
+    let mut module = module_new!("demo")?;
+    // The permission to change the module's layout. A builder borrows it
+    // `&mut`, so one builder edits the module at a time; `m` reads it meanwhile.
+    let mut key = module.layout_token();
+    let m = key.module();
     // A declaration returns a storable id, not a handle.
     let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
     // `m.view(f)` is the borrowing handle; the block it appends back is a
     // linear insertion token (call `.id()` on it to store it).
-    let entry = m.view(f).append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
 
-    let b = IrBuilder::at_end(entry);
+    let b = IrBuilder::at_end(&mut key, entry)?;
     let (lhs, rhs) = m.view(f).params();
     let sum = b.int_add::<i32, _, _, _>(lhs, rhs, "sum")?; // IntValueId<i32, _>
     b.ret(sum)?;                                           // consumes `b`
@@ -258,7 +262,7 @@ takes the typed route, which is why its call reads
 |`CallSiteValue::get_operand_bundles()`|`m.view(call).operand_bundles()` / `.operand_bundle(&tag)?`|on `CallInst`, `InvokeInst` and `CallBrInst`; each yields `OperandBundleUse` views whose `inputs()` are `Value`s. `operand_bundle` refuses a tag the call carries twice (`DuplicateOperandBundle`) where upstream's `getOperandBundle` asserts|
 |`Builder::build_return(Some(v))`|`b.ret(value)?`|`value: impl IntoReturnValue<'ctx, R, B>`; type must match the function's return marker. Consumes the positioned builder and returns `TerminatedBlockInst<'ctx, R, B>` — the (`BasicBlock<'ctx, R, Terminated, B>`, `Instruction`) pair, a borrowing handle rather than an id|
 |`Builder::build_return(None)`|`b.ret_void()` (`R = ()`) or `b.ret_void()?` (`Dyn`)|typed `void` builders are infallible and return `VoidReturnInst<'ctx, B>`; the `Dyn` path errors if the function does not return `void`|
-|`Builder::position_at_end(bb)`|`IrBuilder::new(&mut key).position_at_end(bb)`, or `IrBuilder::at_end(&mut key, bb)`|`key` is the module's `LayoutToken` (`let mut key = module.layout_token(); let m = key.module();`). A builder borrows it `&mut` for as long as it lives, so only one builder per module exists at a time, and nothing can terminate its block or erase its anchor behind its back. `position_at_end` consumes `self` and transitions `Unpositioned` → `PositionedAtEnd`; the emitter methods are only reachable in `PositionedAtEnd` and `PositionedBefore`. Accepts only `Unterminated` blocks. `IrBuilder::at_end(&mut key, bb)` is the one-step form — it infers `R` from it. `b.position_at_end_dyn(block_id)?` is the checked escape for a dynamically discovered CFG, returning `IrError::ForeignValueId` on an id from another module|
+|`Builder::position_at_end(bb)`|`IrBuilder::new(&mut key).position_at_end(bb)`, or `IrBuilder::at_end(&mut key, bb)?`|`key` is the module's `LayoutToken` (`let mut key = module.layout_token(); let m = key.module();`). A builder borrows it `&mut` for as long as it lives, so only one builder per module exists at a time, and nothing can terminate its block or erase its anchor behind its back. `position_at_end` consumes `self` and transitions `Unpositioned` → `PositionedAtEnd`; the emitter methods are only reachable in `PositionedAtEnd` and `PositionedBefore`. Accepts only `Unterminated` blocks. `IrBuilder::at_end(&mut key, bb)?` is the one-step form — it infers `R` from the block, and refuses a block of another module than the token's with `IrError::ForeignLayoutToken`. `b.position_at_end_dyn(block_id)?` is the checked escape for a dynamically discovered CFG, returning `IrError::ForeignValueId` on an id from another module|
 |`Builder::position_before(&instruction)`|`IrBuilder::new_for::<R>(&mut key).position_before(witness)?`|takes a `PlacedInstruction` rather than an `&InstructionValue`, and returns `IrResult` — `ForeignValueId` for an anchor from another module, `InstructionHasNoParent` for one detached after the witness was minted. `Instruction::move_before` / `move_after` / `insert_before` / `insert_after` take the same witness|
 |—|`block.placed_instructions()`|new — walks a block's instructions yielding witnesses directly, so the common `for` loop over a block needs no `Option` before positioning|
 |—|`IrBuilder::new_for::<R>(&mut key)`|new — produces a return-marker-tagged builder for compile-time-checked `ret`|

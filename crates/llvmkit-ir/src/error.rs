@@ -1294,11 +1294,6 @@ pub enum IrError {
         /// The rejected integer bit width.
         bits: u32,
     },
-    /// A layout edit was handed another module's
-    /// [`LayoutToken`](crate::LayoutToken). Two modules of one shared brand
-    /// have tokens of one type, so only the module tag tells them apart.
-    #[error("layout token belongs to another module")]
-    ForeignLayoutToken,
 
     /// A type was passed where a different *kind* was expected — the shape
     /// where the expectation is fixed at the call site ("this operand must be
@@ -2039,6 +2034,14 @@ pub enum IrError {
     #[error("value belongs to a different Module")]
     ForeignValueId,
 
+    /// A layout edit or a builder was handed another module's
+    /// [`LayoutToken`](crate::LayoutToken), or a block of another module than
+    /// the token's. Two modules of one shared brand (every `Module::dynamic` is
+    /// `DynBrand`) have tokens of one type, so only the module tag tells them
+    /// apart (D7).
+    #[error("layout token belongs to another module")]
+    ForeignLayoutToken,
+
     /// An instruction that is in no block was handed to an API that needs the
     /// block it sits in — the anchor of
     /// [`IrBuilder::position_before`](crate::IrBuilder::position_before), or
@@ -2314,7 +2317,6 @@ impl IrError {
             // space or value category. `InvalidIntegerWidth` is a bound LLVM
             // itself imposes — upstream's usage class folds bounds in.
             Self::InvalidIntegerWidth { .. }
-            | Self::ForeignLayoutToken
             | Self::TypeMismatch { .. }
             | Self::TypeIdentityMismatch { .. }
             | Self::OperandWidthMismatch { .. }
@@ -2425,6 +2427,7 @@ impl IrError {
             // A handle or id the caller minted in one module and handed to
             // another.
             Self::ForeignValueId
+            | Self::ForeignLayoutToken
             | Self::ForeignType
             | Self::ForeignMetadataId
             | Self::ForeignNamedMetadataId
@@ -2816,11 +2819,12 @@ impl AggregateInstruction {
 /// the text the condition was reported with, upstream's own where one exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum BlockError {
-    /// An instruction used as an insertion anchor is not in the block. The
-    /// block is read from the anchor's parent when a builder is positioned,
-    /// but the builder holds `&Module`, so the anchor can leave the block
-    /// afterwards (erased, moved, or split off) and a build or a restored
-    /// [`InsertPoint`](crate::InsertPoint) then names a stale anchor: the
+    /// An instruction used as an insertion anchor is not in the block. A live
+    /// builder holds the layout token, so its anchor cannot move; the anchor
+    /// can leave the block only between a saved
+    /// [`InsertPoint`](crate::InsertPoint) and its restore (erased, moved, or
+    /// split off while no builder lived), or when a caller hands the
+    /// insert-before/after primitives an anchor from another block: the
     /// caller's mutation, not an llvmkit bug.
     #[error("instruction anchor is not in this block")]
     AnchorNotInBlock,

@@ -485,6 +485,9 @@ enum OutsideReach<B: ModuleBrand> {
     /// `builder_at` an insert point in the block. An `Option` because the
     /// restore consumes it and `run` takes `&mut self`.
     BuildAt(Option<InsertPoint<'static, (), B, PositionedBefore>>),
+    /// `builder_before` the first instruction of `@other`, found by the pass
+    /// through its module view.
+    BuildBeforeOther,
 }
 
 /// A `ReshapeCfg` pass that reaches for a block outside its function and
@@ -519,6 +522,20 @@ impl<B: ModuleBrand> FunctionPass<B> for ReachOutsideFunction<B> {
             OutsideReach::BuildAt(at) => reshape
                 .builder_at(at.take().expect("the pass runs once"))
                 .err(),
+            OutsideReach::BuildBeforeOther => {
+                let other = reshape
+                    .module()
+                    .functions()
+                    .find(|function| function.name().as_deref() == Some("other"))
+                    .expect("@other is in the module");
+                let anchor = other
+                    .entry_block()
+                    .expect("@other has a body")
+                    .placed_instructions()
+                    .next()
+                    .expect("@other's entry holds its `ret`");
+                reshape.builder_before(anchor).err()
+            }
         };
         *self.refusal.borrow_mut() = refused;
         Ok(reshape.done())
@@ -659,6 +676,76 @@ fn a_function_pass_cannot_build_into_another_function() -> Result<(), IrError> {
     assert_eq!(
         refused,
         Some(IrError::from(llvmkit_ir::BlockError::BlockNotInFunction))
+    );
+    Ok(())
+}
+
+/// `builder_before` an instruction of another function is refused, so the
+/// pass gets no builder there either.
+///
+/// **No upstream counterpart**: as above.
+#[test]
+fn a_function_pass_cannot_build_before_another_functions_instruction() -> Result<(), IrError> {
+    let mut module = module_new!("build-before-another-function")?;
+    let mut key = module.layout_token();
+    let fixture = build_two_functions(&mut key)?;
+    let pass = ReachOutsideFunction::new(OutsideReach::BuildBeforeOther);
+    let refusal = Rc::clone(&pass.refusal);
+    let refused = refusal_leaving_module_unchanged(module, fixture.caller, pass, &refusal)?;
+    assert_eq!(
+        refused,
+        Some(IrError::from(llvmkit_ir::BlockError::BlockNotInFunction))
+    );
+    Ok(())
+}
+
+/// A `ReshapeCfg` pass that inserts `%slot = alloca i32` before its entry
+/// block's terminator through `builder_before`.
+struct AllocaBeforeEntryTerminator;
+
+impl<B: ModuleBrand> FunctionPass<B> for AllocaBeforeEntryTerminator {
+    type Access = ReshapeCfg;
+    type Requires = ();
+    const NAME: &'static str = "alloca-before-entry-terminator";
+
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
+        let mut reshape = cx.mutate();
+        let terminator = reshape
+            .function()
+            .entry_block()
+            .expect("definition has entry")
+            .placed_instructions()
+            .last()
+            .expect("the entry block ends in its terminator");
+        let i32_ty = reshape.module().i32_type();
+        reshape.builder_before(terminator)?.alloca(i32_ty, "slot")?;
+        Ok(reshape.done())
+    }
+}
+
+/// A function pass starts a builder at one of its own instructions with
+/// `builder_before` — the port of constructing `IRBuilder<> B(I)` in a pass —
+/// and what it builds lands right before that instruction.
+///
+/// **No upstream counterpart** as a test: llvmkit's pass context hands the
+/// builder out, where an upstream pass constructs `IRBuilder` itself.
+#[test]
+fn a_function_pass_builds_before_its_own_instruction() -> Result<(), IrError> {
+    let mut module = module_new!("build-before-own-instruction")?;
+    let mut key = module.layout_token();
+    let (caller, _) = build_callbr_caller(&mut key)?;
+    let verified = module.verify()?;
+    let mut analyses = Analyses::new();
+    let out = run_function_pass(AllocaBeforeEntryTerminator, verified, caller, &mut analyses)?;
+    let reverified = out.verify().expect("the inserted alloca re-verifies");
+    let printed = format!("{reverified}");
+    assert!(
+        printed.contains("entry:\n  %slot = alloca i32, align 4\n  callbr void"),
+        "the alloca lands right before the entry's `callbr`, got:\n{printed}"
     );
     Ok(())
 }

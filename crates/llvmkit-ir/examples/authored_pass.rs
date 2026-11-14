@@ -66,7 +66,7 @@ fn main() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let f = m.add_typed_function::<i32, (), _>("f", Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IrBuilder::at_end(&mut key, entry);
+    let b = IrBuilder::at_end(&mut key, entry)?;
     b.ret(i32_ty.const_int(1_u32))?;
 
     let verified = module.verify()?;
