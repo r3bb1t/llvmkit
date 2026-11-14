@@ -27,7 +27,7 @@ use super::constant::{
     Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprInRange,
     ConstantExprOpcode, aggregate_element_count, is_poison, is_undef, is_undef_or_poison,
 };
-use super::constants::{ConstantExprOptions, ConstantFloatValue, ConstantIntValue};
+use super::constants::{ConstantExprOptions, ConstantFloatValue, ConstantIntValue, gep_lane_count};
 use super::data_layout::FunctionPtrAlignType;
 use super::derived_types::{ArrayType, FloatType, IntType, StructType, VectorType, erase_sized};
 use super::element::ElemDyn;
@@ -42,7 +42,7 @@ use super::instruction::{InstructionKindData, InstructionView};
 use super::instructions::{cast_is_valid, is_eliminable_cast_pair};
 use super::int_width::IntDyn;
 use super::module::{ModuleBrand, ModuleRef, ModuleView};
-use super::r#type::{ElementCount, IrType, Type, TypeData, TypeSlotAccess};
+use super::r#type::{IrType, Type, TypeData, TypeSlotAccess};
 use super::type_components::lanes;
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{IsValue, Value, ValueKindData, ValueSlot, ValueSlotAccess};
@@ -579,7 +579,7 @@ fn fold_constant_expr_associative_binary<'ctx, B: ModuleBrand + 'ctx, C: Capabil
         }
         return Ok(None);
     };
-    if !opcode.is_associative() || constant_expr_binary_opcode(expr.opcode) != Some(opcode) {
+    if !opcode.is_associative() || expr.opcode.binary_opcode() != Some(opcode) {
         return Ok(None);
     }
     let [operand0, operand1] = expr.operands.as_ref() else {
@@ -605,7 +605,7 @@ fn build_binary_constant_or_expr<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     rhs: Constant<'ctx, B, C>,
 ) -> IrResult<Option<Constant<'ctx, B, C>>> {
     if opcode.is_desirable_constant_expr() {
-        let Some(expr_opcode) = binary_constant_expr_opcode(opcode) else {
+        let Some(expr_opcode) = ConstantExprOpcode::from_binary_opcode(opcode) else {
             return Ok(None);
         };
         return lhs
@@ -630,51 +630,13 @@ fn constant_expr_binary_opcode_of<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     else {
         return None;
     };
-    constant_expr_binary_opcode(expr.opcode)
+    expr.opcode.binary_opcode()
 }
 
-fn constant_expr_binary_opcode(opcode: ConstantExprOpcode) -> Option<BinaryOpcode> {
-    match opcode {
-        ConstantExprOpcode::Add => Some(BinaryOpcode::Add),
-        ConstantExprOpcode::Sub => Some(BinaryOpcode::Sub),
-        ConstantExprOpcode::Xor => Some(BinaryOpcode::Xor),
-        ConstantExprOpcode::GetElementPtr
-        | ConstantExprOpcode::ShuffleVector
-        | ConstantExprOpcode::InsertElement
-        | ConstantExprOpcode::ExtractElement
-        | ConstantExprOpcode::Trunc
-        | ConstantExprOpcode::PtrToAddr
-        | ConstantExprOpcode::PtrToInt
-        | ConstantExprOpcode::IntToPtr
-        | ConstantExprOpcode::BitCast
-        | ConstantExprOpcode::AddrSpaceCast => None,
-    }
-}
-
-fn binary_constant_expr_opcode(opcode: BinaryOpcode) -> Option<ConstantExprOpcode> {
-    match opcode {
-        BinaryOpcode::Add => Some(ConstantExprOpcode::Add),
-        BinaryOpcode::Sub => Some(ConstantExprOpcode::Sub),
-        BinaryOpcode::Xor => Some(ConstantExprOpcode::Xor),
-        BinaryOpcode::Mul
-        | BinaryOpcode::Udiv
-        | BinaryOpcode::Sdiv
-        | BinaryOpcode::Urem
-        | BinaryOpcode::Srem
-        | BinaryOpcode::Shl
-        | BinaryOpcode::Lshr
-        | BinaryOpcode::Ashr
-        | BinaryOpcode::And
-        | BinaryOpcode::Or
-        | BinaryOpcode::Fadd
-        | BinaryOpcode::Fsub
-        | BinaryOpcode::Fmul
-        | BinaryOpcode::Fdiv
-        | BinaryOpcode::Frem => None,
-    }
-}
-
-/// Fold a cast instruction with a constant operand.
+/// Fold a cast instruction with a constant operand. A cast
+/// `CastInst::castIsValid` refuses does not fold (`Ok(None)`): upstream's
+/// `ConstantFoldCastInstruction` is only reached with a valid cast, which its
+/// callers guarantee.
 ///
 /// Errors with [`IrError::ForeignType`](crate::IrError::ForeignType) if `dest_ty` belongs to a module other
 /// than `operand`'s.
@@ -699,6 +661,13 @@ pub(crate) fn constant_fold_cast_instruction_trusting_same_module<
     operand: Constant<'ctx, B, C>,
     dest_ty: Type<'ctx, B, C>,
 ) -> IrResult<Option<Constant<'ctx, B, C>>> {
+    // Upstream's callers guarantee `CastInst::castIsValid` before
+    // `ConstantFoldCastInstruction`; here every route in (the public entry,
+    // the builder's folder, the constant evaluator, the analyses) passes
+    // through this one check, so no arm below folds an invalid cast.
+    if !cast_is_valid(opcode, operand.ty(), dest_ty) {
+        return Ok(None);
+    }
     if is_poison(operand) {
         return Ok(Some(poison_for(dest_ty)));
     }
@@ -855,7 +824,7 @@ fn fold_maybe_undesirable_cast<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     dest_ty: Type<'ctx, B, C>,
 ) -> IrResult<Option<Constant<'ctx, B, C>>> {
     if opcode.is_desirable_constant_expr() {
-        let Some(expr_opcode) = constant_expr_opcode_from_cast(opcode) else {
+        let Some(expr_opcode) = ConstantExprOpcode::from_cast_opcode(opcode) else {
             return Ok(None);
         };
         return value
@@ -871,25 +840,6 @@ fn fold_maybe_undesirable_cast<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             .map(Some);
     }
     constant_fold_cast_instruction_trusting_same_module(opcode, value, dest_ty)
-}
-
-fn constant_expr_opcode_from_cast(opcode: CastOpcode) -> Option<ConstantExprOpcode> {
-    match opcode {
-        CastOpcode::Trunc => Some(ConstantExprOpcode::Trunc),
-        CastOpcode::PtrToAddr => Some(ConstantExprOpcode::PtrToAddr),
-        CastOpcode::PtrToInt => Some(ConstantExprOpcode::PtrToInt),
-        CastOpcode::IntToPtr => Some(ConstantExprOpcode::IntToPtr),
-        CastOpcode::BitCast => Some(ConstantExprOpcode::BitCast),
-        CastOpcode::AddrSpaceCast => Some(ConstantExprOpcode::AddrSpaceCast),
-        CastOpcode::Zext
-        | CastOpcode::Sext
-        | CastOpcode::FpTrunc
-        | CastOpcode::FpExt
-        | CastOpcode::FpToUi
-        | CastOpcode::FpToSi
-        | CastOpcode::UiToFp
-        | CastOpcode::SiToFp => None,
-    }
 }
 
 /// Fold an integer or floating-point compare instruction.
@@ -2119,7 +2069,22 @@ pub(crate) fn constant_fold_get_element_ptr_trusting_same_module<
     let Ok(result_ty) = gep_result_type(pointer.ty(), indices) else {
         return Ok(None);
     };
+    constant_fold_get_element_ptr_of_result_type(result_ty, pointer, indices, in_range)
+}
 
+/// The folds of [`constant_fold_get_element_ptr_trusting_same_module`] for a
+/// GEP with at least one index whose [`gep_result_type`] is `result_ty`, for
+/// a caller that needs that type itself and computes it once.
+pub(crate) fn constant_fold_get_element_ptr_of_result_type<
+    'ctx,
+    B: ModuleBrand + 'ctx,
+    C: Capability,
+>(
+    result_ty: Type<'ctx, B, C>,
+    pointer: Constant<'ctx, B, C>,
+    indices: &[Constant<'ctx, B, C>],
+    in_range: Option<&ConstantExprInRange>,
+) -> IrResult<Option<Constant<'ctx, B, C>>> {
     if is_poison(pointer) {
         return Ok(Some(poison_for(result_ty)));
     }
@@ -2158,49 +2123,21 @@ pub(crate) fn gep_result_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         return Err(GepConstantError::OperandTypes);
     };
     let scalar_ptr_ty = pointer_ty.module.ptr_type(addr_space).as_type();
-    match gep_operand_shape(pointer_ty, indices)? {
-        GepOperandShape::Scalar => Ok(scalar_ptr_ty),
-        GepOperandShape::Vector(count) => Ok(vector_type_with_scalability(
+    let lanes = gep_lane_count(
+        pointer_ty.data().element_count(),
+        indices
+            .iter()
+            .map(|index| index.ty().data().element_count()),
+    )?;
+    Ok(match lanes {
+        None => scalar_ptr_ty,
+        Some(count) => vector_type_with_scalability(
             pointer_ty.module,
             scalar_ptr_ty,
             count.min,
             count.scalable,
         )
-        .as_type()),
-    }
-}
-
-/// The lane shape the operands of a constant `getelementptr` share.
-enum GepOperandShape {
-    /// Every operand is a scalar.
-    Scalar,
-    /// The vector operands agree on this lane count: the base's, else the
-    /// first vector index's.
-    Vector(ElementCount),
-}
-
-/// The [`GepOperandShape`] of a constant `getelementptr`'s operands, refused
-/// when two vector operands have different lane counts.
-fn gep_operand_shape<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
-    pointer_ty: Type<'ctx, B, C>,
-    indices: &[Constant<'ctx, B, C>],
-) -> Result<GepOperandShape, GepConstantError> {
-    let mut shape = pointer_ty.data().element_count();
-    for index in indices {
-        let Some(index_shape) = index.ty().data().element_count() else {
-            continue;
-        };
-        match shape {
-            Some(current) if current != index_shape => {
-                return Err(GepConstantError::VectorWidthMismatch);
-            }
-            Some(_) => {}
-            None => shape = Some(index_shape),
-        }
-    }
-    Ok(match shape {
-        Some(count) => GepOperandShape::Vector(count),
-        None => GepOperandShape::Scalar,
+        .as_type(),
     })
 }
 
@@ -2639,11 +2576,8 @@ fn fold_bitcast<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             lanes::<1>(),
             false,
         );
-        // Upstream's caller guarantees `CastInst::castIsValid` before this
-        // `ConstantExpr::getBitCast`; a cast that is not valid does not fold.
-        if !cast_is_valid(CastOpcode::BitCast, vector_ty.as_type(), dest_ty) {
-            return Ok(None);
-        }
+        // The cast was checked valid on entry, and `<1 x T>` has `T`'s size,
+        // so this `ConstantExpr::getBitCast` is valid too.
         let vector = vector_ty.const_vector::<Constant<'ctx, B, C>, _>([operand])?;
         return operand
             .module

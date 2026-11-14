@@ -2437,13 +2437,13 @@ where
         let rhs = rhs.into_erased_value(self.mutable_ref())?;
         if lhs.ty() != rhs.ty() {
             return Err(BuilderError::OperandTypesDiffer {
-                operation: OperandCheck::Icmp,
+                operation: OperandCheck::IntegerCompare,
             }
             .into());
         }
         if !lhs.ty().is_int_or_int_vector() && !lhs.ty().is_ptr_or_ptr_vector() {
             return Err(BuilderError::OperandType {
-                operation: OperandCheck::Icmp,
+                operation: OperandCheck::IntegerCompare,
             }
             .into());
         }
@@ -2675,13 +2675,13 @@ where
         let rhs = rhs.into_erased_value(self.mutable_ref())?;
         if lhs.ty() != rhs.ty() {
             return Err(BuilderError::OperandTypesDiffer {
-                operation: OperandCheck::Fcmp,
+                operation: OperandCheck::FloatingPointCompare,
             }
             .into());
         }
         if !lhs.ty().is_float_or_float_vector() {
             return Err(BuilderError::OperandType {
-                operation: OperandCheck::Fcmp,
+                operation: OperandCheck::FloatingPointCompare,
             }
             .into());
         }

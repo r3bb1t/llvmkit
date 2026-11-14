@@ -610,6 +610,76 @@ fn constant_expr_shufflevector_rejects_out_of_range_mask() {
     );
 }
 
+/// Each refusal of `LLParser::parseValID`'s constant-expression and `ptrauth`
+/// arms is anchored at `ID.Loc`, the expression's first token, as every one of
+/// those `error(ID.Loc, ...)` calls is. Each expression ends its line and the
+/// next token is on the following line, so an anchor that drifted past the
+/// closing `)` reports the wrong line.
+///
+/// Ports the anchors of `LLParser::parseValID`'s `kw_ptrauth`,
+/// `kw_getelementptr`, `kw_extractelement`, `kw_insertelement` and
+/// `kw_shufflevector` arms; the texts are upstream's. The shufflevector case
+/// is the mask-range refusal the IR raises after the parser's own guard,
+/// which upstream's single `isValidOperands` call reports at the same
+/// `ID.Loc`.
+#[test]
+fn constant_expression_refusals_are_anchored_at_the_expression() {
+    for (source, message, anchor) in [
+        (
+            "@auth = global ptr ptrauth (i32 0, i32 0)\n@next = global i32 0\n",
+            "constant ptrauth base pointer must be a pointer",
+            "ptrauth",
+        ),
+        (
+            "@p = global ptr getelementptr (i8, i32 0, i64 1)\n@next = global i32 0\n",
+            "base of getelementptr must be a pointer",
+            "getelementptr",
+        ),
+        (
+            "@g = external global i8\n\
+             @p = global ptr getelementptr ({ i32, ptr }, ptr @g, i32 0, i32 1, i32 0)\n\
+             @next = global i32 0\n",
+            "invalid getelementptr indices",
+            "getelementptr",
+        ),
+        (
+            "@g = external global i8\n\
+             @p = global ptr getelementptr inrange(1, 1) (i8, ptr @g, i64 1)\n\
+             @next = global i32 0\n",
+            "expected end to be larger than start",
+            "getelementptr",
+        ),
+        (
+            "@x = global i32 extractelement (i32 0, i32 0)\n@next = global i32 0\n",
+            "invalid extractelement operands",
+            "extractelement",
+        ),
+        (
+            "@x = global <2 x i32> insertelement (<2 x i32> zeroinitializer, i64 0, i32 0)\n\
+             @next = global i32 0\n",
+            "invalid insertelement operands",
+            "insertelement",
+        ),
+        (
+            "define <2 x i32> @bad() {\n  ret <2 x i32> shufflevector (<2 x i32> <i32 1, i32 2>, \
+             <2 x i32> <i32 3, i32 4>, <2 x i32> <i32 0, i32 4>)\n}\n",
+            "invalid operands to shufflevector",
+            "shufflevector",
+        ),
+    ] {
+        let (found, at) = support::rejection_at(source);
+        assert_eq!(found, message, "{source:?}");
+        let offset = source
+            .find(anchor)
+            .unwrap_or_else(|| panic!("{anchor} is in {source:?}"));
+        assert_eq!(
+            at,
+            support::line_and_column(source.as_bytes(), offset),
+            "`{message}` is not anchored at `{anchor}`"
+        );
+    }
+}
+
 /// `test/Bitcode/vscale-round-trip.ll`, the whole file, asserting each of its
 /// four `CHECK-LABEL` / `CHECK` pairs in file order.
 ///
@@ -1130,6 +1200,11 @@ fn ptrauth_invalid_operands_carry_the_typed_rule() {
             include_bytes!("fixtures/upstream/ptrauth-const/invalid_ptrauth_addr_disc.ll")
                 .as_slice(),
             PtrAuthRequirement::AddressDiscriminator,
+        ),
+        (
+            include_bytes!("fixtures/upstream/ptrauth-const/invalid_ptrauth_disc_expr.ll")
+                .as_slice(),
+            PtrAuthRequirement::IntegerDiscriminator,
         ),
         (
             include_bytes!("fixtures/upstream/ptrauth-const/invalid_ptrauth_disc_type.ll")

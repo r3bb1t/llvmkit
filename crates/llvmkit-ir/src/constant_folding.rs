@@ -1053,7 +1053,7 @@ pub(crate) fn constant_fold_cast_operand_trusting_same_module<
     }
 
     if opcode.is_desirable_constant_expr() {
-        let Some(expr_opcode) = cast_constant_expr_opcode(opcode) else {
+        let Some(expr_opcode) = ConstantExprOpcode::from_cast_opcode(opcode) else {
             return Ok(None);
         };
         return operand
@@ -1152,7 +1152,7 @@ fn fold_pointer_to_integer_operand<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     {
         return Ok(None);
     }
-    let Some(cast_opcode) = cast_constant_expr_opcode(opcode) else {
+    let Some(cast_opcode) = ConstantExprOpcode::from_cast_opcode(opcode) else {
         return Ok(None);
     };
     let cast = module.constant_expr(
@@ -2063,7 +2063,7 @@ pub(crate) fn constant_fold_binary_op_operands_trusting_same_module<
     if lhs.ty() != rhs.ty() || !opcode.is_supported_constant_expr() {
         return Ok(None);
     }
-    let Some(expr_opcode) = binary_constant_expr_opcode(opcode) else {
+    let Some(expr_opcode) = ConstantExprOpcode::from_binary_opcode(opcode) else {
         return Ok(None);
     };
     lhs.module
@@ -3056,7 +3056,7 @@ fn constant_fold_constant_expr_operands<'ctx, B: ModuleBrand + 'ctx, C: Capabili
             let [lhs, rhs] = operands else {
                 return Ok(None);
             };
-            let Some(opcode) = binary_opcode_from_constant_expr(expr.opcode) else {
+            let Some(opcode) = expr.opcode.binary_opcode() else {
                 return Ok(None);
             };
             constant_fold_binary_op_operands_trusting_same_module(opcode, *lhs, *rhs, dl)
@@ -3160,38 +3160,6 @@ fn binary_op_fmf(kind: &InstructionKindData) -> FastMathFlags {
         | InstructionKindData::Fdiv(b)
         | InstructionKindData::Frem(b) => b.fmf,
         _ => FastMathFlags::empty(),
-    }
-}
-
-fn binary_opcode_from_constant_expr(opcode: ConstantExprOpcode) -> Option<BinaryOpcode> {
-    match opcode {
-        ConstantExprOpcode::Add => Some(BinaryOpcode::Add),
-        ConstantExprOpcode::Sub => Some(BinaryOpcode::Sub),
-        ConstantExprOpcode::Xor => Some(BinaryOpcode::Xor),
-        _ => None,
-    }
-}
-
-fn binary_constant_expr_opcode(opcode: BinaryOpcode) -> Option<ConstantExprOpcode> {
-    match opcode {
-        BinaryOpcode::Add => Some(ConstantExprOpcode::Add),
-        BinaryOpcode::Sub => Some(ConstantExprOpcode::Sub),
-        BinaryOpcode::Xor => Some(ConstantExprOpcode::Xor),
-        BinaryOpcode::Mul
-        | BinaryOpcode::Udiv
-        | BinaryOpcode::Sdiv
-        | BinaryOpcode::Urem
-        | BinaryOpcode::Srem
-        | BinaryOpcode::Shl
-        | BinaryOpcode::Lshr
-        | BinaryOpcode::Ashr
-        | BinaryOpcode::And
-        | BinaryOpcode::Or
-        | BinaryOpcode::Fadd
-        | BinaryOpcode::Fsub
-        | BinaryOpcode::Fmul
-        | BinaryOpcode::Fdiv
-        | BinaryOpcode::Frem => None,
     }
 }
 
@@ -3708,25 +3676,6 @@ fn fold_bitcast_with_layout<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     match result {
         Some(lanes) => constant_aggregate_from_elements(dest_ty, lanes),
         None => constant_expr_bit_cast(constant, dest_ty).map(Some),
-    }
-}
-
-fn cast_constant_expr_opcode(opcode: CastOpcode) -> Option<ConstantExprOpcode> {
-    match opcode {
-        CastOpcode::Trunc => Some(ConstantExprOpcode::Trunc),
-        CastOpcode::PtrToAddr => Some(ConstantExprOpcode::PtrToAddr),
-        CastOpcode::PtrToInt => Some(ConstantExprOpcode::PtrToInt),
-        CastOpcode::IntToPtr => Some(ConstantExprOpcode::IntToPtr),
-        CastOpcode::BitCast => Some(ConstantExprOpcode::BitCast),
-        CastOpcode::AddrSpaceCast => Some(ConstantExprOpcode::AddrSpaceCast),
-        CastOpcode::Zext
-        | CastOpcode::Sext
-        | CastOpcode::FpTrunc
-        | CastOpcode::FpExt
-        | CastOpcode::FpToUi
-        | CastOpcode::FpToSi
-        | CastOpcode::UiToFp
-        | CastOpcode::SiToFp => None,
     }
 }
 

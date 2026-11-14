@@ -10,7 +10,7 @@ use super::constant_fold::{
     constant_fold_cast_instruction_trusting_same_module,
     constant_fold_compare_instruction_trusting_same_module,
     constant_fold_extract_element_instruction_trusting_same_module,
-    constant_fold_extract_value_instruction, constant_fold_get_element_ptr_trusting_same_module,
+    constant_fold_extract_value_instruction, constant_fold_get_element_ptr_of_result_type,
     constant_fold_insert_element_instruction_trusting_same_module,
     constant_fold_insert_value_instruction_trusting_same_module,
     constant_fold_select_instruction_trusting_same_module,
@@ -152,15 +152,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
             operands.push(index.as_erased());
             index_constants.push(index);
         }
-        if let Some(folded) = constant_fold_get_element_ptr_trusting_same_module(
-            source_ty,
-            ptr,
-            &index_constants,
-            None,
-        )? {
+        // `ConstantFoldGetElementPtr`'s first fold: a GEP without indices is
+        // its base.
+        if index_constants.is_empty() {
+            return Ok(Some(ptr.as_erased()));
+        }
+        // The result type is computed once, for the fold and for the
+        // expression built when nothing folds.
+        let result_ty = gep_result_type(ptr.ty(), &index_constants)?;
+        if let Some(folded) =
+            constant_fold_get_element_ptr_of_result_type(result_ty, ptr, &index_constants, None)?
+        {
             return Ok(Some(folded.as_erased()));
         }
-        let result_ty = gep_result_type(ptr.ty(), &index_constants)?;
         let module = ptr.module;
         module
             .constant_expr_with_options(
@@ -682,7 +686,7 @@ fn fold_cast<'ctx, B: ModuleBrand + 'ctx>(
         Err(_) => return Ok(None),
     };
     if opcode.is_desirable_constant_expr() {
-        let Some(expr_opcode) = cast_constant_expr_opcode(opcode) else {
+        let Some(expr_opcode) = ConstantExprOpcode::from_cast_opcode(opcode) else {
             return constant_fold_cast_instruction_trusting_same_module(opcode, value, dest_ty)
                 .map(|folded| folded.map(Constant::as_erased));
         };
@@ -722,7 +726,7 @@ fn fold_binary_constants<'ctx, B: ModuleBrand + 'ctx>(
     flags: ConstantExprFlags,
 ) -> IrResult<Option<Value<'ctx, B>>> {
     if opcode.is_desirable_constant_expr() {
-        let Some(expr_opcode) = binary_constant_expr_opcode(opcode) else {
+        let Some(expr_opcode) = ConstantExprOpcode::from_binary_opcode(opcode) else {
             return Ok(None);
         };
         return lhs
@@ -770,27 +774,6 @@ fn constants2<'ctx, B: ModuleBrand + 'ctx>(
     rhs: Value<'ctx, B>,
 ) -> Option<(Constant<'ctx, B>, Constant<'ctx, B>)> {
     Some((Constant::try_from(lhs).ok()?, Constant::try_from(rhs).ok()?))
-}
-
-fn binary_constant_expr_opcode(opcode: BinaryOpcode) -> Option<ConstantExprOpcode> {
-    match opcode {
-        BinaryOpcode::Add => Some(ConstantExprOpcode::Add),
-        BinaryOpcode::Sub => Some(ConstantExprOpcode::Sub),
-        BinaryOpcode::Xor => Some(ConstantExprOpcode::Xor),
-        _ => None,
-    }
-}
-
-fn cast_constant_expr_opcode(opcode: CastOpcode) -> Option<ConstantExprOpcode> {
-    match opcode {
-        CastOpcode::Trunc => Some(ConstantExprOpcode::Trunc),
-        CastOpcode::PtrToAddr => Some(ConstantExprOpcode::PtrToAddr),
-        CastOpcode::PtrToInt => Some(ConstantExprOpcode::PtrToInt),
-        CastOpcode::IntToPtr => Some(ConstantExprOpcode::IntToPtr),
-        CastOpcode::BitCast => Some(ConstantExprOpcode::BitCast),
-        CastOpcode::AddrSpaceCast => Some(ConstantExprOpcode::AddrSpaceCast),
-        _ => None,
-    }
 }
 
 fn pointer_cast_opcode<B: ModuleBrand>(

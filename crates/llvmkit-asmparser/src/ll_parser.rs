@@ -9501,6 +9501,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     }
 
     fn parse_ptrauth_constant(&mut self) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
+        // `ID.Loc`: every refusal of the `kw_ptrauth` arm is anchored at the
+        // `ptrauth` keyword, the first token of the value.
+        let id_loc = self.loc();
         self.expect_keyword(Keyword::Ptrauth, "'ptrauth'")?;
         self.expect_punct(PunctKind::LParen, "'(' in constant ptrauth expression")?;
         let pointer = self.parse_ptrauth_operand()?;
@@ -9534,10 +9537,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 // `Constants::ptr_auth` carries upstream's own wording
                 // (`LLParser::parseValID`'s `lltok::kw_ptrauth` arm), which
                 // `ParseError::Constant` renders verbatim.
-                IrError::Constant(error) => ParseError::Constant {
-                    error,
-                    loc: self.loc(),
-                },
+                IrError::Constant(error) => ParseError::Constant { error, loc: id_loc },
                 other => self.builder_err("ptrauth", other),
             })
     }
@@ -9614,7 +9614,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 // `ConstantExpr::get(Opc, Val0, Val1, Flags)` — an integer
                 // binop's result type is its operands'.
                 let result_ty = lhs.ty();
-                self.build_constant_expr(result_ty, None, opcode, vec![lhs, rhs], flags)
+                self.build_constant_expr(id_loc, result_ty, None, opcode, vec![lhs, rhs], flags)
             }
             ConstantExprOpcode::Trunc
             | ConstantExprOpcode::IntToPtr
@@ -9645,6 +9645,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 // "dest type is not present, it is implied by the dest type",
                 // i.e. the type after `to` *is* the result type.
                 self.build_constant_expr(
+                    id_loc,
                     dst_ty,
                     None,
                     opcode,
@@ -9659,9 +9660,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.expect_punct(PunctKind::Comma, "comma after getelementptr's type")?;
                 let operands = self.parse_global_value_vector()?;
                 self.expect_punct(PunctKind::RParen, "')' in constantexpr")?;
-                let (flags, result_ty) =
-                    self.validate_parsed_gep_constant_expr(source_ty, &operands, parsed_flags)?;
-                self.build_constant_expr(result_ty, Some(source_ty), opcode, operands, flags)
+                let (flags, result_ty) = self.validate_parsed_gep_constant_expr(
+                    id_loc,
+                    source_ty,
+                    &operands,
+                    parsed_flags,
+                )?;
+                self.build_constant_expr(
+                    id_loc,
+                    result_ty,
+                    Some(source_ty),
+                    opcode,
+                    operands,
+                    flags,
+                )
             }
             ConstantExprOpcode::ShuffleVector
             | ConstantExprOpcode::InsertElement
@@ -9669,8 +9681,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.expect_punct(PunctKind::LParen, "'(' in constantexpr")?;
                 let operands = self.parse_global_value_vector()?;
                 self.expect_punct(PunctKind::RParen, "')' in constantexpr")?;
-                let result_ty = self.validate_parsed_vector_constant_expr(opcode, &operands)?;
+                let result_ty =
+                    self.validate_parsed_vector_constant_expr(id_loc, opcode, &operands)?;
                 self.build_constant_expr(
+                    id_loc,
                     result_ty,
                     None,
                     opcode,
@@ -9738,6 +9752,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// ```
     fn gep_constant_expr_flags(
         &self,
+        id_loc: Span,
         parsed: ParsedGepConstantExprFlags,
         address_space: AddressSpace,
     ) -> ParseResult<ConstantExprFlags> {
@@ -9750,7 +9765,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             end.extend_or_truncate(bit_width),
         );
         if !in_range.is_non_empty() {
-            return Err(self.expected("end to be larger than start"));
+            return Err(self.expected_at(id_loc, "end to be larger than start"));
         }
         Ok(ConstantExprFlags::gep_with_in_range(
             parsed.no_wrap,
@@ -9785,8 +9800,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// `GetElementPtrInst::getGEPReturnType`'s answer, a `ptr` in the base's
     /// address space, made a vector of the first vector shape found among the
     /// base and then the indices.
+    ///
+    /// Every refusal is anchored at `id_loc`, as upstream's `error(ID.Loc, ...)`
+    /// calls are.
     fn validate_parsed_gep_constant_expr(
         &self,
+        id_loc: Span,
         source_ty: Type<'ctx, B>,
         operands: &[llvmkit_ir::Constant<'ctx, B>],
         parsed_flags: ParsedGepConstantExprFlags,
@@ -9795,26 +9814,27 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // the address space answers both at once, and the `inrange` bounds
         // need it next anyway.
         let Some((base, indices)) = operands.split_first() else {
-            return Err(self.message("base of getelementptr must be a pointer"));
+            return Err(self.message_at(id_loc, "base of getelementptr must be a pointer"));
         };
         let Some(address_space) = pointer_address_space_or_vector_element(base.ty()) else {
-            return Err(self.message("base of getelementptr must be a pointer"));
+            return Err(self.message_at(id_loc, "base of getelementptr must be a pointer"));
         };
 
-        let flags = self.gep_constant_expr_flags(parsed_flags, address_space)?;
+        let flags = self.gep_constant_expr_flags(id_loc, parsed_flags, address_space)?;
 
         let mut gep_width = vector_shape_type(base.ty());
         for index in indices {
             if !index.ty().is_int_or_int_vector() {
-                return Err(self.message("getelementptr index must be an integer"));
+                return Err(self.message_at(id_loc, "getelementptr index must be an integer"));
             }
             if let Some(index_shape) = vector_shape_type(index.ty()) {
                 if let Some(pointer_shape) = gep_width
                     && index_shape != pointer_shape
                 {
-                    return Err(
-                        self.message("getelementptr vector index has a wrong number of elements")
-                    );
+                    return Err(self.message_at(
+                        id_loc,
+                        "getelementptr vector index has a wrong number of elements",
+                    ));
                 }
                 // The base may have been a scalar, so the width is known only
                 // now — upstream's own comment.
@@ -9823,15 +9843,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
 
         if !indices.is_empty() && !source_ty.is_sized() {
-            return Err(self.message("base element of getelementptr must be sized"));
+            return Err(self.message_at(id_loc, "base element of getelementptr must be sized"));
         }
         // `ConstantExpr::isSupportedGetElementPtr`.
         if source_ty.is_scalable() {
-            return Err(self.message("invalid base element for constant getelementptr"));
+            return Err(self.message_at(id_loc, "invalid base element for constant getelementptr"));
         }
         let index_values: Vec<_> = indices.iter().map(|index| index.as_erased()).collect();
         if llvmkit_ir::indexed_gep_type(source_ty, &index_values).is_none() {
-            return Err(self.message("invalid getelementptr indices"));
+            return Err(self.message_at(id_loc, "invalid getelementptr indices"));
         }
         let scalar_ptr = self.module.ptr_type(address_space);
         let result_ty = match gep_width {
@@ -9846,18 +9866,21 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// `getelementptr`/`shufflevector`/`insertelement`/`extractelement` case,
     /// each an `isValidOperands` guard followed by a `ConstantExpr::get*` whose
     /// result type falls out of the operands. Returns that type.
+    /// Every refusal is anchored at `id_loc`, as upstream's `error(ID.Loc, ...)`
+    /// calls are.
     fn validate_parsed_vector_constant_expr(
         &self,
+        id_loc: Span,
         opcode: ConstantExprOpcode,
         operands: &[Constant<'ctx, B>],
     ) -> ParseResult<Type<'ctx, B>> {
         match opcode {
             ConstantExprOpcode::ShuffleVector => {
                 let [lhs, rhs, mask] = operands else {
-                    return Err(self.expected("three operands to shufflevector"));
+                    return Err(self.expected_at(id_loc, "three operands to shufflevector"));
                 };
                 if !is_valid_shufflevector(lhs.ty(), rhs.ty(), mask.ty()) {
-                    return Err(self.message("invalid operands to shufflevector"));
+                    return Err(self.message_at(id_loc, "invalid operands to shufflevector"));
                 }
                 // `ConstantExpr::getShuffleVector`: `VectorType::get(EltTy,
                 // Mask.size(), TypeIsScalable)` — the element type and
@@ -9865,7 +9888,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let (AnyTypeEnum::Vector(lhs_ty), AnyTypeEnum::Vector(mask_ty)) =
                     (AnyTypeEnum::from(lhs.ty()), AnyTypeEnum::from(mask.ty()))
                 else {
-                    return Err(self.message("invalid operands to shufflevector"));
+                    return Err(self.message_at(id_loc, "invalid operands to shufflevector"));
                 };
                 let element = lhs_ty.element();
                 Ok(if lhs_ty.is_scalable() {
@@ -9882,24 +9905,24 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             ConstantExprOpcode::ExtractElement => {
                 let [vector, index] = operands else {
-                    return Err(self.expected("two operands to extractelement"));
+                    return Err(self.expected_at(id_loc, "two operands to extractelement"));
                 };
                 if !is_valid_extractelement(vector.ty(), index.ty()) {
-                    return Err(self.message("invalid extractelement operands"));
+                    return Err(self.message_at(id_loc, "invalid extractelement operands"));
                 }
                 // `ConstantExpr::getExtractElement` types itself off the
                 // vector's element type.
                 let AnyTypeEnum::Vector(vector_ty) = AnyTypeEnum::from(vector.ty()) else {
-                    return Err(self.message("invalid extractelement operands"));
+                    return Err(self.message_at(id_loc, "invalid extractelement operands"));
                 };
                 Ok(vector_ty.element())
             }
             ConstantExprOpcode::InsertElement => {
                 let [vector, value, index] = operands else {
-                    return Err(self.expected("three operands to insertelement"));
+                    return Err(self.expected_at(id_loc, "three operands to insertelement"));
                 };
                 if !is_valid_insertelement(vector.ty(), value.ty(), index.ty()) {
-                    return Err(self.message("invalid insertelement operands"));
+                    return Err(self.message_at(id_loc, "invalid insertelement operands"));
                 }
                 // `ConstantExpr::getInsertElement` gives back the vector's own
                 // type.
@@ -9911,8 +9934,19 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
+    /// `ConstantExpr::get*` for an expression whose arm has run upstream's own
+    /// checks. A refusal is anchored at `id_loc`, the expression's first token,
+    /// where `parseValID` reports (`error(ID.Loc, ...)`).
+    ///
+    /// Every caller ports upstream's `isValidOperands` / `castIsValid` guards
+    /// before calling, so for parsed text the IR refuses only a shufflevector
+    /// mask (whose lanes the parser's guard does not read; upstream's
+    /// `isValidOperands` does). Any other refusal would mean the IR's
+    /// validator is stricter than the parser's port of upstream's: it is kept
+    /// as the typed [`ParseError::Constant`] rather than lost.
     fn build_constant_expr(
         &self,
+        id_loc: Span,
         result_ty: Type<'ctx, B>,
         source_ty: Option<Type<'ctx, B>>,
         opcode: ConstantExprOpcode,
@@ -9940,12 +9974,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     },
                 )) => ParseError::Message {
                     message: "invalid operands to shufflevector".into(),
-                    loc: self.loc(),
+                    loc: id_loc,
                 },
-                IrError::Constant(error) => ParseError::Constant {
-                    error,
-                    loc: self.loc(),
-                },
+                IrError::Constant(error) => ParseError::Constant { error, loc: id_loc },
                 other => self.builder_err("constant expression", other),
             })
     }

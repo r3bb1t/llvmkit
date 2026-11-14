@@ -11,8 +11,9 @@
 //! directories, other than this one.
 //!
 //! What the scan reads, so its reach is not overstated: a variant counts as
-//! asserted when its path appears in a test file's code (comment lines are
-//! skipped). It does not check that the
+//! asserted when its whole path appears in a test file's code (comment lines
+//! are skipped, and a path that continues into a longer identifier does not
+//! count). It does not check that the
 //! appearance is an assertion of a result. The exemptions below name the
 //! variants no public entry can reach, each with the reason.
 //!
@@ -112,6 +113,15 @@ fn test_sources() -> String {
         .join("\n")
 }
 
+/// Whether `code` names `path` as a whole path: an occurrence whose next
+/// character cannot continue an identifier, so `BuilderError::OperandType` is
+/// not found inside `BuilderError::OperandTypesDiffer`.
+fn names(code: &str, path: &str) -> bool {
+    code.match_indices(path).any(|(start, _)| {
+        !code[start + path.len()..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
 /// `source` without its comment lines, so a variant a comment mentions does
 /// not count as asserted.
 fn code_only(source: &str) -> String {
@@ -148,6 +158,24 @@ pub enum Next {
     assert_eq!(variants(source, "Sample"), ["Unit", "Fields", "Wrapper"]);
 }
 
+/// A variant whose name is a prefix of another's is not counted as named by
+/// the longer one, and is counted where it appears whole.
+///
+/// **No upstream counterpart**: the positive control for the path match of
+/// [`every_typed_error_variant_is_asserted`].
+#[test]
+fn a_prefix_variant_is_not_named_by_the_longer_one() {
+    let longer_only = "assert_eq!(e, BuilderError::OperandTypesDiffer { operation });";
+    assert!(!names(longer_only, "BuilderError::OperandType"));
+    assert!(names(longer_only, "BuilderError::OperandTypesDiffer"));
+    let both = "BuilderError::OperandType { operation }; BuilderError::OperandTypesDiffer";
+    assert!(names(both, "BuilderError::OperandType"));
+    assert!(names(
+        "Err(GepConstantError::OperandTypes)",
+        "GepConstantError::OperandTypes"
+    ));
+}
+
 /// Each variant of [`ENUMS`] is named by some test, except the exempt ones,
 /// and no exempt variant is named by one.
 ///
@@ -164,7 +192,7 @@ fn every_typed_error_variant_is_asserted() {
             let exempt = EXEMPT.iter().any(|(enum_name, exempt_variant, _)| {
                 *enum_name == name && *exempt_variant == variant
             });
-            let named = tests.contains(&path);
+            let named = names(&tests, &path);
             if !exempt && !named {
                 failures.push(format!("{path} is asserted by no test"));
             } else if exempt && named {

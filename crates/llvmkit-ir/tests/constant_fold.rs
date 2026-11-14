@@ -123,24 +123,27 @@ fn fptosi_fp128_integer_keeps_low_bits() -> Result<(), IrError> {
 }
 
 /// A `bitcast` of a scalar integer to a vector of a different size does not
-/// fold: the one-lane vector the fold builds cannot be bit-cast to the
-/// destination, and the refusal is "no fold", not an error.
+/// fold, whatever the operand: a constant, a `poison`, a null. The refusal is
+/// "no fold", not an error, and no early arm (poison, undef, null) folds the
+/// invalid cast before the validity check is reached.
 ///
 /// **No upstream counterpart**: `ConstantFold.cpp::ConstantFoldCastInstruction`
-/// reaches `ConstantExpr::getBitCast(ConstantVector::get(V), DestTy)`, which
-/// asserts `castIsValid`; llvmkit's public fold accepts any types and answers
-/// `None`.
+/// is reached only with a cast its callers checked with `castIsValid`;
+/// llvmkit's public fold accepts any types and answers `None`.
 #[test]
 fn an_invalid_scalar_to_vector_bitcast_does_not_fold() -> Result<(), IrError> {
     let m = module_new!("fold-bitcast")?;
     let i32_ty = m.i32_type();
     let wider = VectorType::of(i32_ty, lanes::<2>());
-    let folded = constant_fold_cast_instruction(
-        CastOpcode::BitCast,
-        i32_ty.const_int(7_i32).as_constant(),
-        wider.as_type(),
-    )?;
-    assert_eq!(folded, None);
+    let three_bytes = VectorType::of(m.i8_type(), lanes::<3>());
+    for (operand, dest_ty) in [
+        (i32_ty.const_int(7_i32).as_constant(), wider.as_type()),
+        (i32_ty.as_type().poison().as_constant(), wider.as_type()),
+        (i32_ty.const_zero().as_constant(), three_bytes.as_type()),
+    ] {
+        let folded = constant_fold_cast_instruction(CastOpcode::BitCast, operand, dest_ty)?;
+        assert_eq!(folded, None, "bitcast {operand} to {dest_ty}");
+    }
     Ok(())
 }
 

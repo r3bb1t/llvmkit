@@ -51,7 +51,6 @@ use super::error::{
     TypeKindLabel,
 };
 use super::function::FunctionValue;
-use super::instr_types::BinaryOpcode;
 use super::instruction::{rewrite_debug_record_value, rewrite_operand_cells};
 use super::instructions::cast_is_valid;
 use super::marker::{Dyn, ReturnMarker};
@@ -1707,11 +1706,8 @@ fn fold_constant_expr_data<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             let [lhs, rhs] = operands.as_slice() else {
                 return Ok(None);
             };
-            let opcode = match data.opcode {
-                ConstantExprOpcode::Add => BinaryOpcode::Add,
-                ConstantExprOpcode::Sub => BinaryOpcode::Sub,
-                ConstantExprOpcode::Xor => BinaryOpcode::Xor,
-                _ => return Ok(None),
+            let Some(opcode) = data.opcode.binary_opcode() else {
+                unreachable!("each opcode of this arm is a binary operator (invariant)");
             };
             constant_fold_binary_instruction_trusting_same_module(opcode, *lhs, *rhs)
         }
@@ -3189,17 +3185,12 @@ fn validate_gep_constant_expr(
         }
     }
     let element_count = |ty: TypeSlot| module.context().type_data(ty).element_count();
-    let mut gep_width = element_count(base_ty.slot_trusting_same_module());
-    for index_ty in index_tys {
-        if let Some(index_shape) = element_count(index_ty.slot_trusting_same_module()) {
-            match gep_width {
-                Some(pointer_shape) if index_shape != pointer_shape => {
-                    return Err(GepConstantError::VectorWidthMismatch.into());
-                }
-                _ => gep_width = Some(index_shape),
-            }
-        }
-    }
+    let gep_width = gep_lane_count(
+        element_count(base_ty.slot_trusting_same_module()),
+        index_tys
+            .iter()
+            .map(|index_ty| element_count(index_ty.slot_trusting_same_module())),
+    )?;
     if element_count(result_ty.slot_trusting_same_module()) != gep_width {
         return Err(GepConstantError::VectorWidthMismatch.into());
     }
@@ -3208,6 +3199,31 @@ fn validate_gep_constant_expr(
         source_ty.slot_trusting_same_module(),
         &data.operands[1..],
     )
+}
+
+/// The lane count the vector operands of a `getelementptr` agree on — the
+/// base's, else the first vector index's — or `None` when every operand is a
+/// scalar. Refused when two vector operands' lane counts differ, the
+/// disagreement `ConstantExpr::getGetElementPtr`'s caller asserts against
+/// (`"getelementptr index type missmatch"`, `Constants.cpp`).
+///
+/// The constant-expression validator and the constant folder's result type
+/// both ask this, so the two cannot disagree on a GEP's shape.
+pub(crate) fn gep_lane_count(
+    base: Option<ElementCount>,
+    indices: impl IntoIterator<Item = Option<ElementCount>>,
+) -> Result<Option<ElementCount>, GepConstantError> {
+    let mut lanes = base;
+    for index in indices.into_iter().flatten() {
+        match lanes {
+            Some(current) if current != index => {
+                return Err(GepConstantError::VectorWidthMismatch);
+            }
+            Some(_) => {}
+            None => lanes = Some(index),
+        }
+    }
+    Ok(lanes)
 }
 
 fn scalar_int_bits(module: &ModuleCore, id: TypeSlot) -> Option<u32> {

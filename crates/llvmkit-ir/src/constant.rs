@@ -41,7 +41,7 @@ use super::value::ValueKindData;
 use crate::Branded;
 use crate::ap_int::ApInt;
 use crate::gep_no_wrap_flags::GepNoWrapFlags;
-use crate::instr_types::CastOpcode;
+use crate::instr_types::{BinaryOpcode, CastOpcode};
 use crate::module::{Module, ModuleRef, Unverified};
 use crate::r#type::{Type, TypeData, TypeKind, TypeSlot, TypeSlotAccess};
 use crate::value::{
@@ -104,6 +104,75 @@ impl ConstantExprOpcode {
 
     pub(crate) fn is_cast(self) -> bool {
         self.cast_opcode().is_some()
+    }
+
+    /// The instruction binary opcode a binary expression of this opcode is, or
+    /// `None` for an opcode that is no binary operator.
+    pub(crate) fn binary_opcode(self) -> Option<BinaryOpcode> {
+        match self {
+            Self::Add => Some(BinaryOpcode::Add),
+            Self::Sub => Some(BinaryOpcode::Sub),
+            Self::Xor => Some(BinaryOpcode::Xor),
+            Self::GetElementPtr
+            | Self::ShuffleVector
+            | Self::InsertElement
+            | Self::ExtractElement
+            | Self::Trunc
+            | Self::PtrToAddr
+            | Self::PtrToInt
+            | Self::IntToPtr
+            | Self::BitCast
+            | Self::AddrSpaceCast => None,
+        }
+    }
+
+    /// The expression opcode of a binary operator, or `None` for one LLVM 22
+    /// keeps no constant expression of (`ConstantExpr::isDesirableBinOp`'s
+    /// complement: `mul`, the divisions, shifts, `and` / `or`, the
+    /// floating-point operators).
+    pub(crate) fn from_binary_opcode(opcode: BinaryOpcode) -> Option<Self> {
+        match opcode {
+            BinaryOpcode::Add => Some(Self::Add),
+            BinaryOpcode::Sub => Some(Self::Sub),
+            BinaryOpcode::Xor => Some(Self::Xor),
+            BinaryOpcode::Mul
+            | BinaryOpcode::Udiv
+            | BinaryOpcode::Sdiv
+            | BinaryOpcode::Urem
+            | BinaryOpcode::Srem
+            | BinaryOpcode::Shl
+            | BinaryOpcode::Lshr
+            | BinaryOpcode::Ashr
+            | BinaryOpcode::And
+            | BinaryOpcode::Or
+            | BinaryOpcode::Fadd
+            | BinaryOpcode::Fsub
+            | BinaryOpcode::Fmul
+            | BinaryOpcode::Fdiv
+            | BinaryOpcode::Frem => None,
+        }
+    }
+
+    /// The expression opcode of a cast, or `None` for one LLVM 22 keeps no
+    /// constant expression of (`ConstantExpr::isDesirableCastOp`'s
+    /// complement: the extensions and the floating-point casts).
+    pub(crate) fn from_cast_opcode(opcode: CastOpcode) -> Option<Self> {
+        match opcode {
+            CastOpcode::Trunc => Some(Self::Trunc),
+            CastOpcode::PtrToAddr => Some(Self::PtrToAddr),
+            CastOpcode::PtrToInt => Some(Self::PtrToInt),
+            CastOpcode::IntToPtr => Some(Self::IntToPtr),
+            CastOpcode::BitCast => Some(Self::BitCast),
+            CastOpcode::AddrSpaceCast => Some(Self::AddrSpaceCast),
+            CastOpcode::Zext
+            | CastOpcode::Sext
+            | CastOpcode::FpTrunc
+            | CastOpcode::FpExt
+            | CastOpcode::FpToUi
+            | CastOpcode::FpToSi
+            | CastOpcode::UiToFp
+            | CastOpcode::SiToFp => None,
+        }
     }
 
     /// The instruction cast opcode a cast expression of this opcode is

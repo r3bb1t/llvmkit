@@ -2718,12 +2718,12 @@ pub enum BuilderError {
 pub enum OperandCheck {
     /// An integer binary operator (`add`, `and`, `shl`, ...).
     IntegerBinaryOperator,
-    /// An integer or pointer comparison.
-    Icmp,
+    /// An integer or pointer comparison (`icmp`).
+    IntegerCompare,
     /// A floating-point binary operator (`fadd`, `frem`, ...).
     FloatingPointBinaryOperator,
-    /// A floating-point comparison.
-    Fcmp,
+    /// A floating-point comparison (`fcmp`).
+    FloatingPointCompare,
 }
 
 impl OperandCheck {
@@ -2731,9 +2731,9 @@ impl OperandCheck {
     fn label(self) -> &'static str {
         match self {
             Self::IntegerBinaryOperator => "integer binop",
-            Self::Icmp => "icmp",
+            Self::IntegerCompare => "icmp",
             Self::FloatingPointBinaryOperator => "floating-point binop",
-            Self::Fcmp => "fcmp",
+            Self::FloatingPointCompare => "fcmp",
         }
     }
 
@@ -2741,8 +2741,10 @@ impl OperandCheck {
     fn admitted_types(self) -> &'static str {
         match self {
             Self::IntegerBinaryOperator => "an integer nor an integer vector",
-            Self::Icmp => "an integer nor a pointer",
-            Self::FloatingPointBinaryOperator | Self::Fcmp => "a float nor a float vector",
+            Self::IntegerCompare => "an integer nor a pointer",
+            Self::FloatingPointBinaryOperator | Self::FloatingPointCompare => {
+                "a float nor a float vector"
+            }
         }
     }
 }

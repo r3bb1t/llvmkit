@@ -87,7 +87,7 @@ fn integer_operand_refusals_name_their_operation() -> Result<(), IrError> {
     assert_eq!(
         err,
         IrError::from(BuilderError::OperandTypesDiffer {
-            operation: OperandCheck::Icmp,
+            operation: OperandCheck::IntegerCompare,
         })
     );
     let err = refusal(
@@ -103,7 +103,7 @@ fn integer_operand_refusals_name_their_operation() -> Result<(), IrError> {
     assert_eq!(
         err,
         IrError::from(BuilderError::OperandType {
-            operation: OperandCheck::Icmp,
+            operation: OperandCheck::IntegerCompare,
         })
     );
     Ok(())
@@ -169,7 +169,7 @@ fn floating_point_operand_refusals_name_their_operation() -> Result<(), IrError>
     assert_eq!(
         err,
         IrError::from(BuilderError::OperandTypesDiffer {
-            operation: OperandCheck::Fcmp,
+            operation: OperandCheck::FloatingPointCompare,
         })
     );
     let err = refusal(
@@ -179,7 +179,7 @@ fn floating_point_operand_refusals_name_their_operation() -> Result<(), IrError>
     assert_eq!(
         err,
         IrError::from(BuilderError::OperandType {
-            operation: OperandCheck::Fcmp,
+            operation: OperandCheck::FloatingPointCompare,
         })
     );
 
