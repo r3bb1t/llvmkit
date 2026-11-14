@@ -122,6 +122,61 @@ fn fptosi_fp128_integer_keeps_low_bits() -> Result<(), IrError> {
     Ok(())
 }
 
+/// A `bitcast` of a scalar integer to a vector of a different size does not
+/// fold: the one-lane vector the fold builds cannot be bit-cast to the
+/// destination, and the refusal is "no fold", not an error.
+///
+/// **No upstream counterpart**: `ConstantFold.cpp::ConstantFoldCastInstruction`
+/// reaches `ConstantExpr::getBitCast(ConstantVector::get(V), DestTy)`, which
+/// asserts `castIsValid`; llvmkit's public fold accepts any types and answers
+/// `None`.
+#[test]
+fn an_invalid_scalar_to_vector_bitcast_does_not_fold() -> Result<(), IrError> {
+    let m = module_new!("fold-bitcast")?;
+    let i32_ty = m.i32_type();
+    let wider = VectorType::of(i32_ty, lanes::<2>());
+    let folded = constant_fold_cast_instruction(
+        CastOpcode::BitCast,
+        i32_ty.const_int(7_i32).as_constant(),
+        wider.as_type(),
+    )?;
+    assert_eq!(folded, None);
+    Ok(())
+}
+
+/// A `getelementptr` whose result type cannot be formed does not fold: a
+/// base that is not a pointer, and index vectors whose lane counts disagree,
+/// are "no fold", not errors.
+///
+/// **No upstream counterpart**: `ConstantFold.cpp::ConstantFoldGetElementPtr`
+/// is reached only with a valid GEP (its caller asserts); llvmkit's public
+/// fold accepts any operands and answers `None`.
+#[test]
+fn a_gep_without_a_result_type_does_not_fold() -> Result<(), IrError> {
+    let m = module_new!("fold-gep")?;
+    let i32_ty = m.i32_type();
+    let i64_ty = m.i64_type();
+    let one = i64_ty.const_int(1_i64).as_constant();
+    let not_a_pointer = i32_ty.const_int(7_i32).as_constant();
+    assert_eq!(
+        constant_fold_get_element_ptr(i32_ty.as_type(), not_a_pointer, &[one], None)?,
+        None
+    );
+
+    let ptr_ty = m.ptr_type_in::<0>();
+    let two_pointers = VectorType::of(ptr_ty, lanes::<2>())
+        .const_vector([ptr_ty.const_null(); 2])?
+        .as_constant();
+    let four_indices = VectorType::of(i64_ty, lanes::<4>())
+        .const_vector([i64_ty.const_int(1_i64); 4])?
+        .as_constant();
+    assert_eq!(
+        constant_fold_get_element_ptr(i32_ty.as_type(), two_pointers, &[four_indices], None)?,
+        None
+    );
+    Ok(())
+}
+
 /// Port of `Constants.cpp::ConstantFP::isNullValue` plus
 /// `ConstantFold.cpp::ConstantFoldCastInstruction`: `-0.0` is not a null
 /// floating constant, so bitcast preserves its sign bit.

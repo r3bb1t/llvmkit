@@ -9943,10 +9943,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     expected: error.to_string().into(),
                     loc: self.loc(),
                 },
-                IrError::InvalidOperation { message } => ParseError::Expected {
-                    expected: message.into(),
-                    loc: self.loc(),
-                },
                 other => self.builder_err("constant expression", other),
             })
     }

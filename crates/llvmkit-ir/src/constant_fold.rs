@@ -2780,12 +2780,17 @@ fn fold_undef_float_binary<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             .const_ap_float(&value)
             .map(|value| value.as_constant())
     };
-    let nan = || {
+    let nan = || -> IrResult<Constant<'ctx, B, C>> {
         let scalar = nan_scalar()?;
         match vector_ty {
-            Some(ty) => vector_splat_constant(ty, scalar)?.ok_or(IrError::InvalidOperation {
-                message: "invalid vector NaN constant",
-            }),
+            // `ty` is `lhs.ty()`, a scalable vector whose element type is
+            // `float_ty`, and `scalar` is of `float_ty`, so the splat exists.
+            Some(ty) => match vector_splat_constant(ty, scalar)? {
+                Some(splat) => Ok(splat),
+                None => unreachable!(
+                    "a scalable vector of `float_ty` splats a `float_ty` NaN (invariant)"
+                ),
+            },
             None => Ok(scalar),
         }
     };

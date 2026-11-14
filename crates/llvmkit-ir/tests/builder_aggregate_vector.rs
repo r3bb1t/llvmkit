@@ -679,7 +679,9 @@ fn scalable_const_vector_admits_only_a_splat() -> Result<(), IrError> {
     // Lanes disagree — `getSplat` has one value, so there is nothing to build.
     assert!(matches!(
         vec_ty.const_vector::<llvmkit_ir::Constant<'_, _>, _>([seven, eight, seven, seven]),
-        Err(IrError::InvalidOperation { .. })
+        Err(IrError::Constant(
+            llvmkit_ir::ConstantError::ScalableVectorNotSplat
+        ))
     ));
     // A short list is refused too: it used to be accepted for scalable types
     // only, which let `<vscale x 4 x i32>` print a two-element list.

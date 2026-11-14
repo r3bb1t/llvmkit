@@ -1,10 +1,11 @@
 //! Constant-expression, blockaddress, and token-none tests.
 
 use llvmkit_ir::{
-    ApInt, ArrayType, CastOpcode, Constant, ConstantExprFlags, ConstantExprInRange,
-    ConstantExprOpcode, ConstantFolder, Dyn, DynBrand, ElemDyn, GepNoWrapFlags, IntoConstantValue,
-    IrBuilder, IrBuilderFolder, IrError, LenDyn, Linkage, Module, ModuleBrand,
-    OverflowingConstantExprFlags, Type, Value, VectorType, lanes, module_new,
+    ApInt, ArrayType, CastOpcode, Constant, ConstantError, ConstantExprError, ConstantExprFlags,
+    ConstantExprInRange, ConstantExprOpcode, ConstantFolder, Dyn, DynBrand, ElemDyn,
+    GepConstantError, GepNoWrapFlags, IntoConstantValue, IrBuilder, IrBuilderFolder, IrError,
+    LenDyn, Linkage, Module, ModuleBrand, OverflowingConstantExprFlags, PtrAuthRequirement, Type,
+    Value, VectorType, lanes, module_new,
 };
 
 fn module_text<B: ModuleBrand, S>(m: &Module<B, S>) -> String {
@@ -181,9 +182,11 @@ fn a_constant_bitcast_asks_cast_is_valid() -> Result<(), IrError> {
     assert!(
         matches!(
             refused,
-            Err(IrError::InvalidOperation {
-                message: "invalid bitcast constant expression"
-            })
+            Err(IrError::Constant(ConstantError::Expression(
+                ConstantExprError::InvalidOperands {
+                    opcode: ConstantExprOpcode::BitCast
+                }
+            )))
         ),
         "{refused:?}"
     );
@@ -433,9 +436,11 @@ fn invalid_bitcast_constant_expr_is_rejected() -> Result<(), IrError> {
         .expect_err("pointer-to-integer bitcast constexpr is rejected");
     assert_eq!(
         err,
-        IrError::InvalidOperation {
-            message: "invalid bitcast constant expression"
-        }
+        IrError::Constant(ConstantError::Expression(
+            ConstantExprError::InvalidOperands {
+                opcode: ConstantExprOpcode::BitCast
+            }
+        ))
     );
 
     m.constant_expr(
@@ -476,12 +481,7 @@ fn invalid_gep_constant_expr_indices_are_rejected() -> Result<(), IrError> {
             llvmkit_ir::ConstantExprOptions::new().source_ty(struct_ty.as_type()),
         )
         .expect_err("out-of-range struct GEP index is rejected");
-    assert_eq!(
-        err,
-        IrError::InvalidOperation {
-            message: "invalid getelementptr indices"
-        }
-    );
+    assert_eq!(err, IrError::from(GepConstantError::InvalidIndices));
     Ok(())
 }
 
@@ -518,9 +518,9 @@ fn invalid_shufflevector_constant_expr_non_i32_mask_is_rejected() -> Result<(), 
         .expect_err("i64 shufflevector mask is rejected");
     assert_eq!(
         err,
-        IrError::InvalidOperation {
-            message: "invalid shufflevector constant expression"
-        }
+        IrError::from(ConstantExprError::InvalidOperands {
+            opcode: ConstantExprOpcode::ShuffleVector
+        })
     );
     Ok(())
 }
@@ -556,9 +556,9 @@ fn invalid_shufflevector_constant_expr_out_of_range_mask_is_rejected() -> Result
         .expect_err("out-of-range shufflevector mask is rejected");
     assert_eq!(
         err,
-        IrError::InvalidOperation {
-            message: "invalid shufflevector constant expression"
-        }
+        IrError::from(ConstantExprError::InvalidOperands {
+            opcode: ConstantExprOpcode::ShuffleVector
+        })
     );
     Ok(())
 }
@@ -678,9 +678,9 @@ fn shufflevector_constant_expr_rejects_extra_raw_mask_payload() -> Result<(), Ir
         .expect_err("raw mask payload is rejected for parser-style shufflevector");
     assert_eq!(
         err,
-        IrError::InvalidOperation {
-            message: "invalid shufflevector constant expression"
-        }
+        IrError::from(ConstantExprError::InvalidOperands {
+            opcode: ConstantExprOpcode::ShuffleVector
+        })
     );
     Ok(())
 }
@@ -746,12 +746,7 @@ fn invalid_gep_constant_expr_scalable_aggregate_source_is_rejected() -> Result<(
             llvmkit_ir::ConstantExprOptions::new().source_ty(source_ty.as_type()),
         )
         .expect_err("scalable aggregate GEP source is rejected");
-    assert_eq!(
-        err,
-        IrError::InvalidOperation {
-            message: "invalid base element for constant getelementptr"
-        }
-    );
+    assert_eq!(err, IrError::from(GepConstantError::ScalableSourceElement));
     Ok(())
 }
 
@@ -852,12 +847,7 @@ fn vector_gep_struct_index_width_mismatch_is_rejected() -> Result<(), IrError> {
             llvmkit_ir::ConstantExprOptions::new().source_ty(source_ty.as_type()),
         )
         .expect_err("mismatched vector struct index width is rejected before scalarization");
-    assert_eq!(
-        err,
-        IrError::InvalidOperation {
-            message: "invalid getelementptr constant expression"
-        }
-    );
+    assert_eq!(err, IrError::from(GepConstantError::VectorWidthMismatch));
     Ok(())
 }
 
@@ -946,12 +936,7 @@ fn constant_expr_gep_inrange_width_must_match_base_index_width() -> Result<(), I
                 )),
         )
         .expect_err("public GEP inrange width must be canonical");
-    assert_eq!(
-        err,
-        IrError::InvalidOperation {
-            message: "invalid getelementptr inrange bit width"
-        }
-    );
+    assert_eq!(err, IrError::from(GepConstantError::InRangeBitWidth));
     Ok(())
 }
 
@@ -988,12 +973,7 @@ fn invalid_gep_constant_expr_address_space_mismatch_is_rejected() -> Result<(), 
             llvmkit_ir::ConstantExprOptions::new().source_ty(i8_ty.as_type()),
         )
         .expect_err("GEP result address space must match the base pointer");
-    assert_eq!(
-        err,
-        IrError::InvalidOperation {
-            message: "invalid getelementptr constant expression"
-        }
-    );
+    assert_eq!(err, IrError::from(GepConstantError::AddressSpaceMismatch));
     Ok(())
 }
 
@@ -1022,9 +1002,7 @@ fn ptrauth_constructor_requires_five_operand_shape() -> Result<(), IrError> {
     let bad = m.ptr_auth(ptr, key, disc, addr_disc, key);
     assert_eq!(
         bad,
-        Err(IrError::InvalidOperation {
-            message: "constant ptrauth deactivation symbol must be a pointer",
-        })
+        Err(IrError::from(PtrAuthRequirement::DeactivationSymbolType))
     );
 
     let constant_expr_pointer = m.constant_expr_with_options(
@@ -1038,9 +1016,7 @@ fn ptrauth_constructor_requires_five_operand_shape() -> Result<(), IrError> {
     let bad_deactivation = m.ptr_auth(ptr, key, disc, addr_disc, constant_expr_pointer);
     assert_eq!(
         bad_deactivation,
-        Err(IrError::InvalidOperation {
-            message: "constant ptrauth deactivation symbol must be a global value or null",
-        })
+        Err(IrError::from(PtrAuthRequirement::DeactivationSymbolValue))
     );
 
     let defaulted = m.ptr_auth(ptr, key, m.i64_type().const_zero(), addr_disc, addr_disc)?;
