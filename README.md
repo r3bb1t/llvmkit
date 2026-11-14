@@ -166,8 +166,10 @@ Not shipped yet:
   (loop PM, CGSCC PM, legacy PM, `PassBuilder`'s default pipelines).
   Textual pipelines over the module and function layers do run:
   `parse_module_pass_pipeline("function(instsimplify,dce)")` builds the same
-  pipeline `opt -passes=` would, from the passes llvmkit ports, and refuses
-  any other name as an unknown pass
+  pipeline `opt -passes=` would, from the passes llvmkit ports. It refuses
+  any other pass with the message upstream gives an unregistered name, and
+  refuses the CGSCC, loop and machine-function managers by name
+  ([`docs/divergences.md`](docs/divergences.md) D44)
 
 Out of scope:
 
@@ -970,16 +972,18 @@ For runnable end-to-end versions, see
 | `ModulePass::run(Module &, ModuleAnalysisManager &)` | `ModulePass::run(cx: ModCx<..>)` |
 | `PreservedAnalyses::all()` / `none()` hand-written by the pass | derived from the pass's `type Access` rung — never hand-written |
 | `FAM.getResult<A>(F)` (fallible, null on undeclared) | `cx.analysis::<A, _>()` — infallible; declared in `type Requires`, prefetched |
-| `ModuleToFunctionPassAdaptor` | `for_each_function(function_pipeline((..)))` as a module-pipeline member |
+| `ModuleToFunctionPassAdaptor` | `for_each_function(function_pipeline((..)))` as a module-pipeline member; at runtime, `DynModulePipeline::push_function_pipeline` |
+| `PB.parsePassPipeline(MPM, "function(dce)")` | `parse_module_pass_pipeline::<B>("function(dce)")` → `DynModulePipeline` (and `parse_function_pass_pipeline` for a function pipeline) |
 | mutating IR in a pass | declare a mutating rung, call the consuming `cx.mutate()`, receive a mutator; the driver returns `Module<B, Unverified>` |
 | plugin registration (`llvmGetPassPluginInfo`) | none — a pass is a plain value; no registration step |
 
 Important boundary: the crate currently ships **the capability-graded pass API,
 built-in analyses, initial scalar cleanup transforms (`SimplifyDemandedBitsPass`,
 `InstSimplifyPass`, `DcePass`), optimization-level markers, scoped pass /
-pipeline names, and data-only pass-pipeline recipe types**, not a full
-optimization pipeline. There is no public LLVM-compatible `PassBuilder`, no
-runnable `default<O1>` optimizer, no loop / CGSCC / legacy manager, no
+pipeline names, textual pipelines that run (`parse_module_pass_pipeline`,
+the textual half of `PassBuilder`, over a registry of the ported passes), and
+data-only pass-pipeline recipe types**, not a full optimization pipeline.
+There is no runnable `default<O1>` optimizer, no loop / CGSCC / legacy manager, no
 instrumentation-driven skipping, and no broad transform library yet. See
 [`docs/future-work.md`](docs/future-work.md) (the "Pass API — deferred"
 section) for the scoped-out items.

@@ -1529,10 +1529,15 @@ refuse three kinds of text that upstream accepts:
 
 - **A pass llvmkit does not port.** The registry is the closed enums `RegisteredModulePass`
   (`no-op-module`) and `RegisteredFunctionPass` (`dce`, `instsimplify`, `no-op-function`).
-  Any other name, such as `sroa` or `instcombine`, is refused with upstream's own "unknown
-  module pass" / "unknown function pass" message, the one upstream gives a name it does not
-  register. The analysis pseudo-passes `require<…>` / `invalidate<…>` are refused the same
-  way, since llvmkit's analyses carry no registry names.
+  Any other name, such as `sroa` or `instcombine`, is refused with the message upstream gives a
+  name it does not register, which depends on where the name stands:
+  - first in a module pipeline: "unknown pass name" (`opt -passes=instcombine` gets "unknown
+    pass name 'instcombine'");
+  - first in a function pipeline: "unknown function pass '…' in pipeline '…'";
+  - later in a pipeline: "unknown module pass" or "unknown function pass".
+
+  The analysis pseudo-passes `require<…>` / `invalidate<…>` are refused the same way, since
+  llvmkit's analyses carry no registry names.
 - **A pass manager of a layer llvmkit does not model.** `cgscc(…)`, `coro-cond(…)`, `loop(…)`,
   `loop-mssa(…)` and `machine-function(…)` are refused with
   `IrError::UnmodeledPassManager`, which names the manager. `coro-cond` parses its inner module
@@ -1543,6 +1548,11 @@ refuse three kinds of text that upstream accepts:
   wraps a pipeline that starts with a CGSCC, loop-nest, loop or machine-function pass name in
   that layer's adaptor. No such name is registered here, so the first name is "unknown pass
   name" (or "unknown pipeline name").
+- **Nesting deeper than `MAX_PASS_PIPELINE_NESTING` (64).** Text that opens more parentheses
+  at once, and `Dyn` pipelines composed deeper, are refused with
+  `IrError::PassPipelineTooDeep`. Upstream has no bound, but its parse, run and teardown
+  recurse once per level, so deep enough text exhausts its stack. llvmkit's resolution, run,
+  outline and drop recurse the same way.
 
 Nothing that resolves runs differently from upstream: the nested managers, the
 module-to-function adaptor (with `eager-inv`, and `no-rerun` refused with upstream's message)
@@ -1559,7 +1569,8 @@ the registry.
 
 **Guarded by:** `crates/llvmkit-asmparser/tests/pass_pipeline_parsing.rs`, the port of
 `test/Other/pass-pipeline-parsing.ll` (its CGSCC and loop runs are this entry), and its
-`unmodeled_managers_and_unknown_names_are_refused`.
+`unmodeled_managers_and_unknown_names_are_refused` and
+`nesting_is_bounded_in_text_and_in_composition`.
 
 ---
 

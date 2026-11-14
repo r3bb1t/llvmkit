@@ -929,11 +929,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
 
     /// Drop every cached result for `function` that `pa` does not preserve,
     /// consulting each result's own `invalidate` hook.
+    ///
+    /// Mirrors `AnalysisManager::invalidate` (PassManagerImpl.h), including
+    /// its first statement: when `pa` preserves every function analysis,
+    /// nothing is consulted and nothing is dropped, so the function adaptor's
+    /// invalidation after a function pipeline (whose report preserves that
+    /// set) costs nothing.
     pub fn invalidate<'v, F>(&mut self, function: F, pa: &PreservedAnalyses) -> IrResult<()>
     where
         F: Into<FunctionView<'v, B>>,
         'ctx: 'v,
     {
+        // We're done if all analyses on this IR unit are preserved.
+        if pa.all_analyses_in_set_preserved::<AllAnalysesOnFunction>() {
+            return Ok(());
+        }
         let function = function.into();
         let function_handle = function.as_function();
         let module_id = function_handle.module().id();
@@ -1138,11 +1148,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
 
     /// Drop every cached result for `module` that `pa` does not preserve,
     /// consulting each result's own `invalidate` hook.
+    ///
+    /// Mirrors `AnalysisManager::invalidate` (PassManagerImpl.h), including
+    /// its first statement: when `pa` preserves every module analysis, nothing
+    /// is consulted and nothing is dropped.
     pub fn invalidate<'v, M>(&mut self, module: M, pa: &PreservedAnalyses) -> IrResult<()>
     where
         M: Into<ModuleView<'v, B>>,
         'ctx: 'v,
     {
+        // We're done if all analyses on this IR unit are preserved.
+        if pa.all_analyses_in_set_preserved::<AllAnalysesOnModule>() {
+            return Ok(());
+        }
         let module = module.into();
         let module_id = module.id();
         let snapshot = ModuleAnalysisSnapshot {

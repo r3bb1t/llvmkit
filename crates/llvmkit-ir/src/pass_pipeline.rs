@@ -152,6 +152,18 @@ pub const NO_OP_FUNCTION: PassName<FunctionPassScope> = PassName::new("no-op-fun
 /// Built-in module pass name: `no-op-module` (`NoOpModulePass`).
 pub const NO_OP_MODULE: PassName<ModulePassScope> = PassName::new("no-op-module");
 
+/// How deep pass pipelines may nest: in pipeline text, open parentheses at
+/// once; in composed `Dyn` pipelines, nested pipelines and function
+/// adaptors at once. Deeper is refused with
+/// [`IrError::PassPipelineTooDeep`].
+///
+/// Upstream has no bound, and its parse, run and teardown all recurse once
+/// per level, so deep enough text exhausts its stack. llvmkit's resolution,
+/// run, outline and drop recurse the same way, so the bound is what keeps a
+/// few hundred kilobytes of `function(` from aborting the process. Upstream's
+/// own default pipelines nest well under it.
+pub const MAX_PASS_PIPELINE_NESTING: usize = 64;
+
 /// Owned validated name at the erased textual parser boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PassPipelineTextName {
@@ -318,7 +330,13 @@ pub fn parse_pass_pipeline_text(text: &str) -> IrResult<PassPipeline> {
                 filling(&mut root, &mut open).push(PassPipelineElement::new(name, Vec::new()));
             }
             '(' => {
-                // Continue in the element's inner pipeline.
+                // Continue in the element's inner pipeline, within the
+                // nesting bound (an llvmkit bound; upstream has none).
+                if open.len() == MAX_PASS_PIPELINE_NESTING {
+                    return Err(IrError::PassPipelineTooDeep {
+                        limit: MAX_PASS_PIPELINE_NESTING,
+                    });
+                }
                 open.push((name, Vec::new()));
             }
             _ => {

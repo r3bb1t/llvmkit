@@ -143,6 +143,55 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B>
     }
 }
 
+/// A function analysis whose result keeps the default `invalidate` hook,
+/// which asks to be dropped whenever it is consulted.
+#[derive(Clone, Copy)]
+struct AlwaysStaleFunctionAnalysis;
+
+#[derive(Debug)]
+struct AlwaysStaleFunctionResult;
+
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for AlwaysStaleFunctionAnalysis {
+    type Result = AlwaysStaleFunctionResult;
+
+    fn run<'v>(
+        &self,
+        _function: FunctionView<'v, B>,
+        _am: &mut FunctionAnalysisManager<'ctx, B>,
+    ) -> IrResult<Self::Result>
+    where
+        'ctx: 'v,
+    {
+        Ok(AlwaysStaleFunctionResult)
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for AlwaysStaleFunctionResult {}
+
+/// The module-level twin of [`AlwaysStaleFunctionAnalysis`].
+#[derive(Clone, Copy)]
+struct AlwaysStaleModuleAnalysis;
+
+#[derive(Debug)]
+struct AlwaysStaleModuleResult;
+
+impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysis<'ctx, B> for AlwaysStaleModuleAnalysis {
+    type Result = AlwaysStaleModuleResult;
+
+    fn run<'v>(
+        &self,
+        _module: ModuleView<'v, B>,
+        _am: &mut ModuleAnalysisManager<'ctx, B>,
+    ) -> IrResult<Self::Result>
+    where
+        'ctx: 'v,
+    {
+        Ok(AlwaysStaleModuleResult)
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisResult<'ctx, B> for AlwaysStaleModuleResult {}
+
 /// The shared fixture is a helper, not a `#[test]` body: the harness runs
 /// tests in parallel, so a `module_new!` brand minted here would be claimed by
 /// several threads at once. [`DynBrand`] is registry-exempt and admits any
@@ -546,6 +595,56 @@ fn function_analysis_runs_once_caches_and_invalidates() -> Result<(), IrError> {
 
 /// Ports `unittests/IR/PassManagerTest.cpp` local module-analysis cache and
 /// invalidation behavior.
+/// When a report preserves every analysis of the unit, invalidation consults
+/// no result: a result whose hook always asks to be dropped survives a report
+/// that preserves the whole set, and is dropped by `none()`.
+///
+/// **No upstream test isolates it.** It pins the first statement of
+/// `AnalysisManager::invalidate` (`llvm/include/llvm/IR/PassManagerImpl.h`),
+/// `if (PA.allAnalysesInSetPreserved<AllAnalysesOn<IRUnitT>>()) return;`, for
+/// the function and the module manager.
+#[test]
+fn invalidation_returns_early_when_the_whole_set_is_preserved() -> Result<(), IrError> {
+    with_sample_module(|m| {
+        let f = m.view(m.function_dyn("f").expect("sample has f"));
+        let mut fam = FunctionAnalysisManager::new();
+        fam.register_pass(AlwaysStaleFunctionAnalysis);
+        fam.result::<AlwaysStaleFunctionAnalysis, _>(f)?;
+        let mut whole_function_set = PreservedAnalyses::none();
+        whole_function_set.preserve_set::<AllAnalysesOnFunction>();
+        fam.invalidate(f, &PreservedAnalyses::all())?;
+        fam.invalidate(f, &whole_function_set)?;
+        assert!(
+            fam.cached_result::<AlwaysStaleFunctionAnalysis, _>(f)
+                .is_some()
+        );
+        fam.invalidate(f, &PreservedAnalyses::none())?;
+        assert!(
+            fam.cached_result::<AlwaysStaleFunctionAnalysis, _>(f)
+                .is_none()
+        );
+
+        let mut mam = ModuleAnalysisManager::new();
+        mam.register_pass(AlwaysStaleModuleAnalysis);
+        let verified = m.verify()?;
+        mam.result::<AlwaysStaleModuleAnalysis>(&verified)?;
+        let mut whole_module_set = PreservedAnalyses::none();
+        whole_module_set.preserve_set::<AllAnalysesOnModule>();
+        mam.invalidate(verified.as_view(), &PreservedAnalyses::all())?;
+        mam.invalidate(verified.as_view(), &whole_module_set)?;
+        assert!(
+            mam.cached_result::<AlwaysStaleModuleAnalysis, _>(verified.as_view())
+                .is_some()
+        );
+        mam.invalidate(verified.as_view(), &PreservedAnalyses::none())?;
+        assert!(
+            mam.cached_result::<AlwaysStaleModuleAnalysis, _>(verified.as_view())
+                .is_none()
+        );
+        Ok(())
+    })
+}
+
 #[test]
 fn module_analysis_runs_once_caches_and_invalidates() -> Result<(), IrError> {
     with_sample_module(|m| {

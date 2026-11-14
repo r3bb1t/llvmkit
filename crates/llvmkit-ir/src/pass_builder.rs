@@ -84,8 +84,22 @@ pub enum RegisteredModulePass {
 }
 
 impl RegisteredModulePass {
+    /// The first registered module pass in `PassRegistry.def` order.
+    const FIRST: Self = Self::NoOp;
+
+    /// The pass after this one in `PassRegistry.def` order. The match is
+    /// exhaustive, so a new variant must be placed in the chain before it
+    /// compiles, and [`Self::all`] then reaches it.
+    const fn next(self) -> Option<Self> {
+        match self {
+            Self::NoOp => None,
+        }
+    }
+
     /// Every registered module pass, in `PassRegistry.def` order.
-    pub const ALL: [Self; 1] = [Self::NoOp];
+    pub fn all() -> impl Iterator<Item = Self> {
+        core::iter::successors(Some(Self::FIRST), |pass| pass.next())
+    }
 
     /// The name a textual pipeline spells this pass with.
     pub const fn name(self) -> PassName<ModulePassScope> {
@@ -97,9 +111,7 @@ impl RegisteredModulePass {
     /// The registered pass named `name`, as a `MODULE_PASS` row matches it
     /// (`Name == NAME`).
     pub fn from_name(name: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|pass| pass.name().as_str() == name)
+        Self::all().find(|pass| pass.name().as_str() == name)
     }
 
     /// Appends a new instance of this pass: the row's `CREATE_PASS`.
@@ -123,8 +135,24 @@ pub enum RegisteredFunctionPass {
 }
 
 impl RegisteredFunctionPass {
+    /// The first registered function pass in `PassRegistry.def` order.
+    const FIRST: Self = Self::Dce;
+
+    /// The pass after this one in `PassRegistry.def` order. The match is
+    /// exhaustive, so a new variant must be placed in the chain before it
+    /// compiles, and [`Self::all`] then reaches it.
+    const fn next(self) -> Option<Self> {
+        match self {
+            Self::Dce => Some(Self::InstSimplify),
+            Self::InstSimplify => Some(Self::NoOp),
+            Self::NoOp => None,
+        }
+    }
+
     /// Every registered function pass, in `PassRegistry.def` order.
-    pub const ALL: [Self; 3] = [Self::Dce, Self::InstSimplify, Self::NoOp];
+    pub fn all() -> impl Iterator<Item = Self> {
+        core::iter::successors(Some(Self::FIRST), |pass| pass.next())
+    }
 
     /// The name a textual pipeline spells this pass with.
     pub const fn name(self) -> PassName<FunctionPassScope> {
@@ -138,9 +166,7 @@ impl RegisteredFunctionPass {
     /// The registered pass named `name`, as a `FUNCTION_PASS` row matches it
     /// (`Name == NAME`).
     pub fn from_name(name: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|pass| pass.name().as_str() == name)
+        Self::all().find(|pass| pass.name().as_str() == name)
     }
 
     /// Appends a new instance of this pass: the row's `CREATE_PASS`.
@@ -217,6 +243,41 @@ pub enum UnmodeledPassManager {
 }
 
 impl UnmodeledPassManager {
+    /// The first manager of the chain [`Self::all`] walks.
+    const FIRST: Self = Self::Cgscc;
+
+    /// The manager after this one. The match is exhaustive, so a new variant
+    /// must be placed in the chain before it compiles.
+    const fn next(self) -> Option<Self> {
+        match self {
+            Self::Cgscc => Some(Self::CoroCond),
+            Self::CoroCond => Some(Self::Loop),
+            Self::Loop => Some(Self::LoopMssa),
+            Self::LoopMssa => Some(Self::MachineFunction),
+            Self::MachineFunction => None,
+        }
+    }
+
+    /// Every unmodeled pass manager.
+    pub fn all() -> impl Iterator<Item = Self> {
+        core::iter::successors(Some(Self::FIRST), |manager| manager.next())
+    }
+
+    /// The manager a textual pipeline names `name`.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::all().find(|manager| manager.as_str() == name)
+    }
+
+    /// The layer whose pipelines may hold this manager: `cgscc` and
+    /// `coro-cond` are module-pipeline elements (`isModulePassName`), the
+    /// others function-pipeline elements (`isFunctionPassName`).
+    pub const fn layer(self) -> PassLayer {
+        match self {
+            Self::Cgscc | Self::CoroCond => PassLayer::WholeModule,
+            Self::Loop | Self::LoopMssa | Self::MachineFunction => PassLayer::PerFunction,
+        }
+    }
+
     /// The name a textual pipeline spells this manager with.
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -260,7 +321,7 @@ pub fn parse_module_pass_pipeline<'ctx, B: ModuleBrand + 'ctx>(
         let mut function_pipeline = DynFunctionPipeline::new();
         parse_function_pass_elements(&mut function_pipeline, pipeline.elements())?;
         module_pipeline
-            .push_function_pipeline(function_pipeline, FunctionAdaptorInvalidation::FromReport);
+            .push_function_pipeline(function_pipeline, FunctionAdaptorInvalidation::FromReport)?;
     } else {
         // Upstream's CGSCC, loop-nest, loop and machine-function arms wrap
         // names of layers llvmkit does not model, and no name of those
@@ -289,8 +350,7 @@ pub fn parse_function_pass_pipeline<'ctx, B: ModuleBrand + 'ctx>(
     let pipeline = parse_pass_pipeline_text(text)?;
     let first_name = pipeline.first().name().as_str();
     if !is_function_pass_name(first_name) {
-        return Err(IrError::UnknownPassInPipeline {
-            layer: PassLayer::PerFunction,
+        return Err(IrError::UnknownFunctionPassInPipeline {
             name: first_name.to_owned(),
             pipeline: text.to_owned(),
         });
@@ -338,22 +398,31 @@ fn parse_module_pass<'ctx, B: ModuleBrand + 'ctx>(
         if name == "module" {
             let mut nested = DynModulePipeline::new();
             parse_module_pass_elements(&mut nested, inner)?;
-            pipeline.push_pipeline(nested);
+            pipeline.push_pipeline(nested)?;
             return Ok(());
         }
-        if name == "coro-cond" {
-            // Upstream parses the inner module pipeline before wrapping it,
-            // so an error inside is reported first.
-            let mut nested = DynModulePipeline::<'ctx, B>::new();
-            parse_module_pass_elements(&mut nested, inner)?;
-            return Err(IrError::UnmodeledPassManager {
-                manager: UnmodeledPassManager::CoroCond,
-            });
-        }
-        if name == "cgscc" {
-            return Err(IrError::UnmodeledPassManager {
-                manager: UnmodeledPassManager::Cgscc,
-            });
+        match UnmodeledPassManager::from_name(name) {
+            Some(UnmodeledPassManager::CoroCond) => {
+                // Upstream parses the inner module pipeline before wrapping
+                // it, so an error inside is reported first.
+                let mut nested = DynModulePipeline::<'ctx, B>::new();
+                parse_module_pass_elements(&mut nested, inner)?;
+                return Err(IrError::UnmodeledPassManager {
+                    manager: UnmodeledPassManager::CoroCond,
+                });
+            }
+            // A CGSCC pipeline has no parser here to report its errors.
+            Some(manager @ UnmodeledPassManager::Cgscc) => {
+                return Err(IrError::UnmodeledPassManager { manager });
+            }
+            // The function-layer managers are not module-pipeline elements:
+            // upstream falls through to "invalid use", as here.
+            Some(
+                UnmodeledPassManager::Loop
+                | UnmodeledPassManager::LoopMssa
+                | UnmodeledPassManager::MachineFunction,
+            )
+            | None => {}
         }
         if let Some(parameters) = parse_function_pipeline_name(name) {
             if parameters.no_rerun {
@@ -366,7 +435,7 @@ fn parse_module_pass<'ctx, B: ModuleBrand + 'ctx>(
             } else {
                 FunctionAdaptorInvalidation::FromReport
             };
-            pipeline.push_function_pipeline(function_pipeline, invalidation);
+            pipeline.push_function_pipeline(function_pipeline, invalidation)?;
             return Ok(());
         }
         // Normal passes can't have pipelines.
@@ -390,7 +459,8 @@ fn parse_module_pass<'ctx, B: ModuleBrand + 'ctx>(
         // adaptor preserves anyway.
         let mut function_pipeline = DynFunctionPipeline::new();
         pass.push_into(&mut function_pipeline);
-        pipeline.push_function_pipeline(function_pipeline, FunctionAdaptorInvalidation::FromReport);
+        pipeline
+            .push_function_pipeline(function_pipeline, FunctionAdaptorInvalidation::FromReport)?;
         return Ok(());
     }
     Err(IrError::UnknownPass {
@@ -413,16 +483,14 @@ fn parse_function_pass<'ctx, B: ModuleBrand + 'ctx>(
         if name == "function" {
             let mut nested = DynFunctionPipeline::new();
             parse_function_pass_elements(&mut nested, inner)?;
-            pipeline.push_pipeline(nested);
+            pipeline.push_pipeline(nested)?;
             return Ok(());
         }
-        let manager = match name {
-            "loop" => Some(UnmodeledPassManager::Loop),
-            "loop-mssa" => Some(UnmodeledPassManager::LoopMssa),
-            "machine-function" => Some(UnmodeledPassManager::MachineFunction),
-            _ => None,
-        };
-        if let Some(manager) = manager {
+        if let Some(manager) = UnmodeledPassManager::from_name(name)
+            && manager.layer() == PassLayer::PerFunction
+        {
+            // A loop or machine-function pipeline has no parser here to
+            // report its errors.
             return Err(IrError::UnmodeledPassManager { manager });
         }
         // Normal passes can't have pipelines.
@@ -452,19 +520,23 @@ fn name_without_parameters(name: &str) -> &str {
 /// module pipeline accepts, then the registered module passes.
 fn is_module_pass_name(name: &str) -> bool {
     name == "module"
-        || name == "cgscc"
         || name_without_parameters(name) == "function"
-        || name == "coro-cond"
+        || is_manager_of(name, PassLayer::WholeModule)
         || RegisteredModulePass::from_name(name).is_some()
+}
+
+/// Whether `name` is an unmodeled pass manager a `layer` pipeline holds:
+/// `cgscc` / `coro-cond` in a module pipeline, `loop` / `loop-mssa` /
+/// `machine-function` in a function pipeline.
+fn is_manager_of(name: &str, layer: PassLayer) -> bool {
+    UnmodeledPassManager::from_name(name).is_some_and(|manager| manager.layer() == layer)
 }
 
 /// Mirrors `isFunctionPassName` (`PassBuilder.cpp`): the pass-manager names a
 /// function pipeline accepts, then the registered function passes.
 fn is_function_pass_name(name: &str) -> bool {
     name_without_parameters(name) == "function"
-        || name == "loop"
-        || name == "loop-mssa"
-        || name == "machine-function"
+        || is_manager_of(name, PassLayer::PerFunction)
         || RegisteredFunctionPass::from_name(name).is_some()
 }
 

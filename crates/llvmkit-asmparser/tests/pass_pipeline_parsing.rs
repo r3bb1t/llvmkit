@@ -21,8 +21,10 @@ use std::rc::Rc;
 use llvmkit_asmparser::parser;
 use llvmkit_ir::{
     Analyses, DominatorTreeAnalysis, DynBrand, DynFunctionPipeline, DynModulePipeline, FnCx,
-    FnReport, FunctionAdaptorInvalidation, FunctionPass, Inspect, IrError, IrResult, Module,
-    ModuleBrand, Unverified, parse_function_pass_pipeline, parse_module_pass_pipeline,
+    FnReport, FunctionAdaptorInvalidation, FunctionPass, Inspect, IrError, IrResult,
+    MAX_PASS_PIPELINE_NESTING, Module, ModuleBrand, NoOpFunctionPass, PipelineOutline,
+    RegisteredFunctionPass, RegisteredModulePass, UnmodeledPassManager, Unverified,
+    parse_function_pass_pipeline, parse_module_pass_pipeline,
 };
 
 /// The fixture's IR: `define void @f()` with a self-loop.
@@ -39,16 +41,25 @@ fn parse(source: &str) -> Module<DynBrand, Unverified> {
     }
 }
 
-/// Resolves `passes`, checks the top-level member names, and runs the
-/// pipeline over the fixture.
-fn runs_with_members(passes: &str, members: &[&str]) -> Result<(), IrError> {
+/// Resolves `passes`, checks its whole outline (every nested member, in run
+/// order), and runs the pipeline over the fixture.
+fn runs_with_outline(passes: &str, outline: &[PipelineOutline<'_>]) -> Result<(), IrError> {
     let module = fixture();
     let mut analyses = Analyses::new();
     let mut pipeline: DynModulePipeline<'_, DynBrand> = parse_module_pass_pipeline(passes)?;
-    let names: Vec<&str> = pipeline.pass_names().collect();
-    assert_eq!(names, members, "the members of {passes:?}");
+    assert_eq!(pipeline.outline(), outline, "the outline of {passes:?}");
     pipeline.run(module.verify()?, &mut analyses)?.verify()?;
     Ok(())
+}
+
+const NO_OP_MODULE: PipelineOutline<'static> = PipelineOutline::Pass("no-op-module");
+const NO_OP_FUNCTION: PipelineOutline<'static> = PipelineOutline::Pass("no-op-function");
+
+fn nested<'a>(name: &'a str, members: &[PipelineOutline<'a>]) -> PipelineOutline<'a> {
+    PipelineOutline::Pipeline {
+        name,
+        members: members.to_vec(),
+    }
 }
 
 /// `opt -passes=<passes>` fails with upstream's message `expected`.
@@ -67,16 +78,24 @@ fn refused_with(passes: &str, expected: &str) {
 /// written as `function(…)`, and a function pipeline between module passes.
 #[test]
 fn no_op_pipelines_resolve_in_the_traced_order() -> Result<(), IrError> {
-    runs_with_members(
-        "no-op-module,no-op-module",
-        &["no-op-module", "no-op-module"],
+    runs_with_outline("no-op-module,no-op-module", &[NO_OP_MODULE, NO_OP_MODULE])?;
+    runs_with_outline(
+        "module(no-op-module,no-op-module)",
+        &[nested("module", &[NO_OP_MODULE, NO_OP_MODULE])],
     )?;
-    runs_with_members("module(no-op-module,no-op-module)", &["module"])?;
-    runs_with_members("no-op-function,no-op-function", &["function"])?;
-    runs_with_members("function(no-op-function,no-op-function)", &["function"])?;
-    runs_with_members(
+    let two_function_passes = [nested("function", &[NO_OP_FUNCTION, NO_OP_FUNCTION])];
+    runs_with_outline("no-op-function,no-op-function", &two_function_passes)?;
+    runs_with_outline(
+        "function(no-op-function,no-op-function)",
+        &two_function_passes,
+    )?;
+    runs_with_outline(
         "no-op-module,function(no-op-function,no-op-function),no-op-module",
-        &["no-op-module", "function", "no-op-module"],
+        &[
+            NO_OP_MODULE,
+            nested("function", &[NO_OP_FUNCTION, NO_OP_FUNCTION]),
+            NO_OP_MODULE,
+        ],
     )?;
     Ok(())
 }
@@ -180,6 +199,106 @@ fn a_textual_pipeline_runs_its_passes() -> Result<(), IrError> {
     Ok(())
 }
 
+/// `function(…)` nested `depth` deep around `no-op-function`.
+fn nested_text(depth: usize) -> String {
+    format!(
+        "{}no-op-function{}",
+        "function(".repeat(depth),
+        ")".repeat(depth)
+    )
+}
+
+/// Pipelines nest at most `MAX_PASS_PIPELINE_NESTING` deep, in text and in
+/// composition: the bound resolves and runs, one more level is refused, and
+/// text nested 200,000 deep is refused at once rather than overflowing the
+/// stack in resolution, run or drop.
+///
+/// **No upstream counterpart**: upstream has no bound, and its recursive
+/// parse, run and teardown exhaust the stack on such text
+/// (`docs/divergences.md` D44).
+#[test]
+fn nesting_is_bounded_in_text_and_in_composition() -> Result<(), IrError> {
+    let limit = MAX_PASS_PIPELINE_NESTING;
+    let module = fixture();
+    let mut analyses = Analyses::new();
+    let mut deepest: DynModulePipeline<'_, DynBrand> =
+        parse_module_pass_pipeline(&nested_text(limit))?;
+    deepest.run(module.verify()?, &mut analyses)?.verify()?;
+    for depth in [limit + 1, 200_000] {
+        match parse_module_pass_pipeline::<DynBrand>(&nested_text(depth)) {
+            Err(IrError::PassPipelineTooDeep { limit: refused_at }) => {
+                assert_eq!(refused_at, limit)
+            }
+            other => panic!("{depth} levels: expected PassPipelineTooDeep, got {other:?}"),
+        }
+    }
+
+    // Composition: a function pipeline nested `limit` deep is the deepest
+    // that may be nested again.
+    let mut pipeline = DynFunctionPipeline::<'_, DynBrand>::new();
+    pipeline.push(NoOpFunctionPass);
+    for _ in 0..limit {
+        let mut outer = DynFunctionPipeline::new();
+        outer.push_pipeline(pipeline)?;
+        pipeline = outer;
+    }
+    let mut outer = DynFunctionPipeline::<'_, DynBrand>::new();
+    match outer.push_pipeline(pipeline) {
+        Err(IrError::PassPipelineTooDeep { limit: refused_at }) => assert_eq!(refused_at, limit),
+        other => panic!("expected PassPipelineTooDeep, got {other:?}"),
+    }
+    Ok(())
+}
+
+/// The registry's chains reach every registered pass and manager, in
+/// `PassRegistry.def` order, and each name resolves back to its pass.
+///
+/// **No upstream counterpart**: llvmkit-specific. The registry is closed
+/// enums whose `all()` walks an exhaustive successor match, so a variant
+/// must be placed in the chain to compile; this pins the chain itself.
+#[test]
+fn the_registry_resolves_every_name_it_lists() {
+    let module_names: Vec<&str> = RegisteredModulePass::all()
+        .map(|pass| pass.name().as_str())
+        .collect();
+    assert_eq!(module_names, ["no-op-module"]);
+    let function_names: Vec<&str> = RegisteredFunctionPass::all()
+        .map(|pass| pass.name().as_str())
+        .collect();
+    assert_eq!(function_names, ["dce", "instsimplify", "no-op-function"]);
+    for pass in RegisteredModulePass::all() {
+        assert_eq!(
+            RegisteredModulePass::from_name(pass.name().as_str()),
+            Some(pass)
+        );
+    }
+    for pass in RegisteredFunctionPass::all() {
+        assert_eq!(
+            RegisteredFunctionPass::from_name(pass.name().as_str()),
+            Some(pass)
+        );
+    }
+    let managers: Vec<&str> = UnmodeledPassManager::all()
+        .map(UnmodeledPassManager::as_str)
+        .collect();
+    assert_eq!(
+        managers,
+        [
+            "cgscc",
+            "coro-cond",
+            "loop",
+            "loop-mssa",
+            "machine-function"
+        ]
+    );
+    for manager in UnmodeledPassManager::all() {
+        assert_eq!(
+            UnmodeledPassManager::from_name(manager.as_str()),
+            Some(manager)
+        );
+    }
+}
+
 /// Counts the functions it runs over.
 struct CountFunctions {
     count: Rc<Cell<usize>>,
@@ -219,7 +338,7 @@ fn a_function_adaptor_skips_declarations() -> Result<(), IrError> {
         count: Rc::clone(&count),
     });
     let mut pipeline: DynModulePipeline<'_, DynBrand> = DynModulePipeline::new();
-    pipeline.push_function_pipeline(functions, FunctionAdaptorInvalidation::FromReport);
+    pipeline.push_function_pipeline(functions, FunctionAdaptorInvalidation::FromReport)?;
     let mut analyses = Analyses::new();
     pipeline.run(module.verify()?, &mut analyses)?;
     assert_eq!(count.get(), 2, "@f and @g, not the declaration @h");

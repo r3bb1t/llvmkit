@@ -95,7 +95,6 @@
 
 #![deny(missing_docs)]
 
-use crate::IrResult;
 use crate::analysis::{
     AllAnalysesOnFunction, AllAnalysesOnModule, Analyses, FunctionAnalysisList,
     FunctionAnalysisManager, FunctionAnalysisManagerModuleProxy, ModuleAnalysisList,
@@ -109,7 +108,9 @@ use crate::pass_access::{
     RewriteModule, StaysVerified, VerdictFold,
 };
 use crate::pass_context::{FnCx, FnReport, FunctionView, IntoFunctionId, ModCx, ModReport};
+use crate::pass_pipeline::MAX_PASS_PIPELINE_NESTING;
 use crate::value_id::{FunctionId, ViewIn};
+use crate::{IrError, IrResult};
 
 /// A pass over one function body at capability rung [`Self::Access`].
 ///
@@ -1183,8 +1184,9 @@ where
 }
 
 /// Runs a typed function pipeline over every function definition in module order
-/// — the pipeline-adaptor analog of the retired `ModuleToFunctionPassAdaptor`
-/// (`createModuleToFunctionPassAdaptor`, IR/PassManager.h). A module-pipeline
+/// — upstream's `ModuleToFunctionPassAdaptor` (`createModuleToFunctionPassAdaptor`,
+/// IR/PassManager.h) for a typed pipeline; its erased twin is
+/// [`DynModulePipeline::push_function_pipeline`], and the two share one loop. A module-pipeline
 /// member; its verdict is the wrapped function pipeline's verdict (a mutating
 /// function pipeline downgrades the module). Distinct from
 /// [`crate::pass_context::ModRewrite::patch_functions`] and its
@@ -1223,21 +1225,16 @@ where
     where
         'ctx: 'm,
     {
-        let mut preserved = PreservedAnalyses::all();
-        for function in module.functions() {
-            // Skip declarations: only definitions have a body to run over.
-            if function.entry_block().is_none() {
-                continue;
-            }
-            let pa = self.pipeline.passes.run_all(token, function, fam)?;
-            preserved.intersect(pa);
-        }
-        // The inner pipeline invalidated `fam` per function itself; force-preserve
-        // all function analyses (and the FAM→module proxy) so the module loop's
-        // `fam.invalidate_module` is a no-op and does not double-invalidate.
-        preserved.preserve_set::<AllAnalysesOnFunction>();
-        preserved.preserve::<FunctionAnalysisManagerModuleProxy>();
-        Ok(preserved)
+        // The inner pipeline invalidates `fam` per member itself, and its
+        // report preserves every function analysis, so the per-function
+        // invalidation from it returns at once; the force-preserved set keeps
+        // the module loop's `fam.invalidate_module` from invalidating twice.
+        for_each_definition(
+            module,
+            fam,
+            FunctionAdaptorInvalidation::FromReport,
+            |function, fam| self.pipeline.passes.run_all(token, function, fam),
+        )
     }
 }
 
@@ -1689,6 +1686,9 @@ impl ReadOnlyMod for Inspect {}
 /// type-erasure, with no bearing on pass coherence.)
 pub struct DynFunctionPipeline<'ctx, B: ModuleBrand + 'ctx> {
     passes: Vec<FunctionMember<'ctx, B>>,
+    /// How many pipelines deep its members nest (0 when none is a
+    /// pipeline), at most [`MAX_PASS_PIPELINE_NESTING`].
+    nesting: usize,
 }
 
 /// Prints the member count, not the members: an erased pipeline holds
@@ -1705,7 +1705,10 @@ impl<B: ModuleBrand> core::fmt::Debug for DynFunctionPipeline<'_, B> {
 impl<'ctx, B: ModuleBrand + 'ctx> DynFunctionPipeline<'ctx, B> {
     /// A new, empty transform pipeline. Add passes with [`Self::push`].
     pub fn new() -> Self {
-        Self { passes: Vec::new() }
+        Self {
+            passes: Vec::new(),
+            nesting: 0,
+        }
     }
 
     /// Append a pass to the end of the pipeline. Callable in a loop, from a `match`
@@ -1728,8 +1731,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynFunctionPipeline<'ctx, B> {
     /// members' reports, with every function analysis preserved, since its
     /// members did that invalidation. Its name is `function`, and it is
     /// required, as upstream's pass managers are.
-    pub fn push_pipeline(&mut self, nested: DynFunctionPipeline<'ctx, B>) {
+    ///
+    /// Refused with [`IrError::PassPipelineTooDeep`] when `nested` already
+    /// nests [`MAX_PASS_PIPELINE_NESTING`] pipelines deep.
+    pub fn push_pipeline(&mut self, nested: DynFunctionPipeline<'ctx, B>) -> IrResult<()> {
+        let nesting = nested_depth(nested.nesting)?;
+        self.nesting = self.nesting.max(nesting);
         self.passes.push(FunctionMember::Pipeline(nested));
+        Ok(())
+    }
+
+    /// The members as a tree: each pass by its `NAME`, each nested pipeline
+    /// by its name with its own members. What upstream's
+    /// `-debug-pass-manager` trace names, without running anything.
+    pub fn outline(&self) -> Vec<PipelineOutline<'_>> {
+        self.passes.iter().map(FunctionMember::outline).collect()
     }
 
     /// Number of passes queued.
@@ -1748,8 +1764,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynFunctionPipeline<'ctx, B> {
         self.passes.iter().map(|pass| pass.name())
     }
 
-    /// Whether any queued pass is marked `REQUIRED` (would run even when
-    /// instrumentation elects to skip it — instrumentation itself is future work).
+    /// Whether any member is required (would run even when instrumentation
+    /// elects to skip it — instrumentation itself is future work): a pass
+    /// marked `REQUIRED`, or a nested pipeline, which is required as
+    /// upstream's `PassManager::isRequired` says.
     pub fn has_required_pass(&self) -> bool {
         self.passes.iter().any(|pass| pass.required())
     }
@@ -1886,6 +1904,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Default for DynReadOnlyFunctionPipeline<'ctx, 
 /// member (mirrors [`ModulePassList`]).
 pub struct DynModulePipeline<'ctx, B: ModuleBrand + 'ctx> {
     passes: Vec<ModuleMember<'ctx, B>>,
+    /// How many pipelines deep its members nest, counting a function
+    /// adaptor as one (0 when none is a pipeline), at most
+    /// [`MAX_PASS_PIPELINE_NESTING`].
+    nesting: usize,
 }
 
 /// Prints the member count, not the members: an erased pipeline holds
@@ -1902,7 +1924,10 @@ impl<B: ModuleBrand> core::fmt::Debug for DynModulePipeline<'_, B> {
 impl<'ctx, B: ModuleBrand + 'ctx> DynModulePipeline<'ctx, B> {
     /// A new, empty transform module pipeline. Add passes with [`Self::push`].
     pub fn new() -> Self {
-        Self { passes: Vec::new() }
+        Self {
+            passes: Vec::new(),
+            nesting: 0,
+        }
     }
 
     /// Append a pass to the end of the pipeline (usable in a loop).
@@ -1924,8 +1949,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynModulePipeline<'ctx, B> {
     /// every module analysis preserved, since its members did that
     /// invalidation. Its name is `module`, and it is required, as upstream's
     /// pass managers are.
-    pub fn push_pipeline(&mut self, nested: DynModulePipeline<'ctx, B>) {
+    ///
+    /// Refused with [`IrError::PassPipelineTooDeep`] when `nested` already
+    /// nests [`MAX_PASS_PIPELINE_NESTING`] pipelines deep.
+    pub fn push_pipeline(&mut self, nested: DynModulePipeline<'ctx, B>) -> IrResult<()> {
+        let nesting = nested_depth(nested.nesting)?;
+        self.nesting = self.nesting.max(nesting);
         self.passes.push(ModuleMember::Pipeline(nested));
+        Ok(())
+    }
+
+    /// The members as a tree: each pass by its `NAME`, each nested pipeline
+    /// or function adaptor by its name with its own members. What upstream's
+    /// `-debug-pass-manager` trace names, without running anything.
+    pub fn outline(&self) -> Vec<PipelineOutline<'_>> {
+        self.passes.iter().map(ModuleMember::outline).collect()
     }
 
     /// Append `pipeline` run over every function definition: upstream's
@@ -1937,15 +1975,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynModulePipeline<'ctx, B> {
     /// function-analysis proxy preserved. Its name is `function`, or
     /// `function<eager-inv>` when invalidation is eager, and it is required,
     /// as upstream's adaptor is.
+    ///
+    /// Refused with [`IrError::PassPipelineTooDeep`] when `pipeline` already
+    /// nests [`MAX_PASS_PIPELINE_NESTING`] pipelines deep.
     pub fn push_function_pipeline(
         &mut self,
         pipeline: DynFunctionPipeline<'ctx, B>,
         invalidation: FunctionAdaptorInvalidation,
-    ) {
+    ) -> IrResult<()> {
+        let nesting = nested_depth(pipeline.nesting)?;
+        self.nesting = self.nesting.max(nesting);
         self.passes.push(ModuleMember::FunctionAdaptor {
             pipeline,
             invalidation,
         });
+        Ok(())
     }
 
     /// Number of passes queued.
@@ -1963,7 +2007,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynModulePipeline<'ctx, B> {
         self.passes.iter().map(|pass| pass.name())
     }
 
-    /// Whether any queued pass is marked `REQUIRED`.
+    /// Whether any member is required: a pass marked `REQUIRED`, or a nested
+    /// pipeline or function adaptor, which are required as upstream's
+    /// `PassManager::isRequired` and `ModuleToFunctionPassAdaptor::isRequired`
+    /// say. So a textual pipeline that names any function pass, which
+    /// resolves through an adaptor, has a required member.
     pub fn has_required_pass(&self) -> bool {
         self.passes.iter().any(|pass| pass.required())
     }
@@ -2095,6 +2143,33 @@ pub enum FunctionAdaptorInvalidation {
     Eager,
 }
 
+/// The shape of a [`DynModulePipeline`] or [`DynFunctionPipeline`], member by
+/// member ([`DynModulePipeline::outline`], [`DynFunctionPipeline::outline`]).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PipelineOutline<'a> {
+    /// A pass, by its `NAME`.
+    Pass(&'a str),
+    /// A nested pipeline (`module`, `function`) or a function adaptor
+    /// (`function`, `function<eager-inv>`), with its members in run order.
+    Pipeline {
+        /// The pipeline's or adaptor's name.
+        name: &'a str,
+        /// Its members.
+        members: Vec<PipelineOutline<'a>>,
+    },
+}
+
+/// The nesting of a pipeline that holds one nested `depth` deep, or the
+/// refusal when that passes [`MAX_PASS_PIPELINE_NESTING`].
+fn nested_depth(depth: usize) -> IrResult<usize> {
+    if depth >= MAX_PASS_PIPELINE_NESTING {
+        return Err(IrError::PassPipelineTooDeep {
+            limit: MAX_PASS_PIPELINE_NESTING,
+        });
+    }
+    Ok(depth + 1)
+}
+
 /// One member of a [`DynFunctionPipeline`]: a boxed pass, or a nested
 /// function pipeline. The nested pipeline is a variant, not another
 /// implementor of the erased trait, so the erased trait keeps its single
@@ -2135,6 +2210,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionMember<'ctx, B> {
             Self::Pass(pass) => pass.required(),
             // `PassManager::isRequired`: a pass manager always runs.
             Self::Pipeline(_) => true,
+        }
+    }
+
+    fn outline(&self) -> PipelineOutline<'_> {
+        match self {
+            Self::Pass(pass) => PipelineOutline::Pass(pass.name()),
+            Self::Pipeline(pipeline) => PipelineOutline::Pipeline {
+                name: self.name(),
+                members: pipeline.outline(),
+            },
         }
     }
 }
@@ -2223,6 +2308,20 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleMember<'ctx, B> {
             Self::Pipeline(_) | Self::FunctionAdaptor { .. } => true,
         }
     }
+
+    fn outline(&self) -> PipelineOutline<'_> {
+        match self {
+            Self::Pass(pass) => PipelineOutline::Pass(pass.name()),
+            Self::Pipeline(pipeline) => PipelineOutline::Pipeline {
+                name: self.name(),
+                members: pipeline.outline(),
+            },
+            Self::FunctionAdaptor { pipeline, .. } => PipelineOutline::Pipeline {
+                name: self.name(),
+                members: pipeline.outline(),
+            },
+        }
+    }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> DynModulePipeline<'ctx, B> {
@@ -2265,13 +2364,37 @@ fn run_function_adaptor<'m, 'ctx, B: ModuleBrand + 'ctx>(
 where
     'ctx: 'm,
 {
+    for_each_definition(module, fam, invalidation, |function, fam| {
+        pipeline.run_members(token, function, fam)
+    })
+}
+
+/// The loop of `ModuleToFunctionPassAdaptor::run` (PassManager.cpp), less
+/// the instrumentation callbacks, shared by the erased adaptor
+/// ([`DynModulePipeline::push_function_pipeline`]) and the typed one
+/// ([`ForEachFunction`]): `run` over each definition in module order, each
+/// function's analyses invalidated as `invalidation` says, and the
+/// intersection of the reports, with every function analysis and the
+/// function-analysis proxy preserved.
+fn for_each_definition<'m, 'ctx, B: ModuleBrand + 'ctx>(
+    module: ModuleView<'m, B>,
+    fam: &mut FunctionAnalysisManager<'ctx, B>,
+    invalidation: FunctionAdaptorInvalidation,
+    mut run: impl FnMut(
+        FunctionView<'m, B>,
+        &mut FunctionAnalysisManager<'ctx, B>,
+    ) -> IrResult<PreservedAnalyses>,
+) -> IrResult<PreservedAnalyses>
+where
+    'ctx: 'm,
+{
     let mut preserved = PreservedAnalyses::all();
     for function in module.functions() {
         // `F.isDeclaration()`: only a definition has a body to run over.
         if function.entry_block().is_none() {
             continue;
         }
-        let pass_pa = pipeline.run_members(token, function, fam)?;
+        let pass_pa = run(function, fam)?;
         // A function pass cannot have invalidated another function's
         // analyses, so this function's are invalidated here directly.
         match invalidation {

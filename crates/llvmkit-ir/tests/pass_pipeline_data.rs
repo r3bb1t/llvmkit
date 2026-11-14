@@ -156,7 +156,7 @@ fn pass_pipeline_parser_preserves_nested_shape() -> IrResult<()> {
 /// `Text.substr(0, Pos)` makes one: the empty text, a trailing comma and
 /// `()` each yield an element named `""`.
 #[test]
-fn pass_pipeline_parser_rejects_invalid_or_empty_pipelines() -> IrResult<()> {
+fn pass_pipeline_parser_rejects_unbalanced_text_and_keeps_empty_names() -> IrResult<()> {
     for text in [
         "module(function(instcombine)",
         "module)function",

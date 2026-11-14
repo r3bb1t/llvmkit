@@ -1847,10 +1847,8 @@ pub enum IrError {
     /// A function pipeline's first name is not a function-layer name.
     /// Upstream's "unknown function pass '…' in pipeline '…'"
     /// (`PassBuilder::parsePassPipeline(FunctionPassManager &, StringRef)`).
-    #[error("unknown {layer} pass '{name}' in pipeline '{pipeline}'")]
-    UnknownPassInPipeline {
-        /// The layer the pipeline is built at.
-        layer: PassLayer,
+    #[error("unknown function pass '{name}' in pipeline '{pipeline}'")]
+    UnknownFunctionPassInPipeline {
         /// The pipeline's first name.
         name: String,
         /// The whole pipeline text.
@@ -1879,6 +1877,15 @@ pub enum IrError {
     /// from `PassBuilder::parseModulePass`.
     #[error("cannot have a no-rerun module to function adaptor")]
     NoRerunFunctionAdaptor,
+    /// A pass pipeline, as text or as composed `Dyn` pipelines, nests
+    /// pipelines more than [`crate::MAX_PASS_PIPELINE_NESTING`] levels deep.
+    /// Upstream has no bound: its recursive parse, run and teardown exhaust
+    /// the stack first.
+    #[error("pass pipeline nests more than {limit} levels deep")]
+    PassPipelineTooDeep {
+        /// The nesting bound, [`crate::MAX_PASS_PIPELINE_NESTING`].
+        limit: usize,
+    },
     /// A textual pipeline names a pass manager upstream accepts and llvmkit
     /// does not model (no CGSCC, loop or machine-function layer).
     #[error("pass manager '{manager}' is not modeled")]
@@ -2332,10 +2339,11 @@ impl IrError {
             | Self::InvalidPassPipelineName { .. }
             | Self::InvalidPassPipeline { .. }
             | Self::UnknownPass { .. }
-            | Self::UnknownPassInPipeline { .. }
+            | Self::UnknownFunctionPassInPipeline { .. }
             | Self::UnknownPipelineEntry { .. }
             | Self::PassUsedAsPipeline { .. }
             | Self::NoRerunFunctionAdaptor
+            | Self::PassPipelineTooDeep { .. }
             | Self::UnmodeledPassManager { .. } => Blame::UsageError,
 
             // The broad LangRef-rule family, classified as one class: its sites
