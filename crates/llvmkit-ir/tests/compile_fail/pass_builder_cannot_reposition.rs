@@ -2,12 +2,12 @@
 //! context lent cannot be repositioned.
 //!
 //! `FnReshape::builder_before` checks that the anchor is in the pass's own
-//! function and lends the builder in the `InPass<ReshapeCfg, _>` state, which
+//! function and lends the builder in the `InPass<_>` state, which
 //! is not `Repositionable`. So `position_before` — which would move it to an
 //! instruction of any function — is a type error carrying `Repositionable`'s
 //! own `on_unimplemented` message, and the context's one check cannot be
 //! bypassed after the fact. The rung is `ReshapeCfg`, the widest function
-//! rung, so the refusal is not the `PatchBody` terminator law. No upstream
+//! rung, so the refusal holds at every rung. No upstream
 //! counterpart: an upstream `IRBuilder` inside a `FunctionPass` can be
 //! pointed at any instruction (`IRBuilderBase::SetInsertPoint`).
 

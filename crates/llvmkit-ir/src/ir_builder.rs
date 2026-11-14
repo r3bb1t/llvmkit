@@ -43,7 +43,6 @@ pub mod no_folder;
 
 use crate::Branded;
 use crate::CrateOnly;
-use crate::pass_access::{PatchBody, ReshapeCfg};
 use core::marker::PhantomData;
 use core::num::NonZeroU32;
 
@@ -299,21 +298,24 @@ where
 }
 
 /// Type-state marker: a positioned builder a function pass's context lent,
-/// inserting at `P` ([`PositionedAtEnd`] or [`PositionedBefore`]) for a pass
-/// at rung `Rung` ([`PatchBody`] or [`ReshapeCfg`]).
+/// inserting at `P` ([`PositionedAtEnd`] or [`PositionedBefore`]).
 ///
 /// The context checked that the builder's block is in the pass's own
-/// function, and a lent builder keeps it there: it is not
-/// [`Repositionable`], so it has no `position_*`, `restore_insert_point`,
-/// `unposition`, `into_insert_block` or `append_block_*`. At [`PatchBody`] it
-/// is not [`Terminating`] either, so it cannot emit a terminator and change
-/// the CFG the rung reports preserved. Never constructed: it exists only as
-/// the builder's state parameter. Mint one with
-/// [`FnPatch::builder_before`](crate::FnPatch::builder_before) /
+/// function, and a lent builder keeps it there and builds only the body: it
+/// is not [`Repositionable`], so it has no `position_*`,
+/// `restore_insert_point`, `unposition`, `into_insert_block` or
+/// `append_block_*`; and it is not [`Terminating`], so it emits no
+/// terminator. At `PatchBody` a terminator would change the CFG the rung
+/// reports preserved; at `ReshapeCfg` the rung's CFG edits go through the
+/// context (`split_block`, `edit_terminator`, the `redirect_*` family),
+/// which log each edge change for the analyses the driver repairs, where a
+/// lent builder's terminator would land mid-block and log nothing. Never
+/// constructed: it exists only as the builder's state parameter. Mint one
+/// with [`FnPatch::builder_before`](crate::FnPatch::builder_before) /
 /// [`builder_at`](crate::FnPatch::builder_at) or their
 /// [`FnReshape`](crate::FnReshape) twins.
-pub struct InPass<Rung, P> {
-    _marker: PhantomData<fn() -> (Rung, P)>,
+pub struct InPass<P> {
+    _marker: PhantomData<fn() -> P>,
 }
 
 /// Sealed marker for the type-state generic so external crates cannot
@@ -323,8 +325,7 @@ mod state_sealed {
     impl Sealed for super::Unpositioned {}
     impl Sealed for super::PositionedAtEnd {}
     impl Sealed for super::PositionedBefore {}
-    impl<P: super::InsertionPlace> Sealed for super::InPass<super::PatchBody, P> {}
-    impl<P: super::InsertionPlace> Sealed for super::InPass<super::ReshapeCfg, P> {}
+    impl<P: super::InsertionPlace> Sealed for super::InPass<P> {}
 }
 
 /// Sealed marker trait for the [`IrBuilder`] positioning typestate.
@@ -336,35 +337,34 @@ mod state_sealed {
 /// [`SsaBuilder`](crate::SsaBuilder) used to be such a caller; since 0.0.4
 /// cycle D it is one type whose cursor is data, and always stores a
 /// `PositionedAtEnd` inner builder.)
-pub trait BuilderPositionState: state_sealed::Sealed + 'static {}
+pub trait BuilderPositionState: state_sealed::Sealed + 'static {
+    /// Where the builder inserts, without a pass's lending: the state an
+    /// [`InsertPoint`] saved from it restores to. A lent [`InPass<P>`]
+    /// builder's is `P`; every other state's is itself.
+    type Place: BuilderPositionState;
+}
 
-impl BuilderPositionState for Unpositioned {}
-impl BuilderPositionState for PositionedAtEnd {}
-impl BuilderPositionState for PositionedBefore {}
-impl<P: InsertionPlace> BuilderPositionState for InPass<PatchBody, P> {}
-impl<P: InsertionPlace> BuilderPositionState for InPass<ReshapeCfg, P> {}
+impl BuilderPositionState for Unpositioned {
+    type Place = Unpositioned;
+}
+impl BuilderPositionState for PositionedAtEnd {
+    type Place = PositionedAtEnd;
+}
+impl BuilderPositionState for PositionedBefore {
+    type Place = PositionedBefore;
+}
+impl<P: InsertionPlace> BuilderPositionState for InPass<P> {
+    type Place = P;
+}
 
 /// The positioned states: [`PositionedAtEnd`], [`PositionedBefore`] and a
 /// pass's lent [`InPass`] builder. The bound of every build an [`IrBuilder`]
 /// can make in any of them. Sealed.
-pub trait Positioning: BuilderPositionState {
-    /// Where the builder inserts, without a pass's scope: the state an
-    /// [`InsertPoint`] saved from it restores to.
-    type Place: InsertionPlace;
-}
+pub trait Positioning: BuilderPositionState {}
 
-impl Positioning for PositionedAtEnd {
-    type Place = PositionedAtEnd;
-}
-impl Positioning for PositionedBefore {
-    type Place = PositionedBefore;
-}
-impl<P: InsertionPlace> Positioning for InPass<PatchBody, P> {
-    type Place = P;
-}
-impl<P: InsertionPlace> Positioning for InPass<ReshapeCfg, P> {
-    type Place = P;
-}
+impl Positioning for PositionedAtEnd {}
+impl Positioning for PositionedBefore {}
+impl<P: InsertionPlace> Positioning for InPass<P> {}
 
 /// The states a builder can be moved from: [`Unpositioned`],
 /// [`PositionedAtEnd`] and [`PositionedBefore`], every state but a pass's
@@ -389,33 +389,32 @@ pub trait InsertionPlace: Positioning + Repositionable {}
 impl InsertionPlace for PositionedAtEnd {}
 impl InsertionPlace for PositionedBefore {}
 
-/// The positioned states that may emit a terminator: every one but a
-/// [`PatchBody`] pass's lent builder, whose rung reports the CFG preserved.
-/// The bound of every terminator build. Sealed.
-#[diagnostic::on_unimplemented(
-    message = "a `PatchBody` pass's builder cannot emit a terminator",
-    note = "a terminator changes the CFG, which the `PatchBody` rung reports preserved; \
-            a pass that rewires the CFG declares `type Access = ReshapeCfg`"
-)]
+/// The positioned states that may emit a terminator: [`PositionedAtEnd`] and
+/// [`PositionedBefore`], every positioned state but a pass's lent [`InPass`]
+/// builder ([`InPass`] says why). The bound of the impls that hold every
+/// terminator build, so a lent builder's call to one is `E0599` naming the
+/// unmet `InPass<_>: Terminating`. Sealed.
 pub trait Terminating: Positioning {}
 
 impl Terminating for PositionedAtEnd {}
 impl Terminating for PositionedBefore {}
-impl<P: InsertionPlace> Terminating for InPass<ReshapeCfg, P> {}
 
 /// Snapshot of a positioned [`IrBuilder`]'s insertion location. Mirrors
 /// `IRBuilderBase::InsertPoint` in `IRBuilder.h`.
 ///
-/// `S` is the state the builder was saved in, and
-/// [`IrBuilder::restore_insert_point`] restores to it: an at-end snapshot
-/// restores an at-end builder. A snapshot outlives the builder it was saved
+/// `S` is where the builder inserted, free of a pass's lending (its
+/// [`BuilderPositionState::Place`]), and
+/// [`IrBuilder::restore_insert_point`] restores a free builder in it: an
+/// at-end snapshot restores an at-end builder, and one saved from a lent
+/// [`InPass`] builder restores, through a pass context's `builder_at`, a lent
+/// one again. A snapshot outlives the builder it was saved
 /// from, and so its hold on the [`LayoutToken`], which is why restoring one
 /// re-checks it against the live module. Only a
 /// positioned builder saves one, so a snapshot always names a block (upstream's
 /// empty `InsertPoint` has no counterpart).
 #[derive(Branded)]
 #[branded(Debug)]
-pub struct InsertPoint<'ctx, R: ReturnMarker, B: ModuleBrand, S: Positioning> {
+pub struct InsertPoint<'ctx, R: ReturnMarker, B: ModuleBrand, S: InsertionPlace> {
     /// The insertion block's storable id. Its module tag is what
     /// [`IrBuilder::restore_insert_point`] checks, so a snapshot taken from
     /// another module's builder is refused rather than reopening whatever
@@ -706,7 +705,8 @@ where
 /// Type parameters:
 /// - `F` — folder strategy (defaults to [`ConstantFolder`]).
 /// - `S` — insertion-point type-state ([`Unpositioned`] /
-///   [`PositionedAtEnd`] / [`PositionedBefore`]).
+///   [`PositionedAtEnd`] / [`PositionedBefore`], or a pass's lent
+///   [`InPass`] builder).
 /// - `R` — parent function's [`ReturnMarker`].
 pub struct IrBuilder<'m, 'ctx, B, F, S, R>
 where
@@ -834,7 +834,8 @@ where
     /// Create a builder already positioned at the end of `bb`, inferring the
     /// return marker `R` from the block — the block already pins it, so no
     /// turbofish is needed. Equivalent to
-    /// `new_for::<R>(key).position_at_end(bb)` but with `R` derived. Installs
+    /// `new_for::<R>(key).try_position_at_end(bb)` but with `R` derived, and
+    /// for any brand. Installs
     /// the default [`ConstantFolder`], matching [`new_for`](Self::new_for).
     /// [`new_for`](Self::new_for) remains for the unpositioned case (build a
     /// block first).
@@ -845,11 +846,12 @@ where
     ///
     /// # Errors
     ///
-    /// [`IrError::ForeignLayoutToken`] if `bb` belongs to another module than
-    /// `key`. Two modules of a shared brand (every `Module::dynamic` is
-    /// `DynBrand`) have tokens of one type, so only the module tag tells a
-    /// block of one from the other's token, and a builder over the token's
-    /// module must not write into another module's block.
+    /// [`IrError::ForeignValueId`] if `bb` belongs to another module than
+    /// `key`'s, as every positioning entry refuses a block of another module.
+    /// Two modules of a shared brand (every `Module::dynamic` is `DynBrand`)
+    /// have blocks of one type, so only the module tag tells them apart, and
+    /// a builder over the token's module must not write into another
+    /// module's block.
     pub fn at_end<Params>(
         key: &'m mut LayoutToken<'ctx, B>,
         bb: BasicBlock<'ctx, R, Unterminated, B, Params>,
@@ -857,7 +859,9 @@ where
     where
         Params: BlockParams,
     {
-        key.admit(bb.module_ref().id())?;
+        if bb.module_ref().id() != key.module().id() {
+            return Err(IrError::ForeignValueId);
+        }
         // Internal: `bb`'s module was compared with the token's just above.
         Ok(IrBuilder::new_for_unkeyed::<R>(key.module()).position_at_end_trusting_same_module(bb))
     }
@@ -891,10 +895,12 @@ where
 }
 
 // --------------------------------------------------------------------------
-// Positioning methods, available in every state: to `PositionedAtEnd`
-// (`position_at_end*`), to `PositionedBefore` (`position_before`), to
-// whichever `position_past_allocas` lands in, or to the state an
-// `InsertPoint` was saved in (`restore_insert_point`).
+// The reads every state has (`view`, `try_view`, `save_insert_point`), and the
+// positioning methods every `Repositionable` state has — every state but a
+// pass's lent `InPass` builder: to `PositionedAtEnd` (`position_at_end*`), to
+// `PositionedBefore` (`position_before`), to whichever `position_past_allocas`
+// lands in, or to the state an `InsertPoint` was saved in
+// (`restore_insert_point`).
 // --------------------------------------------------------------------------
 
 impl<'m, 'ctx, B, F, S, R> IrBuilder<'m, 'ctx, B, F, S, R>
@@ -975,7 +981,7 @@ where
         // `LayoutToken`, borrowed `&mut` (`IrBuilder::new` / `new_for` /
         // `new_for_return` / `with_folder`, and `IrBuilder::at_end`, which
         // also refuses a block of another module with
-        // `IrError::ForeignLayoutToken`), or, crate-internally, from a
+        // `IrError::ForeignValueId`), or, crate-internally, from a
         // `&Module<B, Unverified>` (`new_for_unkeyed` / `with_folder_unkeyed`);
         // only a holder of the module's mutation authority has either. Every
         // other constructor moves an existing builder's module. So it holds
@@ -1078,6 +1084,8 @@ where
         B: crate::UniqueBrand,
         S: Repositionable,
     {
+        // Internal: `B` names one live module, and the builder and `bb` each
+        // borrow a live module of brand `B`, so `bb` is the builder's own.
         self.position_at_end_trusting_same_module(bb)
     }
 
@@ -1086,10 +1094,11 @@ where
     ///
     /// # Errors
     ///
-    /// [`IrError::ForeignLayoutToken`] if `bb` belongs to another module than
-    /// the builder's, whose [`LayoutToken`] the builder holds. Two modules of
-    /// one shared brand have blocks of one type, so only the module tag tells
-    /// them apart.
+    /// [`IrError::ForeignValueId`] if `bb` belongs to another module than
+    /// the builder's, as [`position_at_end_dyn`](Self::position_at_end_dyn)
+    /// and [`restore_insert_point`](Self::restore_insert_point) refuse one.
+    /// Two modules of one shared brand have blocks of one type, so only the
+    /// module tag tells them apart.
     pub fn try_position_at_end<Params>(
         self,
         bb: BasicBlock<'ctx, R, Unterminated, B, Params>,
@@ -1099,8 +1108,9 @@ where
         S: Repositionable,
     {
         if bb.module_ref().id() != self.module.id() {
-            return Err(IrError::ForeignLayoutToken);
+            return Err(IrError::ForeignValueId);
         }
+        // Internal: `bb`'s module was compared with the builder's just above.
         Ok(self.position_at_end_trusting_same_module(bb))
     }
 
@@ -1262,12 +1272,16 @@ where
     /// id's module tag, which guards two modules sharing one brand, before it
     /// re-validates the block against the live module.
     ///
-    /// Only a positioned builder has a location to save, and the snapshot
-    /// keeps its state, so [`restore_insert_point`](Self::restore_insert_point)
-    /// gives back a builder of the same state.
+    /// Only a positioned builder has a location to save. The snapshot keeps
+    /// where the builder inserts, [`BuilderPositionState::Place`]: a free
+    /// builder's own state, and for a pass's lent [`InPass<P>`] builder its
+    /// `P`. So [`restore_insert_point`](Self::restore_insert_point) gives
+    /// back a free builder of that state, and a pass context's `builder_at` a
+    /// lent one.
     pub fn save_insert_point(&self) -> InsertPoint<'static, R, B, S::Place>
     where
         S: Positioning,
+        S::Place: InsertionPlace,
     {
         InsertPoint {
             block: self.insert_block().id(),
@@ -1732,15 +1746,13 @@ where
         }
     }
 
-    /// This builder, lent to a function pass at rung `Rung`: the same
-    /// position, in the [`InPass`] state that neither repositions nor, at
-    /// [`PatchBody`], terminates. The pass context checks the block is in its
-    /// function before calling this.
+    /// This builder, lent to a function pass: the same position, in the
+    /// [`InPass`] state that neither repositions nor terminates. The pass
+    /// context checks the block is in its function before calling this.
     #[inline]
-    pub(crate) fn lent_to_pass<Rung>(self) -> IrBuilder<'m, 'ctx, B, F, InPass<Rung, S>, R>
+    pub(crate) fn lent_to_pass(self) -> IrBuilder<'m, 'ctx, B, F, InPass<S>, R>
     where
         S: InsertionPlace,
-        InPass<Rung, S>: Positioning,
     {
         IrBuilder {
             module: self.module,
@@ -8714,10 +8726,11 @@ where
 }
 
 // --------------------------------------------------------------------------
-// Terminator builds (and the edge helpers only they use): every positioned
-// state but a `PatchBody` pass's lent builder, whose rung reports the CFG
-// preserved. Each takes its block through `into_block_to_terminate`, which
-// requires `Terminating`, so a terminator outside these impls fails to build.
+// Terminator builds (and the helpers only they use): every positioned state
+// but a pass's lent `InPass` builder. Each takes its block through
+// `into_block_to_terminate`, which requires `Terminating`, and every
+// terminator payload is built inside an impl bounded `S: Terminating` —
+// `tests/terminator_build_drift.rs` fails on one built anywhere else.
 // --------------------------------------------------------------------------
 
 impl<'m, 'ctx, B, F, S, R> IrBuilder<'m, 'ctx, B, F, S, R>
@@ -11028,10 +11041,19 @@ where
             .require_match(crate::value::Typed::ty(folded))?;
         Ok(folded)
     }
+}
 
+impl<'m, 'ctx, B, F, S, R> IrBuilder<'m, 'ctx, B, F, S, R>
+where
+    B: ModuleBrand + 'ctx,
+    F: IrBuilderFolder<'ctx, B>,
+    S: Terminating,
+    R: ReturnMarker,
+{
     /// Build the `ret` payload and append. Crate-internal: the typed
     /// `ret` methods funnel here after their per-marker
-    /// validation. Cannot fail by construction.
+    /// validation. Cannot fail by construction. In a `Terminating` impl
+    /// because it builds a terminator payload.
     fn append_ret(&self, value: Option<Value<'ctx, B>>) -> Instruction<'ctx, Attached, B> {
         // Internal: every caller lifted `value` against this module.
         let payload = ReturnOpData::new(value.map(|v| v.slot_trusting_same_module()));

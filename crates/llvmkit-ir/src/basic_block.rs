@@ -616,7 +616,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     ///
     /// # Errors
     ///
-    /// [`IrError::ForeignLayoutToken`] if this block is not in `key`'s
+    /// [`IrError::ForeignValueId`] if this block is not in `key`'s
     /// module, as [`IrBuilder::at_end`](crate::IrBuilder::at_end) refuses.
     #[inline]
     pub fn builder<'m>(

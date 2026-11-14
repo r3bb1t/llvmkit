@@ -5,9 +5,8 @@
 //! position. llvmkit has no empty insert point: `save_insert_point` exists
 //! only on a positioned builder (`S: Positioning`), so a snapshot always names
 //! a block and `restore_insert_point` has no "empty" case to refuse at run
-//! time. Primary error is rustc's stable `E0599`, the method absent for the
-//! unsatisfied `Unpositioned: Positioning` bound (the snapshot's state is the
-//! bound's `S::Place`, so rustc reports the method, not the bound).
+//! time. Primary error is rustc's stable `E0277`, the unsatisfied
+//! `Unpositioned: InsertionPlace` bound on the snapshot's state.
 
 use llvmkit_ir::{Dyn, IrBuilder, Module};
 

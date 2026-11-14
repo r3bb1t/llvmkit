@@ -1,0 +1,13 @@
+error[E0599]: the method `unreachable` exists for struct `IrBuilder<'_, '_, B, ConstantFolder, InPass<PositionedBefore>, Dyn>`, but its trait bounds were not satisfied
+  --> tests/compile_fail/pass_builder_cannot_terminate.rs:39:45
+   |
+39 |         reshape.builder_before(terminator)?.unreachable();
+   |                                             ^^^^^^^^^^^ method cannot be called due to unsatisfied trait bounds
+   |
+  ::: src/ir_builder.rs
+   |
+   | pub struct InPass<P> {
+   | -------------------- doesn't satisfy `InPass<PositionedBefore>: Terminating`
+   |
+   = note: the following trait bounds were not satisfied:
+           `InPass<PositionedBefore>: Terminating`

@@ -77,9 +77,7 @@ use super::instruction::{
     Instruction, InstructionView, NonTerminator, PlacedInstruction, TerminatorKind, state,
 };
 use super::ir_builder::constant_folder::ConstantFolder;
-use super::ir_builder::{
-    InPass, InsertPoint, InsertionPlace, IrBuilder, PositionedBefore, Positioning,
-};
+use super::ir_builder::{InPass, InsertPoint, InsertionPlace, IrBuilder, PositionedBefore};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::pass_access::{
@@ -927,9 +925,10 @@ where
     /// on the function while it lives. Its return marker is [`Dyn`]: this
     /// context sees the function erased, so `ret` checks the type at run time.
     ///
-    /// The builder is lent in the [`InPass`] state, which keeps it in this
-    /// function: it cannot be repositioned, and at this rung it cannot emit a
-    /// terminator, which would change the CFG the rung reports preserved.
+    /// The builder is lent in the [`InPass`] state, which keeps it to this
+    /// function's body: it cannot be repositioned, and it emits no
+    /// terminator, which at this rung would change the CFG the rung reports
+    /// preserved.
     ///
     /// Witnesses the dirty flag on success, for [`Self::builder_at`]'s reason.
     ///
@@ -943,37 +942,23 @@ where
     pub fn builder_before<C2: Capability>(
         &mut self,
         anchor: PlacedInstruction<'m, B, C2>,
-    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, InPass<PatchBody, PositionedBefore>, Dyn>>
-    {
-        self.builder_before_for::<PatchBody, C2>(anchor)
-    }
-
-    /// [`Self::builder_before`] for a context at rung `Rung`: the one body
-    /// the [`FnReshape`] twin shares.
-    #[inline]
-    pub(crate) fn builder_before_for<Rung, C2: Capability>(
-        &mut self,
-        anchor: PlacedInstruction<'m, B, C2>,
-    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, InPass<Rung, PositionedBefore>, Dyn>>
-    where
-        InPass<Rung, PositionedBefore>: Positioning,
-    {
+    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, InPass<PositionedBefore>, Dyn>> {
         let builder = IrBuilder::new_for_unkeyed::<Dyn>(self.module).position_before(anchor)?;
         self.lend(builder)
     }
 
     /// Lend `builder`, positioned by the caller over this context's module:
     /// refuse it unless it inserts into this function, witness the dirty
-    /// flag, and scope it to `Rung` ([`InPass`]) so it stays in the function.
-    /// The one check behind every builder a function-pass context hands out.
-    fn lend<'s, Rung, P, R2>(
+    /// flag, and put it in the [`InPass`] state so it stays in the function's
+    /// body. The one check behind every builder a function-pass context hands
+    /// out.
+    fn lend<'s, P, R2>(
         &'s mut self,
         builder: IrBuilder<'s, 'm, B, ConstantFolder, P, R2>,
-    ) -> IrResult<IrBuilder<'s, 'm, B, ConstantFolder, InPass<Rung, P>, R2>>
+    ) -> IrResult<IrBuilder<'s, 'm, B, ConstantFolder, InPass<P>, R2>>
     where
         P: InsertionPlace,
         R2: ReturnMarker,
-        InPass<Rung, P>: Positioning,
     {
         // Internal: the pass's own function, read in its own module.
         let own_function = self.function.as_function().slot_trusting_same_module();
@@ -981,7 +966,7 @@ where
             return Err(BlockError::BlockNotInFunction.into());
         }
         self.dirty.set(true);
-        Ok(builder.lent_to_pass::<Rung>())
+        Ok(builder.lent_to_pass())
     }
 
     /// A builder restored at a previously saved [`InsertPoint`], anchored in
@@ -1008,25 +993,10 @@ where
     pub fn builder_at<R2, Saved>(
         &mut self,
         ip: InsertPoint<'m, R2, B, Saved>,
-    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, InPass<PatchBody, Saved>, R2>>
+    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, InPass<Saved>, R2>>
     where
         R2: ReturnMarker,
         Saved: InsertionPlace,
-    {
-        self.builder_at_for::<PatchBody, R2, Saved>(ip)
-    }
-
-    /// [`Self::builder_at`] for a context at rung `Rung`: the one body the
-    /// [`FnReshape`] twin shares.
-    #[inline]
-    pub(crate) fn builder_at_for<Rung, R2, Saved>(
-        &mut self,
-        ip: InsertPoint<'m, R2, B, Saved>,
-    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, InPass<Rung, Saved>, R2>>
-    where
-        R2: ReturnMarker,
-        Saved: InsertionPlace,
-        InPass<Rung, Saved>: Positioning,
     {
         // The builder's key borrow is this `&mut self`: while it lives, no
         // other context edit, and no second builder, can run on the function.
@@ -1391,32 +1361,34 @@ where
     }
 
     /// A builder positioned before `anchor`, an instruction of this function,
-    /// with [`FnPatch::builder_before`]'s refusals. Lent at this rung, so it
-    /// may emit a terminator (this rung rewires the CFG) but, like the
-    /// [`FnPatch`] one, cannot be repositioned out of the function.
+    /// delegated from [`FnPatch::builder_before`] with its refusals. Lent in
+    /// the [`InPass`] state like the [`FnPatch`] one, so it builds only the
+    /// body: this rung's CFG edits go through [`Self::split_block`],
+    /// [`Self::edit_terminator`] and the `redirect_*` family, which log each
+    /// edge change for the analyses the driver repairs.
     #[inline]
     pub fn builder_before<C2: Capability>(
         &mut self,
         anchor: PlacedInstruction<'m, B, C2>,
-    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, InPass<ReshapeCfg, PositionedBefore>, Dyn>>
-    {
-        self.patch.builder_before_for::<ReshapeCfg, C2>(anchor)
+    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, InPass<PositionedBefore>, Dyn>> {
+        self.patch.builder_before(anchor)
     }
 
     /// A builder restored at a previously saved [`InsertPoint`]. Delegated from
-    /// the inner [`FnPatch`]; the supported way to reopen a block this mutator
-    /// has reshaped (for example the emptied source block after a
-    /// [`Self::split_block`]).
+    /// the inner [`FnPatch`], and lent in the [`InPass`] state like
+    /// [`Self::builder_before`]'s; the way to build into a block this mutator
+    /// has reshaped (for example the tail block a [`Self::split_block`]
+    /// made).
     #[inline]
     pub fn builder_at<R2, Saved>(
         &mut self,
         ip: InsertPoint<'m, R2, B, Saved>,
-    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, InPass<ReshapeCfg, Saved>, R2>>
+    ) -> IrResult<IrBuilder<'_, 'm, B, ConstantFolder, InPass<Saved>, R2>>
     where
         R2: ReturnMarker,
         Saved: InsertionPlace,
     {
-        self.patch.builder_at_for::<ReshapeCfg, R2, Saved>(ip)
+        self.patch.builder_at(ip)
     }
 
     // NB: no `module_mut` delegate. `FnPatch::module_mut` is `pub(crate)`

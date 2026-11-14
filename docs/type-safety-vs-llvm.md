@@ -588,8 +588,10 @@ infallible in both states, and is one method for both:
 pub fn ret_void(self) -> VoidReturnInst<'ctx, B>
 ```
 
-`Terminating` is every positioned state but a `PatchBody` pass's lent builder
-(`InPass<PatchBody, _>`), whose rung reports the CFG preserved.
+`Terminating` is every positioned state but a function pass's lent builder
+(`InPass<_>`), which builds the function's body only: at `PatchBody` a
+terminator would change the CFG the rung reports preserved, and at
+`ReshapeCfg` the CFG edits go through the context's logged edits.
 
 (`VoidReturnInst<'ctx, B>` is an alias for `TerminatedBlockInst<'ctx, (), B>`,
 itself a `(BasicBlock, Instruction)` pair — the terminator builders return

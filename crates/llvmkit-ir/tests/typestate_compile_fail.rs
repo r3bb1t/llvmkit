@@ -51,9 +51,9 @@ fn typestate_compile_fail() {
     // The reshape cursor lends one mutator at a time too. Primary error is
     // rustc's stable `E0499`.
     t.compile_fail("tests/compile_fail/module_pass_holds_one_reshape_mutator.rs");
-    // A `PatchBody` pass's lent builder is not `Terminating`, so the
+    // A pass's lent builder is not `Terminating`, at any rung, so the
     // terminator builds are absent. Primary error is rustc's stable `E0599`.
-    t.compile_fail("tests/compile_fail/patchbody_builder_cannot_terminate.rs");
+    t.compile_fail("tests/compile_fail/pass_builder_cannot_terminate.rs");
     // A pass's lent builder is not `Repositionable`, at any rung. Primary
     // error is `E0277` with `Repositionable`'s own `on_unimplemented` message.
     t.compile_fail("tests/compile_fail/pass_builder_cannot_reposition.rs");
@@ -62,9 +62,8 @@ fn typestate_compile_fail() {
     // `E0502`.
     t.compile_fail("tests/compile_fail/pass_builder_holds_its_context.rs");
     // An unpositioned builder has no insert point to save, so a snapshot
-    // always names a block. Primary error is rustc's stable `E0599`: the
-    // snapshot's state is `S::Place`, so the unmet `S: Positioning` makes the
-    // method absent rather than a failed bound.
+    // always names a block. Primary error is rustc's stable `E0277`, the
+    // unmet `S::Place: InsertionPlace` bound.
     t.compile_fail("tests/compile_fail/save_insert_point_unpositioned.rs");
     t.compile_fail("tests/compile_fail/retained_unterminated_block_cannot_reposition.rs");
     t.compile_fail("tests/compile_fail/terminated_block_cannot_start_cursor.rs");

@@ -2030,15 +2030,20 @@ pub enum IrError {
     /// builders, [`GlobalVariable::set_initializer`](crate::GlobalVariable::set_initializer),
     /// [`GlobalAlias::set_aliasee`](crate::GlobalAlias::set_aliasee),
     /// [`GlobalIfunc::set_resolver`](crate::GlobalIfunc::set_resolver) and
-    /// [`Module::metadata_constant`](crate::Module::metadata_constant).
+    /// [`Module::metadata_constant`](crate::Module::metadata_constant). And
+    /// for a block of another module by every builder-positioning entry —
+    /// [`IrBuilder::at_end`](crate::IrBuilder::at_end),
+    /// [`BasicBlock::builder`](crate::BasicBlock::builder),
+    /// [`IrBuilder::try_position_at_end`](crate::IrBuilder::try_position_at_end),
+    /// [`IrBuilder::position_at_end_dyn`](crate::IrBuilder::position_at_end_dyn)
+    /// and [`IrBuilder::restore_insert_point`](crate::IrBuilder::restore_insert_point).
     #[error("value belongs to a different Module")]
     ForeignValueId,
 
-    /// A layout edit or a builder was handed another module's
-    /// [`LayoutToken`](crate::LayoutToken), or a block of another module than
-    /// the token's. Two modules of one shared brand (every `Module::dynamic` is
-    /// `DynBrand`) have tokens of one type, so only the module tag tells them
-    /// apart (D7).
+    /// A layout edit was handed another module's
+    /// [`LayoutToken`](crate::LayoutToken). Two modules of one shared brand
+    /// (every `Module::dynamic` is `DynBrand`) have tokens of one type, so
+    /// only the module tag tells them apart (D7).
     #[error("layout token belongs to another module")]
     ForeignLayoutToken,
 

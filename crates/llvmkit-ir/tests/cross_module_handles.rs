@@ -2884,7 +2884,7 @@ fn restore_insert_point_rejects_an_insert_point_from_another_module() {
 /// predecessor from another module needs a builder positioned at that
 /// module's block, and that positioning is itself refused: the `predecessor`
 /// case pins `try_position_at_end` refusing it with
-/// [`IrError::ForeignLayoutToken`], so no such edge can be started.
+/// [`IrError::ForeignValueId`], so no such edge can be started.
 ///
 /// No upstream counterpart: llvmkit's block-argument edges have none;
 /// `PHINode::addIncoming` (`IR/Instructions.h`) takes a `Value *` and a
@@ -2927,7 +2927,7 @@ fn a_block_argument_edge_rejects_a_value_or_predecessor_from_another_module() {
         ),
         (
             "predecessor",
-            IrError::ForeignLayoutToken,
+            IrError::ForeignValueId,
             IrBuilder::new_for::<Dyn>(&mut home_key)
                 .try_position_at_end(elsewhere)
                 .and_then(|b| b.br_with_args(target, &[home_one, home_two]))

@@ -161,10 +161,9 @@ fn every_keyed_edit_refuses_another_modules_token() {
 /// Each entry that binds a token-holding builder to a handle refuses a handle
 /// of another module than the token's: the builder's arena is the token's
 /// module, so it must not write into another module's block or function.
-/// `IrBuilder::at_end`, `BasicBlock::builder` and `try_position_at_end`
-/// refuse a block with `IrError::ForeignLayoutToken`; `SsaBuilder`'s two
-/// constructors refuse a function with `IrError::ForeignValueId`, the
-/// function-admission error they share with every other function boundary.
+/// Each refuses with `IrError::ForeignValueId`, the handle-of-another-module
+/// error every positioning entry and function boundary shares;
+/// `IrError::ForeignLayoutToken` is the layout edits' alone.
 #[test]
 fn builder_bindings_refuse_a_handle_of_another_module() {
     let mut owner_module = Module::dynamic("token-owner");
@@ -185,32 +184,24 @@ fn builder_bindings_refuse_a_handle_of_another_module() {
         .as_function();
     let mut state = SsaState::for_function(edited, edited.view(declared)).expect("a declaration");
 
-    let outcomes: Vec<(&str, IrError, Option<IrError>)> = vec![
+    let outcomes: Vec<(&str, Option<IrError>)> = vec![
         (
             "IrBuilder::at_end",
-            IrError::ForeignLayoutToken,
             IrBuilder::at_end(&mut owner_key, first).err(),
         ),
-        (
-            "BasicBlock::builder",
-            IrError::ForeignLayoutToken,
-            second.builder(&mut owner_key).err(),
-        ),
+        ("BasicBlock::builder", second.builder(&mut owner_key).err()),
         (
             "try_position_at_end",
-            IrError::ForeignLayoutToken,
             IrBuilder::new_for::<()>(&mut owner_key)
                 .try_position_at_end(third)
                 .err(),
         ),
         (
             "SsaBuilder::for_function",
-            IrError::ForeignValueId,
             SsaBuilder::for_function(&mut owner_key, edited.view(declared), &mut state).err(),
         ),
         (
             "SsaBuilder::with_folder_for_function",
-            IrError::ForeignValueId,
             SsaBuilder::with_folder_for_function(
                 &mut owner_key,
                 edited.view(declared),
@@ -222,10 +213,8 @@ fn builder_bindings_refuse_a_handle_of_another_module() {
     ];
     let let_through: Vec<String> = outcomes
         .into_iter()
-        .filter(|(_, expected, outcome)| *outcome != Some(expected.clone()))
-        .map(|(entry, expected, outcome)| {
-            format!("{entry}: expected {expected:?}, got {outcome:?}")
-        })
+        .filter(|(_, outcome)| *outcome != Some(IrError::ForeignValueId))
+        .map(|(entry, outcome)| format!("{entry}: {outcome:?}"))
         .collect();
     assert!(let_through.is_empty(), "{let_through:#?}");
 }

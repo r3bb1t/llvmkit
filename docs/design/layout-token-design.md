@@ -338,3 +338,36 @@ the function.
      (`Verifier::visitInstruction`); llvmkit's has neither arm, recorded as
      `docs/divergences.md` finding 145. Refusing it at build time in a lent
      builder is the function-pass sandbox, the next step.
+9. **Review of `aefd5cc1`.** Three of decision 8's choices changed.
+   - **No lent builder terminates, at any rung.** A `ReshapeCfg` lent
+     builder was `Terminating`, but it can only sit in front of an existing
+     instruction, so its terminator landed mid-block, and the edge change
+     skipped the `CfgUpdate` log that `split_block`, `edit_terminator` and
+     the `redirect_*` family keep for the analyses the driver repairs
+     (`split_block` leaves both halves terminated, so no reshape needs a
+     lent builder to terminate). With both rungs alike, the state lost its
+     rung parameter: `InPass<P>`. Fixture `pass_builder_cannot_terminate.rs`
+     (at `ReshapeCfg`, the widest rung) replaces the `PatchBody` one.
+     `Terminating` carries no `on_unimplemented` message: the terminator
+     builds sit in impls bounded `S: Terminating`, and rustc reports a call
+     from a lent builder as `E0599` naming the unmet bound, never with a
+     trait's message.
+   - **Terminator payloads are held, not just conventional.**
+     `append_ret` moved into a `S: Terminating` impl, and
+     `tests/terminator_build_drift.rs` fails on any terminator payload
+     (the kinds read from `InstructionKindData::is_terminator`) built in
+     `ir_builder.rs` outside such an impl.
+   - **A foreign block is `ForeignValueId` at every positioning entry.**
+     `at_end`, `BasicBlock::builder` and `try_position_at_end` refused with
+     `ForeignLayoutToken`, while `position_at_end_dyn` and
+     `restore_insert_point` used `ForeignValueId` for the same condition.
+     `ForeignLayoutToken` is now the layout edits' alone (a token of another
+     module).
+   - **The trusting door is guarded.** Every
+     `position_at_end_trusting_same_module` call sits under an
+     `// Internal:` comment, held by `tests/position_door_drift.rs`.
+   - **Smaller.** `InsertPoint` is bounded `S: InsertionPlace`, so a
+     snapshot of a lent state is unnameable; `save_insert_point` keeps
+     `BuilderPositionState::Place` and reports an unpositioned builder as
+     `E0277` again; `position_at_end`'s own block-typestate fixtures are back
+     on a `module_new!` module and pin both entries.

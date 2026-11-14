@@ -5,23 +5,26 @@
 //! after its terminator at runtime. llvmkit moves the rule to the
 //! type system: once a builder consumes its insertion block via a
 //! terminator-emitting build, the block is `Terminated` and cannot be
-//! re-positioned by `IrBuilder::try_position_at_end` (which, like
-//! `position_at_end`, only accepts `BasicBlock<R, Unterminated>`). The
-//! module is `Module::dynamic`, whose `DynBrand` is not a `UniqueBrand`, so
-//! the checked `try_` form is the one that reaches the block-typestate check
-//! without a second, unrelated brand error.
+//! re-positioned. Both positioning entries are pinned, each with its own
+//! terminated block: `position_at_end` (on a `module_new!` module, whose
+//! brand is a `UniqueBrand`) and its checked twin `try_position_at_end`.
+//! Each accepts only `BasicBlock<R, Unterminated>`, so each call is `E0308`.
 
-use llvmkit_ir::{IrBuilder, Linkage, Module};
+use llvmkit_ir::{IrBuilder, IrError, Linkage, module_new};
 
-fn main() {
-    let mut module = Module::dynamic("c"); let mut key = module.layout_token(); let m = key.module();
+fn main() -> Result<(), IrError> {
+    let mut module = module_new!("c")?;
+    let mut key = module.layout_token();
+    let m = key.module();
     let f = m
-        .add_typed_function::<(), (), _>("f", Linkage::External)
-        .unwrap()
+        .add_typed_function::<(), (), _>("f", Linkage::External)?
         .as_function();
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IrBuilder::new_for::<()>(&mut key).try_position_at_end(entry).unwrap();
-    let (terminated_bb, _term) = b.ret_void();
-    // `terminated_bb` carries `Terminated`, which `try_position_at_end` does not accept.
-    let _ = IrBuilder::new_for::<()>(&mut key).try_position_at_end(terminated_bb);
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let other = m.view(f).append_basic_block(m, "other");
+    let (terminated, _) = IrBuilder::new_for::<()>(&mut key).position_at_end(entry).ret_void();
+    let (terminated_other, _) = IrBuilder::new_for::<()>(&mut key).position_at_end(other).ret_void();
+    // Each block now carries `Terminated`, which neither entry accepts.
+    let _ = IrBuilder::new_for::<()>(&mut key).position_at_end(terminated);
+    let _ = IrBuilder::new_for::<()>(&mut key).try_position_at_end(terminated_other);
+    Ok(())
 }
