@@ -396,9 +396,12 @@ impl InsertionPlace for PositionedBefore {}
 /// unmet `InPass<_>: Terminating`; the message below shows where code names
 /// the bound itself (`fn close<S: Terminating>(..)`). Sealed.
 #[diagnostic::on_unimplemented(
-    message = "a builder a pass's context lent cannot emit a terminator",
-    note = "a lent builder builds only the function's body; a `ReshapeCfg` pass changes \
-            the CFG through its context's `split_block`, `edit_terminator` and `redirect_*`"
+    message = "a builder in the `{Self}` state cannot emit a terminator",
+    note = "terminators are built by a free positioned builder (`PositionedAtEnd` or \
+            `PositionedBefore`): position an `Unpositioned` one first; a pass's lent \
+            `InPass` builder builds only the function's body, and a `ReshapeCfg` pass \
+            changes the CFG through its context's `split_block`, `edit_terminator` and \
+            `redirect_*`"
 )]
 pub trait Terminating: Positioning {}
 

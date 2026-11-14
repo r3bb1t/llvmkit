@@ -1,0 +1,24 @@
+error[E0277]: a builder in the `InPass<PositionedBefore>` state cannot emit a terminator
+  --> tests/compile_fail/terminating_bound_names_its_rule.rs:49:15
+   |
+49 |         close(reshape.builder_before(terminator)?);
+   |         ----- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `Terminating` is not implemented for `InPass<PositionedBefore>`
+   |         |
+   |         required by a bound introduced by this call
+   |
+   = note: terminators are built by a free positioned builder (`PositionedAtEnd` or `PositionedBefore`): position an `Unpositioned` one first; a pass's lent `InPass` builder builds only the function's body, and a `ReshapeCfg` pass changes the CFG through its context's `split_block`, `edit_terminator` and `redirect_*`
+help: the following other types implement trait `Terminating`
+  --> src/ir_builder.rs
+   |
+   | impl Terminating for PositionedAtEnd {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `PositionedAtEnd`
+   | impl Terminating for PositionedBefore {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `PositionedBefore`
+note: required by a bound in `close`
+  --> tests/compile_fail/terminating_bound_names_its_rule.rs:23:8
+   |
+19 | fn close<'a, 'ctx, B, F, S, R>(builder: IrBuilder<'a, 'ctx, B, F, S, R>)
+   |    ----- required by a bound in this function
+...
+23 |     S: Terminating,
+   |        ^^^^^^^^^^^ required by this bound in `close`

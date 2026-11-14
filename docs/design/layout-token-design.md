@@ -394,3 +394,30 @@ the function.
      other code uses, where any `// Internal:` comment used to pass. The
      type-level form of the terminator law is recorded in
      `docs/future-work.md`.
+11. **Review of `f10481fb`.**
+   - **`ForeignLayoutToken` is back, with one meaning.** Merging it into
+     `ForeignValueId` (decision 10) left an edit that checks a token and a
+     second handle unable to say which argument was wrong:
+     `splice_into(&mut key, dest)` answered `ForeignValueId` for a foreign
+     `key` and for a foreign `dest`. The rule now: `ForeignLayoutToken` is a
+     token argument that is not the edited handle's module's, raised by the
+     ten layout edits and nothing else; `ForeignValueId` is a handle of
+     another module than the one an entry builds or edits in (a second
+     handle of an edit, every positioning entry, the function boundaries).
+     `at_end` and `BasicBlock::builder` take a token too, but what they
+     compare is a block with the module the builder will build in, the
+     positioning check, so they stay `ForeignValueId`.
+   - **`Terminating`'s message names the state.** It read as if only a lent
+     builder could fail the bound; `Unpositioned` fails it too. The message
+     is `a builder in the `{Self}` state cannot emit a terminator`, and the
+     note covers both. Fixture `terminating_bound_names_its_rule.rs` pins
+     it firing, through a helper generic over `S: Terminating`.
+   - **Each scanner control now discriminates.** Every positive control in
+     `terminator_build_drift.rs` fails on the scanner it replaced (an impl's
+     closing `}`, an `impl_*!` call naming `S: Terminating`, a one-line
+     `impl .. {}` followed by a comment naming it); comment lines are no
+     header; `src/ir_builder/` is walked recursively.
+   - **The door marker is held, not asserted.** `position_door_drift.rs`
+     fails on a `// Same-module block:` marker above anything but a door
+     call, so "this door's alone" is a checked property rather than a
+     sentence.

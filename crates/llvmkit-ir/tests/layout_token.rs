@@ -52,9 +52,10 @@ fn returning<'ctx>(key: &mut LayoutToken<'ctx, DynBrand>, name: &str) -> Returni
 }
 
 /// Each of the ten layout edits (the list and its derivation are in the file
-/// header) refuses a token of another module with `IrError::ForeignValueId`
-/// (the handle is of another module than the token's), before it reads or
-/// changes anything: the edited module prints the same afterwards.
+/// header) refuses a token of another module with
+/// `IrError::ForeignLayoutToken`, the error that names the token argument,
+/// before it reads or changes anything: the edited module prints the same
+/// afterwards.
 #[test]
 fn every_keyed_edit_refuses_another_modules_token() {
     let mut owner_module = Module::dynamic("token-owner");
@@ -144,7 +145,7 @@ fn every_keyed_edit_refuses_another_modules_token() {
     ];
     let let_through: Vec<String> = outcomes
         .into_iter()
-        .filter(|(_, outcome)| *outcome != Err(IrError::ForeignValueId))
+        .filter(|(_, outcome)| *outcome != Err(IrError::ForeignLayoutToken))
         .map(|(entry, outcome)| format!("{entry}: {outcome:?}"))
         .collect();
     assert!(
@@ -162,8 +163,9 @@ fn every_keyed_edit_refuses_another_modules_token() {
 /// of another module than the token's: the builder's arena is the token's
 /// module, so it must not write into another module's block or function.
 /// Each refuses with `IrError::ForeignValueId`, the handle-of-another-module
-/// error the layout edits, every positioning entry and every function
-/// boundary share.
+/// error every positioning entry and every function boundary share; a token
+/// argument of another module is `IrError::ForeignLayoutToken`, the layout
+/// edits' (the first test).
 #[test]
 fn builder_bindings_refuse_a_handle_of_another_module() {
     let mut owner_module = Module::dynamic("token-owner");

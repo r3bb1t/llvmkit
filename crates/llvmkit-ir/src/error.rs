@@ -2037,14 +2037,23 @@ pub enum IrError {
     /// [`IrBuilder::try_position_at_end`](crate::IrBuilder::try_position_at_end),
     /// [`IrBuilder::position_at_end_dyn`](crate::IrBuilder::position_at_end_dyn)
     /// and [`IrBuilder::restore_insert_point`](crate::IrBuilder::restore_insert_point).
-    /// And by every layout edit that takes a
-    /// [`LayoutToken`](crate::LayoutToken) (`erase_from_parent`, the moves and
-    /// inserts, `split_at`, `split_before`, `splice_into`) for a handle of
-    /// another module than the token's: two modules of one shared brand
-    /// (every `Module::dynamic` is `DynBrand`) have tokens and handles of one
-    /// type, so only the module tag tells them apart (D7).
+    /// A layout edit raises it for a second handle (a `dest` block, an
+    /// anchor) of another module than the edited one; a token of another
+    /// module is [`Self::ForeignLayoutToken`].
     #[error("value belongs to a different Module")]
     ForeignValueId,
+
+    /// A layout edit was handed a [`LayoutToken`](crate::LayoutToken) that is
+    /// not the token of the edited handle's module. Raised by the ten edits
+    /// that take one — `Instruction::erase_from_parent`,
+    /// `detach_from_parent`, `move_before`, `move_after`, `insert_before`,
+    /// `insert_after`, `append_to`, and `BasicBlock::split_at`,
+    /// `split_before`, `splice_into` — before any other check, so it names
+    /// the token argument and no handle. Two modules of one shared brand
+    /// (every `Module::dynamic` is `DynBrand`) have tokens of one type, so
+    /// only the module tag tells them apart (D7).
+    #[error("layout token belongs to another module")]
+    ForeignLayoutToken,
 
     /// An instruction that is in no block was handed to an API that needs the
     /// block it sits in — the anchor of
@@ -2431,6 +2440,7 @@ impl IrError {
             // A handle or id the caller minted in one module and handed to
             // another.
             Self::ForeignValueId
+            | Self::ForeignLayoutToken
             | Self::ForeignType
             | Self::ForeignMetadataId
             | Self::ForeignNamedMetadataId

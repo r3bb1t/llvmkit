@@ -54,6 +54,9 @@ fn typestate_compile_fail() {
     // A pass's lent builder is not `Terminating`, at any rung, so the
     // terminator builds are absent. Primary error is rustc's stable `E0599`.
     t.compile_fail("tests/compile_fail/pass_builder_cannot_terminate.rs");
+    // Where code names the bound itself, a lent builder fails it with
+    // `Terminating`'s own `on_unimplemented` message (`E0277`).
+    t.compile_fail("tests/compile_fail/terminating_bound_names_its_rule.rs");
     // A pass's lent builder is not `Repositionable`, at any rung. Primary
     // error is `E0277` with `Repositionable`'s own `on_unimplemented` message.
     t.compile_fail("tests/compile_fail/pass_builder_cannot_reposition.rs");

@@ -1243,7 +1243,7 @@ impl<
     ///
     /// # Errors
     ///
-    /// [`IrError::ForeignValueId`] if `key` is another module's, and
+    /// [`IrError::ForeignLayoutToken`] if `key` is another module's, and
     /// [`IrError::ForeignValueId`] if `dest` is.
     pub fn splice_into<R2: ReturnMarker, S2: BlockTerminationState>(
         self,
@@ -1413,7 +1413,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
     ///
     /// Every refusal happens before anything is created, moved or rewritten:
     ///
-    /// - [`IrError::ForeignValueId`] if `key` is another module's.
+    /// - [`IrError::ForeignLayoutToken`] if `key` is another module's.
     /// - [`IrError::ForeignValueId`] if `before` belongs to another module.
     /// - [`BlockError`] (inside [`IrError::Block`]) if this block has no
     ///   terminator (upstream's `assert(getTerminator())`; a `Terminated` handle is not
@@ -1532,7 +1532,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
     ///
     /// Every refusal happens before anything is created, moved or retargeted:
     ///
-    /// - [`IrError::ForeignValueId`] if `key` is another module's.
+    /// - [`IrError::ForeignLayoutToken`] if `key` is another module's.
     /// - [`IrError::ForeignValueId`] if `before` belongs to another module.
     /// - [`BlockError`] (inside [`IrError::Block`]) if this block has no
     ///   terminator (upstream's `assert(getTerminator())`, which a `Terminated` handle does
