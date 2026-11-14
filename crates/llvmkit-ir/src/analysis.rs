@@ -10,7 +10,6 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 
 use super::module::{Module, Verified};
-use crate::Branded;
 use crate::cfg_update::CfgUpdate;
 use crate::dominator_tree::{DominatorTree, DominatorTreeAnalysis};
 use crate::module::{ModuleBrand, ModuleId, ModuleView};
@@ -237,11 +236,7 @@ impl PreservedAnalyses {
 
     /// Build a checker for `A`.
     pub fn checker<A: 'static>(&self) -> PreservedAnalysisChecker<'_> {
-        PreservedAnalysisChecker {
-            pa: self,
-            analysis: TypeId::of::<A>(),
-            key: None,
-        }
+        self.checker_for_type(TypeId::of::<A>())
     }
 
     /// Build a checker for the analysis whose type id is `analysis`.
@@ -503,13 +498,17 @@ trait FunctionAnalysisOps<'ctx, B: ModuleBrand + 'ctx> {
     where
         'ctx: 'v;
 
-    /// Consult the cached result's own invalidation hook.
+    /// The analysis's type name, for diagnostics.
+    fn analysis_name(&self) -> &'static str;
+
+    /// Consult the cached result's own invalidation hook, which may ask
+    /// `query` whether the results it depends on are invalidated.
     fn invalidate_erased<'v>(
         &self,
         result: &mut dyn Any,
         function: FunctionView<'v, B>,
         pa: &PreservedAnalyses,
-        snapshot: &FunctionAnalysisSnapshot,
+        query: &mut dyn InvalidationQuery,
     ) -> IrResult<bool>
     where
         'ctx: 'v;
@@ -539,12 +538,14 @@ trait ModuleAnalysisOps<'ctx, B: ModuleBrand + 'ctx> {
     where
         'ctx: 'v;
 
+    fn analysis_name(&self) -> &'static str;
+
     fn invalidate_erased<'v>(
         &self,
         result: &mut dyn Any,
         module: ModuleView<'v, B>,
         pa: &PreservedAnalyses,
-        snapshot: &ModuleAnalysisSnapshot,
+        query: &mut dyn InvalidationQuery,
     ) -> IrResult<bool>
     where
         'ctx: 'v;
@@ -569,17 +570,21 @@ where
         Ok(Box::new(self.0.run(function, am)?))
     }
 
+    fn analysis_name(&self) -> &'static str {
+        type_name::<A>()
+    }
+
     fn invalidate_erased<'v>(
         &self,
         result: &mut dyn Any,
         function: FunctionView<'v, B>,
         pa: &PreservedAnalyses,
-        snapshot: &FunctionAnalysisSnapshot,
+        query: &mut dyn InvalidationQuery,
     ) -> IrResult<bool>
     where
         'ctx: 'v,
     {
-        invalidate_function_result::<B, A>(result, function, pa, snapshot)
+        invalidate_function_result::<B, A>(result, function, pa, query)
     }
 }
 
@@ -604,17 +609,21 @@ where
         Ok(Box::new(self.0.run(function, am)?))
     }
 
+    fn analysis_name(&self) -> &'static str {
+        type_name::<A>()
+    }
+
     fn invalidate_erased<'v>(
         &self,
         result: &mut dyn Any,
         function: FunctionView<'v, B>,
         pa: &PreservedAnalyses,
-        snapshot: &FunctionAnalysisSnapshot,
+        query: &mut dyn InvalidationQuery,
     ) -> IrResult<bool>
     where
         'ctx: 'v,
     {
-        invalidate_function_result::<B, A>(result, function, pa, snapshot)
+        invalidate_function_result::<B, A>(result, function, pa, query)
     }
 
     fn cfg_apply_erased<'v>(
@@ -649,17 +658,21 @@ where
         Ok(Box::new(self.0.run(module, am)?))
     }
 
+    fn analysis_name(&self) -> &'static str {
+        type_name::<A>()
+    }
+
     fn invalidate_erased<'v>(
         &self,
         result: &mut dyn Any,
         module: ModuleView<'v, B>,
         pa: &PreservedAnalyses,
-        snapshot: &ModuleAnalysisSnapshot,
+        query: &mut dyn InvalidationQuery,
     ) -> IrResult<bool>
     where
         'ctx: 'v,
     {
-        invalidate_module_result::<B, A>(result, module, pa, snapshot)
+        invalidate_module_result::<B, A>(result, module, pa, query)
     }
 }
 
@@ -676,53 +689,103 @@ struct CachedModuleResult<'ctx, B: ModuleBrand + 'ctx> {
     ops: ModuleOps<'ctx, B>,
 }
 
-#[derive(Clone, Debug)]
-struct FunctionAnalysisSnapshot {
-    cached: HashSet<(ModuleId, TypeId, ValueSlot)>,
+/// Whether `pa` preserves `analysis`, by name or through the unit's whole
+/// set `S`: upstream's `!PAC.preserved() && !PAC.preservedSet<S>()`, negated.
+fn preserved_on_unit<S: 'static>(pa: &PreservedAnalyses, analysis: TypeId) -> bool {
+    let checker = pa.checker_for_type(analysis);
+    checker.preserved() || checker.preserved_set::<S>()
 }
 
-#[derive(Clone, Debug)]
-struct ModuleAnalysisSnapshot {
-    cached: HashSet<(TypeId, ModuleId)>,
+/// What an invalidator asks the invalidation run it belongs to: whether the
+/// cached result of `analysis` for the same unit is invalidated. One run
+/// answers for every result of one function or one module.
+trait InvalidationQuery {
+    fn is_invalidated(&mut self, analysis: TypeId, name: &'static str) -> IrResult<bool>;
 }
 
-/// Invalidator passed to function-analysis results.
-///
-/// Holds the *key* of the function being invalidated rather than a
-/// [`FunctionView`], so the struct carries no view region: the view handed to
-/// [`FunctionAnalysisResult::invalidate`] lives at the caller-chosen `'v` (which
-/// an owned module mints at its borrow), while this invalidator stays at the
-/// manager's `'ctx`.
-#[derive(Branded)]
-#[branded(Debug)]
-pub struct FunctionAnalysisInvalidator<'a, 'ctx, B: ModuleBrand> {
+/// Upstream's `Invalidator` state for one function: the
+/// `IsResultInvalidated` memo and the results it consults.
+struct FunctionInvalidationRun<'r, 'v, 'ctx, B: ModuleBrand + 'ctx> {
+    results: &'r mut HashMap<(ModuleId, TypeId, ValueSlot), CachedFunctionResult<'ctx, B>>,
+    function: FunctionView<'v, B>,
     module_id: ModuleId,
     function_slot: ValueSlot,
+    pa: &'r PreservedAnalyses,
+    /// The analyses cached for this function when the run began.
+    started_with: HashSet<TypeId>,
+    /// `IsResultInvalidated`.
+    decided: HashMap<TypeId, bool>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> InvalidationQuery for FunctionInvalidationRun<'_, '_, 'ctx, B> {
+    /// Mirrors `Invalidator::invalidateImpl` (PassManager.h): the memoised
+    /// answer, or the cached result's own `invalidate` hook, which may ask
+    /// for its own dependencies. Upstream asserts that the result is cached
+    /// and that no dependency cycle reaches it again; here those are
+    /// [`IrError::AnalysisNotCached`] and
+    /// [`IrError::AnalysisInvalidationCycle`]. A result being consulted is
+    /// out of the cache while its hook runs, which is how a cycle is seen.
+    fn is_invalidated(&mut self, analysis: TypeId, name: &'static str) -> IrResult<bool> {
+        if let Some(&decided) = self.decided.get(&analysis) {
+            return Ok(decided);
+        }
+        let key = (self.module_id, analysis, self.function_slot);
+        let Some(mut cached) = self.results.remove(&key) else {
+            // Cached when the run began, undecided, and out of the cache: its
+            // hook is running, so this is a cycle.
+            return Err(if self.started_with.contains(&analysis) {
+                IrError::AnalysisInvalidationCycle { name }
+            } else {
+                IrError::AnalysisNotCached { name }
+            });
+        };
+        let ops = Rc::clone(&cached.ops);
+        let (function, pa) = (self.function, self.pa);
+        let decided = ops.invalidate_erased(&mut *cached.result, function, pa, self);
+        self.results.insert(key, cached);
+        let decided = decided?;
+        self.decided.insert(analysis, decided);
+        Ok(decided)
+    }
+}
+
+/// Invalidator passed to function-analysis results: upstream's
+/// `AnalysisManager::Invalidator`, through which a result asks whether the
+/// results it depends on are invalidated.
+pub struct FunctionAnalysisInvalidator<'a, 'ctx, B: ModuleBrand> {
     pa: &'a PreservedAnalyses,
-    snapshot: &'a FunctionAnalysisSnapshot,
+    query: &'a mut dyn InvalidationQuery,
     /// The analysis whose result is being consulted.
     consulted: TypeId,
     _brand: PhantomData<fn(B) -> B>,
     _ctx: PhantomData<&'ctx ()>,
 }
 
+/// Names the analysis being consulted; the run it asks is not printable.
+impl<B: ModuleBrand> core::fmt::Debug for FunctionAnalysisInvalidator<'_, '_, B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FunctionAnalysisInvalidator")
+            .field("consulted", &self.consulted)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a, 'ctx, B: ModuleBrand> FunctionAnalysisInvalidator<'a, 'ctx, B> {
-    /// Report whether analysis `A`'s result for this function is being
-    /// invalidated: `true` unless `A` (or the `AllAnalysesOnFunction` set) is
-    /// preserved. Errors with [`IrError::AnalysisNotCached`] if `A` was not
-    /// cached when invalidation began.
+    /// Whether analysis `A`'s result for this function is invalidated.
+    ///
+    /// Mirrors `Invalidator::invalidate` (PassManager.h): `A`'s cached result
+    /// is consulted through its own `invalidate` hook, which may ask for its
+    /// own dependencies in turn, and the answer is remembered for the rest of
+    /// the run. Errors with [`IrError::AnalysisNotCached`] if `A` has no
+    /// cached result for this function, and with
+    /// [`IrError::AnalysisInvalidationCycle`] if `A`'s result is the one
+    /// being consulted, or one that asked for it (both upstream asserts).
     pub fn invalidate<A>(&mut self) -> IrResult<bool>
     where
         A: FunctionAnalysis<'ctx, B>,
     {
-        let key = (self.module_id, TypeId::of::<A>(), self.function_slot);
-        if !self.snapshot.cached.contains(&key) {
-            return Err(IrError::AnalysisNotCached {
-                name: type_name::<A>(),
-            });
-        }
-        let checker = self.pa.checker::<A>();
-        Ok(!(checker.preserved() || checker.preserved_set::<AllAnalysesOnFunction>()))
+        self.query
+            .is_invalidated(TypeId::of::<A>(), type_name::<A>())
     }
 
     /// Whether the report preserves the analysis whose result is being
@@ -730,43 +793,79 @@ impl<'a, 'ctx, B: ModuleBrand> FunctionAnalysisInvalidator<'a, 'ctx, B> {
     /// upstream's default result hook gives
     /// (`AnalysisResultModel::invalidate`, PassManagerInternal.h).
     pub fn consulted_result_preserved(&self) -> bool {
-        let checker = self.pa.checker_for_type(self.consulted);
-        checker.preserved() || checker.preserved_set::<AllAnalysesOnFunction>()
+        preserved_on_unit::<AllAnalysesOnFunction>(self.pa, self.consulted)
     }
 }
 
-/// Invalidator passed to module-analysis results. Holds the module *key* rather
-/// than a [`ModuleView`], for the same reason as
-/// [`FunctionAnalysisInvalidator`].
-#[derive(Branded)]
-#[branded(Debug)]
-pub struct ModuleAnalysisInvalidator<'a, 'ctx, B: ModuleBrand> {
+/// Upstream's `Invalidator` state for one module: the module twin of
+/// [`FunctionInvalidationRun`].
+struct ModuleInvalidationRun<'r, 'v, 'ctx, B: ModuleBrand + 'ctx> {
+    results: &'r mut HashMap<(TypeId, ModuleId), CachedModuleResult<'ctx, B>>,
+    module: ModuleView<'v, B>,
     module_id: ModuleId,
+    pa: &'r PreservedAnalyses,
+    /// The analyses cached for this module when the run began.
+    started_with: HashSet<TypeId>,
+    /// `IsResultInvalidated`.
+    decided: HashMap<TypeId, bool>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> InvalidationQuery for ModuleInvalidationRun<'_, '_, 'ctx, B> {
+    /// Mirrors `Invalidator::invalidateImpl` (PassManager.h); see
+    /// [`FunctionInvalidationRun`]'s.
+    fn is_invalidated(&mut self, analysis: TypeId, name: &'static str) -> IrResult<bool> {
+        if let Some(&decided) = self.decided.get(&analysis) {
+            return Ok(decided);
+        }
+        let key = (analysis, self.module_id);
+        let Some(mut cached) = self.results.remove(&key) else {
+            // Cached when the run began, undecided, and out of the cache: its
+            // hook is running, so this is a cycle.
+            return Err(if self.started_with.contains(&analysis) {
+                IrError::AnalysisInvalidationCycle { name }
+            } else {
+                IrError::AnalysisNotCached { name }
+            });
+        };
+        let ops = Rc::clone(&cached.ops);
+        let (module, pa) = (self.module, self.pa);
+        let decided = ops.invalidate_erased(&mut *cached.result, module, pa, self);
+        self.results.insert(key, cached);
+        let decided = decided?;
+        self.decided.insert(analysis, decided);
+        Ok(decided)
+    }
+}
+
+/// Invalidator passed to module-analysis results: the module twin of
+/// [`FunctionAnalysisInvalidator`].
+pub struct ModuleAnalysisInvalidator<'a, 'ctx, B: ModuleBrand> {
     pa: &'a PreservedAnalyses,
-    snapshot: &'a ModuleAnalysisSnapshot,
+    query: &'a mut dyn InvalidationQuery,
     /// The analysis whose result is being consulted.
     consulted: TypeId,
     _brand: PhantomData<fn(B) -> B>,
     _ctx: PhantomData<&'ctx ()>,
 }
 
+/// Names the analysis being consulted; the run it asks is not printable.
+impl<B: ModuleBrand> core::fmt::Debug for ModuleAnalysisInvalidator<'_, '_, B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ModuleAnalysisInvalidator")
+            .field("consulted", &self.consulted)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a, 'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisInvalidator<'a, 'ctx, B> {
-    /// Report whether analysis `A`'s result for this module is being
-    /// invalidated: `true` unless `A` (or the `AllAnalysesOnModule` set) is
-    /// preserved. Errors with [`IrError::AnalysisNotCached`] if `A` was not
-    /// cached when invalidation began.
+    /// Whether analysis `A`'s result for this module is invalidated: the
+    /// module twin of [`FunctionAnalysisInvalidator::invalidate`].
     pub fn invalidate<A>(&mut self) -> IrResult<bool>
     where
         A: ModuleAnalysis<'ctx, B>,
     {
-        let key = (TypeId::of::<A>(), self.module_id);
-        if !self.snapshot.cached.contains(&key) {
-            return Err(IrError::AnalysisNotCached {
-                name: type_name::<A>(),
-            });
-        }
-        let checker = self.pa.checker::<A>();
-        Ok(!(checker.preserved() || checker.preserved_set::<AllAnalysesOnModule>()))
+        self.query
+            .is_invalidated(TypeId::of::<A>(), type_name::<A>())
     }
 
     /// Whether the report preserves the analysis whose result is being
@@ -774,8 +873,7 @@ impl<'a, 'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisInvalidator<'a, 'ctx, B> {
     /// upstream's default result hook gives
     /// (`AnalysisResultModel::invalidate`, PassManagerInternal.h).
     pub fn consulted_result_preserved(&self) -> bool {
-        let checker = self.pa.checker_for_type(self.consulted);
-        checker.preserved() || checker.preserved_set::<AllAnalysesOnModule>()
+        preserved_on_unit::<AllAnalysesOnModule>(self.pa, self.consulted)
     }
 }
 
@@ -989,26 +1087,34 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
         let function_handle = function.as_function();
         let module_id = function_handle.module().id();
         // Paired with its own module's id in every key it is compared with.
-        let function_id = function_handle.slot_trusting_same_module();
-        let snapshot = FunctionAnalysisSnapshot {
-            cached: self.results.keys().copied().collect(),
+        let function_slot = function_handle.slot_trusting_same_module();
+        // `AnalysisResultLists[&IR]`: this function's cached analyses.
+        let cached: Vec<(TypeId, &'static str)> = self
+            .results
+            .iter()
+            .filter(|(key, _)| key.0 == module_id && key.2 == function_slot)
+            .map(|(key, cached)| (key.1, cached.ops.analysis_name()))
+            .collect();
+        let mut run = FunctionInvalidationRun {
+            results: &mut self.results,
+            function,
+            module_id,
+            function_slot,
+            pa,
+            started_with: cached.iter().map(|(analysis, _)| *analysis).collect(),
+            decided: HashMap::new(),
         };
-        let mut dead = Vec::new();
-        for (key, cached) in &mut self.results {
-            if key.0 == module_id
-                && key.2 == function_id
-                && Rc::clone(&cached.ops).invalidate_erased(
-                    &mut *cached.result,
-                    function,
-                    pa,
-                    &snapshot,
-                )?
-            {
-                dead.push(*key);
-            }
+        // Each result not already decided through a dependent's question is
+        // asked, with the invalidator, for itself.
+        for (analysis, name) in &cached {
+            run.is_invalidated(*analysis, name)?;
         }
-        for key in dead {
-            self.results.remove(&key);
+        // Now erase the results that were marked above as invalidated.
+        let decided = run.decided;
+        for (analysis, invalidated) in decided {
+            if invalidated {
+                self.results.remove(&(module_id, analysis, function_slot));
+            }
         }
         Ok(())
     }
@@ -1204,24 +1310,32 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
         }
         let module = module.into();
         let module_id = module.id();
-        let snapshot = ModuleAnalysisSnapshot {
-            cached: self.results.keys().copied().collect(),
+        // `AnalysisResultLists[&IR]`: this module's cached analyses.
+        let cached: Vec<(TypeId, &'static str)> = self
+            .results
+            .iter()
+            .filter(|(key, _)| key.1 == module_id)
+            .map(|(key, cached)| (key.0, cached.ops.analysis_name()))
+            .collect();
+        let mut run = ModuleInvalidationRun {
+            results: &mut self.results,
+            module,
+            module_id,
+            pa,
+            started_with: cached.iter().map(|(analysis, _)| *analysis).collect(),
+            decided: HashMap::new(),
         };
-        let mut dead = Vec::new();
-        for (key, cached) in &mut self.results {
-            if key.1 == module_id
-                && Rc::clone(&cached.ops).invalidate_erased(
-                    &mut *cached.result,
-                    module,
-                    pa,
-                    &snapshot,
-                )?
-            {
-                dead.push(*key);
-            }
+        // Each result not already decided through a dependent's question is
+        // asked, with the invalidator, for itself.
+        for (analysis, name) in &cached {
+            run.is_invalidated(*analysis, name)?;
         }
-        for key in dead {
-            self.results.remove(&key);
+        // Now erase the results that were marked above as invalidated.
+        let decided = run.decided;
+        for (analysis, invalidated) in decided {
+            if invalidated {
+                self.results.remove(&(analysis, module_id));
+            }
         }
         Ok(())
     }
@@ -1353,7 +1467,7 @@ fn invalidate_function_result<'v, 'ctx, B, A>(
     result: &mut dyn Any,
     function: FunctionView<'v, B>,
     pa: &PreservedAnalyses,
-    snapshot: &FunctionAnalysisSnapshot,
+    query: &mut dyn InvalidationQuery,
 ) -> IrResult<bool>
 where
     B: ModuleBrand + 'ctx,
@@ -1363,12 +1477,9 @@ where
     let Some(result) = result.downcast_mut::<A::Result>() else {
         return Ok(true);
     };
-    let handle = function.as_function();
     let mut invalidator = FunctionAnalysisInvalidator::<'_, 'ctx, B> {
-        module_id: handle.module().id(),
-        function_slot: handle.slot_trusting_same_module(),
         pa,
-        snapshot,
+        query,
         consulted: TypeId::of::<A>(),
         _brand: PhantomData,
         _ctx: PhantomData,
@@ -1400,7 +1511,7 @@ fn invalidate_module_result<'v, 'ctx, B, A>(
     result: &mut dyn Any,
     module: ModuleView<'v, B>,
     pa: &PreservedAnalyses,
-    snapshot: &ModuleAnalysisSnapshot,
+    query: &mut dyn InvalidationQuery,
 ) -> IrResult<bool>
 where
     B: ModuleBrand + 'ctx,
@@ -1411,9 +1522,8 @@ where
         return Ok(true);
     };
     let mut invalidator = ModuleAnalysisInvalidator::<'_, 'ctx, B> {
-        module_id: module.id(),
         pa,
-        snapshot,
+        query,
         consulted: TypeId::of::<A>(),
         _brand: PhantomData,
         _ctx: PhantomData,

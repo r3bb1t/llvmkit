@@ -264,6 +264,182 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysis<'ctx, B> for DefaultHookModuleA
 
 impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisResult<'ctx, B> for DefaultHookModuleResult {}
 
+/// A function analysis whose result depends on `D`'s: its hook answers
+/// whatever the invalidator says of `D`.
+struct DependsOn<D> {
+    _dependency: core::marker::PhantomData<fn() -> D>,
+}
+
+impl<D> Clone for DependsOn<D> {
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
+
+impl<D> DependsOn<D> {
+    fn new() -> Self {
+        Self {
+            _dependency: core::marker::PhantomData,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct DependsOnResult<D> {
+    _dependency: core::marker::PhantomData<fn() -> D>,
+}
+
+impl<'ctx, B, D> FunctionAnalysis<'ctx, B> for DependsOn<D>
+where
+    B: ModuleBrand + 'ctx,
+    D: FunctionAnalysis<'ctx, B>,
+{
+    type Result = DependsOnResult<D>;
+
+    fn run<'v>(
+        &self,
+        _function: FunctionView<'v, B>,
+        _am: &mut FunctionAnalysisManager<'ctx, B>,
+    ) -> IrResult<Self::Result>
+    where
+        'ctx: 'v,
+    {
+        Ok(DependsOnResult {
+            _dependency: core::marker::PhantomData,
+        })
+    }
+}
+
+impl<'ctx, B, D> FunctionAnalysisResult<'ctx, B> for DependsOnResult<D>
+where
+    B: ModuleBrand + 'ctx,
+    D: FunctionAnalysis<'ctx, B>,
+{
+    fn invalidate<'v>(
+        &mut self,
+        _function: FunctionView<'v, B>,
+        _pa: &PreservedAnalyses,
+        inv: &mut FunctionAnalysisInvalidator<'_, 'ctx, B>,
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v,
+    {
+        inv.invalidate::<D>()
+    }
+}
+
+/// A function analysis whose result counts how often its hook is asked.
+#[derive(Clone)]
+struct CountedHookAnalysis {
+    hooks: Rc<Cell<u32>>,
+}
+
+#[derive(Debug)]
+struct CountedHookResult {
+    hooks: Rc<Cell<u32>>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for CountedHookAnalysis {
+    type Result = CountedHookResult;
+
+    fn run<'v>(
+        &self,
+        _function: FunctionView<'v, B>,
+        _am: &mut FunctionAnalysisManager<'ctx, B>,
+    ) -> IrResult<Self::Result>
+    where
+        'ctx: 'v,
+    {
+        Ok(CountedHookResult {
+            hooks: Rc::clone(&self.hooks),
+        })
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for CountedHookResult {
+    fn invalidate<'v>(
+        &mut self,
+        _function: FunctionView<'v, B>,
+        _pa: &PreservedAnalyses,
+        inv: &mut FunctionAnalysisInvalidator<'_, 'ctx, B>,
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v,
+    {
+        self.hooks.set(self.hooks.get() + 1);
+        Ok(!inv.consulted_result_preserved())
+    }
+}
+
+/// One half of a dependency cycle: its result asks [`CycleB`]'s.
+#[derive(Clone, Copy)]
+struct CycleA;
+/// The other half: its result asks [`CycleA`]'s.
+#[derive(Clone, Copy)]
+struct CycleB;
+#[derive(Debug)]
+struct CycleAResult;
+#[derive(Debug)]
+struct CycleBResult;
+
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for CycleA {
+    type Result = CycleAResult;
+
+    fn run<'v>(
+        &self,
+        _function: FunctionView<'v, B>,
+        _am: &mut FunctionAnalysisManager<'ctx, B>,
+    ) -> IrResult<Self::Result>
+    where
+        'ctx: 'v,
+    {
+        Ok(CycleAResult)
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for CycleB {
+    type Result = CycleBResult;
+
+    fn run<'v>(
+        &self,
+        _function: FunctionView<'v, B>,
+        _am: &mut FunctionAnalysisManager<'ctx, B>,
+    ) -> IrResult<Self::Result>
+    where
+        'ctx: 'v,
+    {
+        Ok(CycleBResult)
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for CycleAResult {
+    fn invalidate<'v>(
+        &mut self,
+        _function: FunctionView<'v, B>,
+        _pa: &PreservedAnalyses,
+        inv: &mut FunctionAnalysisInvalidator<'_, 'ctx, B>,
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v,
+    {
+        inv.invalidate::<CycleB>()
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for CycleBResult {
+    fn invalidate<'v>(
+        &mut self,
+        _function: FunctionView<'v, B>,
+        _pa: &PreservedAnalyses,
+        inv: &mut FunctionAnalysisInvalidator<'_, 'ctx, B>,
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v,
+    {
+        inv.invalidate::<CycleA>()
+    }
+}
+
 /// The shared fixture is a helper, not a `#[test]` body: the harness runs
 /// tests in parallel, so a `module_new!` brand minted here would be claimed by
 /// several threads at once. [`DynBrand`] is registry-exempt and admits any
@@ -717,8 +893,9 @@ fn invalidation_returns_early_when_the_whole_set_is_preserved() -> Result<(), Ir
 
 /// A result that keeps the default `invalidate` hook survives a report that
 /// preserves its analysis by name, or through the unit's whole set while
-/// another analysis is abandoned (so the manager does not return early), and
-/// is dropped by a report that preserves neither.
+/// another analysis is abandoned (so the manager does not return early). It
+/// is dropped when its own analysis is abandoned under the preserved set,
+/// and by a report that preserves neither.
 ///
 /// **No upstream test isolates it.** It pins the default hook,
 /// `AnalysisResultModel::invalidate`
@@ -742,6 +919,16 @@ fn the_default_result_hook_asks_whether_its_analysis_is_preserved() -> Result<()
             fam.cached_result::<DefaultHookFunctionAnalysis, _>(f)
                 .is_some()
         );
+        // Abandoning the analysis itself overrides the preserved set.
+        let mut abandoned = PreservedAnalyses::none();
+        abandoned.preserve_set::<AllAnalysesOnFunction>();
+        abandoned.abandon::<DefaultHookFunctionAnalysis>();
+        fam.invalidate(f, &abandoned)?;
+        assert!(
+            fam.cached_result::<DefaultHookFunctionAnalysis, _>(f)
+                .is_none()
+        );
+        fam.result::<DefaultHookFunctionAnalysis, _>(f)?;
         let mut other = PreservedAnalyses::none();
         other.preserve::<CountFunctionAnalysis>();
         fam.invalidate(f, &other)?;
@@ -765,6 +952,15 @@ fn the_default_result_hook_asks_whether_its_analysis_is_preserved() -> Result<()
             mam.cached_result::<DefaultHookModuleAnalysis, _>(verified.as_view())
                 .is_some()
         );
+        let mut abandoned = PreservedAnalyses::none();
+        abandoned.preserve_set::<AllAnalysesOnModule>();
+        abandoned.abandon::<DefaultHookModuleAnalysis>();
+        mam.invalidate(verified.as_view(), &abandoned)?;
+        assert!(
+            mam.cached_result::<DefaultHookModuleAnalysis, _>(verified.as_view())
+                .is_none()
+        );
+        mam.result::<DefaultHookModuleAnalysis>(&verified)?;
         let mut other = PreservedAnalyses::none();
         other.preserve::<CountModuleAnalysis>();
         mam.invalidate(verified.as_view(), &other)?;
@@ -772,6 +968,104 @@ fn the_default_result_hook_asks_whether_its_analysis_is_preserved() -> Result<()
             mam.cached_result::<DefaultHookModuleAnalysis, _>(verified.as_view())
                 .is_none()
         );
+        Ok(())
+    })
+}
+
+/// A result that asks the invalidator about its dependency gets the
+/// dependency's own hook's answer: under a report that preserves only
+/// `CfgAnalyses`, the dominator tree's hook keeps the tree, so a result
+/// depending on it is kept too.
+///
+/// **No upstream test isolates it.** It pins `Invalidator::invalidateImpl`
+/// (`llvm/include/llvm/IR/PassManager.h`), which answers with
+/// `Result.invalidate(IR, PA, *this)` of the dependency's cached result,
+/// not with the report's checker alone.
+#[test]
+fn a_dependency_is_asked_through_its_own_hook() -> Result<(), IrError> {
+    with_sample_module(|m| {
+        let f = m.view(m.function_dyn("f").expect("sample has f"));
+        let mut fam = FunctionAnalysisManager::new();
+        fam.register_pass(DominatorTreeAnalysis);
+        fam.register_pass(DependsOn::<DominatorTreeAnalysis>::new());
+        fam.result::<DominatorTreeAnalysis, _>(f)?;
+        fam.result::<DependsOn<DominatorTreeAnalysis>, _>(f)?;
+        let mut cfg_only = PreservedAnalyses::none();
+        cfg_only.preserve_set::<CfgAnalyses>();
+        fam.invalidate(f, &cfg_only)?;
+        assert!(
+            fam.cached_result::<DominatorTreeAnalysis, _>(f).is_some(),
+            "the tree's hook keeps it under CfgAnalyses"
+        );
+        assert!(
+            fam.cached_result::<DependsOn<DominatorTreeAnalysis>, _>(f)
+                .is_some(),
+            "a result depending on a kept tree is kept"
+        );
+        fam.invalidate(f, &PreservedAnalyses::none())?;
+        assert!(
+            fam.cached_result::<DependsOn<DominatorTreeAnalysis>, _>(f)
+                .is_none()
+        );
+        Ok(())
+    })
+}
+
+/// One invalidation asks each result's hook once: a result asked by a
+/// dependent and again for itself answers from the run's memo.
+///
+/// **No upstream test isolates it.** It pins `Invalidator::invalidateImpl`'s
+/// `IsResultInvalidated` lookup and the manager loop's skip of an already
+/// decided result (`llvm/include/llvm/IR/PassManagerImpl.h`,
+/// `AnalysisManager::invalidate`).
+#[test]
+fn each_hook_is_asked_once_per_invalidation() -> Result<(), IrError> {
+    with_sample_module(|m| {
+        let f = m.view(m.function_dyn("f").expect("sample has f"));
+        let hooks = Rc::new(Cell::new(0));
+        let mut fam = FunctionAnalysisManager::new();
+        fam.register_pass(CountedHookAnalysis {
+            hooks: Rc::clone(&hooks),
+        });
+        fam.register_pass(DependsOn::<CountedHookAnalysis>::new());
+        fam.result::<CountedHookAnalysis, _>(f)?;
+        fam.result::<DependsOn<CountedHookAnalysis>, _>(f)?;
+        fam.invalidate(f, &PreservedAnalyses::none())?;
+        assert_eq!(hooks.get(), 1);
+        assert!(fam.cached_result::<CountedHookAnalysis, _>(f).is_none());
+        assert!(
+            fam.cached_result::<DependsOn<CountedHookAnalysis>, _>(f)
+                .is_none()
+        );
+        Ok(())
+    })
+}
+
+/// Results whose hooks ask for each other are refused as a cycle, where
+/// upstream asserts.
+///
+/// **No upstream test isolates it.** It pins the assert in
+/// `Invalidator::invalidateImpl` ("likely indicates a dependency cycle",
+/// `llvm/include/llvm/IR/PassManager.h`) as
+/// `IrError::AnalysisInvalidationCycle`.
+#[test]
+fn hooks_that_ask_for_each_other_are_a_cycle() -> Result<(), IrError> {
+    with_sample_module(|m| {
+        let f = m.view(m.function_dyn("f").expect("sample has f"));
+        let mut fam = FunctionAnalysisManager::new();
+        fam.register_pass(CycleA);
+        fam.register_pass(CycleB);
+        fam.result::<CycleA, _>(f)?;
+        fam.result::<CycleB, _>(f)?;
+        match fam.invalidate(f, &PreservedAnalyses::none()) {
+            Err(IrError::AnalysisInvalidationCycle { name }) => {
+                assert!(
+                    name.ends_with("CycleA") || name.ends_with("CycleB"),
+                    "{name}"
+                );
+            }
+            other => panic!("expected AnalysisInvalidationCycle, got {other:?}"),
+        }
         Ok(())
     })
 }

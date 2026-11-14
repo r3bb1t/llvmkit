@@ -75,10 +75,29 @@ impl<B: ModuleBrand> FunctionPass<B> for NoOpFunctionPass {
     }
 }
 
+/// The text of a name table's spelling: a pass name, or a plain string.
+trait Spelling {
+    fn text(self) -> &'static str;
+}
+
+impl<S: crate::pass_pipeline::PassScope> Spelling for PassName<S> {
+    fn text(self) -> &'static str {
+        self.as_str()
+    }
+}
+
+impl Spelling for &'static str {
+    fn text(self) -> &'static str {
+        self
+    }
+}
+
 /// Declares a closed name table: the enum, its every variant in declaration
-/// order (`all()`), and each variant's spelling (`$spelling_fn`), all from one
-/// list. A variant cannot exist without appearing in `all()`, so it cannot be
-/// left out of name resolution.
+/// order (`all()`), each variant's spelling (`$spelling_fn`), and the lookup
+/// from a spelling back to its variant (`from_name`, `Name == NAME` as
+/// upstream's `PassRegistry.def` rows match), all from one list. A variant
+/// cannot exist without appearing in `all()`, so it cannot be left out of
+/// name resolution.
 macro_rules! name_table {
     (
         $(#[$meta:meta])*
@@ -114,6 +133,11 @@ macro_rules! name_table {
                     $(Self::$variant => $spelling,)+
                 }
             }
+
+            /// The variant spelled `name`, if any.
+            pub fn from_name(name: &str) -> Option<Self> {
+                Self::all().find(|variant| Spelling::text(variant.$spelling_fn()) == name)
+            }
         }
     };
 }
@@ -130,12 +154,6 @@ name_table! {
 }
 
 impl RegisteredModulePass {
-    /// The registered pass named `name`, as a `MODULE_PASS` row matches it
-    /// (`Name == NAME`).
-    pub fn from_name(name: &str) -> Option<Self> {
-        Self::all().find(|pass| pass.name().as_str() == name)
-    }
-
     /// Appends a new instance of this pass: the row's `CREATE_PASS`.
     pub fn push_into<'ctx, B: ModuleBrand + 'ctx>(self, pipeline: &mut DynModulePipeline<'ctx, B>) {
         match self {
@@ -161,12 +179,6 @@ name_table! {
 }
 
 impl RegisteredFunctionPass {
-    /// The registered pass named `name`, as a `FUNCTION_PASS` row matches it
-    /// (`Name == NAME`).
-    pub fn from_name(name: &str) -> Option<Self> {
-        Self::all().find(|pass| pass.name().as_str() == name)
-    }
-
     /// Appends a new instance of this pass: the row's `CREATE_PASS`.
     pub fn push_into<'ctx, B: ModuleBrand + 'ctx>(
         self,
@@ -244,11 +256,6 @@ name_table! {
 }
 
 impl UnmodeledPassManager {
-    /// The manager a textual pipeline names `name`.
-    pub fn from_name(name: &str) -> Option<Self> {
-        Self::all().find(|manager| manager.as_str() == name)
-    }
-
     /// The layer whose pipelines may hold this manager: `cgscc` and
     /// `coro-cond` are module-pipeline elements (`isModulePassName`), the
     /// others function-pipeline elements (`isFunctionPassName`).

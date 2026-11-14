@@ -370,7 +370,9 @@ pub use pass_manager::{
     ReadOnlyFn, ReadOnlyMod, VerdictCarry, for_each_function, function_pipeline, module_pipeline,
     run_function_pass, run_module_pass,
 };
-pub use pass_pipeline::{MAX_PASS_PIPELINE_NESTING, MAX_PASS_PIPELINE_TEXT_NESTING};
+pub use pass_pipeline::{
+    MAX_COMPOSED_PASS_PIPELINE_NESTING, MAX_PASS_PIPELINE_NESTING, PipelineNestingBound,
+};
 // Textual-pipeline names, recipe data and the parsed AST. The text is made
 // runnable by `pass_builder` (`parse_module_pass_pipeline`,
 // `parse_function_pass_pipeline`, re-exported above); the recipes are data

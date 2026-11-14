@@ -22,10 +22,10 @@ use llvmkit_asmparser::parser;
 use llvmkit_ir::{
     Analyses, DominatorTreeAnalysis, DynBrand, DynFunctionPipeline, DynModulePipeline, FnCx,
     FnReport, FunctionAdaptorInvalidation, FunctionPass, Inspect, IrError, IrResult,
-    MAX_PASS_PIPELINE_NESTING, MAX_PASS_PIPELINE_TEXT_NESTING, Module, ModuleBrand,
-    NoOpFunctionPass, NoOpModulePass, PassPipelineElement, PassPipelineTextName, PipelineOutline,
-    RegisteredFunctionPass, RegisteredModulePass, UnmodeledPassManager, Unverified,
-    parse_function_pass_pipeline, parse_module_pass_pipeline,
+    MAX_COMPOSED_PASS_PIPELINE_NESTING, MAX_PASS_PIPELINE_NESTING, Module, ModuleBrand,
+    NoOpFunctionPass, NoOpModulePass, PassPipelineElement, PassPipelineTextName,
+    PipelineNestingBound, PipelineOutline, RegisteredFunctionPass, RegisteredModulePass,
+    UnmodeledPassManager, Unverified, parse_function_pass_pipeline, parse_module_pass_pipeline,
 };
 
 /// The fixture's IR: `define void @f()` with a self-loop.
@@ -209,11 +209,31 @@ fn nested_text(wrapper: &str, depth: usize, inner: &str) -> String {
     )
 }
 
-fn assert_too_deep<T: core::fmt::Debug>(result: Result<T, IrError>, what: &str) {
+fn assert_too_deep<T: core::fmt::Debug>(
+    result: Result<T, IrError>,
+    bound: PipelineNestingBound,
+    what: &str,
+) {
     match result {
-        Err(IrError::PassPipelineTooDeep) => {}
+        Err(IrError::PassPipelineTooDeep { bound: passed }) => {
+            assert_eq!(passed, bound, "{what}: the bound passed")
+        }
         other => panic!("{what}: expected PassPipelineTooDeep, got {other:?}"),
     }
+}
+
+/// A function pipeline around `no-op-function`, nested `depth` levels deep.
+fn function_pipeline_nested(
+    depth: usize,
+) -> Result<DynFunctionPipeline<'static, DynBrand>, IrError> {
+    let mut pipeline = DynFunctionPipeline::new();
+    pipeline.push(NoOpFunctionPass);
+    for _ in 0..depth {
+        let mut outer = DynFunctionPipeline::new();
+        outer.push_pipeline(pipeline)?;
+        pipeline = outer;
+    }
+    Ok(pipeline)
 }
 
 /// Resolves `passes` and runs it over the fixture.
@@ -225,24 +245,25 @@ fn resolves_and_runs(passes: &str) -> Result<(), IrError> {
     Ok(())
 }
 
-/// Pipelines nest at most `MAX_PASS_PIPELINE_NESTING` levels, and text at
-/// most `MAX_PASS_PIPELINE_TEXT_NESTING` parentheses, one less, since
-/// resolution can wrap a bare function pass in one more level. Text at its
-/// bound resolves and runs, in both shapes that gain that level (a bare pass
-/// innermost in `module(…)`, and a pipeline that starts with a function
-/// pass). One more parenthesis is refused, and so is text nested 200,000
-/// deep, at once, rather than overflowing the stack in resolution, run or
-/// drop. The parsed AST's public constructor and each composition entry
-/// (`push_pipeline` on both containers, `push_function_pipeline`) hold the
-/// same bounds.
+/// Text and parsed elements hold at most `MAX_PASS_PIPELINE_NESTING`
+/// parentheses open, and composed pipelines at most
+/// `MAX_COMPOSED_PASS_PIPELINE_NESTING` levels, one more, the level
+/// resolution adds without a parenthesis. Text at its bound resolves and
+/// runs in every shape: `function(` nesting, and the two shapes that gain
+/// the adaptor level (a bare pass innermost in `module(…)`, and a pipeline
+/// that starts with a function pass). One more parenthesis is refused, and
+/// so is text nested 200,000 deep, at once, rather than overflowing the
+/// stack in resolution, run or drop. The parsed AST's public constructor and
+/// each composition entry (`push_pipeline` on both containers,
+/// `push_function_pipeline`) hold their bounds.
 ///
 /// **No upstream counterpart**: upstream has no bound, and its recursive
 /// parse, run and teardown exhaust the stack on such text
 /// (`docs/divergences.md` D44).
 #[test]
 fn nesting_is_bounded_in_text_and_in_composition() -> Result<(), IrError> {
-    let text_limit = MAX_PASS_PIPELINE_TEXT_NESTING;
-    let limit = MAX_PASS_PIPELINE_NESTING;
+    let text_limit = MAX_PASS_PIPELINE_NESTING;
+    let limit = MAX_COMPOSED_PASS_PIPELINE_NESTING;
     assert_eq!(text_limit + 1, limit);
 
     resolves_and_runs(&nested_text("function", text_limit, "no-op-function"))?;
@@ -259,6 +280,7 @@ fn nesting_is_bounded_in_text_and_in_composition() -> Result<(), IrError> {
                     depth,
                     "no-op-function",
                 )),
+                PipelineNestingBound::Text,
                 &format!("{wrapper}( x{depth}"),
             );
         }
@@ -272,33 +294,23 @@ fn nesting_is_bounded_in_text_and_in_composition() -> Result<(), IrError> {
     }
     assert_too_deep(
         PassPipelineElement::new(name("function")?, [element]),
+        PipelineNestingBound::Text,
         "an element one past the text bound",
     );
 
     // Composition: a pipeline `limit` levels deep may not be nested again,
     // through any of the three entries.
-    let mut function_pipeline = DynFunctionPipeline::<'_, DynBrand>::new();
-    function_pipeline.push(NoOpFunctionPass);
-    for _ in 0..limit {
-        let mut outer = DynFunctionPipeline::new();
-        outer.push_pipeline(function_pipeline)?;
-        function_pipeline = outer;
-    }
     assert_too_deep(
-        DynFunctionPipeline::<'_, DynBrand>::new().push_pipeline(function_pipeline),
+        DynFunctionPipeline::<'_, DynBrand>::new().push_pipeline(function_pipeline_nested(limit)?),
+        PipelineNestingBound::Composed,
         "DynFunctionPipeline::push_pipeline",
     );
-
-    let mut function_pipeline = DynFunctionPipeline::<'_, DynBrand>::new();
-    function_pipeline.push(NoOpFunctionPass);
-    for _ in 0..limit {
-        let mut outer = DynFunctionPipeline::new();
-        outer.push_pipeline(function_pipeline)?;
-        function_pipeline = outer;
-    }
     assert_too_deep(
-        DynModulePipeline::<'_, DynBrand>::new()
-            .push_function_pipeline(function_pipeline, FunctionAdaptorInvalidation::FromReport),
+        DynModulePipeline::<'_, DynBrand>::new().push_function_pipeline(
+            function_pipeline_nested(limit)?,
+            FunctionAdaptorInvalidation::FromReport,
+        ),
+        PipelineNestingBound::Composed,
         "DynModulePipeline::push_function_pipeline",
     );
 
@@ -311,6 +323,7 @@ fn nesting_is_bounded_in_text_and_in_composition() -> Result<(), IrError> {
     }
     assert_too_deep(
         DynModulePipeline::<'_, DynBrand>::new().push_pipeline(module_pipeline),
+        PipelineNestingBound::Composed,
         "DynModulePipeline::push_pipeline",
     );
     Ok(())

@@ -152,16 +152,9 @@ pub const NO_OP_FUNCTION: PassName<FunctionPassScope> = PassName::new("no-op-fun
 /// Built-in module pass name: `no-op-module` (`NoOpModulePass`).
 pub const NO_OP_MODULE: PassName<ModulePassScope> = PassName::new("no-op-module");
 
-/// How many levels of nested pipelines (nested pipelines and function
-/// adaptors) a composed `Dyn` pipeline may hold. Deeper is refused with
-/// [`IrError::PassPipelineTooDeep`].
-///
-/// Text and parsed elements ([`PassPipelineElement`]) are held to one level
-/// less: at most [`MAX_PASS_PIPELINE_TEXT_NESTING`] open parentheses. A
-/// pipeline resolves to at most one more level than its parentheses, because
-/// resolution wraps a bare function pass in a module pipeline (or a pipeline
-/// that starts with one) in a function adaptor. So any text the parser
-/// accepts resolves within this bound.
+/// How many parentheses pipeline text, or a parsed [`PassPipelineElement`],
+/// may hold open at once. More is refused with
+/// [`IrError::PassPipelineTooDeep`] ([`PipelineNestingBound::Text`]).
 ///
 /// Upstream has no bound. Its parse, run and teardown all recurse once per
 /// level, so deep enough text exhausts its stack. llvmkit's resolution, run,
@@ -170,10 +163,49 @@ pub const NO_OP_MODULE: PassName<ModulePassScope> = PassName::new("no-op-module"
 /// default pipelines nest well under it.
 pub const MAX_PASS_PIPELINE_NESTING: usize = 64;
 
-/// How many parentheses pipeline text, or a parsed [`PassPipelineElement`],
-/// may hold open at once: one less than [`MAX_PASS_PIPELINE_NESTING`],
-/// because resolution can add one level (see there).
-pub const MAX_PASS_PIPELINE_TEXT_NESTING: usize = MAX_PASS_PIPELINE_NESTING - 1;
+/// How many levels of nested pipelines (nested pipelines and function
+/// adaptors) a composed `Dyn` pipeline may hold: one more than
+/// [`MAX_PASS_PIPELINE_NESTING`]. More is refused with
+/// [`IrError::PassPipelineTooDeep`] ([`PipelineNestingBound::Composed`]).
+///
+/// The extra level is the one resolution can add: it wraps a bare function
+/// pass in a module pipeline (innermost in `module(…)`, or a pipeline that
+/// starts with a function pass) in a function adaptor its text has no
+/// parenthesis for. Every other level has its parenthesis, so text within
+/// [`MAX_PASS_PIPELINE_NESTING`] resolves within this bound.
+/// `pass_pipeline_parsing.rs::nesting_is_bounded_in_text_and_in_composition`
+/// resolves each such shape at the text bound
+/// (`cargo +1.96.0 test -p llvmkit-asmparser --test pass_pipeline_parsing
+/// nesting`). A new resolution arm that wraps without a parenthesis must be
+/// added to that test.
+pub const MAX_COMPOSED_PASS_PIPELINE_NESTING: usize = MAX_PASS_PIPELINE_NESTING + 1;
+
+/// Which nesting bound a pass pipeline passed:
+/// [`IrError::PassPipelineTooDeep`]'s field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PipelineNestingBound {
+    /// Text or a parsed element held more than
+    /// [`MAX_PASS_PIPELINE_NESTING`] parentheses open at once.
+    Text,
+    /// A composed `Dyn` pipeline would hold more than
+    /// [`MAX_COMPOSED_PASS_PIPELINE_NESTING`] levels.
+    Composed,
+}
+
+impl core::fmt::Display for PipelineNestingBound {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Text => write!(
+                f,
+                "more than {MAX_PASS_PIPELINE_NESTING} parentheses open at once"
+            ),
+            Self::Composed => write!(
+                f,
+                "more than {MAX_COMPOSED_PASS_PIPELINE_NESTING} levels of nested pipelines"
+            ),
+        }
+    }
+}
 
 /// Owned validated name at the erased textual parser boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -262,47 +294,77 @@ impl PassPipeline {
 }
 
 /// One parsed pass-pipeline element with an optional nested pipeline, nested
-/// at most [`MAX_PASS_PIPELINE_TEXT_NESTING`] deep.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// at most [`MAX_PASS_PIPELINE_NESTING`] parentheses deep.
+#[derive(Clone)]
 pub struct PassPipelineElement {
     name: PassPipelineTextName,
     inner_pipeline: Vec<PassPipelineElement>,
     /// Parentheses below this element's name: 0 for a leaf, one more than
-    /// its deepest inner element otherwise.
+    /// its deepest inner element otherwise. Derived from `inner_pipeline`,
+    /// so `Debug`, `PartialEq` and `Hash` leave it out.
     depth: usize,
+}
+
+/// Prints the name and the inner pipeline, the element's whole content.
+impl core::fmt::Debug for PassPipelineElement {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PassPipelineElement")
+            .field("name", &self.name)
+            .field("inner_pipeline", &self.inner_pipeline)
+            .finish()
+    }
+}
+
+impl PartialEq for PassPipelineElement {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.inner_pipeline == other.inner_pipeline
+    }
+}
+
+impl Eq for PassPipelineElement {}
+
+impl core::hash::Hash for PassPipelineElement {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+        self.inner_pipeline.hash(state);
+    }
 }
 
 impl PassPipelineElement {
     /// Constructs an element from an already-validated name and its inner
     /// pipeline, refused with [`IrError::PassPipelineTooDeep`] when that
-    /// would nest more than [`MAX_PASS_PIPELINE_TEXT_NESTING`] deep, the
-    /// bound text is held to. So no element, parsed or built, is deeper than
-    /// the recursion its formatting, comparison and drop can afford.
+    /// would hold more than [`MAX_PASS_PIPELINE_NESTING`] parentheses open,
+    /// the bound text is held to. So no element, parsed or built, is deeper
+    /// than the recursion its formatting, comparison and drop can afford.
     pub fn new<Inner>(name: PassPipelineTextName, inner_pipeline: Inner) -> IrResult<Self>
     where
         Inner: IntoIterator<Item = Self>,
     {
-        let inner_pipeline: Vec<Self> = inner_pipeline.into_iter().collect();
-        let depth = match inner_pipeline.iter().map(|inner| inner.depth).max() {
-            None => 0,
-            Some(deepest) => deepest + 1,
-        };
-        if depth > MAX_PASS_PIPELINE_TEXT_NESTING {
-            return Err(IrError::PassPipelineTooDeep);
+        let element = Self::nested(name, inner_pipeline.into_iter().collect());
+        if element.depth > MAX_PASS_PIPELINE_NESTING {
+            return Err(IrError::PassPipelineTooDeep {
+                bound: PipelineNestingBound::Text,
+            });
         }
-        Ok(Self {
-            name,
-            inner_pipeline,
-            depth,
-        })
+        Ok(element)
     }
 
     /// An element with no inner pipeline.
     fn leaf(name: PassPipelineTextName) -> Self {
+        Self::nested(name, Vec::new())
+    }
+
+    /// An element over `inner_pipeline`, unchecked: the parser has already
+    /// held its text within the bound.
+    fn nested(name: PassPipelineTextName, inner_pipeline: Vec<Self>) -> Self {
+        let depth = match inner_pipeline.iter().map(|inner| inner.depth).max() {
+            None => 0,
+            Some(deepest) => deepest + 1,
+        };
         Self {
             name,
-            inner_pipeline: Vec::new(),
-            depth: 0,
+            inner_pipeline,
+            depth,
         }
     }
 
@@ -369,8 +431,10 @@ pub fn parse_pass_pipeline_text(text: &str) -> IrResult<PassPipeline> {
             '(' => {
                 // Continue in the element's inner pipeline, within the
                 // nesting bound (an llvmkit bound; upstream has none).
-                if open.len() == MAX_PASS_PIPELINE_TEXT_NESTING {
-                    return Err(IrError::PassPipelineTooDeep);
+                if open.len() == MAX_PASS_PIPELINE_NESTING {
+                    return Err(IrError::PassPipelineTooDeep {
+                        bound: PipelineNestingBound::Text,
+                    });
                 }
                 open.push((name, Vec::new()));
             }
@@ -381,8 +445,8 @@ pub fn parse_pass_pipeline_text(text: &str) -> IrResult<PassPipeline> {
                 // unbalanced.
                 loop {
                     let (name, inner) = open.pop().ok_or_else(invalid)?;
-                    // Within the bound: `open` never held more than it.
-                    let element = PassPipelineElement::new(name, inner)?;
+                    // Within the bound: `open` never holds more than it.
+                    let element = PassPipelineElement::nested(name, inner);
                     filling(&mut root, &mut open).push(element);
                     match rest.strip_prefix(')') {
                         Some(after) => rest = after,

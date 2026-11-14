@@ -21,6 +21,7 @@ use core::fmt;
 use crate::addr_space::AddressSpace;
 use crate::instr_types::{CastOpcode, OperandBundleTag};
 use crate::pass_builder::{PassLayer, PipelineEntryKind, UnmodeledPassManager};
+use crate::pass_pipeline::PipelineNestingBound;
 
 /// Whether a failure indicates a bug in llvmkit.
 ///
@@ -1877,17 +1878,16 @@ pub enum IrError {
     /// from `PassBuilder::parseModulePass`.
     #[error("cannot have a no-rerun module to function adaptor")]
     NoRerunFunctionAdaptor,
-    /// A pass pipeline nests pipelines more than
-    /// [`crate::MAX_PASS_PIPELINE_NESTING`] levels deep: composed `Dyn`
-    /// pipelines, or text (or a parsed element) that could resolve to one,
-    /// since resolution can wrap a bare function pass in one more level than
-    /// the text's parentheses. Upstream has no bound: its recursive parse,
-    /// run and teardown exhaust the stack first.
-    #[error(
-        "pass pipeline nests more than {} levels deep",
-        crate::MAX_PASS_PIPELINE_NESTING
-    )]
-    PassPipelineTooDeep,
+    /// A pass pipeline nests past one of llvmkit's nesting bounds: text or a
+    /// parsed element past [`crate::MAX_PASS_PIPELINE_NESTING`] parentheses,
+    /// or a composed `Dyn` pipeline past
+    /// [`crate::MAX_COMPOSED_PASS_PIPELINE_NESTING`] levels. Upstream has no
+    /// bound: its recursive parse, run and teardown exhaust the stack first.
+    #[error("pass pipeline nests {bound}")]
+    PassPipelineTooDeep {
+        /// The bound it passed.
+        bound: PipelineNestingBound,
+    },
     /// A textual pipeline names a pass manager upstream accepts and llvmkit
     /// does not model (no CGSCC, loop or machine-function layer).
     #[error("pass manager '{manager}' is not modeled")]
@@ -1906,6 +1906,15 @@ pub enum IrError {
     #[error("analysis {name} is not cached")]
     AnalysisNotCached {
         /// Type name of the analysis whose cached result is absent.
+        name: &'static str,
+    },
+    /// While invalidating, a result's `invalidate` hook asked, directly or
+    /// through the results it asked in turn, whether its own analysis's
+    /// result is invalidated: a dependency cycle. Upstream asserts on it
+    /// (`Invalidator::invalidateImpl`, "likely indicates a dependency cycle").
+    #[error("analysis {name} depends on itself while it is invalidated")]
+    AnalysisInvalidationCycle {
+        /// Type name of the analysis asked for while its own hook ran.
         name: &'static str,
     },
     /// An analysis manager ran analysis `name`, inserted the result into its
@@ -2345,7 +2354,7 @@ impl IrError {
             | Self::UnknownPipelineEntry { .. }
             | Self::PassUsedAsPipeline { .. }
             | Self::NoRerunFunctionAdaptor
-            | Self::PassPipelineTooDeep
+            | Self::PassPipelineTooDeep { .. }
             | Self::UnmodeledPassManager { .. } => Blame::UsageError,
 
             // The broad LangRef-rule family, classified as one class: its sites
@@ -2363,11 +2372,12 @@ impl IrError {
             // Analysis-manager contracts the caller broke: an unregistered
             // analysis, an invalidator asking about a dependency it never
             // cached, or a `Requires` list's `collect` run without its
-            // `prefetch`. The manager's own read-back straight after caching
-            // is `AnalysisResultMissingAfterCaching`, above.
-            Self::AnalysisNotRegistered { .. } | Self::AnalysisNotCached { .. } => {
-                Blame::UsageError
-            }
+            // `prefetch`, or invalidation hooks that ask for each other in a
+            // cycle. The manager's own read-back straight after caching is
+            // `AnalysisResultMissingAfterCaching`, above.
+            Self::AnalysisNotRegistered { .. }
+            | Self::AnalysisNotCached { .. }
+            | Self::AnalysisInvalidationCycle { .. } => Blame::UsageError,
 
             // IR the caller built, parsed, or asked a pass to insert breaks a
             // LangRef rule.

@@ -1548,14 +1548,20 @@ refuse three kinds of text that upstream accepts:
   wraps a pipeline that starts with a CGSCC, loop-nest, loop or machine-function pass name in
   that layer's adaptor. No such name is registered here, so the first name is "unknown pass
   name" (or "unknown pipeline name").
-- **Nesting past the bound.** `Dyn` pipelines composed more than `MAX_PASS_PIPELINE_NESTING`
-  (64) levels deep are refused with `IrError::PassPipelineTooDeep`, a level being a nested
-  pipeline or a function adaptor. So are text and parsed elements with more than
-  `MAX_PASS_PIPELINE_TEXT_NESTING` (63) parentheses open at once. The text bound is one less
-  because resolution can wrap a bare function pass in one more level than its parentheses,
-  so all accepted text resolves within the composition bound. Upstream has no bound, but
-  its parse, run and teardown recurse once per level, so deep enough text exhausts its
-  stack. llvmkit's resolution, run, outline and drop recurse the same way.
+- **Nesting past the bound.** Text and parsed elements with more than
+  `MAX_PASS_PIPELINE_NESTING` (64) parentheses open at once are refused with
+  `IrError::PassPipelineTooDeep` (`PipelineNestingBound::Text`). So are `Dyn` pipelines
+  composed more than `MAX_COMPOSED_PASS_PIPELINE_NESTING` (65) levels deep
+  (`PipelineNestingBound::Composed`), a level being a nested pipeline or a function adaptor.
+  The composed bound is one more because resolution can wrap a bare function pass in a
+  function adaptor that has no parenthesis in the text. Text within its bound therefore
+  resolves within the composed bound. `nesting_is_bounded_in_text_and_in_composition`
+  resolves each shape that adds that level, at the text bound
+  (`cargo +1.96.0 test -p llvmkit-asmparser --test pass_pipeline_parsing nesting`, on
+  `151d46ba` with this change applied); a new resolution arm that wraps without a
+  parenthesis belongs in that test. Upstream has no bound, but its parse, run and teardown
+  recurse once per level, so deep enough text exhausts its stack. llvmkit's resolution, run,
+  outline and drop recurse the same way.
 
 Nothing that resolves runs differently from upstream: the nested managers, the
 module-to-function adaptor (with `eager-inv`, and `no-rerun` refused with upstream's message)

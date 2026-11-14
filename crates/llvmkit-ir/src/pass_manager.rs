@@ -108,7 +108,7 @@ use crate::pass_access::{
     RewriteModule, StaysVerified, VerdictFold,
 };
 use crate::pass_context::{FnCx, FnReport, FunctionView, IntoFunctionId, ModCx, ModReport};
-use crate::pass_pipeline::MAX_PASS_PIPELINE_NESTING;
+use crate::pass_pipeline::{MAX_COMPOSED_PASS_PIPELINE_NESTING, PipelineNestingBound};
 use crate::value_id::{FunctionId, ViewIn};
 use crate::{IrError, IrResult};
 
@@ -1689,7 +1689,7 @@ impl ReadOnlyMod for Inspect {}
 pub struct DynFunctionPipeline<'ctx, B: ModuleBrand + 'ctx> {
     passes: Vec<FunctionMember<'ctx, B>>,
     /// How many pipelines deep its members nest (0 when none is a
-    /// pipeline), at most [`MAX_PASS_PIPELINE_NESTING`].
+    /// pipeline), at most [`MAX_COMPOSED_PASS_PIPELINE_NESTING`].
     nesting: usize,
 }
 
@@ -1735,7 +1735,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynFunctionPipeline<'ctx, B> {
     /// required, as upstream's pass managers are.
     ///
     /// Refused with [`IrError::PassPipelineTooDeep`] when `nested` already
-    /// nests [`MAX_PASS_PIPELINE_NESTING`] pipelines deep.
+    /// nests [`MAX_COMPOSED_PASS_PIPELINE_NESTING`] pipelines deep.
     pub fn push_pipeline(&mut self, nested: DynFunctionPipeline<'ctx, B>) -> IrResult<()> {
         let nesting = nested_depth(nested.nesting)?;
         self.nesting = self.nesting.max(nesting);
@@ -1908,7 +1908,7 @@ pub struct DynModulePipeline<'ctx, B: ModuleBrand + 'ctx> {
     passes: Vec<ModuleMember<'ctx, B>>,
     /// How many pipelines deep its members nest, counting a function
     /// adaptor as one (0 when none is a pipeline), at most
-    /// [`MAX_PASS_PIPELINE_NESTING`].
+    /// [`MAX_COMPOSED_PASS_PIPELINE_NESTING`].
     nesting: usize,
 }
 
@@ -1953,7 +1953,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynModulePipeline<'ctx, B> {
     /// pass managers are.
     ///
     /// Refused with [`IrError::PassPipelineTooDeep`] when `nested` already
-    /// nests [`MAX_PASS_PIPELINE_NESTING`] pipelines deep.
+    /// nests [`MAX_COMPOSED_PASS_PIPELINE_NESTING`] pipelines deep.
     pub fn push_pipeline(&mut self, nested: DynModulePipeline<'ctx, B>) -> IrResult<()> {
         let nesting = nested_depth(nested.nesting)?;
         self.nesting = self.nesting.max(nesting);
@@ -1979,7 +1979,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynModulePipeline<'ctx, B> {
     /// as upstream's adaptor is.
     ///
     /// Refused with [`IrError::PassPipelineTooDeep`] when `pipeline` already
-    /// nests [`MAX_PASS_PIPELINE_NESTING`] pipelines deep.
+    /// nests [`MAX_COMPOSED_PASS_PIPELINE_NESTING`] pipelines deep.
     pub fn push_function_pipeline(
         &mut self,
         pipeline: DynFunctionPipeline<'ctx, B>,
@@ -2162,10 +2162,12 @@ pub enum PipelineOutline<'a> {
 }
 
 /// The nesting of a pipeline that holds one nested `depth` deep, or the
-/// refusal when that passes [`MAX_PASS_PIPELINE_NESTING`].
+/// refusal when that passes [`MAX_COMPOSED_PASS_PIPELINE_NESTING`].
 fn nested_depth(depth: usize) -> IrResult<usize> {
-    if depth >= MAX_PASS_PIPELINE_NESTING {
-        return Err(IrError::PassPipelineTooDeep);
+    if depth >= MAX_COMPOSED_PASS_PIPELINE_NESTING {
+        return Err(IrError::PassPipelineTooDeep {
+            bound: PipelineNestingBound::Composed,
+        });
     }
     Ok(depth + 1)
 }
