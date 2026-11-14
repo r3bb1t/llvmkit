@@ -306,25 +306,22 @@ fn a_function_adaptor_invalidates_as_its_parameter_says() -> Result<(), IrError>
 /// `PassBuilder::parsePassPipeline`.
 #[test]
 fn unmodeled_managers_and_unknown_names_are_refused() {
-    refused_with(
-        "cgscc(no-op-cgscc)",
-        "pass manager 'cgscc' is not modeled by llvmkit",
-    );
+    refused_with("cgscc(no-op-cgscc)", "pass manager 'cgscc' is not modeled");
     refused_with(
         "coro-cond(no-op-module)",
-        "pass manager 'coro-cond' is not modeled by llvmkit",
+        "pass manager 'coro-cond' is not modeled",
     );
     refused_with(
         "function(loop(no-op-loop))",
-        "pass manager 'loop' is not modeled by llvmkit",
+        "pass manager 'loop' is not modeled",
     );
     refused_with(
         "function(loop-mssa(no-op-loop))",
-        "pass manager 'loop-mssa' is not modeled by llvmkit",
+        "pass manager 'loop-mssa' is not modeled",
     );
     refused_with(
         "function(machine-function(no-op-machine-function))",
-        "pass manager 'machine-function' is not modeled by llvmkit",
+        "pass manager 'machine-function' is not modeled",
     );
     // `coro-cond` parses its module pipeline first, as upstream does.
     refused_with("coro-cond(bad)", "unknown module pass 'bad'");

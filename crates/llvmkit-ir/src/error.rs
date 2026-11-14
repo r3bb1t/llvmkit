@@ -1881,7 +1881,7 @@ pub enum IrError {
     NoRerunFunctionAdaptor,
     /// A textual pipeline names a pass manager upstream accepts and llvmkit
     /// does not model (no CGSCC, loop or machine-function layer).
-    #[error("pass manager '{manager}' is not modeled by llvmkit")]
+    #[error("pass manager '{manager}' is not modeled")]
     UnmodeledPassManager {
         /// The pass manager named.
         manager: UnmodeledPassManager,

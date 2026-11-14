@@ -158,19 +158,24 @@ impl RegisteredFunctionPass {
 
 /// The pass-manager layer a textual pipeline element is resolved at; it
 /// names the layer in upstream's diagnostics ("unknown function pass").
+///
+/// The variants are not spelled `Module` / `Function`: rustc shortens a type
+/// to its bare name in diagnostics only while no other public item shares
+/// that name, and a `Module` variant here made every diagnostic about
+/// [`crate::Module`] spell it `llvmkit_ir::Module`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PassLayer {
-    /// A `ModulePassManager`.
-    Module,
-    /// A `FunctionPassManager`.
-    Function,
+    /// A `ModulePassManager`: passes over the whole module.
+    WholeModule,
+    /// A `FunctionPassManager`: passes over one function at a time.
+    PerFunction,
 }
 
 impl fmt::Display for PassLayer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Module => "module",
-            Self::Function => "function",
+            Self::WholeModule => "module",
+            Self::PerFunction => "function",
         })
     }
 }
@@ -285,7 +290,7 @@ pub fn parse_function_pass_pipeline<'ctx, B: ModuleBrand + 'ctx>(
     let first_name = pipeline.first().name().as_str();
     if !is_function_pass_name(first_name) {
         return Err(IrError::UnknownPassInPipeline {
-            layer: PassLayer::Function,
+            layer: PassLayer::PerFunction,
             name: first_name.to_owned(),
             pipeline: text.to_owned(),
         });
@@ -366,7 +371,7 @@ fn parse_module_pass<'ctx, B: ModuleBrand + 'ctx>(
         }
         // Normal passes can't have pipelines.
         return Err(IrError::PassUsedAsPipeline {
-            layer: PassLayer::Module,
+            layer: PassLayer::WholeModule,
             name: name.to_owned(),
         });
     }
@@ -389,7 +394,7 @@ fn parse_module_pass<'ctx, B: ModuleBrand + 'ctx>(
         return Ok(());
     }
     Err(IrError::UnknownPass {
-        layer: PassLayer::Module,
+        layer: PassLayer::WholeModule,
         name: name.to_owned(),
     })
 }
@@ -422,7 +427,7 @@ fn parse_function_pass<'ctx, B: ModuleBrand + 'ctx>(
         }
         // Normal passes can't have pipelines.
         return Err(IrError::PassUsedAsPipeline {
-            layer: PassLayer::Function,
+            layer: PassLayer::PerFunction,
             name: name.to_owned(),
         });
     }
@@ -433,7 +438,7 @@ fn parse_function_pass<'ctx, B: ModuleBrand + 'ctx>(
         return Ok(());
     }
     Err(IrError::UnknownPass {
-        layer: PassLayer::Function,
+        layer: PassLayer::PerFunction,
         name: name.to_owned(),
     })
 }
