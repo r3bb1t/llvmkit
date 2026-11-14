@@ -7,8 +7,9 @@
 //! block it just created or read from its own function. Nothing in the
 //! compiler ties a call to its reason, so a new caller handing it a block of
 //! another `DynBrand` module would write into the wrong arena with no test
-//! failing. This test is that tie: every call sits under a `// Internal:`
-//! comment saying why the block is the builder's module's.
+//! failing. This test is that tie: every call sits under a
+//! `// Same-module block:` comment, a marker no other code uses, saying why
+//! the block is the builder's module's.
 //!
 //! No upstream counterpart: LLVM's `BasicBlock *` carries no module tag.
 
@@ -17,9 +18,11 @@ use std::path::{Path, PathBuf};
 /// The door's call spelling.
 const DOOR_CALL: &str = ".position_at_end_trusting_same_module(";
 
-/// The comment a call must sit under, spelled in two halves so that this
-/// file's own spelling is no call site's justification.
-const MARKER: &str = concat!("// ", "Internal:");
+/// The comment a call must sit under: a marker this door alone uses, so the
+/// crate's general `// Internal:` justification (which sits above many
+/// `slot_trusting_same_module` reads) cannot stand in for it. Spelled in two
+/// halves so that this file's own spelling is no call site's justification.
+const MARKER: &str = concat!("// ", "Same-module block:");
 
 /// Every `.rs` file under `dir`, recursively.
 fn rust_files(dir: &Path) -> Vec<PathBuf> {
@@ -80,17 +83,20 @@ fn unmarked_calls(source: &str) -> (Vec<usize>, usize) {
 }
 
 /// Every call of `IrBuilder::position_at_end_trusting_same_module` in
-/// `crates/llvmkit-ir/src` sits under a `// Internal:` comment. Positive
-/// control: the scanner flags an unmarked call and accepts a marked one, on
+/// `crates/llvmkit-ir/src` sits under a `// Same-module block:` comment.
+/// Positive control: the scanner flags an unmarked call and one under only
+/// the crate's general `// Internal:` comment, and accepts a marked one, on
 /// one line and wrapped, in synthetic sources; and the tree has calls to
 /// check, so a rename cannot make the test pass vacuously.
 ///
 /// No upstream counterpart: llvmkit-specific regression for the unchecked
-/// positioning door (`docs/design/layout-token-design.md` decision 8).
+/// positioning door (`docs/design/layout-token-design.md` decisions 8 and 10).
 #[test]
-fn every_trusting_position_call_sits_under_an_internal_comment() {
+fn every_trusting_position_call_sits_under_a_same_module_marker() {
     let unmarked = "fn f() {\n    // a comment, but no marker\n    let b = b.position_at_end_trusting_same_module(bb);\n}\n";
     assert_eq!(unmarked_calls(unmarked), (vec![3], 1));
+    let general = "fn f() {\n    // Internal: `x` was admitted above.\n    let b = b.position_at_end_trusting_same_module(bb);\n}\n";
+    assert_eq!(unmarked_calls(general), (vec![3], 1));
     let marked = format!(
         "fn f() {{\n    {MARKER} `bb` was created here.\n    let b = b.position_at_end_trusting_same_module(bb);\n}}\n"
     );
@@ -118,7 +124,7 @@ fn every_trusting_position_call_sits_under_an_internal_comment() {
     );
     assert!(
         violations.is_empty(),
-        "trusting-door calls not under an `// Internal:` comment:\n{}",
+        "trusting-door calls not under a `// Same-module block:` comment:\n{}",
         violations.join("\n")
     );
 }

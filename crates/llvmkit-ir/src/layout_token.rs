@@ -51,15 +51,17 @@ impl<'m, B: ModuleBrand> LayoutToken<'m, B> {
         self.module
     }
 
-    /// Crate-internal: refuse this token for an edit of another module's
-    /// layout ([`IrError::ForeignLayoutToken`]). Two modules of a shared
-    /// brand (every `Module::dynamic` is `DynBrand`) have tokens of one type,
-    /// so the brand cannot tell them apart; the module tag does (D7).
+    /// Crate-internal: refuse this token for an edit of a handle of another
+    /// module ([`IrError::ForeignValueId`], the error every entry gives a
+    /// handle of another module than the one it works in). Two modules of a
+    /// shared brand (every `Module::dynamic` is `DynBrand`) have tokens and
+    /// handles of one type, so the brand cannot tell them apart; the module
+    /// tag does (D7).
     pub(crate) fn admit(&self, owner: ModuleId) -> IrResult<()> {
         if self.module.core_ref().id() == owner {
             Ok(())
         } else {
-            Err(IrError::ForeignLayoutToken)
+            Err(IrError::ForeignValueId)
         }
     }
 }

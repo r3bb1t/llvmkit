@@ -1376,9 +1376,12 @@ where
 
     /// A builder restored at a previously saved [`InsertPoint`]. Delegated from
     /// the inner [`FnPatch`], and lent in the [`InPass`] state like
-    /// [`Self::builder_before`]'s; the way to build into a block this mutator
-    /// has reshaped (for example the tail block a [`Self::split_block`]
-    /// made).
+    /// [`Self::builder_before`]'s; the way back to a position saved earlier
+    /// in this pass ([`IrBuilder::save_insert_point`]). The snapshot is
+    /// re-checked: one saved before an instruction that has since moved, for
+    /// example into the tail block of a [`Self::split_block`], is refused
+    /// with [`BlockError::AnchorNotInBlock`]; build there with
+    /// [`Self::builder_before`] on one of the tail's own instructions.
     #[inline]
     pub fn builder_at<R2, Saved>(
         &mut self,

@@ -2784,6 +2784,27 @@ driver marks preserved exactly what it watched repair). What remains deferred:
   unwitnessed -- so this waits on a decision about `module_mut`, not on
   plumbing alone. Wire the flush through the cursors if per-function analyses
   are ever threaded into them.
+- **A `ReshapeCfg` pass cannot change a terminator's kind.** A pass's lent
+  builder emits no terminator (`InPass`, `docs/design/layout-token-design.md`
+  decisions 9 and 10), and `FnReshape`'s terminator edits (`edit_br`,
+  `edit_cond_br`, `edit_switch`, `edit_invoke`, `edit_callbr`) redirect or
+  remove successors: `remove_then` / `remove_else` turn a `cond_br` into a
+  `br`, and nothing else changes the kind. So `br` → `unreachable`,
+  `switch` → `cond_br` on a new condition, or `cond_br` → `switch` cannot be
+  written yet — SimplifyCFG (task 27) needs them. The shape that keeps the
+  `CfgUpdate` log honest is a context edit that replaces the terminator and
+  records the edge delta, as `split_block` does, not a terminating lent
+  builder.
+- **The builder's terminator law is a source scan, not a type.** Every
+  terminator build sits in an impl bounded `S: Terminating`, but the shared
+  `append_instruction` (in a `S: Positioning` impl, which a lent builder
+  reaches) accepts any `InstructionKindData`, terminators included;
+  `tests/terminator_build_drift.rs` is what fails on a terminator payload
+  built outside such an impl. Making it a compile error needs
+  terminator-ness in the payload's type — `InstructionKindData` is one enum
+  whose variants share payload types (`Add(BinaryOpData)`,
+  `Sub(BinaryOpData)`) — for example a `TerminatorKind` enum split out of it
+  and an `append_terminator` door bounded `S: Terminating`.
 - ~~**New `.stderr` under the canonical-rustc bless caveat.**
   `reshape_stale_cfg_analysis_across_edit` is blessed on the local rustc like
   the pass-API fixtures above; its `E0502` borrow-error wording is stable

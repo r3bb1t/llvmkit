@@ -351,7 +351,7 @@ the function.
      `Terminating` carries no `on_unimplemented` message: the terminator
      builds sit in impls bounded `S: Terminating`, and rustc reports a call
      from a lent builder as `E0599` naming the unmet bound, never with a
-     trait's message.
+     trait's message. (Corrected in decision 10.)
    - **Terminator payloads are held, not just conventional.**
      `append_ret` moved into a `S: Terminating` impl, and
      `tests/terminator_build_drift.rs` fails on any terminator payload
@@ -371,3 +371,26 @@ the function.
      `BuilderPositionState::Place` and reports an unpositioned builder as
      `E0277` again; `position_at_end`'s own block-typestate fixtures are back
      on a `module_new!` module and pin both entries.
+10. **Review of `c456af42`.**
+   - **`ForeignLayoutToken` is gone.** It and `ForeignValueId` named one
+     condition: a handle of another module than the one an entry works in.
+     A layout edit's check (`LayoutToken::admit`) compares the token's
+     module with the handle's, exactly as a positioning entry does, so every
+     such refusal is now `ForeignValueId`, and `at_end` delegates to
+     `try_position_at_end` instead of repeating its comparison.
+   - **`Terminating` has its message back.** Decision 9 said it could never
+     fire; it fires wherever code names the bound itself
+     (`fn close<S: Terminating>(..)`), and only the impl-bounded builds
+     report `E0599`.
+   - **"No reshape needs a lent builder to terminate" was too strong.**
+     `split_block` leaves both halves terminated, but a `ReshapeCfg` pass
+     still cannot change a terminator's kind (`br` → `unreachable`,
+     `switch` → `cond_br`); recorded in `docs/future-work.md`, with the
+     shape that keeps the `CfgUpdate` log honest.
+   - **The drift guards are tighter.** `terminator_build_drift.rs` ends an
+     impl at its closing `}` or any other column-0 item, no longer mistakes
+     an `impl_*!` macro call for an impl, and scans `src/ir_builder/` too.
+     `position_door_drift.rs` requires a `// Same-module block:` marker no
+     other code uses, where any `// Internal:` comment used to pass. The
+     type-level form of the terminator law is recorded in
+     `docs/future-work.md`.

@@ -393,7 +393,13 @@ impl InsertionPlace for PositionedBefore {}
 /// [`PositionedBefore`], every positioned state but a pass's lent [`InPass`]
 /// builder ([`InPass`] says why). The bound of the impls that hold every
 /// terminator build, so a lent builder's call to one is `E0599` naming the
-/// unmet `InPass<_>: Terminating`. Sealed.
+/// unmet `InPass<_>: Terminating`; the message below shows where code names
+/// the bound itself (`fn close<S: Terminating>(..)`). Sealed.
+#[diagnostic::on_unimplemented(
+    message = "a builder a pass's context lent cannot emit a terminator",
+    note = "a lent builder builds only the function's body; a `ReshapeCfg` pass changes \
+            the CFG through its context's `split_block`, `edit_terminator` and `redirect_*`"
+)]
 pub trait Terminating: Positioning {}
 
 impl Terminating for PositionedAtEnd {}
@@ -859,11 +865,7 @@ where
     where
         Params: BlockParams,
     {
-        if bb.module_ref().id() != key.module().id() {
-            return Err(IrError::ForeignValueId);
-        }
-        // Internal: `bb`'s module was compared with the token's just above.
-        Ok(IrBuilder::new_for_unkeyed::<R>(key.module()).position_at_end_trusting_same_module(bb))
+        IrBuilder::new_for::<R>(key).try_position_at_end(bb)
     }
 }
 
@@ -895,8 +897,9 @@ where
 }
 
 // --------------------------------------------------------------------------
-// The reads every state has (`view`, `try_view`, `save_insert_point`), and the
-// positioning methods every `Repositionable` state has — every state but a
+// The reads every state has (`view`, `try_view`), the snapshot every
+// positioned state has (`save_insert_point`), and the positioning methods
+// every `Repositionable` state has — every state but a
 // pass's lent `InPass` builder: to `PositionedAtEnd` (`position_at_end*`), to
 // `PositionedBefore` (`position_before`), to whichever `position_past_allocas`
 // lands in, or to the state an `InsertPoint` was saved in
@@ -1084,7 +1087,7 @@ where
         B: crate::UniqueBrand,
         S: Repositionable,
     {
-        // Internal: `B` names one live module, and the builder and `bb` each
+        // Same-module block: `B` names one live module, and the builder and `bb` each
         // borrow a live module of brand `B`, so `bb` is the builder's own.
         self.position_at_end_trusting_same_module(bb)
     }
@@ -1110,14 +1113,16 @@ where
         if bb.module_ref().id() != self.module.id() {
             return Err(IrError::ForeignValueId);
         }
-        // Internal: `bb`'s module was compared with the builder's just above.
+        // Same-module block: `bb`'s module was compared with the builder's just above.
         Ok(self.position_at_end_trusting_same_module(bb))
     }
 
     /// [`position_at_end`](Self::position_at_end) without the brand bound or
     /// the module comparison, for crate code whose `bb` is provably of the
     /// builder's module: a block it just created, or one read from the
-    /// builder's own function. Each caller says why at the call.
+    /// builder's own function. Each caller says why under a
+    /// `// Same-module block:` comment, which `tests/position_door_drift.rs`
+    /// requires.
     pub(crate) fn position_at_end_trusting_same_module<Params>(
         self,
         bb: BasicBlock<'ctx, R, Unterminated, B, Params>,

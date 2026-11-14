@@ -1243,7 +1243,7 @@ impl<
     ///
     /// # Errors
     ///
-    /// [`IrError::ForeignLayoutToken`] if `key` is another module's, and
+    /// [`IrError::ForeignValueId`] if `key` is another module's, and
     /// [`IrError::ForeignValueId`] if `dest` is.
     pub fn splice_into<R2: ReturnMarker, S2: BlockTerminationState>(
         self,
@@ -1413,7 +1413,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
     ///
     /// Every refusal happens before anything is created, moved or rewritten:
     ///
-    /// - [`IrError::ForeignLayoutToken`] if `key` is another module's.
+    /// - [`IrError::ForeignValueId`] if `key` is another module's.
     /// - [`IrError::ForeignValueId`] if `before` belongs to another module.
     /// - [`BlockError`] (inside [`IrError::Block`]) if this block has no
     ///   terminator (upstream's `assert(getTerminator())`; a `Terminated` handle is not
@@ -1495,7 +1495,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
         }
 
         // BranchInst *BI = BranchInst::Create(New, this);
-        // Internal: the block being split, re-minted in its own module.
+        // Same-module block: the block being split, re-minted in its own module.
         let (_, branch) = IrBuilder::new_for_unkeyed::<R>(module_token)
             .position_at_end_trusting_same_module(
                 BasicBlock::<'ctx, R, Unterminated, B>::from_parts(self.id, own, self.ty),
@@ -1532,7 +1532,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
     ///
     /// Every refusal happens before anything is created, moved or retargeted:
     ///
-    /// - [`IrError::ForeignLayoutToken`] if `key` is another module's.
+    /// - [`IrError::ForeignValueId`] if `key` is another module's.
     /// - [`IrError::ForeignValueId`] if `before` belongs to another module.
     /// - [`BlockError`] (inside [`IrError::Block`]) if this block has no
     ///   terminator (upstream's `assert(getTerminator())`, which a `Terminated` handle does
@@ -1630,7 +1630,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
         }
 
         // BranchInst *BI = BranchInst::Create(this, New);
-        // Internal: `new_block` was created in the token's module above.
+        // Same-module block: `new_block` was created in the token's module above.
         let (_, branch) = IrBuilder::new_for::<R>(key)
             .position_at_end_trusting_same_module(new_block)
             .br_to_slot_unchecked(self.id);
