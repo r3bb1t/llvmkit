@@ -199,73 +199,87 @@ fn ashr_at_or_beyond_the_width_fills_with_the_sign_bit() {
 /// longer. The digits are upstream's: `UINT128_MAX` in decimal and in hex.
 #[test]
 fn a_wide_integer_prints_in_the_time_of_its_value() {
+    within_a_minute(
+        "a_wide_integer_prints_in_the_time_of_its_value",
+        "still printing after a minute: a full-width division per digit",
+        print_wide_values,
+    );
+}
+
+/// Division at the widest integer type, `i8388608`: 2^20 divisions of a small
+/// value by a small value, every bit set by a one-digit divisor (short
+/// division), and every bit set by 2^64 (Knuth's Algorithm D, with a
+/// normalizing shift of 31).
+///
+/// **No upstream test isolates the cost.** `APInt::udivrem` (`APInt.cpp`)
+/// divides a one-word dividend natively and otherwise runs `APInt::divide`,
+/// whose cost follows the operands' significant digits. llvmkit's `udivrem`
+/// was a bit-at-a-time long division, so each division here walked 2^23
+/// bits. After that was ported, its size facts still walked the width:
+/// `count_leading_zeros` tested a bit at a time, and the `X < Y` arm's
+/// `unsigned_cmp` read all 2^17 words. The 2^20 small divisions make any
+/// per-division walk of the width (2^17 words or more each) run past the
+/// deadline.
+#[test]
+fn division_at_the_widest_integer_follows_the_significant_digits() {
+    within_a_minute(
+        "division_at_the_widest_integer_follows_the_significant_digits",
+        "still dividing after a minute: division walks the width",
+        divide_wide_values,
+    );
+}
+
+fn divide_wide_values() {
+    const WIDTH: u32 = 1 << 23;
+    let seven = ApInt::from_words(WIDTH, &[7]);
+    let hundred = ApInt::from_words(WIDTH, &[100]);
+    for _ in 0..1 << 20 {
+        let small = hundred.udivrem(&seven).expect("non-zero divisor");
+        assert_eq!(small.quotient().words(), &[14]);
+        assert_eq!(small.remainder().words(), &[2]);
+    }
+    // `7 / 100`: the `X < Y` arm.
+    let less = seven.udivrem(&hundred).expect("non-zero divisor");
+    assert!(less.quotient().is_zero());
+    assert_eq!(less.remainder(), &seven);
+
+    let all_ones = ApInt::all_ones(WIDTH);
+    // 2^WIDTH - 1 is divisible by 3 at an even width: 0x5555... remains.
+    let by_three = all_ones
+        .udivrem(&ApInt::from_words(WIDTH, &[3]))
+        .expect("non-zero divisor");
+    let fives = vec![0x5555_5555_5555_5555_u64; 1 << 17];
+    assert_eq!(by_three.quotient(), &ApInt::from_words(WIDTH, &fives));
+    assert!(by_three.remainder().is_zero());
+
+    let by_two_to_the_64 = all_ones
+        .udivrem(&ApInt::from_words(WIDTH, &[0, 1]))
+        .expect("non-zero divisor");
+    assert_eq!(by_two_to_the_64.quotient(), &all_ones.lshr(64));
+    assert_eq!(
+        by_two_to_the_64.remainder(),
+        &ApInt::from_words(WIDTH, &[u64::MAX])
+    );
+}
+
+/// Runs `body` on a worker and exits the binary if it has not finished within
+/// a minute, naming `test` and `cost`. The worker cannot be stopped, so the
+/// binary exits rather than keep it running behind a failed test, at the cost
+/// of the other tests' results in this binary (see
+/// `long_splat_folds.rs::within_a_minute`).
+fn within_a_minute(test: &'static str, cost: &'static str, body: fn()) {
     let (done, finished) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
-        let one = ApInt::from_words(1 << 23, &[1]);
-        assert_eq!(one.to_string_radix(10, Signedness::Unsigned), "1");
-        let max = ApInt::from_words(128, &[u64::MAX, u64::MAX]);
-        assert_eq!(
-            max.to_string_radix(10, Signedness::Unsigned),
-            "340282366920938463463374607431768211455"
-        );
-        assert_eq!(
-            max.to_string_radix(16, Signedness::Unsigned),
-            "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
-        );
-        // Every radix over a value whose digits cross word and chunk edges.
-        let mixed = ApInt::from_words(128, &[0x0123_4567_89AB_CDEF, 0x0000_0000_0000_0042]);
-        assert_eq!(
-            mixed.to_string_radix(10, Signedness::Unsigned),
-            "1217567094394046893551"
-        );
-        assert_eq!(
-            mixed.to_string_radix(16, Signedness::Unsigned),
-            "420123456789ABCDEF"
-        );
-        assert_eq!(
-            mixed.to_string_radix(8, Signedness::Unsigned),
-            "204004432126361152746757"
-        );
-        // A lower chunk that needs its leading zeros: 10^19 + 5 divides by
-        // 10^19 into 1 and 5, and 36^12 + 7 and 36^25 + 1 split the same way
-        // in radix 36. Expected digits from Python's integer formatting.
-        let ten_19_plus_5 = ApInt::from_words(128, &[10_000_000_000_000_000_005]);
-        assert_eq!(
-            ten_19_plus_5.to_string_radix(10, Signedness::Unsigned),
-            "10000000000000000005"
-        );
-        let base36_chunk = ApInt::from_words(128, &[36_u64.pow(12) + 7]);
-        assert_eq!(
-            base36_chunk.to_string_radix(36, Signedness::Unsigned),
-            "1000000000007"
-        );
-        let base36_chunks =
-            ApInt::from_words(192, &[0x8f24_0000_0000_0001, 0x6015_4fc3_6cbf_4277, 0x2]);
-        assert_eq!(
-            base36_chunks.to_string_radix(36, Signedness::Unsigned),
-            "10000000000000000000000001"
-        );
-        let wide_ones = ApInt::all_ones(1 << 16);
-        assert_eq!(
-            wide_ones.to_string_radix(2, Signedness::Unsigned).len(),
-            1 << 16
-        );
+        body();
         done.send(()).ok();
     });
     match finished.recv_timeout(std::time::Duration::from_secs(60)) {
         Ok(()) => {}
-        // The worker cannot be stopped, so the binary exits rather than keep it
-        // running behind a failed test, at the cost of the other tests'
-        // results in this binary (see `long_splat_folds.rs::within_a_minute`).
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             // Straight to the process's stderr: the test harness captures
             // `eprintln!`, and the exit below would drop what it captured.
             use std::io::Write as _;
-            let _ = writeln!(
-                std::io::stderr(),
-                "a_wide_integer_prints_in_the_time_of_its_value: still printing after a \
-                 minute: a full-width division per digit"
-            );
+            let _ = writeln!(std::io::stderr(), "{test}: {cost}");
             std::process::exit(1);
         }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -274,4 +288,56 @@ fn a_wide_integer_prints_in_the_time_of_its_value() {
             }
         }
     }
+}
+
+fn print_wide_values() {
+    let one = ApInt::from_words(1 << 23, &[1]);
+    assert_eq!(one.to_string_radix(10, Signedness::Unsigned), "1");
+    let max = ApInt::from_words(128, &[u64::MAX, u64::MAX]);
+    assert_eq!(
+        max.to_string_radix(10, Signedness::Unsigned),
+        "340282366920938463463374607431768211455"
+    );
+    assert_eq!(
+        max.to_string_radix(16, Signedness::Unsigned),
+        "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+    );
+    // Every radix over a value whose digits cross word and chunk edges.
+    let mixed = ApInt::from_words(128, &[0x0123_4567_89AB_CDEF, 0x0000_0000_0000_0042]);
+    assert_eq!(
+        mixed.to_string_radix(10, Signedness::Unsigned),
+        "1217567094394046893551"
+    );
+    assert_eq!(
+        mixed.to_string_radix(16, Signedness::Unsigned),
+        "420123456789ABCDEF"
+    );
+    assert_eq!(
+        mixed.to_string_radix(8, Signedness::Unsigned),
+        "204004432126361152746757"
+    );
+    // A lower chunk that needs its leading zeros: 10^19 + 5 divides by
+    // 10^19 into 1 and 5, and 36^12 + 7 and 36^25 + 1 split the same way
+    // in radix 36. Expected digits from Python's integer formatting.
+    let ten_19_plus_5 = ApInt::from_words(128, &[10_000_000_000_000_000_005]);
+    assert_eq!(
+        ten_19_plus_5.to_string_radix(10, Signedness::Unsigned),
+        "10000000000000000005"
+    );
+    let base36_chunk = ApInt::from_words(128, &[36_u64.pow(12) + 7]);
+    assert_eq!(
+        base36_chunk.to_string_radix(36, Signedness::Unsigned),
+        "1000000000007"
+    );
+    let base36_chunks =
+        ApInt::from_words(192, &[0x8f24_0000_0000_0001, 0x6015_4fc3_6cbf_4277, 0x2]);
+    assert_eq!(
+        base36_chunks.to_string_radix(36, Signedness::Unsigned),
+        "10000000000000000000000001"
+    );
+    let wide_ones = ApInt::all_ones(1 << 16);
+    assert_eq!(
+        wide_ones.to_string_radix(2, Signedness::Unsigned).len(),
+        1 << 16
+    );
 }

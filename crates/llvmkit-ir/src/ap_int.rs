@@ -151,6 +151,23 @@ impl ApInt {
         Self { bit_width, words }
     }
 
+    /// [`Self::from_words`] over an owned vector: the words past the width
+    /// and the high zero words are dropped and the top word masked in place,
+    /// so nothing is copied.
+    fn from_word_vec(bit_width: u32, mut words: Vec<u64>) -> Self {
+        let limit = words_for_bits_usize(bit_width);
+        words.truncate(limit);
+        if words.len() == limit
+            && let Some(top) = words.last_mut()
+        {
+            *top &= top_mask(bit_width);
+        }
+        while words.last() == Some(&0) {
+            words.pop();
+        }
+        Self { bit_width, words }
+    }
+
     pub fn from_string(bit_width: u32, text: &str, radix: u8) -> IrResult<Self> {
         if Radix::of(radix).is_none() {
             return Err(IrError::InvalidOperation {
@@ -752,20 +769,23 @@ impl ApInt {
         }
     }
 
+    /// Mirrors `APInt::countLeadingZerosSlowCase` (APInt.cpp): a word at a
+    /// time from the top, stopping at the first non-zero word, then the
+    /// adjustment for the top word's unused bits. The high zero words are not
+    /// stored, so they are counted in one step rather than visited, and the
+    /// top word's unused bits are already clear, so the count is the width
+    /// less the bits up to the top set bit.
     pub fn count_leading_zeros(&self) -> u32 {
-        if self.bit_width == 0 {
-            return 0;
-        }
-        let mut count = 0;
-        let mut bit = self.bit_width;
-        while bit > 0 {
-            bit -= 1;
-            if self.bit(bit) {
-                break;
-            }
-            count += 1;
-        }
-        count
+        let Some(top) = self.words.last() else {
+            return self.bit_width;
+        };
+        // Fewer stored words than `bit_width / 64` rounded up, so the bits
+        // below the top stored word fit the width, as does the whole count.
+        let below_top = match u32::try_from(self.words.len() - 1) {
+            Ok(words) => words * WORD_BITS,
+            Err(_) => unreachable!("stored words are bounded by the u32 bit width"),
+        };
+        self.bit_width - (below_top + (WORD_BITS - top.leading_zeros()))
     }
 
     pub fn count_leading_ones(&self) -> u32 {
@@ -1500,8 +1520,8 @@ impl ApInt {
         // `rhs_words` are zero, as upstream's closing `memset`s make them.
         let (quotient, remainder) = divide(&self.words, lhs_words, &rhs.words, rhs_words);
         Some(ApIntDivRem {
-            quotient: Self::from_words(bit_width, &quotient),
-            remainder: Self::from_words(bit_width, &remainder),
+            quotient: Self::from_word_vec(bit_width, quotient),
+            remainder: Self::from_word_vec(bit_width, remainder),
         })
     }
 
@@ -2055,13 +2075,17 @@ impl ApInt {
         if self.bit_width != rhs.bit_width {
             return self.bit_width.cmp(&rhs.bit_width);
         }
-        let len = self.num_words();
-        let mut i = len;
-        while i > 0 {
-            i -= 1;
-            let lhs_word = word_at(&self.words, i, self.bit_width);
-            let rhs_word = word_at(&rhs.words, i, rhs.bit_width);
-            match lhs_word.cmp(&rhs_word) {
+        // Mirrors `APInt::tcCompare` (APInt.cpp): the first differing word
+        // from the top decides. The words above both values' stored words are
+        // zero in both and equal, so the walk starts at the higher top word:
+        // a value storing more words is the greater, since its top stored
+        // word is non-zero (the words are trimmed).
+        match self.words.len().cmp(&rhs.words.len()) {
+            Ordering::Equal => {}
+            longer => return longer,
+        }
+        for (lhs_word, rhs_word) in self.words.iter().rev().zip(rhs.words.iter().rev()) {
+            match lhs_word.cmp(rhs_word) {
                 Ordering::Equal => {}
                 non_eq => return non_eq,
             }

@@ -5,8 +5,10 @@
 //! entry point; the rows that follow are chosen to drive the rare branches of
 //! upstream's Knuth algorithm D. llvmkit's `udivrem` ports `APInt::udivrem`,
 //! `APInt::divide` and `KnuthDiv`, so the rows drive the same internal steps:
-//! the D6 add-back of `divrem_big1` / `divrem_big2` and the short division of
-//! a one-digit divisor among them.
+//! the D6 add-back among them. `divrem_big1`, `divrem_big2`, `divrem_big6`
+//! and `divrem_big7` reach it: with the add-back disabled in `knuth_div`, those
+//! four fail (`cargo +1.96.0 test -p llvmkit-ir --test ap_int_upstream_divrem`,
+//! on `69736e00` with the Knuth port applied).
 //!
 //! Two spelling differences, neither of which changes the logic:
 //!

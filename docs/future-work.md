@@ -994,14 +994,31 @@ digit, Algorithm D otherwise), so the cost follows the operands'
 significant digits as upstream's does. A wide dividend over a wide divisor
 still costs their digit counts multiplied, as upstream's does.
 
+Two size facts the port reads also walked the width, and were fixed in the
+review that followed:
+
+- `ApInt::count_leading_zeros` tested a bit at a time. It now ports
+  `APInt::countLeadingZerosSlowCase`, which works a word at a time.
+- `ApInt::unsigned_cmp` read every word of the width. Upstream's `tcCompare`
+  does the same, but llvmkit's stored words are trimmed, so comparing their
+  counts first gives the same answer without visiting the zero words.
+
 **Guarded by:**
-`crates/llvmkit-asmparser/tests/resource_bounds.rs::division_at_the_widest_integer_follows_the_significant_digits`.
-It exits on its one-minute deadline with the bit-at-a-time loop restored,
-checked on `69736e00` with this change applied. The D6 add-back step is
-reached by the ported `divrem_big1`, `divrem_big2`, `divrem_big6` and
-`divrem_big7` (`crates/llvmkit-ir/tests/ap_int_upstream_divrem.rs`). With the
-add-back disabled, those four failed and the other five passed, on the same
-tree.
+`crates/llvmkit-ir/tests/ap_int.rs::division_at_the_widest_integer_follows_the_significant_digits`,
+which runs 2^20 small divisions at that width. It exits on its one-minute
+deadline with the old `count_leading_zeros` restored, and again with the old
+`unsigned_cmp` restored. Each was restored separately and run with
+`cargo +1.96.0 test -p llvmkit-ir --test ap_int division`, on `d545776a`
+with the fixes applied. Its first version, one division of each kind in
+`crates/llvmkit-asmparser/tests/resource_bounds.rs`, exited on the same
+deadline with the bit-at-a-time loop restored (on `69736e00`). Each division
+under that loop walks all 2^23 bits.
+
+The ported `divrem_big1`, `divrem_big2`, `divrem_big6` and `divrem_big7`
+(`crates/llvmkit-ir/tests/ap_int_upstream_divrem.rs`) reach the D6 add-back
+step. With the add-back disabled, those four failed and the other five
+passed (`cargo +1.96.0 test -p llvmkit-ir --test ap_int_upstream_divrem`, on
+`69736e00` with the port applied).
 
 ## Value tracking builds a demanded-lanes `ApInt` of one bit per lane (found 2026-11-13, resource-bounds review)
 
