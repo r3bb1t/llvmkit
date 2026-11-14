@@ -2261,6 +2261,10 @@ pub enum IrError {
     /// A constant that cannot be built as asked; see [`ConstantError`].
     #[error(transparent)]
     Constant(#[from] ConstantError),
+    /// An instruction the builder cannot create or position as asked; see
+    /// [`BuilderError`].
+    #[error(transparent)]
+    Builder(#[from] BuilderError),
 }
 
 impl IrError {
@@ -2420,6 +2424,9 @@ impl IrError {
             // Every constant refusal rejects operands the caller (or the
             // text it parsed) supplied.
             Self::Constant(_) => Blame::UsageError,
+            // Every builder refusal rejects operands or a position the caller
+            // supplied.
+            Self::Builder(_) => Blame::UsageError,
         }
     }
 }
@@ -2601,4 +2608,179 @@ pub enum GepConstantError {
     /// "invalid getelementptr indices").
     #[error("invalid getelementptr indices")]
     InvalidIndices,
+}
+
+/// An instruction the IR builder cannot create or position as asked: where
+/// upstream's `IRBuilder` and instruction constructors assert, or where
+/// `Verifier` would refuse what they built. Each variant's `Display` is the
+/// text the condition was reported with, upstream's own where one exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum BuilderError {
+    /// `position_at_end` of a block that already ends in a terminator.
+    #[error("cannot position at end of a terminated block")]
+    PositionAfterTerminator,
+    /// `restore_insert_point` of an insert point that names no block.
+    #[error("cannot restore an empty insert point")]
+    EmptyInsertPoint,
+    /// `restore_insert_point` at the end of a block that has since been
+    /// terminated.
+    #[error("cannot restore insert point at end of terminated block")]
+    RestoreAfterTerminator,
+    /// An incoming added to a value that is not an instruction.
+    #[error("phi_add_incoming_from_value: target is not an instruction")]
+    PhiTargetNotAnInstruction,
+    /// An incoming added to an instruction that is not a `phi`.
+    #[error("phi_add_incoming_from_value: instruction is not a phi")]
+    PhiTargetNotAPhi,
+    /// A binary operator's or comparison's two operands differ in type.
+    #[error("{} operands must have the same type", operation.label())]
+    OperandTypesDiffer {
+        /// The operation the operands were given to.
+        operation: OperandCheck,
+    },
+    /// A binary operator's or comparison's operand is not of a type the
+    /// operation takes.
+    #[error(
+        "{} operand is neither {}",
+        operation.label(),
+        operation.admitted_types()
+    )]
+    OperandType {
+        /// The operation the operand was given to.
+        operation: OperandCheck,
+    },
+    /// An `fneg` operand that is not a float or float vector.
+    #[error("fneg operand is neither a float nor a float vector")]
+    FnegOperandType,
+    /// A runtime opcode handed to a binary-operator entry of the other
+    /// family, or one that is no binary operator.
+    #[error("opcode is not {} binary operator", family.article_label())]
+    NotABinaryOpcode {
+        /// The family the entry builds.
+        family: ArithmeticFamily,
+    },
+    /// A `select` of `token` values.
+    #[error("select values cannot have token type")]
+    SelectOfToken,
+    /// A vector `select` whose condition's elements are not `i1`.
+    #[error("vector select condition element type must be i1")]
+    VectorSelectConditionNotI1,
+    /// A vector `select` whose selected values do not have the condition's
+    /// lane count.
+    #[error(
+        "vector select requires selected vectors to have the same vector length as select \
+         condition"
+    )]
+    VectorSelectLengthMismatch,
+    /// A scalar `select` whose condition is not `i1`.
+    #[error("select condition must be i1 or <n x i1>")]
+    SelectConditionNotI1,
+    /// Fast-math flags on a `select` whose result is not floating-point.
+    #[error("fast-math flags require a floating-point select result")]
+    SelectFastMathNotFloatingPoint,
+    /// An `extractvalue` / `insertvalue` with no indices.
+    #[error("{} indices must not be empty", instruction.keyword())]
+    EmptyAggregateIndices {
+        /// The instruction that was given no indices.
+        instruction: AggregateInstruction,
+    },
+    /// A `shufflevector` `ShuffleVectorInst::isValidOperands` refuses.
+    #[error("invalid shufflevector operands")]
+    InvalidShuffleVectorOperands,
+    /// Fast-math flags on a call whose return type is not floating-point
+    /// (`LLParser::parseCall`'s wording).
+    #[error(
+        "fast-math-flags specified for call without floating-point scalar or vector return type"
+    )]
+    CallFastMathNotFloatingPoint,
+    /// A `struct_gep` field index that does not fit the `i32` constant it
+    /// is spelled with.
+    #[error("struct field index exceeds i32::MAX")]
+    StructFieldIndexTooWide {
+        /// The index asked for.
+        index: u32,
+    },
+    /// A `ptrtoaddr` whose result is not the width of its pointer's address
+    /// (`Verifier::visitPtrToAddrInst`'s wording).
+    #[error("PtrToAddr result must be address width")]
+    PtrToAddrResultWidth,
+    /// A `ptrtoaddr` whose source is not a pointer or pointer vector
+    /// (`Verifier::visitPtrToAddrInst`'s wording).
+    #[error("PtrToAddr source must be pointer")]
+    PtrToAddrSourceNotPointer,
+    /// A vector splat whose lane count does not fit the platform's `usize`.
+    #[error("vector splat lane count exceeds the platform address range")]
+    SplatLaneCountTooWide,
+}
+
+/// The operation an operand-type check in [`BuilderError`] belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OperandCheck {
+    /// An integer binary operator (`add`, `and`, `shl`, ...).
+    IntegerBinop,
+    /// An integer or pointer comparison.
+    Icmp,
+    /// A floating-point binary operator (`fadd`, `frem`, ...).
+    FloatingPointBinop,
+    /// A floating-point comparison.
+    Fcmp,
+}
+
+impl OperandCheck {
+    /// The operation as the diagnostic names it.
+    fn label(self) -> &'static str {
+        match self {
+            Self::IntegerBinop => "integer binop",
+            Self::Icmp => "icmp",
+            Self::FloatingPointBinop => "floating-point binop",
+            Self::Fcmp => "fcmp",
+        }
+    }
+
+    /// The operand types the operation takes, as the diagnostic lists them.
+    fn admitted_types(self) -> &'static str {
+        match self {
+            Self::IntegerBinop => "an integer nor an integer vector",
+            Self::Icmp => "an integer nor a pointer",
+            Self::FloatingPointBinop | Self::Fcmp => "a float nor a float vector",
+        }
+    }
+}
+
+/// The two families of binary operator the builder's erased entries take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ArithmeticFamily {
+    /// `add` through `xor`.
+    Integer,
+    /// `fadd` through `frem`.
+    FloatingPoint,
+}
+
+impl ArithmeticFamily {
+    /// The family with its indefinite article, as the diagnostic reads.
+    fn article_label(self) -> &'static str {
+        match self {
+            Self::Integer => "an integer",
+            Self::FloatingPoint => "a floating-point",
+        }
+    }
+}
+
+/// The aggregate instructions that take a list of constant indices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AggregateInstruction {
+    /// `extractvalue`.
+    ExtractValue,
+    /// `insertvalue`.
+    InsertValue,
+}
+
+impl AggregateInstruction {
+    /// The instruction's `.ll` keyword.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            Self::ExtractValue => "extractvalue",
+            Self::InsertValue => "insertvalue",
+        }
+    }
 }

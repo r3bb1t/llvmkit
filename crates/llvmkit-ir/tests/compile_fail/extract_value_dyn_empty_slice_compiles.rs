@@ -23,7 +23,7 @@ fn main() -> Result<(), IrError> {
     let b = llvmkit_ir::IrBuilder::new_for::<()>(&m).position_at_end(entry);
     let up = f.param(0)?;
     // Compiles fine: the empty-slice rejection is the runtime
-    // `IrError::InvalidOperation` kept by `extract_value_dyn`,
+    // `BuilderError::EmptyAggregateIndices` kept by `extract_value_dyn`,
     // not a compile-time error.
     let _ = b.extract_value_dyn(up, &[], "bad");
     Ok(())

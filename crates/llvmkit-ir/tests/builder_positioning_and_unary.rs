@@ -114,7 +114,10 @@ fn restore_insert_point_rejects_terminated_block() -> Result<(), IrError> {
         Ok(_) => panic!("terminated block cannot be reopened from a saved insert point"),
         Err(err) => err,
     };
-    assert!(matches!(err, IrError::InvalidOperation { .. }));
+    assert_eq!(
+        err,
+        IrError::from(llvmkit_ir::BuilderError::RestoreAfterTerminator)
+    );
     Ok(())
 }
 
@@ -171,7 +174,10 @@ fn position_at_end_dyn_rejects_a_terminated_block() -> Result<(), IrError> {
         Ok(_) => panic!("a terminated block must not be reopened from its id"),
         Err(err) => err,
     };
-    assert!(matches!(err, IrError::InvalidOperation { .. }));
+    assert_eq!(
+        err,
+        IrError::from(llvmkit_ir::BuilderError::PositionAfterTerminator)
+    );
     Ok(())
 }
 

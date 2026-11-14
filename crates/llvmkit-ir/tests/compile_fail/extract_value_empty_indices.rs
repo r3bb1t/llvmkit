@@ -3,7 +3,7 @@
 //! index list at runtime; the typed `extract_value<V, const N: usize,
 //! Name>` pulls that assertion forward to monomorphisation via
 //! `const { assert!(N > 0) }`, so `N == 0` fails to compile instead of
-//! producing the `IrError::InvalidOperation` returned by
+//! producing the `BuilderError::EmptyAggregateIndices` returned by
 //! `extract_value_dyn` (which keeps the runtime check; see
 //! `test/Assembler/extractvalue-no-idx.ll`).
 

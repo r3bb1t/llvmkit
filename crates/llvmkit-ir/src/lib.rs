@@ -266,10 +266,10 @@ pub use derived_types::{
 };
 pub use dominator_tree::{DominatorTree, DominatorTreeAnalysis, DominatorTreeBlock};
 pub use error::{
-    Blame, BrandError, ConstantError, ConstantExprError, DataLayoutError, GepConstantError,
-    InvalidValueNameReason, IrError, IrResult, PtrAuthRequirement, RenderedType,
-    TargetExtParameterRule, TypeKindLabel, TypePosition, ValueCategoryLabel, VerifierRule,
-    VerifierSubject,
+    AggregateInstruction, ArithmeticFamily, Blame, BrandError, BuilderError, ConstantError,
+    ConstantExprError, DataLayoutError, GepConstantError, InvalidValueNameReason, IrError,
+    IrResult, OperandCheck, PtrAuthRequirement, RenderedType, TargetExtParameterRule,
+    TypeKindLabel, TypePosition, ValueCategoryLabel, VerifierRule, VerifierSubject,
 };
 pub use fmf::FastMathFlags;
 pub use function::{FunctionBasicBlocks, FunctionBuilder, FunctionValue, IntoCallee};

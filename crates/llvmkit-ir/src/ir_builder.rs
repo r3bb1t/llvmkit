@@ -59,7 +59,10 @@ use super::constant_fold;
 use super::constants::ConstantExprOptions;
 use super::derived_types::{FloatType, FunctionType, IntType, PointerType, StructType};
 use super::element::{ElemDyn, StaticVecElem, VecElem, WrapWitness};
-use super::error::{IrError, IrResult, TypeKindLabel};
+use super::error::{
+    AggregateInstruction, ArithmeticFamily, BuilderError, IrError, IrResult, OperandCheck,
+    TypeKindLabel,
+};
 use super::float_kind::{Bfloat, Fp128, Half, PpcFp128, StaticFloatKind, X86Fp80};
 use super::float_kind::{FloatDyn, FloatKind, FloatWiderThan, IntoFloatValue};
 use super::fmf::FastMathFlags;
@@ -117,7 +120,7 @@ use super::struct_schema::{
 use super::sync_scope::SyncScope;
 use super::term_open_state::{Closed, Open};
 use super::r#type::TypeSlotAccess;
-use super::r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeSlot};
+use super::r#type::{ElementCount, IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeSlot};
 use super::typed_pointer_value::TypedPointerValue;
 use super::value::{
     ArrayValue, FloatValue, IntValue, IntoErasedValue, IntoPointerValue, IsValue, PointerValue,
@@ -129,6 +132,14 @@ use super::value_id::{
     PointerValueId, TypedCallInstId, VaArgInstId, ValueId, ViewIn,
 };
 use super::vec_len::{LenDyn, StaticVecLen, VecLen};
+
+/// What a `ptrtoaddr` source type says about the result: the address space
+/// whose index width the result takes, and the lane count when the source is
+/// a vector of pointers.
+struct PtrToAddrSource {
+    addr_space: crate::AddressSpace,
+    lanes: Option<ElementCount>,
+}
 
 /// Pair returned by terminator builders: the terminated insertion block and
 /// the emitted terminator instruction.
@@ -895,7 +906,7 @@ where
     /// - [`IrError::ForeignValueId`] if `block` was minted in another module
     ///   (the tag is compared before the arena is touched) or its slot no longer
     ///   holds a basic block;
-    /// - [`IrError::InvalidOperation`] if the block already has a terminator —
+    /// - [`BuilderError::PositionAfterTerminator`] if the block already has a terminator —
     ///   the same rule [`restore_insert_point`](Self::restore_insert_point)
     ///   enforces, so a `_dyn` reposition can never reopen a closed block.
     ///
@@ -918,9 +929,7 @@ where
             .terminator()
             .is_some_and(|inst| inst.is_terminator())
         {
-            return Err(IrError::InvalidOperation {
-                message: "cannot position at end of a terminated block",
-            });
+            return Err(BuilderError::PositionAfterTerminator.into());
         }
         Ok(IrBuilder {
             module: self.module,
@@ -1063,9 +1072,7 @@ where
         ip: InsertPoint<'ctx, R, B>,
     ) -> IrResult<IrBuilder<'m, 'ctx, B, F, Positioned, R>> {
         let Some(block) = ip.block else {
-            return Err(IrError::InvalidOperation {
-                message: "cannot restore an empty insert point",
-            });
+            return Err(BuilderError::EmptyInsertPoint.into());
         };
         let module_ref = self.mutable_ref();
         // Boundary: a snapshot from another module's builder carries that
@@ -1077,9 +1084,7 @@ where
                 .terminator()
                 .is_some_and(|inst| inst.is_terminator())
         {
-            return Err(IrError::InvalidOperation {
-                message: "cannot restore insert point at end of terminated block",
-            });
+            return Err(BuilderError::RestoreAfterTerminator.into());
         }
         Ok(IrBuilder {
             module: self.module,
@@ -1148,17 +1153,13 @@ where
         let inst_kind_data = match &inst_data.kind {
             ValueKindData::Instruction(i) => &i.kind,
             _ => {
-                return Err(IrError::InvalidOperation {
-                    message: "phi_add_incoming_from_value: target is not an instruction",
-                });
+                return Err(BuilderError::PhiTargetNotAnInstruction.into());
             }
         };
         let phi_payload = match inst_kind_data {
             InstructionKindData::Phi(p) => p,
             _ => {
-                return Err(IrError::InvalidOperation {
-                    message: "phi_add_incoming_from_value: instruction is not a phi",
-                });
+                return Err(BuilderError::PhiTargetNotAPhi.into());
             }
         };
         // Result-type check: the same rule the typed `PhiInst::add_incoming`
@@ -2232,14 +2233,16 @@ where
         N: AsRef<str>,
     {
         if lhs.ty() != rhs.ty() {
-            return Err(IrError::InvalidOperation {
-                message: "integer binop operands must have the same type",
-            });
+            return Err(BuilderError::OperandTypesDiffer {
+                operation: OperandCheck::IntegerBinop,
+            }
+            .into());
         }
         if !lhs.ty().is_int_or_int_vector() {
-            return Err(IrError::InvalidOperation {
-                message: "integer binop operand is neither an integer nor an integer vector",
-            });
+            return Err(BuilderError::OperandType {
+                operation: OperandCheck::IntegerBinop,
+            }
+            .into());
         }
         // Same opcode-keyed hook choice the typed `int_binop_flagged` path
         // makes, and for the same upstream reason: `IRBuilder::CreateAdd` and
@@ -2328,8 +2331,8 @@ where
     {
         let lhs = lhs.into_erased_value(self.mutable_ref())?;
         let rhs = rhs.into_erased_value(self.mutable_ref())?;
-        let kind_ctor = int_binop_kind_ctor(opcode).ok_or(IrError::InvalidOperation {
-            message: "opcode is not an integer binary operator",
+        let kind_ctor = int_binop_kind_ctor(opcode).ok_or(BuilderError::NotABinaryOpcode {
+            family: ArithmeticFamily::Integer,
         })?;
         self.int_binop_dyn_with_flags(opcode, lhs, rhs, flags, name, kind_ctor)
             .map(|v| v.id())
@@ -2433,14 +2436,16 @@ where
         let lhs = lhs.into_erased_value(self.mutable_ref())?;
         let rhs = rhs.into_erased_value(self.mutable_ref())?;
         if lhs.ty() != rhs.ty() {
-            return Err(IrError::InvalidOperation {
-                message: "icmp operands must have the same type",
-            });
+            return Err(BuilderError::OperandTypesDiffer {
+                operation: OperandCheck::Icmp,
+            }
+            .into());
         }
         if !lhs.ty().is_int_or_int_vector() && !lhs.ty().is_ptr_or_ptr_vector() {
-            return Err(IrError::InvalidOperation {
-                message: "icmp operand is neither an integer nor a pointer",
-            });
+            return Err(BuilderError::OperandType {
+                operation: OperandCheck::Icmp,
+            }
+            .into());
         }
         let result_ty = self.cmp_result_type(lhs.ty());
         // Internal: both operands were admitted by their lifts.
@@ -2529,33 +2534,24 @@ where
         }
         // "select values cannot have token type"
         if matches!(true_v.ty().data(), TypeData::Token) {
-            return Err(IrError::InvalidOperation {
-                message: "select values cannot have token type",
-            });
+            return Err(BuilderError::SelectOfToken.into());
         }
 
         match cond.ty().data().element_count() {
             // Vector select.
             Some(condition_shape) => {
                 if self.integer_scalar_bit_width(cond.ty()) != Some(1) {
-                    return Err(IrError::InvalidOperation {
-                        message: "vector select condition element type must be i1",
-                    });
+                    return Err(BuilderError::VectorSelectConditionNotI1.into());
                 }
                 // "selected values for vector select must be vectors", and
                 // then the element counts must agree.
                 if true_v.ty().data().element_count() != Some(condition_shape) {
-                    return Err(IrError::InvalidOperation {
-                        message: "vector select requires selected vectors to have the same vector \
-                                  length as select condition",
-                    });
+                    return Err(BuilderError::VectorSelectLengthMismatch.into());
                 }
             }
             None => {
                 if !matches!(cond.ty().data(), TypeData::Integer { bits: 1 }) {
-                    return Err(IrError::InvalidOperation {
-                        message: "select condition must be i1 or <n x i1>",
-                    });
+                    return Err(BuilderError::SelectConditionNotI1.into());
                 }
             }
         }
@@ -2567,9 +2563,7 @@ where
         // upstream really asks `isFPOrFPVectorTy`: the `fadd`-family, `fcmp`
         // and `fneg` operand checks.
         if !fmf.is_empty() && !crate::operator::is_supported_floating_point_type(true_v.ty()) {
-            return Err(IrError::InvalidOperation {
-                message: "fast-math flags require a floating-point select result",
-            });
+            return Err(BuilderError::SelectFastMathNotFloatingPoint.into());
         }
 
         let result_ty = true_v.ty().slot_trusting_same_module();
@@ -2622,18 +2616,20 @@ where
     {
         let lhs = lhs.into_erased_value(self.mutable_ref())?;
         let rhs = rhs.into_erased_value(self.mutable_ref())?;
-        let kind_ctor = fp_binop_kind_ctor(opcode).ok_or(IrError::InvalidOperation {
-            message: "opcode is not a floating-point binary operator",
+        let kind_ctor = fp_binop_kind_ctor(opcode).ok_or(BuilderError::NotABinaryOpcode {
+            family: ArithmeticFamily::FloatingPoint,
         })?;
         if lhs.ty() != rhs.ty() {
-            return Err(IrError::InvalidOperation {
-                message: "floating-point binop operands must have the same type",
-            });
+            return Err(BuilderError::OperandTypesDiffer {
+                operation: OperandCheck::FloatingPointBinop,
+            }
+            .into());
         }
         if !lhs.ty().is_float_or_float_vector() {
-            return Err(IrError::InvalidOperation {
-                message: "floating-point binop operand is neither a float nor a float vector",
-            });
+            return Err(BuilderError::OperandType {
+                operation: OperandCheck::FloatingPointBinop,
+            }
+            .into());
         }
         if let Some(folded) = self.folder.fold_bin_op_fmf_dyn(opcode, lhs, rhs, fmf)? {
             return Ok(self
@@ -2678,14 +2674,16 @@ where
         let lhs = lhs.into_erased_value(self.mutable_ref())?;
         let rhs = rhs.into_erased_value(self.mutable_ref())?;
         if lhs.ty() != rhs.ty() {
-            return Err(IrError::InvalidOperation {
-                message: "fcmp operands must have the same type",
-            });
+            return Err(BuilderError::OperandTypesDiffer {
+                operation: OperandCheck::Fcmp,
+            }
+            .into());
         }
         if !lhs.ty().is_float_or_float_vector() {
-            return Err(IrError::InvalidOperation {
-                message: "fcmp operand is neither a float nor a float vector",
-            });
+            return Err(BuilderError::OperandType {
+                operation: OperandCheck::Fcmp,
+            }
+            .into());
         }
         let result_ty = self.cmp_result_type(lhs.ty());
         // Internal: both operands were admitted by their lifts.
@@ -2719,9 +2717,7 @@ where
     {
         let value = value.into_erased_value(self.mutable_ref())?;
         if !value.ty().is_float_or_float_vector() {
-            return Err(IrError::InvalidOperation {
-                message: "fneg operand is neither a float nor a float vector",
-            });
+            return Err(BuilderError::FnegOperandType.into());
         }
         if let Some(folded) = self
             .folder
@@ -3775,9 +3771,10 @@ where
     {
         let agg = aggregate.into_erased_value(self.mutable_ref())?;
         if indices.is_empty() {
-            return Err(IrError::InvalidOperation {
-                message: "extractvalue indices must not be empty",
-            });
+            return Err(BuilderError::EmptyAggregateIndices {
+                instruction: AggregateInstruction::ExtractValue,
+            }
+            .into());
         }
         // Internal: the aggregate was admitted by its lift.
         let leaf_ty =
@@ -3844,9 +3841,10 @@ where
         let agg = aggregate.into_erased_value(self.mutable_ref())?;
         let val = value.into_erased_value(self.mutable_ref())?;
         if indices.is_empty() {
-            return Err(IrError::InvalidOperation {
-                message: "insertvalue indices must not be empty",
-            });
+            return Err(BuilderError::EmptyAggregateIndices {
+                instruction: AggregateInstruction::InsertValue,
+            }
+            .into());
         }
         // Internal: the aggregate and the value were admitted by their lifts.
         let agg_ty = agg.ty().slot_trusting_same_module();
@@ -4248,9 +4246,7 @@ where
         // parser never surfaces this one, because — exactly as upstream — it
         // runs its own `isValidOperands` before constructing.
         if !ShuffleVectorInst::is_valid_operands(l, r, mask) {
-            return Err(IrError::InvalidOperation {
-                message: "invalid shufflevector operands",
-            });
+            return Err(BuilderError::InvalidShuffleVectorOperands.into());
         }
         if let Some(folded) = self.folder.fold_shuffle_vector_dyn(l, r, mask)? {
             return self
@@ -6415,10 +6411,7 @@ where
         if !fmf.is_empty()
             && !crate::operator::is_supported_floating_point_type(fn_ty.return_type())
         {
-            return Err(IrError::InvalidOperation {
-                message: "fast-math-flags specified for call without floating-point scalar or \
-                          vector return type",
-            });
+            return Err(BuilderError::CallFastMathNotFloatingPoint.into());
         }
         // `CallInst::Create` then `setTailCallKind` / `setCallingConv` /
         // `setFastMathFlags` / `setAttributes`: llvmkit's payload constructor
@@ -6636,9 +6629,10 @@ where
         let i32_ty = self.mutable_ref().i32_type();
         let zero = i32_ty.const_zero().as_dyn();
         let idx_val = i32_ty
-            .const_int(i32::try_from(idx).map_err(|_| IrError::InvalidOperation {
-                message: "struct field index exceeds i32::MAX",
-            })?)
+            .const_int(
+                i32::try_from(idx)
+                    .map_err(|_| BuilderError::StructFieldIndexTooWide { index: idx })?,
+            )
             .as_dyn();
         self.gep_inner(
             struct_ty,
@@ -7343,9 +7337,7 @@ where
         let dst_slot = dst_ty.slot_trusting_same_module();
         let expected_ty = self.ptr_to_addr_result_type(value.ty())?;
         if expected_ty.slot_trusting_same_module() != dst_slot {
-            return Err(IrError::InvalidOperation {
-                message: "PtrToAddr result must be address width",
-            });
+            return Err(BuilderError::PtrToAddrResultWidth.into());
         }
         if let Some(folded) = self
             .folder
@@ -7844,9 +7836,7 @@ where
                 zero_idx,
                 insert_name,
             )?;
-        let n = usize::try_from(count.get()).map_err(|_| IrError::InvalidOperation {
-            message: "vector splat lane count exceeds the platform address range",
-        })?;
+        let n = usize::try_from(count.get()).map_err(|_| BuilderError::SplatLaneCountTooWide)?;
         // A splat selects lane 0 of the inserted vector for every result lane.
         let mask = vec![ShuffleMaskElem::Lane(0); n];
         let splat_name = if name_ref.is_empty() {
@@ -10547,47 +10537,43 @@ where
     }
 
     fn ptr_to_addr_result_type(&self, src_ty: Type<'ctx, B>) -> IrResult<Type<'ctx, B>> {
-        let (addr_space, vector_shape) = self.ptr_to_addr_source_shape(src_ty)?;
-        let address_bits = self.module.data_layout().index_size_in_bits(addr_space);
+        let source = self.ptr_to_addr_source_shape(src_ty)?;
+        let address_bits = self
+            .module
+            .data_layout()
+            .index_size_in_bits(source.addr_space);
         let int_ty = self.int_type_for_bits(address_bits)?.as_type();
-        let Some((lanes, scalable)) = vector_shape else {
+        let Some(lanes) = source.lanes else {
             return Ok(int_ty);
         };
-        let vector_id = if scalable {
+        let vector_id = if lanes.scalable {
             self.module
                 .context()
-                .scalable_vector_type(int_ty.slot_trusting_same_module(), lanes)
+                .scalable_vector_type(int_ty.slot_trusting_same_module(), lanes.min)
         } else {
             self.module
                 .context()
-                .fixed_vector_type(int_ty.slot_trusting_same_module(), lanes)
+                .fixed_vector_type(int_ty.slot_trusting_same_module(), lanes.min)
         };
         Ok(Type::new(vector_id, self.mutable_ref()))
     }
 
-    fn ptr_to_addr_source_shape(
-        &self,
-        src_ty: Type<'ctx, B>,
-    ) -> IrResult<(crate::AddressSpace, Option<(NonZeroU32, bool)>)> {
-        match src_ty.data() {
-            TypeData::Pointer { addr_space } => Ok((*addr_space, None)),
-            TypeData::FixedVector { elem, n } => match self.module.context().type_data(*elem) {
-                TypeData::Pointer { addr_space } => Ok((*addr_space, Some((*n, false)))),
-                _ => Err(IrError::InvalidOperation {
-                    message: "PtrToAddr source must be pointer",
-                }),
-            },
-            TypeData::ScalableVector { elem, min } => {
-                match self.module.context().type_data(*elem) {
-                    TypeData::Pointer { addr_space } => Ok((*addr_space, Some((*min, true)))),
-                    _ => Err(IrError::InvalidOperation {
-                        message: "PtrToAddr source must be pointer",
-                    }),
-                }
-            }
-            _ => Err(IrError::InvalidOperation {
-                message: "PtrToAddr source must be pointer",
+    /// The shape `Verifier::visitPtrToAddrInst` reads off a `ptrtoaddr`
+    /// source: a pointer, or a vector of pointers.
+    fn ptr_to_addr_source_shape(&self, src_ty: Type<'ctx, B>) -> IrResult<PtrToAddrSource> {
+        let (pointer, lanes) = match src_ty.data() {
+            TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => (
+                self.module.context().type_data(*elem),
+                src_ty.data().element_count(),
+            ),
+            scalar => (scalar, None),
+        };
+        match pointer {
+            TypeData::Pointer { addr_space } => Ok(PtrToAddrSource {
+                addr_space: *addr_space,
+                lanes,
             }),
+            _ => Err(BuilderError::PtrToAddrSourceNotPointer.into()),
         }
     }
 

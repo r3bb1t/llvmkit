@@ -54,10 +54,11 @@ impl Pattern {
     }
 }
 
-/// The site counts at the ceiling, measured by this test on `33b2aaaf` with
-/// the rule added. Lower one whenever its count falls; never raise one.
+/// The site counts at the ceiling, as [`loose_types_do_not_grow`] measures
+/// them: first on `33b2aaaf` with the rule added, and again in each commit
+/// that lowered one. Lower one whenever its count falls; never raise one.
 const CEILINGS: [(Pattern, usize); 4] = [
-    (Pattern::InvalidOperationSite, 101),
+    (Pattern::InvalidOperationSite, 70),
     (Pattern::StringParseDiagnostic, 506),
     (Pattern::PublicTupleReturn, 47),
     (Pattern::PublicBoolParameter, 43),
