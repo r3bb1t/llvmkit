@@ -41,6 +41,7 @@ use super::value::ValueKindData;
 use crate::Branded;
 use crate::ap_int::ApInt;
 use crate::gep_no_wrap_flags::GepNoWrapFlags;
+use crate::instr_types::CastOpcode;
 use crate::module::{Module, ModuleRef, Unverified};
 use crate::r#type::{Type, TypeData, TypeKind, TypeSlot, TypeSlotAccess};
 use crate::value::{
@@ -102,15 +103,28 @@ impl ConstantExprOpcode {
     }
 
     pub(crate) fn is_cast(self) -> bool {
-        matches!(
-            self,
-            Self::Trunc
-                | Self::PtrToAddr
-                | Self::PtrToInt
-                | Self::IntToPtr
-                | Self::BitCast
-                | Self::AddrSpaceCast
-        )
+        self.cast_opcode().is_some()
+    }
+
+    /// The instruction cast opcode a cast expression of this opcode is
+    /// (`ConstantExpr::getCast`'s `Opcode`), or `None` for an opcode that is no
+    /// cast.
+    pub(crate) fn cast_opcode(self) -> Option<CastOpcode> {
+        match self {
+            Self::Trunc => Some(CastOpcode::Trunc),
+            Self::PtrToAddr => Some(CastOpcode::PtrToAddr),
+            Self::PtrToInt => Some(CastOpcode::PtrToInt),
+            Self::IntToPtr => Some(CastOpcode::IntToPtr),
+            Self::BitCast => Some(CastOpcode::BitCast),
+            Self::AddrSpaceCast => Some(CastOpcode::AddrSpaceCast),
+            Self::Add
+            | Self::Sub
+            | Self::Xor
+            | Self::GetElementPtr
+            | Self::ShuffleVector
+            | Self::InsertElement
+            | Self::ExtractElement => None,
+        }
     }
 }
 

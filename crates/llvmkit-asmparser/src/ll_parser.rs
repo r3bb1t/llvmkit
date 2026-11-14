@@ -9532,9 +9532,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             )
             .map_err(|e| match e {
                 // `Constants::ptr_auth` carries upstream's own wording
-                // (`LLParser::parseValID`'s `lltok::kw_ptrauth` arm), so the
-                // message is rendered verbatim rather than as `expected ...`.
-                IrError::Constant(error) => self.message(error.to_string()),
+                // (`LLParser::parseValID`'s `lltok::kw_ptrauth` arm), which
+                // `ParseError::Constant` renders verbatim.
+                IrError::Constant(error) => ParseError::Constant {
+                    error,
+                    loc: self.loc(),
+                },
                 other => self.builder_err("ptrauth", other),
             })
     }
@@ -9939,8 +9942,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     message: "invalid operands to shufflevector".into(),
                     loc: self.loc(),
                 },
-                IrError::Constant(error) => ParseError::Expected {
-                    expected: error.to_string().into(),
+                IrError::Constant(error) => ParseError::Constant {
+                    error,
                     loc: self.loc(),
                 },
                 other => self.builder_err("constant expression", other),

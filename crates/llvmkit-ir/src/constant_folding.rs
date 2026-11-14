@@ -3109,7 +3109,7 @@ fn constant_fold_constant_expr_operands<'ctx, B: ModuleBrand + 'ctx, C: Capabili
             let [operand] = operands else {
                 return Ok(None);
             };
-            let Some(opcode) = cast_opcode_from_constant_expr(expr.opcode) else {
+            let Some(opcode) = expr.opcode.cast_opcode() else {
                 return Ok(None);
             };
             constant_fold_cast_operand_trusting_same_module(
@@ -3192,18 +3192,6 @@ fn binary_constant_expr_opcode(opcode: BinaryOpcode) -> Option<ConstantExprOpcod
         | BinaryOpcode::Fmul
         | BinaryOpcode::Fdiv
         | BinaryOpcode::Frem => None,
-    }
-}
-
-fn cast_opcode_from_constant_expr(opcode: ConstantExprOpcode) -> Option<CastOpcode> {
-    match opcode {
-        ConstantExprOpcode::Trunc => Some(CastOpcode::Trunc),
-        ConstantExprOpcode::PtrToAddr => Some(CastOpcode::PtrToAddr),
-        ConstantExprOpcode::PtrToInt => Some(CastOpcode::PtrToInt),
-        ConstantExprOpcode::IntToPtr => Some(CastOpcode::IntToPtr),
-        ConstantExprOpcode::BitCast => Some(CastOpcode::BitCast),
-        ConstantExprOpcode::AddrSpaceCast => Some(CastOpcode::AddrSpaceCast),
-        _ => None,
     }
 }
 

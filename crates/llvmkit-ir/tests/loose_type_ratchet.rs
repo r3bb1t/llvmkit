@@ -59,7 +59,7 @@ impl Pattern {
 /// that lowered one. Lower one whenever its count falls; never raise one.
 const CEILINGS: [(Pattern, usize); 4] = [
     (Pattern::InvalidOperationSite, 70),
-    (Pattern::StringParseDiagnostic, 506),
+    (Pattern::StringParseDiagnostic, 504),
     (Pattern::PublicTupleReturn, 47),
     (Pattern::PublicBoolParameter, 43),
 ];

@@ -6,7 +6,7 @@
 
 use llvmkit_asmparser::{ll_parser::Parser, parse_error::ParseError, parser};
 use llvmkit_ir::module_new;
-use llvmkit_ir::{ArrayType, Module};
+use llvmkit_ir::{ArrayType, ConstantError, Module, PtrAuthRequirement};
 
 pub mod support;
 
@@ -1104,6 +1104,59 @@ fn ptrauth_invalid_operands_match_upstream_diagnostics() {
         ),
     ] {
         assert_parse_error(fixture, expected);
+    }
+}
+
+/// The same `test/Assembler/invalid-ptrauth-const*.ll` fixtures, matched by
+/// the rule each breaks: the parser hands the IR's typed refusal over as
+/// `ParseError::Constant` instead of a string.
+///
+/// **llvmkit-specific**: upstream's diagnostics are text; the typed payload is
+/// llvmkit's. The text is pinned by
+/// [`ptrauth_invalid_operands_match_upstream_diagnostics`].
+#[test]
+fn ptrauth_invalid_operands_carry_the_typed_rule() {
+    for (fixture, rule) in [
+        (
+            include_bytes!("fixtures/upstream/ptrauth-const/invalid_ptrauth_base_pointer.ll")
+                .as_slice(),
+            PtrAuthRequirement::BasePointer,
+        ),
+        (
+            include_bytes!("fixtures/upstream/ptrauth-const/invalid_ptrauth_key.ll").as_slice(),
+            PtrAuthRequirement::Key,
+        ),
+        (
+            include_bytes!("fixtures/upstream/ptrauth-const/invalid_ptrauth_addr_disc.ll")
+                .as_slice(),
+            PtrAuthRequirement::AddressDiscriminator,
+        ),
+        (
+            include_bytes!("fixtures/upstream/ptrauth-const/invalid_ptrauth_disc_type.ll")
+                .as_slice(),
+            PtrAuthRequirement::IntegerDiscriminator,
+        ),
+        (
+            include_bytes!("fixtures/upstream/ptrauth-const/invalid_ptrauth_deactivation.ll")
+                .as_slice(),
+            PtrAuthRequirement::DeactivationSymbolType,
+        ),
+    ] {
+        let module = Module::dynamic("parser_constants_ptrauth_rule");
+        let err = Parser::new(fixture, &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect_err("fixture is rejected");
+        assert!(
+            matches!(
+                err,
+                ParseError::Constant {
+                    error: ConstantError::PtrAuth(found),
+                    ..
+                } if found == rule
+            ),
+            "{rule:?}: got {err:?}"
+        );
     }
 }
 

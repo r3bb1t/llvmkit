@@ -2234,13 +2234,13 @@ where
     {
         if lhs.ty() != rhs.ty() {
             return Err(BuilderError::OperandTypesDiffer {
-                operation: OperandCheck::IntegerBinop,
+                operation: OperandCheck::IntegerBinaryOperator,
             }
             .into());
         }
         if !lhs.ty().is_int_or_int_vector() {
             return Err(BuilderError::OperandType {
-                operation: OperandCheck::IntegerBinop,
+                operation: OperandCheck::IntegerBinaryOperator,
             }
             .into());
         }
@@ -2621,13 +2621,13 @@ where
         })?;
         if lhs.ty() != rhs.ty() {
             return Err(BuilderError::OperandTypesDiffer {
-                operation: OperandCheck::FloatingPointBinop,
+                operation: OperandCheck::FloatingPointBinaryOperator,
             }
             .into());
         }
         if !lhs.ty().is_float_or_float_vector() {
             return Err(BuilderError::OperandType {
-                operation: OperandCheck::FloatingPointBinop,
+                operation: OperandCheck::FloatingPointBinaryOperator,
             }
             .into());
         }
@@ -6356,7 +6356,7 @@ where
     /// either, so a config field would be an option those builders accept and
     /// ignore. `fmf` is `CallInst::setFastMathFlags`, a parameter for the same
     /// reason — an `invoke` or `callbr` is never an `FPMathOperator` — and
-    /// refused with [`IrError::InvalidOperation`] when non-empty on a call
+    /// refused with [`BuilderError::CallFastMathNotFloatingPoint`] when non-empty on a call
     /// whose return type is not floating-point, where upstream asserts. The
     /// refusal carries `LLParser::parseCall`'s sentence for the same fault.
     ///

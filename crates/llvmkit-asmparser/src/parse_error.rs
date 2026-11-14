@@ -18,6 +18,7 @@ use std::borrow::Cow;
 
 use llvmkit_support::Span;
 
+use llvmkit_ir::ConstantError;
 use llvmkit_ir::metadata::{SpecializedMetadataField, SpecializedMetadataKind};
 
 use crate::ll_lexer::LexError;
@@ -246,6 +247,14 @@ pub enum ParseError {
         loc: Span,
     },
 
+    /// A constant the IR refused to build as written: the typed
+    /// [`ConstantError`] the builder returned, rendered verbatim (each
+    /// variant's `Display` is `LLParser::parseValID`'s sentence where upstream
+    /// spells one). A caller matches the rule that failed instead of comparing
+    /// text.
+    #[error("{error}")]
+    Constant { error: ConstantError, loc: Span },
+
     /// `redefinition of <symbol>` — mirrors `LLParser::checkValueID` and
     /// the `"redefinition of "` diagnostic site in `LLParser.cpp`.
     #[error("redefinition of {kind} '{sigil}{id}'", sigil = .kind.sigil())]
@@ -417,6 +426,7 @@ impl ParseError {
             ParseError::Lex(e) => e.span(),
             ParseError::Expected { loc, .. }
             | ParseError::Message { loc, .. }
+            | ParseError::Constant { loc, .. }
             | ParseError::Redefinition { loc, .. }
             | ParseError::UndefinedSymbol { loc, .. }
             | ParseError::DefinedWithWrongType { loc, .. }

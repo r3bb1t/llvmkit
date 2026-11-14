@@ -1268,17 +1268,15 @@ impl DataLayoutError {
 /// bill: a 56-variant return type obliged the parser's brand mapper to write
 /// an arm for 54 unreachable variants, and it filled that arm by stuffing a
 /// stringified error into an I/O error with `ErrorKind::Other`. Narrower
-/// errors ([`BrandError`], [`DataLayoutError`]) and an exhaustive `IrError`
+/// errors ([`BrandError`], [`DataLayoutError`], [`ConstantError`],
+/// [`BuilderError`]) and an exhaustive `IrError`
 /// are two halves of removing that pressure.
 ///
 /// `Hash` alongside `Eq` so an error can be de-duplicated: a verifier or a
 /// pass driver that collects failures across a whole module wants a
 /// `HashSet<IrError>`, not a `Vec` it has to scan.
 /// Every payload is `Hash + Eq + Clone` -- scalars, owned strings, and the
-/// crate's own label and nested-error types (`TypeKindLabel`, `RenderedType`,
-/// `VerifierRule`, `VerifierSubject`, `OperandBundleTag`, `BrandError`,
-/// `DataLayoutError`) -- so
-/// the derive is total. That bound, not a list of types, is what a new
+/// crate's own label and nested-error types -- so the derive is total. That bound, not a list of types, is what a new
 /// payload has to satisfy; `crates/llvmkit-ir/tests/ir_error_bounds.rs`
 /// checks it. The sibling
 /// `llvmkit_asmparser::ParseError` already carried `Hash` for the same reason.
@@ -2616,7 +2614,9 @@ pub enum GepConstantError {
 /// text the condition was reported with, upstream's own where one exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum BuilderError {
-    /// `position_at_end` of a block that already ends in a terminator.
+    /// `position_at_end_dyn` of a block that already ends in a terminator
+    /// (the typed `position_at_end` takes only an `Unterminated` block, so it
+    /// cannot ask this).
     #[error("cannot position at end of a terminated block")]
     PositionAfterTerminator,
     /// `restore_insert_point` of an insert point that names no block.
@@ -2717,11 +2717,11 @@ pub enum BuilderError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OperandCheck {
     /// An integer binary operator (`add`, `and`, `shl`, ...).
-    IntegerBinop,
+    IntegerBinaryOperator,
     /// An integer or pointer comparison.
     Icmp,
     /// A floating-point binary operator (`fadd`, `frem`, ...).
-    FloatingPointBinop,
+    FloatingPointBinaryOperator,
     /// A floating-point comparison.
     Fcmp,
 }
@@ -2730,9 +2730,9 @@ impl OperandCheck {
     /// The operation as the diagnostic names it.
     fn label(self) -> &'static str {
         match self {
-            Self::IntegerBinop => "integer binop",
+            Self::IntegerBinaryOperator => "integer binop",
             Self::Icmp => "icmp",
-            Self::FloatingPointBinop => "floating-point binop",
+            Self::FloatingPointBinaryOperator => "floating-point binop",
             Self::Fcmp => "fcmp",
         }
     }
@@ -2740,9 +2740,9 @@ impl OperandCheck {
     /// The operand types the operation takes, as the diagnostic lists them.
     fn admitted_types(self) -> &'static str {
         match self {
-            Self::IntegerBinop => "an integer nor an integer vector",
+            Self::IntegerBinaryOperator => "an integer nor an integer vector",
             Self::Icmp => "an integer nor a pointer",
-            Self::FloatingPointBinop | Self::Fcmp => "a float nor a float vector",
+            Self::FloatingPointBinaryOperator | Self::Fcmp => "a float nor a float vector",
         }
     }
 }

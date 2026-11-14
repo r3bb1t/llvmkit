@@ -10,7 +10,8 @@
 //!
 //! `BuilderError::SplatLaneCountTooWide` has no test: a `NonZeroU32` lane
 //! count always fits a 32- or 64-bit `usize`, so it is reachable only on a
-//! 16-bit target.
+//! 16-bit target. Every other variant is asserted here or in a sibling test,
+//! which `tests/typed_error_coverage.rs` checks against the enum.
 
 use llvmkit_ir::{
     AggregateInstruction, ArithmeticFamily, BinaryOpcode, BuilderError, Dyn, FastMathFlags,
@@ -55,7 +56,7 @@ fn integer_operand_refusals_name_their_operation() -> Result<(), IrError> {
     assert_eq!(
         err,
         IrError::from(BuilderError::OperandTypesDiffer {
-            operation: OperandCheck::IntegerBinop,
+            operation: OperandCheck::IntegerBinaryOperator,
         })
     );
     let err = refusal(
@@ -65,7 +66,7 @@ fn integer_operand_refusals_name_their_operation() -> Result<(), IrError> {
     assert_eq!(
         err,
         IrError::from(BuilderError::OperandType {
-            operation: OperandCheck::IntegerBinop,
+            operation: OperandCheck::IntegerBinaryOperator,
         })
     );
     let err = refusal(
@@ -147,7 +148,7 @@ fn floating_point_operand_refusals_name_their_operation() -> Result<(), IrError>
     assert_eq!(
         err,
         IrError::from(BuilderError::OperandTypesDiffer {
-            operation: OperandCheck::FloatingPointBinop,
+            operation: OperandCheck::FloatingPointBinaryOperator,
         })
     );
     let err = refusal(
@@ -157,7 +158,7 @@ fn floating_point_operand_refusals_name_their_operation() -> Result<(), IrError>
     assert_eq!(
         err,
         IrError::from(BuilderError::OperandType {
-            operation: OperandCheck::FloatingPointBinop,
+            operation: OperandCheck::FloatingPointBinaryOperator,
         })
     );
 
@@ -211,6 +212,14 @@ fn select_refusals_name_the_broken_rule() -> Result<(), IrError> {
     let bool_vector_arg = m.view(f).param(2)?.as_erased();
     let int_vector_arg = m.view(f).param(3)?.as_erased();
 
+    let Some(token_none) = m.token_type().as_type().null_value() else {
+        panic!("`token` has the null value `token none`");
+    };
+    let err = refusal(
+        b.select_erased(flag, token_none, token_none, "s"),
+        "select of token values",
+    );
+    assert_eq!(err, IrError::from(BuilderError::SelectOfToken));
     let err = refusal(
         b.select_erased(i32_arg, i32_arg, i32_arg, "s"),
         "select on an i32 condition",

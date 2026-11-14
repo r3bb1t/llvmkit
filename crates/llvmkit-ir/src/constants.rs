@@ -51,7 +51,7 @@ use super::error::{
     TypeKindLabel,
 };
 use super::function::FunctionValue;
-use super::instr_types::{BinaryOpcode, CastOpcode};
+use super::instr_types::BinaryOpcode;
 use super::instruction::{rewrite_debug_record_value, rewrite_operand_cells};
 use super::instructions::cast_is_valid;
 use super::marker::{Dyn, ReturnMarker};
@@ -1724,14 +1724,8 @@ fn fold_constant_expr_data<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             let [operand] = operands.as_slice() else {
                 return Ok(None);
             };
-            let opcode = match data.opcode {
-                ConstantExprOpcode::Trunc => CastOpcode::Trunc,
-                ConstantExprOpcode::PtrToAddr => CastOpcode::PtrToAddr,
-                ConstantExprOpcode::PtrToInt => CastOpcode::PtrToInt,
-                ConstantExprOpcode::IntToPtr => CastOpcode::IntToPtr,
-                ConstantExprOpcode::BitCast => CastOpcode::BitCast,
-                ConstantExprOpcode::AddrSpaceCast => CastOpcode::AddrSpaceCast,
-                _ => return Ok(None),
+            let Some(opcode) = data.opcode.cast_opcode() else {
+                unreachable!("each opcode of this arm is a cast (invariant)");
             };
             constant_fold_cast_instruction_trusting_same_module(opcode, *operand, result_ty)
         }
@@ -2939,79 +2933,26 @@ pub(super) fn validate_constant_expr_data(
         .collect();
     validate_constant_expr_flags(data)?;
     match data.opcode {
-        ConstantExprOpcode::Trunc => {
-            // Each cast arm asks `CastInst::castIsValid`, as each
+        ConstantExprOpcode::Trunc
+        | ConstantExprOpcode::PtrToAddr
+        | ConstantExprOpcode::PtrToInt
+        | ConstantExprOpcode::IntToPtr
+        | ConstantExprOpcode::BitCast
+        | ConstantExprOpcode::AddrSpaceCast => {
+            // Each cast asks `CastInst::castIsValid`, as each
             // `ConstantExpr::get*` cast constructor asserts it.
-            let [src_ty] = operand_tys.as_slice() else {
-                return Err(ConstantExprError::OperandCount {
-                    opcode: ConstantExprOpcode::Trunc,
-                }
-                .into());
+            let Some(cast) = data.opcode.cast_opcode() else {
+                unreachable!("each opcode of this arm is a cast (invariant)");
             };
-            if !cast_is_valid(CastOpcode::Trunc, *src_ty, result_ty) {
-                return Err(ConstantExprError::InvalidOperands {
-                    opcode: ConstantExprOpcode::Trunc,
-                }
-                .into());
-            }
-        }
-        ConstantExprOpcode::PtrToAddr | ConstantExprOpcode::PtrToInt => {
             let [src_ty] = operand_tys.as_slice() else {
                 return Err(ConstantExprError::OperandCount {
                     opcode: data.opcode,
                 }
                 .into());
             };
-            let opcode = if matches!(data.opcode, ConstantExprOpcode::PtrToAddr) {
-                CastOpcode::PtrToAddr
-            } else {
-                CastOpcode::PtrToInt
-            };
-            if !cast_is_valid(opcode, *src_ty, result_ty) {
+            if !cast_is_valid(cast, *src_ty, result_ty) {
                 return Err(ConstantExprError::InvalidOperands {
                     opcode: data.opcode,
-                }
-                .into());
-            }
-        }
-        ConstantExprOpcode::IntToPtr => {
-            let [src_ty] = operand_tys.as_slice() else {
-                return Err(ConstantExprError::OperandCount {
-                    opcode: ConstantExprOpcode::IntToPtr,
-                }
-                .into());
-            };
-            if !cast_is_valid(CastOpcode::IntToPtr, *src_ty, result_ty) {
-                return Err(ConstantExprError::InvalidOperands {
-                    opcode: ConstantExprOpcode::IntToPtr,
-                }
-                .into());
-            }
-        }
-        ConstantExprOpcode::BitCast => {
-            let [src_ty] = operand_tys.as_slice() else {
-                return Err(ConstantExprError::OperandCount {
-                    opcode: ConstantExprOpcode::BitCast,
-                }
-                .into());
-            };
-            if !cast_is_valid(CastOpcode::BitCast, *src_ty, result_ty) {
-                return Err(ConstantExprError::InvalidOperands {
-                    opcode: ConstantExprOpcode::BitCast,
-                }
-                .into());
-            }
-        }
-        ConstantExprOpcode::AddrSpaceCast => {
-            let [src_ty] = operand_tys.as_slice() else {
-                return Err(ConstantExprError::OperandCount {
-                    opcode: ConstantExprOpcode::AddrSpaceCast,
-                }
-                .into());
-            };
-            if !cast_is_valid(CastOpcode::AddrSpaceCast, *src_ty, result_ty) {
-                return Err(ConstantExprError::InvalidOperands {
-                    opcode: ConstantExprOpcode::AddrSpaceCast,
                 }
                 .into());
             }
@@ -3173,10 +3114,10 @@ pub(super) fn verify_constant_expr_data(
     if matches!(data.opcode, ConstantExprOpcode::PtrToAddr) {
         let result_ty = Type::<DynBrand, ReadOnly>::new(data.result_ty, module);
         let [src] = data.operands.as_ref() else {
-            return Err(ConstantExprError::OperandCount {
-                opcode: ConstantExprOpcode::PtrToAddr,
-            }
-            .into());
+            unreachable!(
+                "`validate_constant_expr_data` admitted this `ptrtoaddr` with exactly one \
+                 operand (invariant)"
+            );
         };
         let src_ty = Type::<DynBrand, ReadOnly>::new(module.context().value_data(*src).ty, module);
         let addr_bits = pointer_address_space(
@@ -3227,7 +3168,10 @@ fn validate_gep_constant_expr(
         module,
         scalar_type_slot(module, base_ty.slot_trusting_same_module()),
     ) else {
-        return Err(GepConstantError::OperandTypes.into());
+        unreachable!(
+            "the base was checked `is_ptr_or_ptr_vector` above, so its scalar is a pointer \
+             (invariant)"
+        );
     };
     if pointer_address_space(
         module,

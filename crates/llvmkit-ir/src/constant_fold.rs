@@ -39,7 +39,7 @@ use super::global_value::Linkage;
 use super::global_variable::GlobalVariable;
 use super::instr_types::{BinaryOpcode, CastOpcode, ShuffleMaskElem, UnaryOpcode};
 use super::instruction::{InstructionKindData, InstructionView};
-use super::instructions::is_eliminable_cast_pair;
+use super::instructions::{cast_is_valid, is_eliminable_cast_pair};
 use super::int_width::IntDyn;
 use super::module::{ModuleBrand, ModuleRef, ModuleView};
 use super::r#type::{ElementCount, IrType, Type, TypeData, TypeSlotAccess};
@@ -47,10 +47,7 @@ use super::type_components::lanes;
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{IsValue, Value, ValueKindData, ValueSlot, ValueSlotAccess};
 use super::vec_len::LenDyn;
-use super::{
-    ConstantError, ConstantExprError, Dyn, FunctionValue, GepConstantError, IrError, IrResult,
-    RoundingMode,
-};
+use super::{Dyn, FunctionValue, GepConstantError, IrResult, RoundingMode};
 
 /// Dispatch an instruction to the target-independent pure-constant folds
 /// mirrored from `llvm/lib/IR/ConstantFold.cpp`.
@@ -822,10 +819,7 @@ pub(crate) fn constant_cast_expr<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     else {
         return None;
     };
-    if !expr.opcode.is_cast() {
-        return None;
-    }
-    let opcode = cast_opcode_from_constant_expr(expr.opcode)?;
+    let opcode = expr.opcode.cast_opcode()?;
     let [source] = expr.operands.as_ref() else {
         return None;
     };
@@ -877,24 +871,6 @@ fn fold_maybe_undesirable_cast<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             .map(Some);
     }
     constant_fold_cast_instruction_trusting_same_module(opcode, value, dest_ty)
-}
-
-fn cast_opcode_from_constant_expr(opcode: ConstantExprOpcode) -> Option<CastOpcode> {
-    match opcode {
-        ConstantExprOpcode::Trunc => Some(CastOpcode::Trunc),
-        ConstantExprOpcode::PtrToAddr => Some(CastOpcode::PtrToAddr),
-        ConstantExprOpcode::PtrToInt => Some(CastOpcode::PtrToInt),
-        ConstantExprOpcode::IntToPtr => Some(CastOpcode::IntToPtr),
-        ConstantExprOpcode::BitCast => Some(CastOpcode::BitCast),
-        ConstantExprOpcode::AddrSpaceCast => Some(CastOpcode::AddrSpaceCast),
-        ConstantExprOpcode::Add
-        | ConstantExprOpcode::Sub
-        | ConstantExprOpcode::Xor
-        | ConstantExprOpcode::GetElementPtr
-        | ConstantExprOpcode::ShuffleVector
-        | ConstantExprOpcode::InsertElement
-        | ConstantExprOpcode::ExtractElement => None,
-    }
 }
 
 fn constant_expr_opcode_from_cast(opcode: CastOpcode) -> Option<ConstantExprOpcode> {
@@ -2138,13 +2114,10 @@ pub(crate) fn constant_fold_get_element_ptr_trusting_same_module<
         return Ok(Some(pointer));
     }
 
-    let result_ty = match gep_result_type(pointer.ty(), indices) {
-        Ok(ty) => ty,
-        // A GEP whose result type cannot be formed does not fold.
-        Err(IrError::Constant(ConstantError::Expression(ConstantExprError::GetElementPtr(_)))) => {
-            return Ok(None);
-        }
-        Err(err) => return Err(err),
+    // A GEP whose result type cannot be formed does not fold. The refusal is
+    // a `GepConstantError` and nothing else, so every refusal declines.
+    let Ok(result_ty) = gep_result_type(pointer.ty(), indices) else {
+        return Ok(None);
     };
 
     if is_poison(pointer) {
@@ -2173,32 +2146,45 @@ pub(crate) fn constant_fold_get_element_ptr_trusting_same_module<
 /// `ConstantExpr::getGetElementPtr`'s `ReqTy` — `getGEPReturnType` plus the
 /// lane agreement that routine's caller asserts
 /// (`"getelementptr index type missmatch"`, `Constants.cpp`). llvmkit ports
-/// no crash: the disagreement is an `IrError` instead, which is hardening
-/// rather than divergence — the input is IR the Verifier rejects either way.
+/// no crash: a base that is no pointer, or operands that disagree on their
+/// lane count, form no result type and are refused with the
+/// [`GepConstantError`] naming which, which is hardening rather than
+/// divergence — the input is IR the Verifier rejects either way.
 pub(crate) fn gep_result_type<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     pointer_ty: Type<'ctx, B, C>,
     indices: &[Constant<'ctx, B, C>],
-) -> IrResult<Type<'ctx, B, C>> {
+) -> Result<Type<'ctx, B, C>, GepConstantError> {
     let Some(addr_space) = pointer_address_space(pointer_ty) else {
-        return Err(GepConstantError::OperandTypes.into());
+        return Err(GepConstantError::OperandTypes);
     };
     let scalar_ptr_ty = pointer_ty.module.ptr_type(addr_space).as_type();
-    let Some(count) = gep_operand_element_count(pointer_ty, indices)? else {
-        return Ok(scalar_ptr_ty);
-    };
-    Ok(
-        vector_type_with_scalability(pointer_ty.module, scalar_ptr_ty, count.min, count.scalable)
-            .as_type(),
-    )
+    match gep_operand_shape(pointer_ty, indices)? {
+        GepOperandShape::Scalar => Ok(scalar_ptr_ty),
+        GepOperandShape::Vector(count) => Ok(vector_type_with_scalability(
+            pointer_ty.module,
+            scalar_ptr_ty,
+            count.min,
+            count.scalable,
+        )
+        .as_type()),
+    }
 }
 
-/// The `ElementCount` the operands of a constant `getelementptr` agree on —
-/// the base's, else the first vector index's — or `None` when every operand
-/// is a scalar.
-fn gep_operand_element_count<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
+/// The lane shape the operands of a constant `getelementptr` share.
+enum GepOperandShape {
+    /// Every operand is a scalar.
+    Scalar,
+    /// The vector operands agree on this lane count: the base's, else the
+    /// first vector index's.
+    Vector(ElementCount),
+}
+
+/// The [`GepOperandShape`] of a constant `getelementptr`'s operands, refused
+/// when two vector operands have different lane counts.
+fn gep_operand_shape<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     pointer_ty: Type<'ctx, B, C>,
     indices: &[Constant<'ctx, B, C>],
-) -> IrResult<Option<ElementCount>> {
+) -> Result<GepOperandShape, GepConstantError> {
     let mut shape = pointer_ty.data().element_count();
     for index in indices {
         let Some(index_shape) = index.ty().data().element_count() else {
@@ -2206,13 +2192,16 @@ fn gep_operand_element_count<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
         };
         match shape {
             Some(current) if current != index_shape => {
-                return Err(GepConstantError::VectorWidthMismatch.into());
+                return Err(GepConstantError::VectorWidthMismatch);
             }
             Some(_) => {}
             None => shape = Some(index_shape),
         }
     }
-    Ok(shape)
+    Ok(match shape {
+        Some(count) => GepOperandShape::Vector(count),
+        None => GepOperandShape::Scalar,
+    })
 }
 
 fn pointer_address_space<B: ModuleBrand, C: Capability>(
@@ -2650,21 +2639,23 @@ fn fold_bitcast<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
             lanes::<1>(),
             false,
         );
+        // Upstream's caller guarantees `CastInst::castIsValid` before this
+        // `ConstantExpr::getBitCast`; a cast that is not valid does not fold.
+        if !cast_is_valid(CastOpcode::BitCast, vector_ty.as_type(), dest_ty) {
+            return Ok(None);
+        }
         let vector = vector_ty.const_vector::<Constant<'ctx, B, C>, _>([operand])?;
-        return match operand.module.constant_expr(
-            dest_ty,
-            ConstantExprOpcode::BitCast,
-            [vector.as_erased()],
-            [],
-            [],
-            ConstantExprFlags::none(),
-        ) {
-            Ok(folded) => Ok(Some(folded)),
-            // A `bitcast` the constant-expression validator refuses does not
-            // fold; any other error is a real one.
-            Err(IrError::Constant(ConstantError::Expression(_))) => Ok(None),
-            Err(err) => Err(err),
-        };
+        return operand
+            .module
+            .constant_expr(
+                dest_ty,
+                ConstantExprOpcode::BitCast,
+                [vector.as_erased()],
+                [],
+                [],
+                ConstantExprFlags::none(),
+            )
+            .map(Some);
     }
     if let Ok(src) = ConstantIntValue::<IntDyn, B, C>::try_from(operand)
         && let Ok(dst_ty) = IntType::<IntDyn, B, C>::try_from(dest_ty)
