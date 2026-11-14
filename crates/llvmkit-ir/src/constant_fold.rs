@@ -10,7 +10,7 @@
 //! error, so under D7 each public entry that takes more than one handle admits
 //! every later one against its first handle's module through the checked door
 //! (`slot_in`), before anything is read, and returns
-//! [`IrError::ForeignValueId`] or [`IrError::ForeignType`]. It then calls its
+//! [`IrError::ForeignValueId`](crate::IrError::ForeignValueId) or [`IrError::ForeignType`](crate::IrError::ForeignType). It then calls its
 //! crate-private `_trusting_same_module` core, which is the one crate code
 //! calls with operands it minted or has already admitted — so each entry's
 //! check is the only one on its path.
@@ -416,7 +416,7 @@ pub fn constant_fold_unary_instruction<'ctx, B: ModuleBrand + 'ctx, C: Capabilit
 
 /// Fold a binary instruction with constant operands.
 ///
-/// Errors with [`IrError::ForeignValueId`] if `rhs` belongs to a module other
+/// Errors with [`IrError::ForeignValueId`](crate::IrError::ForeignValueId) if `rhs` belongs to a module other
 /// than `lhs`'s.
 pub fn constant_fold_binary_instruction<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     opcode: BinaryOpcode,
@@ -676,7 +676,7 @@ fn binary_constant_expr_opcode(opcode: BinaryOpcode) -> Option<ConstantExprOpcod
 
 /// Fold a cast instruction with a constant operand.
 ///
-/// Errors with [`IrError::ForeignType`] if `dest_ty` belongs to a module other
+/// Errors with [`IrError::ForeignType`](crate::IrError::ForeignType) if `dest_ty` belongs to a module other
 /// than `operand`'s.
 pub fn constant_fold_cast_instruction<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     opcode: CastOpcode,
@@ -894,7 +894,7 @@ fn constant_expr_opcode_from_cast(opcode: CastOpcode) -> Option<ConstantExprOpco
 
 /// Fold an integer or floating-point compare instruction.
 ///
-/// Errors with [`IrError::ForeignValueId`] if `rhs` belongs to a module other
+/// Errors with [`IrError::ForeignValueId`](crate::IrError::ForeignValueId) if `rhs` belongs to a module other
 /// than `lhs`'s.
 pub fn constant_fold_compare_instruction<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     predicate: CmpPredicate,
@@ -1448,7 +1448,7 @@ fn type_is_empty<B: ModuleBrand, C: Capability>(ty: Type<'_, B, C>) -> bool {
 
 /// Fold a `select` with constant condition/arms.
 ///
-/// Errors with [`IrError::ForeignValueId`] if either arm belongs to a module
+/// Errors with [`IrError::ForeignValueId`](crate::IrError::ForeignValueId) if either arm belongs to a module
 /// other than `condition`'s.
 pub fn constant_fold_select_instruction<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     condition: Constant<'ctx, B, C>,
@@ -1582,7 +1582,7 @@ pub(crate) fn constant_fold_select_instruction_trusting_same_module<
 
 /// Fold an `extractelement` with constant vector and index operands.
 ///
-/// Errors with [`IrError::ForeignValueId`] if `index` belongs to a module other
+/// Errors with [`IrError::ForeignValueId`](crate::IrError::ForeignValueId) if `index` belongs to a module other
 /// than `vector`'s.
 pub fn constant_fold_extract_element_instruction<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     vector: Constant<'ctx, B, C>,
@@ -1729,7 +1729,7 @@ pub(crate) fn constant_fold_extract_element_instruction_trusting_same_module<
 
 /// Fold an `insertelement` with constant operands.
 ///
-/// Errors with [`IrError::ForeignValueId`] if `value` or `index` belongs to a
+/// Errors with [`IrError::ForeignValueId`](crate::IrError::ForeignValueId) if `value` or `index` belongs to a
 /// module other than `vector`'s.
 pub fn constant_fold_insert_element_instruction<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     vector: Constant<'ctx, B, C>,
@@ -1796,7 +1796,7 @@ pub(crate) fn constant_fold_insert_element_instruction_trusting_same_module<
 
 /// Fold a `shufflevector` with constant operands.
 ///
-/// Errors with [`IrError::ForeignValueId`] if `rhs` belongs to a module other
+/// Errors with [`IrError::ForeignValueId`](crate::IrError::ForeignValueId) if `rhs` belongs to a module other
 /// than `lhs`'s.
 pub fn constant_fold_shuffle_vector_instruction<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     lhs: Constant<'ctx, B, C>,
@@ -2033,7 +2033,7 @@ pub fn constant_fold_extract_value_instruction<'ctx, B: ModuleBrand + 'ctx, C: C
 
 /// Fold an `insertvalue` with constant operands.
 ///
-/// Errors with [`IrError::ForeignValueId`] if `value` belongs to a module
+/// Errors with [`IrError::ForeignValueId`](crate::IrError::ForeignValueId) if `value` belongs to a module
 /// other than `aggregate`'s.
 pub fn constant_fold_insert_value_instruction<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     aggregate: Constant<'ctx, B, C>,
@@ -2080,8 +2080,8 @@ pub(crate) fn constant_fold_insert_value_instruction_trusting_same_module<
 
 /// Fold a `getelementptr` with constant operands.
 ///
-/// Errors with [`IrError::ForeignType`] if `source_ty`, or
-/// [`IrError::ForeignValueId`] if an index, belongs to a module other than
+/// Errors with [`IrError::ForeignType`](crate::IrError::ForeignType) if `source_ty`, or
+/// [`IrError::ForeignValueId`](crate::IrError::ForeignValueId) if an index, belongs to a module other than
 /// `pointer`'s.
 pub fn constant_fold_get_element_ptr<'ctx, B: ModuleBrand + 'ctx, C: Capability>(
     source_ty: Type<'ctx, B, C>,
