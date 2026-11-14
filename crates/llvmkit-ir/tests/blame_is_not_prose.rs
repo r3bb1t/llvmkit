@@ -143,14 +143,12 @@ fn no_message_payload_repeats_what_blame_states() {
     files.sort_unstable();
 
     let mut offenders = Vec::new();
-    let mut pass_context_literals = 0;
+    let mut literals_read = 0;
     for file in &files {
         let source = std::fs::read_to_string(file)
             .unwrap_or_else(|error| panic!("reading {}: {error}", file.display()));
         let literals = literals_after(&source, "message:");
-        if file.ends_with("pass_context.rs") {
-            pass_context_literals = literals.len();
-        }
+        literals_read += literals.len();
         offenders.extend(
             literals
                 .iter()
@@ -158,10 +156,15 @@ fn no_message_payload_repeats_what_blame_states() {
                 .map(|(line, literal)| format!("{}:{line}: {literal}", file.display())),
         );
     }
+    // The positive control: the walk reads the `message:` literals that remain.
+    // `pass_context.rs`, where the `insert_phi` defect lived, holds none since
+    // its refusals became `CfgEditError` variants, whose text the `#[error]`
+    // scan above reads in `error.rs`. When the last `InvalidOperation` site is
+    // gone, so is the last literal, and this test goes with the variant.
     assert!(
-        pass_context_literals > 0,
-        "the walk must reach `pass_context.rs` and read its `message:` literals, \
-         or this scan is blind where the `insert_phi` defect lived"
+        literals_read > 0,
+        "the walk must read the crate's remaining `message:` literals, or this \
+         scan is blind"
     );
     assert!(
         offenders.is_empty(),
