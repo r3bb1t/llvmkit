@@ -85,6 +85,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
     let brand_param = Ident::new("__LlvmkitBrand", Span::mixed_site());
     let folder_param = Ident::new("__LlvmkitFolder", Span::mixed_site());
     let return_param = Ident::new("__LlvmkitReturn", Span::mixed_site());
+    let state_param = Ident::new("__LlvmkitState", Span::mixed_site());
     let name_generic = Ident::new("__LlvmkitName", Span::mixed_site());
     let build_generics: Vec<Ident> = indices
         .iter()
@@ -183,7 +184,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
                 #[inline]
                 #vis fn #field_ident<'m, #folder_param, #return_param>(
                     self,
-                    builder: &#ir::IrBuilder<'m, 'ctx, #brand_param, #folder_param, #ir::Positioned, #return_param>,
+                    builder: &#ir::IrBuilder<'m, 'ctx, #brand_param, #folder_param, #ir::PositionedAtEnd, #return_param>,
                 ) -> <#ty as #ir::IrField>::Value<'ctx, #brand_param, #ir::Mutable>
                 where
                     #brand_param: #ir::UniqueBrand,
@@ -195,12 +196,13 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
 
                 #[doc = #try_doc]
                 #[inline]
-                #vis fn #try_ident<'m, #folder_param, #return_param>(
+                #vis fn #try_ident<'m, #folder_param, #state_param, #return_param>(
                     self,
-                    builder: &#ir::IrBuilder<'m, 'ctx, #brand_param, #folder_param, #ir::Positioned, #return_param>,
+                    builder: &#ir::IrBuilder<'m, 'ctx, #brand_param, #folder_param, #state_param, #return_param>,
                 ) -> #ir::IrResult<<#ty as #ir::IrField>::Value<'ctx, #brand_param, #ir::Mutable>>
                 where
                     #folder_param: #ir::IrBuilderFolder<'ctx, #brand_param>,
+                    #state_param: #ir::Positioning,
                     #return_param: #ir::ReturnMarker,
                 {
                     builder.extract_field::<#ident, #ty, _, _>(self, #idx, #field_name)
@@ -323,7 +325,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
             #[doc = #build_doc]
             fn build<'m, #folder_param, #return_param, #name_generic, #(#build_generics,)*>(
                 self,
-                #builder_param: &#ir::IrBuilder<'m, 'ctx, #brand_param, #folder_param, #ir::Positioned, #return_param>,
+                #builder_param: &#ir::IrBuilder<'m, 'ctx, #brand_param, #folder_param, #ir::PositionedAtEnd, #return_param>,
                 #(#build_params,)*
                 #name_param: #name_generic,
             ) -> #value_ident<'ctx, #brand_param>
@@ -342,14 +344,15 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
             /// type, and each field's admission error — `IrError::ForeignValueId`
             /// for another module's value, a type mismatch for a value of
             /// another type.
-            fn try_build<'m, #folder_param, #return_param, #name_generic, #(#build_generics,)*>(
+            fn try_build<'m, #folder_param, #state_param, #return_param, #name_generic, #(#build_generics,)*>(
                 self,
-                #builder_param: &#ir::IrBuilder<'m, 'ctx, #brand_param, #folder_param, #ir::Positioned, #return_param>,
+                #builder_param: &#ir::IrBuilder<'m, 'ctx, #brand_param, #folder_param, #state_param, #return_param>,
                 #(#build_params,)*
                 #name_param: #name_generic,
             ) -> #ir::IrResult<#value_ident<'ctx, #brand_param>>
             where
                 #folder_param: #ir::IrBuilderFolder<'ctx, #brand_param>,
+                #state_param: #ir::Positioning,
                 #return_param: #ir::ReturnMarker,
                 #name_generic: ::core::convert::AsRef<str>,
                 #(#try_build_bounds,)*;
@@ -364,7 +367,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
             #[inline]
             fn build<'m, #folder_param, #return_param, #name_generic, #(#build_generics,)*>(
                 self,
-                #builder_param: &#ir::IrBuilder<'m, 'ctx, #brand_param, #folder_param, #ir::Positioned, #return_param>,
+                #builder_param: &#ir::IrBuilder<'m, 'ctx, #brand_param, #folder_param, #ir::PositionedAtEnd, #return_param>,
                 #(#build_params,)*
                 #name_param: #name_generic,
             ) -> #value_ident<'ctx, #brand_param>
@@ -384,14 +387,15 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
             }
 
             #[inline]
-            fn try_build<'m, #folder_param, #return_param, #name_generic, #(#build_generics,)*>(
+            fn try_build<'m, #folder_param, #state_param, #return_param, #name_generic, #(#build_generics,)*>(
                 self,
-                #builder_param: &#ir::IrBuilder<'m, 'ctx, #brand_param, #folder_param, #ir::Positioned, #return_param>,
+                #builder_param: &#ir::IrBuilder<'m, 'ctx, #brand_param, #folder_param, #state_param, #return_param>,
                 #(#build_params,)*
                 #name_param: #name_generic,
             ) -> #ir::IrResult<#value_ident<'ctx, #brand_param>>
             where
                 #folder_param: #ir::IrBuilderFolder<'ctx, #brand_param>,
+                #state_param: #ir::Positioning,
                 #return_param: #ir::ReturnMarker,
                 #name_generic: ::core::convert::AsRef<str>,
                 #(#try_build_bounds,)*

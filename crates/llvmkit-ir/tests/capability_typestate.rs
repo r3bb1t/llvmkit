@@ -1071,7 +1071,7 @@ fn typed_values_keep_the_capability_and_authoring_entries_take_either() -> Resul
     IrBuilder::new_for::<()>(&m)
         .position_at_end(body)
         .ret_void();
-    let _past_allocas = IrBuilder::new_for::<()>(&m).position_past_allocas(g_read_only);
+    let _past_allocas = IrBuilder::new_for::<()>(&m).position_past_allocas(g_read_only)?;
     assert!(
         address.to_string().contains("blockaddress(@g, %body)"),
         "{address}"
@@ -1151,7 +1151,7 @@ fn a_patch_body_pass_builds_with_a_type_read_through_its_view() -> Result<(), Ir
     use std::rc::Rc;
 
     struct TruncateParameter<B: ModuleBrand> {
-        at: Option<InsertPoint<'static, Dyn, B>>,
+        at: Option<InsertPoint<'static, Dyn, B, llvmkit_ir::PositionedBefore>>,
         parameter: IntValueId<i32, B>,
         type_capability: Rc<RefCell<Option<TypeId>>>,
         block_capabilities: Rc<RefCell<Vec<TypeId>>>,

@@ -69,7 +69,7 @@ use super::block_state::Terminated;
 use super::capability::{Capability, Mutable, ReadOnly};
 use super::cfg_update::CfgUpdate;
 use super::dominator_tree::DominatorTreeAnalysis;
-use super::error::{CfgEditError, EditedTerminator, IrError, SwitchSuccessorEdit};
+use super::error::{BlockError, CfgEditError, EditedTerminator, IrError, SwitchSuccessorEdit};
 use super::function::{FunctionBasicBlocks, FunctionValue};
 use super::instr_types::BranchKind;
 use super::instruction::InstructionKindData;
@@ -77,7 +77,7 @@ use super::instruction::{
     Instruction, InstructionView, NonTerminator, PlacedInstruction, TerminatorKind, state,
 };
 use super::ir_builder::constant_folder::ConstantFolder;
-use super::ir_builder::{InsertPoint, IrBuilder, Positioned};
+use super::ir_builder::{InsertPoint, IrBuilder, Positioning};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::pass_access::{
@@ -922,9 +922,13 @@ where
     /// this function's module. The first-class replacement for the
     /// `IrBuilder::new(module_mut())` spelling that the now-crate-private
     /// `module_mut` used to enable: it hands back exactly a positioned
-    /// builder, never the module's declaration surface. Errors the same way
-    /// [`IrBuilder::restore_insert_point`] does — an empty insert point, or a
-    /// block that has since grown a terminator.
+    /// builder, never the module's declaration surface, in the state the
+    /// insert point was saved in. Errors the same way
+    /// [`IrBuilder::restore_insert_point`] does: a block that has since grown
+    /// a terminator, or an anchor that has since left its block. And a block
+    /// of another function in this module, or of no function, is refused with
+    /// [`BlockError::BlockNotInFunction`]: a function pass builds into its own
+    /// function and no other.
     ///
     /// Handing out a positioned builder over the mutable module token is
     /// intent-to-mutate, so the dirty flag is witnessed here on success. Unlike
@@ -937,14 +941,20 @@ where
     /// honesty. Set only after `restore_insert_point` succeeds: a rejected
     /// insert point hands out no builder, so no mutation is possible.
     #[inline]
-    pub fn builder_at<R2>(
+    pub fn builder_at<R2, Saved>(
         &self,
-        ip: InsertPoint<'m, R2, B>,
-    ) -> IrResult<IrBuilder<'m, 'm, B, ConstantFolder, Positioned, R2>>
+        ip: InsertPoint<'m, R2, B, Saved>,
+    ) -> IrResult<IrBuilder<'m, 'm, B, ConstantFolder, Saved, R2>>
     where
         R2: ReturnMarker,
+        Saved: Positioning,
     {
         let builder = IrBuilder::new_for::<R2>(self.module).restore_insert_point(ip)?;
+        // Internal: the pass's own function, read in its own module.
+        let own_function = self.function.as_function().slot_trusting_same_module();
+        if builder.insert_block().parent_id() != Some(own_function) {
+            return Err(BlockError::BlockNotInFunction.into());
+        }
         self.dirty.set(true);
         Ok(builder)
     }
@@ -1310,12 +1320,13 @@ where
     /// has reshaped (for example the emptied source block after a
     /// [`Self::split_block`]).
     #[inline]
-    pub fn builder_at<R2>(
+    pub fn builder_at<R2, Saved>(
         &self,
-        ip: InsertPoint<'m, R2, B>,
-    ) -> IrResult<IrBuilder<'m, 'm, B, ConstantFolder, Positioned, R2>>
+        ip: InsertPoint<'m, R2, B, Saved>,
+    ) -> IrResult<IrBuilder<'m, 'm, B, ConstantFolder, Saved, R2>>
     where
         R2: ReturnMarker,
+        Saved: Positioning,
     {
         self.patch.builder_at(ip)
     }
@@ -1403,8 +1414,14 @@ where
 
     /// Resolve a caller-supplied [`BlockId`] into the block the mutator's
     /// internals work through. The single choke point for the reshape
-    /// surface's block arguments: a foreign id is rejected here, before any
-    /// successor scan, phi read, or arena write.
+    /// surface's block arguments: an id from another module is refused with
+    /// [`IrError::ForeignValueId`], and a block of another function in this
+    /// module, or of no function, with [`BlockError::BlockNotInFunction`] —
+    /// both before any successor scan, phi read, or arena write. A function
+    /// pass reshapes its own function and no other: upstream states the rule
+    /// (`ModuleToFunctionPassAdaptor`'s comment in `PassManager.h`: function
+    /// passes "should not read or modify any other functions!") and llvmkit
+    /// checks it.
     ///
     /// The block is minted at this context's own reference — the unverified
     /// module the edit runs under — so it is [`Mutable`]; a
@@ -1424,7 +1441,13 @@ where
             .label_type::<B>()
             .as_type()
             .slot_trusting_same_module();
-        Ok(BasicBlock::from_parts(slot, module_ref, label_ty))
+        let resolved = BasicBlock::from_parts(slot, module_ref, label_ty);
+        // Internal: the pass's own function, read in its own module.
+        let own_function = self.function().as_function().slot_trusting_same_module();
+        if resolved.parent_id() != Some(own_function) {
+            return Err(BlockError::BlockNotInFunction.into());
+        }
+        Ok(resolved)
     }
 
     /// Split `block` in two at `before` and return the new block's id. The
@@ -1732,12 +1755,13 @@ where
         let from_block = self.resolve_basic_block(from.id())?;
         // Internal: the pass's own block, read in its own module.
         let from_id = from_block.slot_trusting_same_module();
-        // Resolve the target id against this function's module *first*: a
-        // foreign `BlockId` is rejected here, before any successor scan or phi
-        // read touches the arena.
-        let new_to = new_to.into_basic_block_label(from_block.module_ref())?;
-        // Internal: admitted by `into_basic_block_label` just above.
-        let new_id = new_to.slot_trusting_same_module();
+        // Resolve the target *first*: an id from another module, or a block of
+        // another function or of none, is refused here, before any successor
+        // scan or phi read touches the arena. A branch may only name a block
+        // of its own function.
+        let new_block = self.resolve_basic_block(new_to)?;
+        // Internal: admitted by `resolve_basic_block` just above.
+        let new_id = new_block.slot_trusting_same_module();
         // Same for the seed values: resolve every caller-supplied `ValueId`
         // against this module *before* any precondition scan, so a foreign id
         // is rejected while the terminator and every phi are still untouched.
@@ -1767,7 +1791,6 @@ where
         // Collect `new_to`'s leading phis (its block parameters) and validate
         // `phi_values` against them BEFORE mutating — all-or-nothing, mirroring
         // the block-argument branch builder.
-        let new_block: BasicBlock<'m, Dyn, Terminated, B> = new_to.to_block();
         let mut param_phis: Vec<ValueSlot> = Vec::new();
         for inst_id in new_block.instruction_ids() {
             let ValueKindData::Instruction(inst) = &ctx.value_data(inst_id).kind else {
@@ -1790,8 +1813,8 @@ where
             let value_ty = value.ty().slot_trusting_same_module();
             if value_ty != phi_ty {
                 return Err(IrError::TypeMismatch {
-                    expected: Type::new(phi_ty, new_to.module).kind_label(),
-                    got: Type::new(value_ty, new_to.module).kind_label(),
+                    expected: Type::new(phi_ty, from_block.module_ref()).kind_label(),
+                    got: Type::new(value_ty, from_block.module_ref()).kind_label(),
                 });
             }
         }
@@ -1931,7 +1954,7 @@ where
         let builder = IrBuilder::new(self.patch.module_mut());
         for (phi_id, value) in param_phis.iter().zip(phi_values.iter()) {
             let phi_ty = ctx.value_data(*phi_id).ty;
-            let phi_val = Value::from_parts(*phi_id, new_to.module, phi_ty);
+            let phi_val = Value::from_parts(*phi_id, from_block.module_ref(), phi_ty);
             // This add cannot fail: arity and per-phi type were validated above,
             // and the ambiguous-duplicate check cannot fire because `from` was
             // proven not to already reach `new_to`. The `?` is defensive — if

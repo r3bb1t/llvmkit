@@ -10,7 +10,8 @@
 //! What the scan reads, so its reach is not overstated: every `.rs` file
 //! under each workspace crate's `src/`, skipping lines whose code starts with
 //! `//`. A public signature is the text from `pub fn` to its first `{` or
-//! `;`, across lines. Not read: tests outside `src/`, macro-generated code,
+//! `;`, across lines, and a public alias the text from `pub type` to its
+//! `;`. Not read: tests outside `src/`, macro-generated code,
 //! and loose types the patterns do not spell (a sentinel value, a string
 //! field naming a closed set). Those are held by the rule and by review.
 //!
@@ -33,14 +34,20 @@ enum Pattern {
     PublicTupleReturn,
     /// A `pub fn` taking a `bool` parameter, other than a `set_*` setter.
     PublicBoolParameter,
+    /// A `pub type` alias of a tuple of two or more values, bare or inside
+    /// `IrResult` / `Option` / `Result`. Counted on its own so a tuple moved
+    /// out of a signature and behind an alias stays a counted site: a return
+    /// spelled through the alias is not a [`Self::PublicTupleReturn`].
+    PublicTupleAlias,
 }
 
 impl Pattern {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::InvalidOperationSite,
         Self::StringParseDiagnostic,
         Self::PublicTupleReturn,
         Self::PublicBoolParameter,
+        Self::PublicTupleAlias,
     ];
 
     /// What to write instead, for the failure message.
@@ -48,7 +55,7 @@ impl Pattern {
         match self {
             Self::InvalidOperationSite => "a typed IrError variant",
             Self::StringParseDiagnostic => "a typed ParseError variant",
-            Self::PublicTupleReturn => "a named struct",
+            Self::PublicTupleReturn | Self::PublicTupleAlias => "a named struct",
             Self::PublicBoolParameter => "a two-variant enum",
         }
     }
@@ -57,11 +64,13 @@ impl Pattern {
 /// The site counts at the ceiling, as [`loose_types_do_not_grow`] measures
 /// them: first on `33b2aaaf` with the rule added, and again in each commit
 /// that lowered one. Lower one whenever its count falls; never raise one.
-const CEILINGS: [(Pattern, usize); 4] = [
+/// `PublicTupleAlias` was added later, at its count when it was introduced.
+const CEILINGS: [(Pattern, usize); 5] = [
     (Pattern::InvalidOperationSite, 42),
     (Pattern::StringParseDiagnostic, 504),
-    (Pattern::PublicTupleReturn, 47),
+    (Pattern::PublicTupleReturn, 46),
     (Pattern::PublicBoolParameter, 43),
+    (Pattern::PublicTupleAlias, 12),
 ];
 
 /// Every `.rs` file under `dir`, recursively.
@@ -150,10 +159,10 @@ fn public_signatures(code: &str) -> Vec<(&str, &str, &str)> {
     signatures
 }
 
-/// Whether `returns` is a tuple of two or more values, bare or inside one of
-/// the wrappers.
-fn returns_tuple(returns: &str) -> bool {
-    let mut inner = returns;
+/// Whether the type text `spelled` is a tuple of two or more values, bare or
+/// inside one of the wrappers.
+fn spells_tuple(spelled: &str) -> bool {
+    let mut inner = spelled;
     for wrapper in ["IrResult<", "Option<", "Result<"] {
         if let Some(rest) = inner.strip_prefix(wrapper) {
             inner = rest;
@@ -177,7 +186,7 @@ fn returns_tuple(returns: &str) -> bool {
 }
 
 /// The count of each pattern in one file's code.
-fn count(path: &Path, code: &str, counts: &mut [usize; 4]) {
+fn count(path: &Path, code: &str, counts: &mut [usize; 5]) {
     let in_parser = path
         .components()
         .any(|component| component.as_os_str() == "llvmkit-asmparser");
@@ -196,11 +205,23 @@ fn count(path: &Path, code: &str, counts: &mut [usize; 4]) {
         .sum::<usize>();
     }
     for (name, parameters, returns) in public_signatures(code) {
-        if returns_tuple(returns) {
+        if spells_tuple(returns) {
             counts[2] += 1;
         }
         if !name.starts_with("set_") && parameters.contains(": bool") {
             counts[3] += 1;
+        }
+    }
+    // A `pub type` declaration runs to its `;`, across lines; what it aliases
+    // is the text after its ` = `.
+    for (start, _) in code.match_indices("pub type ") {
+        let rest = &code[start + "pub type ".len()..];
+        let declaration = &rest[..rest.find(';').unwrap_or(rest.len())];
+        if declaration
+            .split_once(" = ")
+            .is_some_and(|(_, aliased)| spells_tuple(aliased.trim()))
+        {
+            counts[4] += 1;
         }
     }
 }
@@ -208,7 +229,8 @@ fn count(path: &Path, code: &str, counts: &mut [usize; 4]) {
 /// The scanner counts each pattern in synthetic sources that spell it, in
 /// one-line and multi-line signatures and behind each return wrapper, and
 /// does not count the shapes the rule allows: a `set_*` setter, a unit or
-/// one-value return, a tuple inside an iterator type, a commented-out site.
+/// one-value return, a tuple inside an iterator type, a commented-out site,
+/// an alias of a non-tuple or of another alias.
 ///
 /// **No upstream counterpart**: the positive control for
 /// [`loose_types_do_not_grow`]'s scanner.
@@ -228,18 +250,24 @@ fn the_scanner_sees_each_pattern() {
         pub fn ctlz(&self, zero_is_poison: bool) -> u32 {}\n\
         pub fn spread(\n    &self,\n    allow_poison: bool,\n) {}\n\
         pub fn set_dso_local(&self, dso_local: bool) {}\n\
-        pub fn returns_bool(&self) -> bool {}\n";
-    let mut counts = [0usize; 4];
+        pub fn returns_bool(&self) -> bool {}\n\
+        pub type Pair<'ctx, B> = (Block<'ctx, B>, Inst<'ctx, B>);\n\
+        pub type MultiLine<'ctx, B> = (\n    Block<'ctx, B>,\n    Vec<Value<'ctx, B>>,\n);\n\
+        pub type Wrapped = IrResult<(u32, u32)>;\n\
+        pub type OfAlias<'ctx, B> = Pair<'ctx, B>;\n\
+        pub type Unit = ();\n\
+        // pub type Commented = (u32, u32);\n";
+    let mut counts = [0usize; 5];
     count(ir, &code_only(source), &mut counts);
-    assert_eq!(counts, [1, 0, 3, 2], "the IR crate's patterns");
+    assert_eq!(counts, [1, 0, 3, 2, 3], "the IR crate's patterns");
 
     let diagnostics = "\
         fn p(&self) { self.message(\"a\"); self.expected_at(loc, \"b\"); }\n\
         fn q() { ParseError::Message { message: m, loc } }\n\
         fn expected(&self) {}\n";
-    let mut counts = [0usize; 4];
+    let mut counts = [0usize; 5];
     count(parser, &code_only(diagnostics), &mut counts);
-    assert_eq!(counts, [0, 3, 0, 0], "the parser's string diagnostics");
+    assert_eq!(counts, [0, 3, 0, 0, 0], "the parser's string diagnostics");
 }
 
 /// Each loose-type pattern is counted across the workspace's sources and held
@@ -249,7 +277,7 @@ fn the_scanner_sees_each_pattern() {
 /// `CLAUDE.md`'s "No loose types" rule.
 #[test]
 fn loose_types_do_not_grow() {
-    let mut counts = [0usize; 4];
+    let mut counts = [0usize; 5];
     for path in source_files() {
         let Ok(source) = std::fs::read_to_string(&path) else {
             panic!("{} is readable", path.display());

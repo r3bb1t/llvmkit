@@ -2628,9 +2628,6 @@ pub enum BuilderError {
     /// cannot ask this).
     #[error("cannot position at end of a terminated block")]
     PositionAfterTerminator,
-    /// `restore_insert_point` of an insert point that names no block.
-    #[error("cannot restore an empty insert point")]
-    EmptyInsertPoint,
     /// `restore_insert_point` at the end of a block that has since been
     /// terminated.
     #[error("cannot restore insert point at end of terminated block")]
@@ -2727,6 +2724,10 @@ pub enum BuilderError {
     /// and need no parent.
     #[error("cannot check a `ret` in a block that belongs to no function")]
     ReturnOutsideFunction,
+    /// `position_past_allocas` of a function with no blocks: a declaration
+    /// has no entry block to position in.
+    #[error("cannot position past the allocas of a function with no blocks")]
+    FunctionWithoutBlocks,
 }
 
 /// The operation an operand-type check in [`BuilderError`] belongs to.
@@ -2809,9 +2810,12 @@ impl AggregateInstruction {
 /// the text the condition was reported with, upstream's own where one exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum BlockError {
-    /// An instruction used as an insertion anchor is not in the block. Every
-    /// caller reads the block from the anchor's own parent, so this is an
-    /// llvmkit bug, not the caller's.
+    /// An instruction used as an insertion anchor is not in the block. The
+    /// block is read from the anchor's parent when a builder is positioned,
+    /// but the builder holds `&Module`, so the anchor can leave the block
+    /// afterwards (erased, moved, or split off) and a build or a restored
+    /// [`InsertPoint`](crate::InsertPoint) then names a stale anchor: the
+    /// caller's mutation, not an llvmkit bug.
     #[error("instruction anchor is not in this block")]
     AnchorNotInBlock,
     /// The instruction a block is split at is not in the block.
@@ -2821,13 +2825,16 @@ pub enum BlockError {
     #[error("cannot split an orphan basic block")]
     SplitOrphanBlock,
     /// A block named as one of a function's belongs to another function, or
-    /// to none.
+    /// to none — including a block a function pass names that is not in the
+    /// function the pass runs on.
     #[error("block does not belong to function")]
     BlockNotInFunction,
     /// A block whose parent is the function but which the function's block
     /// list does not hold: the two are kept together, so this is an llvmkit
     /// bug, not the caller's.
-    #[error("block does not belong to function")]
+    #[error(
+        "block names the function as its parent, but the function's block list does not hold it"
+    )]
     ParentListMissingBlock,
     /// A split of a block that has no terminator (upstream's
     /// `assert(getTerminator() && "Can't use splitBasicBlock on degenerate BB!")`).
@@ -2850,8 +2857,9 @@ impl BlockError {
     /// named that breaks the rule, or llvmkit, for a broken invariant.
     pub fn blame(self) -> Blame {
         match self {
-            Self::AnchorNotInBlock | Self::ParentListMissingBlock => Blame::LlvmkitInvariant,
-            Self::SplitPointNotInBlock
+            Self::ParentListMissingBlock => Blame::LlvmkitInvariant,
+            Self::AnchorNotInBlock
+            | Self::SplitPointNotInBlock
             | Self::SplitOrphanBlock
             | Self::BlockNotInFunction
             | Self::DegenerateSplit { .. }
@@ -2891,7 +2899,10 @@ pub enum CfgEditError {
     AlreadyReaches,
     /// `redirect_indirect` past the end of a `callbr`'s indirect
     /// destinations.
-    #[error("redirect_indirect: `callbr` indirect destination index out of range")]
+    #[error(
+        "redirect_indirect: `callbr` indirect destination index {index} out of range for \
+         {count} indirect destinations"
+    )]
     IndirectDestinationOutOfRange {
         /// The index asked for.
         index: usize,
@@ -2899,8 +2910,11 @@ pub enum CfgEditError {
         count: usize,
     },
     /// An edit of a block that has no last instruction. A pass runs on a
-    /// verified module and can erase only a `NonTerminator`, so this is an
-    /// llvmkit bug, not the caller's.
+    /// verified module, can name only a block of its own function (any other
+    /// is refused as [`BlockError::BlockNotInFunction`] first), can erase only
+    /// a `NonTerminator`, and can restore a builder only before an anchor or
+    /// at the end of an unterminated block — of which a verified function has
+    /// none. So this is an llvmkit bug, not the caller's.
     #[error("edit_terminator: `from` has no terminator")]
     NoTerminator,
     /// An edit of a block whose last instruction is not a terminator; an

@@ -325,7 +325,8 @@ pub use ir_builder::folder::{IrBuilderFolder, TrustedFolder};
 pub use ir_builder::no_folder::NoFolder;
 pub use ir_builder::{
     AllocaBuilder, BuilderPositionState, CallBuilder, CallSiteConfig, InsertPoint, IrBuilder,
-    LoadBuilder, Positioned, SelectArm, SelectNarrow, StoreBuilder, Unpositioned,
+    LoadBuilder, PastAllocas, PositionedAtEnd, PositionedBefore, Positioning, SelectArm,
+    SelectNarrow, StoreBuilder, Unpositioned,
 };
 pub use known_bits::{AddSubOperation, KnownBits, ShiftAmountKnowledge};
 pub use marker::{Dyn, Ptr, ReturnMarker};

@@ -556,7 +556,7 @@ Positioning only accepts an unterminated block:
 pub fn position_at_end<Params>(
     self,
     bb: BasicBlock<'ctx, R, Unterminated, B, Params>,
-) -> IrBuilder<'m, 'ctx, B, F, Positioned, R>
+) -> IrBuilder<'m, 'ctx, B, F, PositionedAtEnd, R>
 where
     Params: BlockParams,
 ```
@@ -570,11 +570,24 @@ where
     V: IntoReturnValue<'ctx, R, B>,
 ```
 
+The two positioned states are split by where the builder inserts.
+`PositionedAtEnd` appends, and nothing about the end of a block can go stale, so
+a build with nothing else to refuse is infallible there. `PositionedBefore`
+inserts before an anchor instruction, and the builder holds `&Module`, so the
+anchor can be erased or moved after positioning. Every build in that state
+therefore returns `IrResult` and refuses a stale anchor with
+`BlockError::AnchorNotInBlock`. `ret void` shows the split. Both states share
+one fallible core, and the at-end form unwraps it through a provably dead arm:
+
 ```rust
+// IrBuilder<'m, 'ctx, B, F, PositionedAtEnd, ()>
 pub fn ret_void(self) -> VoidReturnInst<'ctx, B> {
-    let inst = self.append_ret(None);
-    let bb = self.into_insert_block();
-    (bb.retag_termination::<Terminated>(), inst)
+    at_end_infallible(self.ret_void_at_point())
+}
+
+// IrBuilder<'m, 'ctx, B, F, PositionedBefore, ()>
+pub fn ret_void(self) -> IrResult<VoidReturnInst<'ctx, B>> {
+    self.ret_void_at_point()
 }
 ```
 

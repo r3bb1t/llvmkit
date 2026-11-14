@@ -438,7 +438,7 @@ bb3:
 /// `TEST(BasicBlockUtils, splitBasicBlockBefore_ex2)`, IR verbatim. Upstream
 /// is an `#ifndef NDEBUG` `ASSERT_DEATH` on the assert "cannot split on multi
 /// incoming phis": `bb2`'s phi has two predecessors. llvmkit does not port
-/// the crash: `split_before` returns that text as `IrError::InvalidOperation`
+/// the crash: `split_before` returns `BlockError::SplitBeforeMultiIncomingPhis`, displaying that text,
 /// and leaves the module untouched, which is hardening rather than divergence.
 #[test]
 fn split_basic_block_before_ex2() {

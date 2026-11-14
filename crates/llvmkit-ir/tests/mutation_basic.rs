@@ -503,7 +503,7 @@ fn debug_record_value_operand_is_rewritten_by_rauw() -> Result<(), IrError> {
 /// block's own instruction list, so a split point from another block has no
 /// error path there — it asserts only that the block is terminated and that the
 /// iterator is not `end()`. llvmkit takes an `InstructionView`, which can name
-/// any instruction, so it returns `IrError::InvalidOperation`, and a refused
+/// any instruction, so it returns `BlockError::SplitPointNotInBlock`, and a refused
 /// call must not mutate. `split_at` used to append the new block
 /// before looking for the split point, so this call returned the error and
 /// left an empty `entry.split` block in the function.

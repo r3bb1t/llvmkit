@@ -482,7 +482,7 @@ fn insert_phi_typed_into_merge_block_verifies() -> Result<(), IrError> {
 }
 
 /// NEGATIVE (empty): the typed `insert_phi` needs at least one incoming to derive
-/// the result type. Fed none, it errors with `InvalidOperation` (and points to
+/// the result type. Fed none, it errors with `CfgEditError::PhiWithoutIncoming` (and points to
 /// `insert_phi_dyn` for the zero-incoming case) rather than reaching the CFG
 /// checks.
 #[test]

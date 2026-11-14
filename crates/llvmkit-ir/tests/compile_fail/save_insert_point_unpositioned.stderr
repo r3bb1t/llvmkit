@@ -1,0 +1,21 @@
+error[E0277]: the trait bound `Unpositioned: Positioning` is not satisfied
+  --> tests/compile_fail/save_insert_point_unpositioned.rs:15:48
+   |
+15 |     let _empty = IrBuilder::new_for::<Dyn>(&m).save_insert_point();
+   |                                                ^^^^^^^^^^^^^^^^^ the trait `Positioning` is not implemented for `Unpositioned`
+   |
+help: the following other types implement trait `Positioning`
+  --> src/ir_builder.rs
+   |
+   | impl Positioning for PositionedAtEnd {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `PositionedAtEnd`
+   | impl Positioning for PositionedBefore {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `PositionedBefore`
+note: required by a bound in `IrBuilder::<'m, 'ctx, B, F, S, R>::save_insert_point`
+  --> src/ir_builder.rs
+   |
+   |     pub fn save_insert_point(&self) -> InsertPoint<'static, R, B, S>
+   |            ----------------- required by a bound in this associated function
+   |     where
+   |         S: Positioning,
+   |            ^^^^^^^^^^^ required by this bound in `IrBuilder::<'m, 'ctx, B, F, S, R>::save_insert_point`

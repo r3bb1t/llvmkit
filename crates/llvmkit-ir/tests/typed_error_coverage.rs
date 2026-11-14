@@ -43,12 +43,7 @@ const ENUMS: [&str; 7] = [
 /// a wrapper whose payload enum is itself in [`ENUMS`]. A variant
 /// here that a test also names is reported, so the exemption is removed once
 /// it is no longer needed.
-const EXEMPT: [(&str, &str, &str); 6] = [
-    (
-        "BlockError",
-        "AnchorNotInBlock",
-        "an llvmkit invariant: every caller reads the block from the anchor's own parent",
-    ),
+const EXEMPT: [(&str, &str, &str); 5] = [
     (
         "BlockError",
         "ParentListMissingBlock",
@@ -57,12 +52,14 @@ const EXEMPT: [(&str, &str, &str); 6] = [
     (
         "CfgEditError",
         "NoTerminator",
-        "an llvmkit invariant: a pass runs on a verified module and erases only a NonTerminator",
+        "an llvmkit invariant: a pass runs on a verified module, names only its own \
+         function's blocks, and erases only a NonTerminator",
     ),
     (
         "CfgEditError",
         "LastInstructionNotTerminator",
-        "an llvmkit invariant: a pass runs on a verified module and erases only a NonTerminator",
+        "an llvmkit invariant: a pass runs on a verified module, names only its own \
+         function's blocks, and erases only a NonTerminator",
     ),
     (
         "BuilderError",

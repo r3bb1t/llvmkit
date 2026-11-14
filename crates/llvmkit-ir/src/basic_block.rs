@@ -29,7 +29,7 @@ use super::instruction::{
     InstructionKindData, InstructionView, PlacedInstruction, absorb_debug_records,
 };
 use super::ir_builder::constant_folder::ConstantFolder;
-use super::ir_builder::{IrBuilder, Positioned};
+use super::ir_builder::{IrBuilder, PositionedAtEnd, at_end_infallible};
 use super::keyed_list::KeyedList;
 use super::marker::{Dyn, ReturnMarker};
 use super::metadata::{
@@ -608,12 +608,12 @@ where
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     BasicBlock<'ctx, R, Unterminated, B, Params>
 {
-    /// Positioned builder at the end of this block. `bb.builder()` is
+    /// A builder positioned at the end of this block. `bb.builder()` is
     /// exactly [`IrBuilder::at_end(bb)`](crate::IrBuilder::at_end) — the
     /// return marker `R` is inferred from the block, so no turbofish is
     /// needed. Reads better when `bb` is already in hand.
     #[inline]
-    pub fn builder(self) -> IrBuilder<'ctx, 'ctx, B, ConstantFolder, Positioned, R> {
+    pub fn builder(self) -> IrBuilder<'ctx, 'ctx, B, ConstantFolder, PositionedAtEnd, R> {
         IrBuilder::at_end(self)
     }
 }
@@ -824,6 +824,11 @@ impl<
             _term: PhantomData,
             _params: PhantomData,
         }
+    }
+
+    /// Whether `instruction` is in this block's instruction list now.
+    pub(crate) fn holds_instruction(&self, instruction: ValueSlot) -> bool {
+        self.data().instructions.borrow().contains(instruction)
     }
 
     /// Borrow the storage payload.
@@ -1457,11 +1462,13 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
         }
 
         // BranchInst *BI = BranchInst::Create(New, this);
-        let (_, branch) = IrBuilder::new_for::<R>(module_token)
-            .position_at_end(BasicBlock::<'ctx, R, Unterminated, B>::from_parts(
-                self.id, own, self.ty,
-            ))
-            .br_to_slot_unchecked(new_id);
+        let (_, branch) = at_end_infallible(
+            IrBuilder::new_for::<R>(module_token)
+                .position_at_end(BasicBlock::<'ctx, R, Unterminated, B>::from_parts(
+                    self.id, own, self.ty,
+                ))
+                .br_to_slot_unchecked(new_id),
+        );
         // The splice left `I`'s records at this block's end, and inserting the
         // branch there adopts them (`Instruction::insertBefore`).
         // Internal: the branch was minted in this module just above.
@@ -1589,9 +1596,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams, C: Capab
         }
 
         // BranchInst *BI = BranchInst::Create(this, New);
-        let (_, branch) = IrBuilder::new_for::<R>(module_token)
-            .position_at_end(new_block)
-            .br_to_slot_unchecked(self.id);
+        let (_, branch) = at_end_infallible(
+            IrBuilder::new_for::<R>(module_token)
+                .position_at_end(new_block)
+                .br_to_slot_unchecked(self.id),
+        );
         // The splice moved `I`'s records to the new block's end, and inserting
         // the branch there adopts them (`Instruction::insertBefore`).
         // Internal: the branch was minted in this module just above.

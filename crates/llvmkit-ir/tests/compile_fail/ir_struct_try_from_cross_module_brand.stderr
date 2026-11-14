@@ -14,12 +14,12 @@ help: the trait `IntoLayoutValue<'_, Point, Right>` is not implemented for `Poin
    |          ^^^^^^^^
    = help: for that trait implementation, expected `Left`, found `Right`
    = note: required for `PointValue<'_, Left>` to implement `IntoIrField<'_, Point, Right>`
-note: required by a bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::insert_field`
+note: required by a bound in `IrBuilder::<'m, 'ctx, B, F, S, R>::insert_field`
   --> src/ir_builder.rs
    |
-   |     pub fn insert_field<S, Field, Aggregate, FieldValue, Name>(
+   |     pub fn insert_field<Schema, Field, Aggregate, FieldValue, Name>(
    |            ------------ required by a bound in this associated function
 ...
-   |         Aggregate: IntoIrField<'ctx, S, B>,
-   |                    ^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::insert_field`
+   |         Aggregate: IntoIrField<'ctx, Schema, B>,
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `IrBuilder::<'m, 'ctx, B, F, S, R>::insert_field`
    = note: this error originates in the derive macro `IrStruct` (in Nightly builds, run with -Z macro-backtrace for more info)

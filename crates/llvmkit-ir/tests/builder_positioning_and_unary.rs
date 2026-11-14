@@ -9,7 +9,8 @@
 //! `lib/Frontend/OpenMP/OMPIRBuilder.cpp` or a transform pass).
 
 use llvmkit_ir::{
-    Dyn, IntValue, IrBuilder, IrError, Linkage, Module, PointerValue, SubFlags, module_new,
+    Dyn, IntValue, IrBuilder, IrError, Linkage, Module, PastAllocas, PointerValue, SubFlags,
+    module_new,
 };
 
 // --- Positioning ------------------------------------------------------
@@ -61,7 +62,12 @@ fn position_past_allocas_anchors_after_alloca_prefix() -> Result<(), IrError> {
     let zero = i32_ty.const_int(0_i32);
     b.store(zero, slot)?;
     b.ret_void()?;
-    let b2 = IrBuilder::new_for::<Dyn>(&m).position_past_allocas(m.view(f));
+    // The entry block's first non-alloca is the `store`, so the builder lands
+    // before it.
+    let PastAllocas::Before(b2) = IrBuilder::new_for::<Dyn>(&m).position_past_allocas(m.view(f))?
+    else {
+        panic!("the entry block holds a store after its alloca");
+    };
     let _hoisted = b2.alloca(i32_ty, "hoisted")?;
     let text = format!("{m}");
     let pos_slot = text.find("%slot = alloca").expect("slot present");

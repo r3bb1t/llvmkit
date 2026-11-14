@@ -11,7 +11,7 @@
 
 use llvmkit_ir::{
     Constant, ConstantFolder, Dyn, DynBrand, ElemDyn, FunctionValue, IntoConstantValue,
-    IntrinsicId, IntrinsicInst, IrBuilder, IrError, LenDyn, Linkage, Module, Positioned, Type,
+    IntrinsicId, IntrinsicInst, IrBuilder, IrError, LenDyn, Linkage, Module, PositionedAtEnd, Type,
     VectorType, lanes,
 };
 
@@ -74,7 +74,7 @@ impl Fixture {
     }
 
     /// `IRBuilder<> Builder(BB)`.
-    fn builder(&self) -> IrBuilder<'_, '_, DynBrand, ConstantFolder, Positioned, Dyn> {
+    fn builder(&self) -> IrBuilder<'_, '_, DynBrand, ConstantFolder, PositionedAtEnd, Dyn> {
         let test = self.m.function_dyn("test").expect("declared in `set_up`");
         let block = self.m.view(test).append_basic_block(&self.m, "");
         IrBuilder::new_for::<Dyn>(&self.m).position_at_end(block)

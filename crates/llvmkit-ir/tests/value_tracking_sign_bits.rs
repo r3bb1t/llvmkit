@@ -35,7 +35,7 @@ fn in_function<F, R>(name: &str, body: F) -> Result<R, IrError>
 where
     F: for<'m> FnOnce(
         &'m Module<llvmkit_ir::DynBrand>,
-        &IrBuilder<'m, 'm, llvmkit_ir::DynBrand, NoFolder, llvmkit_ir::Positioned, Dyn>,
+        &IrBuilder<'m, 'm, llvmkit_ir::DynBrand, NoFolder, llvmkit_ir::PositionedAtEnd, Dyn>,
         IntValue<'m, i32, llvmkit_ir::DynBrand>,
     ) -> Result<R, IrError>,
 {

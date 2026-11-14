@@ -14,9 +14,9 @@
 //! which `tests/typed_error_coverage.rs` checks against the enum.
 
 use llvmkit_ir::{
-    AggregateInstruction, ArithmeticFamily, BinaryOpcode, BuilderError, Dyn, FastMathFlags,
-    FloatPredicate, IcmpFlags, IntBinOpFlags, IntPredicate, IrBuilder, IrError, Linkage,
-    OperandCheck, ShuffleMaskElem, lanes, module_new,
+    AggregateInstruction, ArithmeticFamily, BinaryOpcode, BlockError, BuilderError, Dyn,
+    FastMathFlags, FloatPredicate, IcmpFlags, IntBinOpFlags, IntPredicate, IrBuilder, IrError,
+    Linkage, OperandCheck, ShuffleMaskElem, lanes, module_new,
 };
 
 /// The refusal an `Err` carries, or a panic naming the entry that succeeded.
@@ -341,24 +341,87 @@ fn struct_gep_refuses_an_index_wider_than_i32() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Restoring an insert point saved from an unpositioned builder is refused as
-/// an empty insert point, and `phi_add_incoming_from_value` refuses a target
-/// that is not an instruction, and an instruction that is not a `phi`.
+/// A builder positioned before an instruction that is then erased refuses its
+/// next build, and leaves the module as it was; a snapshot saved there
+/// refuses to restore. This was an `unreachable!` panic: the builder holds
+/// `&Module`, so nothing stops the anchor leaving the block after the builder
+/// was positioned. Upstream's `IRBuilder` keeps a raw iterator and is
+/// undefined there.
+///
+/// An unpositioned builder has no insert point to save at all, which
+/// `tests/compile_fail/save_insert_point_unpositioned.rs` pins.
 #[test]
-fn insert_point_and_phi_target_refusals() -> Result<(), IrError> {
+fn a_builder_before_an_erased_anchor_refuses_to_build() -> Result<(), IrError> {
+    let m = module_new!("builder-errors-stale-anchor")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.function_type(m.void_type(), [i32_ty.as_type()])?;
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let (_, ret) = IrBuilder::new_for::<Dyn>(&m)
+        .position_at_end(entry)
+        .ret_void()?;
+    let before_ret = IrBuilder::new_for::<Dyn>(&m).position_before(ret.placed())?;
+    let saved = before_ret.save_insert_point();
+    ret.erase_from_parent(&m);
+    let printed = format!("{m}");
+
+    let arg: llvmkit_ir::IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+    let err = refusal(
+        before_ret.int_add(arg, 1_i32, "sum"),
+        "an add before an erased anchor",
+    );
+    assert_eq!(err, IrError::from(BlockError::AnchorNotInBlock));
+    assert_eq!(format!("{m}"), printed, "a refused build adds nothing");
+    assert!(
+        !arg.as_erased().has_uses(),
+        "the refusal comes before the instruction is created, so `%0` gains no use"
+    );
+    let err = refusal(
+        before_ret.ret_void(),
+        "a `ret void` before an erased anchor",
+    );
+    assert_eq!(err, IrError::from(BlockError::AnchorNotInBlock));
+    assert_eq!(format!("{m}"), printed, "a refused build adds nothing");
+
+    let err = refusal(
+        IrBuilder::new_for::<Dyn>(&m).restore_insert_point(saved),
+        "restoring a snapshot before an erased anchor",
+    );
+    assert_eq!(err, IrError::from(BlockError::AnchorNotInBlock));
+    Ok(())
+}
+
+/// `position_past_allocas` refuses a declaration, which has no entry block to
+/// position in. Upstream's `SetInsertPointPastAllocas` calls
+/// `F->getEntryBlock()`, which is undefined on a declaration; llvmkit's typed
+/// refusal is its own.
+#[test]
+fn position_past_allocas_refuses_a_declaration() -> Result<(), IrError> {
+    let m = module_new!("builder-errors-past-allocas-declaration")?;
+    let fn_ty = m.function_type(m.void_type(), Vec::<llvmkit_ir::Type<'_, _>>::new())?;
+    let declaration = m.add_function_dyn("declared", fn_ty, Linkage::External)?;
+    let err = refusal(
+        IrBuilder::new_for::<Dyn>(&m).position_past_allocas(m.view(declaration)),
+        "positioning past the allocas of a declaration",
+    );
+    assert_eq!(err, IrError::from(BuilderError::FunctionWithoutBlocks));
+    assert_eq!(
+        err.to_string(),
+        "cannot position past the allocas of a function with no blocks"
+    );
+    Ok(())
+}
+
+/// `phi_add_incoming_from_value` refuses a target that is not an
+/// instruction, and an instruction that is not a `phi`.
+#[test]
+fn phi_target_refusals() -> Result<(), IrError> {
     let m = module_new!("builder-errors-position")?;
     let i32_ty = m.i32_type();
     let fn_ty = m.function_type(m.void_type(), [i32_ty.as_type()])?;
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let entry_id = entry.id();
-
-    let empty = IrBuilder::new_for::<Dyn>(&m).save_insert_point();
-    let err = refusal(
-        IrBuilder::new_for::<Dyn>(&m).restore_insert_point(empty),
-        "restore of an empty insert point",
-    );
-    assert_eq!(err, IrError::from(BuilderError::EmptyInsertPoint));
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg = m.view(f).param(0)?.as_erased();

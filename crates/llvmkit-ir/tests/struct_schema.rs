@@ -62,7 +62,7 @@ impl StructSchema for Point {
 impl<'ctx, B: ModuleBrand + 'ctx> Hand<'ctx, Point, B> {
     fn x<'m, F, R>(
         self,
-        b: &llvmkit_ir::IrBuilder<'m, 'ctx, B, F, llvmkit_ir::Positioned, R>,
+        b: &llvmkit_ir::IrBuilder<'m, 'ctx, B, F, llvmkit_ir::PositionedAtEnd, R>,
     ) -> Result<IntValue<'ctx, i32, B>, IrError>
     where
         F: llvmkit_ir::IrBuilderFolder<'ctx, B>,
@@ -73,7 +73,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Hand<'ctx, Point, B> {
 
     fn with_x<'m, F, R, V>(
         self,
-        b: &llvmkit_ir::IrBuilder<'m, 'ctx, B, F, llvmkit_ir::Positioned, R>,
+        b: &llvmkit_ir::IrBuilder<'m, 'ctx, B, F, llvmkit_ir::PositionedAtEnd, R>,
         value: V,
     ) -> Result<Self, IrError>
     where
@@ -233,7 +233,7 @@ fn recursive(name: &str) -> Result<(), IrError> {
 impl<'ctx, B: ModuleBrand + 'ctx> Hand<'ctx, Rect, B> {
     fn min<'m, F, R>(
         self,
-        b: &llvmkit_ir::IrBuilder<'m, 'ctx, B, F, llvmkit_ir::Positioned, R>,
+        b: &llvmkit_ir::IrBuilder<'m, 'ctx, B, F, llvmkit_ir::PositionedAtEnd, R>,
     ) -> Result<Hand<'ctx, Point, B>, IrError>
     where
         F: llvmkit_ir::IrBuilderFolder<'ctx, B>,
@@ -244,7 +244,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Hand<'ctx, Rect, B> {
 
     fn max<'m, F, R>(
         self,
-        b: &llvmkit_ir::IrBuilder<'m, 'ctx, B, F, llvmkit_ir::Positioned, R>,
+        b: &llvmkit_ir::IrBuilder<'m, 'ctx, B, F, llvmkit_ir::PositionedAtEnd, R>,
     ) -> Result<Hand<'ctx, Point, B>, IrError>
     where
         F: llvmkit_ir::IrBuilderFolder<'ctx, B>,

@@ -25,7 +25,7 @@ use llvmkit_ir::{
     DynBrand, FastMathFlags, FloatDyn, FloatValue, FnCx, FnReport, FunctionId, FunctionPass,
     GepNoWrapFlags, InlineAsmOptions, InstructionView, IntDyn, IntValue, InvokeInst, IrBuilder,
     IrError, IrResult, IrStruct, Linkage, Module, OperandBundleDef, OperandBundleTag,
-    OperandBundleUse, PatchBody, PointerValue, Positioned, ReshapeCfg, SsaBuilder, SsaState,
+    OperandBundleUse, PatchBody, PointerValue, PositionedAtEnd, ReshapeCfg, SsaBuilder, SsaState,
     SyncScope, TailCallKind, TruncFlags, Type, UiToFpFlags, Unterminated, Value, ValueId,
     ZextFlags, comdat::SelectionKind, iter::BlockCursor, lanes, run_function_pass,
 };
@@ -46,7 +46,7 @@ struct Nest {
 
 /// A positioned erased-return builder over a `DynBrand` module.
 type PositionedBuilder<'m> =
-    IrBuilder<'m, 'm, DynBrand, llvmkit_ir::ConstantFolder, Positioned, Dyn>;
+    IrBuilder<'m, 'm, DynBrand, llvmkit_ir::ConstantFolder, PositionedAtEnd, Dyn>;
 
 /// An unterminated block of an erased-return function in a `DynBrand` module.
 type OpenBlock<'m> = BasicBlock<'m, Dyn, Unterminated, DynBrand>;
@@ -4207,7 +4207,7 @@ impl<'m> IrBuilderFolder<'m, DynBrand> for TypedAnswerFolder<'m> {
 }
 
 /// A positioned builder over a custom folder `F`.
-type FoldingBuilder<'m, F> = IrBuilder<'m, 'm, DynBrand, F, Positioned, Dyn>;
+type FoldingBuilder<'m, F> = IrBuilder<'m, 'm, DynBrand, F, PositionedAtEnd, Dyn>;
 
 /// `i32 name(i32, i64, float, double, ptr)` in `module` with a builder over
 /// `folder` at its entry, plus the `i32` and `float` parameters, typed.

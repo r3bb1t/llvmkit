@@ -8,10 +8,14 @@
 //! `tests/compile_fail/` fixtures; here we assert the *runtime* behavior of the
 //! ops that do exist.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use llvmkit_ir::{
-    Analyses, BasicBlockLabel, BlockId, Dyn, FnCx, FnReport, FunctionId, FunctionPass,
-    IntPredicate, IntValue, IrBuilder, IrError, IrResult, Linkage, Module, ModuleBrand, ReshapeCfg,
-    TermEdit, Value, ValueId, module_new, run_function_pass,
+    Analyses, BasicBlock, BasicBlockLabel, BlockId, CfgEditError, Dyn, EditedTerminator, FnCx,
+    FnReport, FunctionId, FunctionPass, InsertPoint, IntPredicate, IntValue, IrBuilder, IrError,
+    IrResult, Linkage, Module, ModuleBrand, PositionedBefore, ReshapeCfg, TermEdit, Value, ValueId,
+    module_new, run_function_pass,
 };
 
 // Fixture return-type aliases. These keep the the emitters helper signatures under
@@ -190,11 +194,35 @@ fn invoke_redirect_unwind_retargets_unwind_edge() -> Result<(), IrError> {
 // callbr — redirect the default / an indirect edge.
 // ---------------------------------------------------------------------------
 
+/// Which edge of a `callbr` a [`RedirectCallBrEdge`] retargets.
+#[derive(Clone, Copy)]
+enum CallBrEdge {
+    /// The fallthrough edge, `to label %cont`.
+    Default,
+    /// Indirect destination `n`, the `n`th label in `[label %ind, ...]`.
+    Indirect(usize),
+}
+
 /// A `ReshapeCfg` pass that narrows the entry block's `callbr` and redirects
-/// either its default edge or its indirect edge 0 onto `new_to`.
+/// `edge` onto `new_to`.
+///
+/// A refused redirect is recorded in `refusal` and the pass still finishes, so
+/// the caller gets the module back and can compare it with the input: an
+/// `Err` from `run` would consume the module and leave nothing to compare.
 struct RedirectCallBrEdge<B: ModuleBrand> {
-    default_edge: bool,
+    edge: CallBrEdge,
     new_to: BlockId<Dyn, B>,
+    refusal: Rc<RefCell<Option<IrError>>>,
+}
+
+impl<B: ModuleBrand> RedirectCallBrEdge<B> {
+    fn new(edge: CallBrEdge, new_to: BlockId<Dyn, B>) -> Self {
+        Self {
+            edge,
+            new_to,
+            refusal: Rc::new(RefCell::new(None)),
+        }
+    }
 }
 
 impl<B: ModuleBrand> FunctionPass<B> for RedirectCallBrEdge<B> {
@@ -213,10 +241,12 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectCallBrEdge<B> {
             .entry_block()
             .expect("definition has entry");
         let callbr = reshape.edit_callbr(entry.id())?;
-        if self.default_edge {
-            callbr.redirect_default(self.new_to, &[])?;
-        } else {
-            callbr.redirect_indirect(0, self.new_to, &[])?;
+        let redirected = match self.edge {
+            CallBrEdge::Default => callbr.redirect_default(self.new_to, &[]),
+            CallBrEdge::Indirect(index) => callbr.redirect_indirect(index, self.new_to, &[]),
+        };
+        if let Err(error) = redirected {
+            *self.refusal.borrow_mut() = Some(error);
         }
         Ok(reshape.done())
     }
@@ -281,11 +311,14 @@ fn callbr_redirect_default_retargets_default_edge() -> Result<(), IrError> {
     let (caller, new_dyn) = build_callbr_caller(&m)?;
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
-    let pass = RedirectCallBrEdge {
-        default_edge: true,
-        new_to: new_dyn,
-    };
+    let pass = RedirectCallBrEdge::new(CallBrEdge::Default, new_dyn);
+    let refusal = Rc::clone(&pass.refusal);
     let out = run_function_pass(pass, verified, caller, &mut analyses)?;
+    assert_eq!(
+        *refusal.borrow(),
+        None,
+        "the default edge must be redirected"
+    );
     let reverified = out.verify().expect("callbr redirect output must re-verify");
     let printed = format!("{reverified}");
     assert!(
@@ -295,37 +328,9 @@ fn callbr_redirect_default_retargets_default_edge() -> Result<(), IrError> {
     Ok(())
 }
 
-/// A `ReshapeCfg` pass that retargets the entry block's `callbr` indirect
-/// edge `index` onto `new_to`.
-struct RedirectCallBrIndirect<B: ModuleBrand> {
-    index: usize,
-    new_to: BlockId<Dyn, B>,
-}
-
-impl<B: ModuleBrand> FunctionPass<B> for RedirectCallBrIndirect<B> {
-    type Access = ReshapeCfg;
-    type Requires = ();
-    const NAME: &'static str = "redirect-callbr-indirect";
-
-    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
-    where
-        'ctx: 'm,
-        Self: 'ctx,
-    {
-        let reshape = cx.mutate();
-        let entry = reshape
-            .function()
-            .entry_block()
-            .expect("definition has entry");
-        reshape
-            .edit_callbr(entry.id())?
-            .redirect_indirect(self.index, self.new_to, &[])?;
-        Ok(reshape.done())
-    }
-}
-
 /// `redirect_indirect` past the end of the `callbr`'s indirect destinations is
-/// refused with the index and the count, before any edge is touched.
+/// refused with the index and the count, and the function is left exactly as
+/// it was: the refusal comes before any edge is touched.
 ///
 /// **No upstream counterpart**: `CallBrInst::setIndirectDest` asserts its
 /// index; llvmkit's typed refusal carries it.
@@ -333,20 +338,28 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectCallBrIndirect<B> {
 fn callbr_redirect_indirect_refuses_an_index_past_the_destinations() -> Result<(), IrError> {
     let m = module_new!("callbr-redirect-indirect-out-of-range")?;
     let (caller, new_dyn) = build_callbr_caller(&m)?;
+    let before = format!("{m}");
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
-    let pass = RedirectCallBrIndirect {
-        index: 1,
-        new_to: new_dyn,
-    };
-    let err = run_function_pass(pass, verified, caller, &mut analyses)
-        .expect_err("index 1 of a callbr with one indirect destination must be refused");
+    let pass = RedirectCallBrEdge::new(CallBrEdge::Indirect(1), new_dyn);
+    let refusal = Rc::clone(&pass.refusal);
+    let out = run_function_pass(pass, verified, caller, &mut analyses)?;
+    let expected =
+        IrError::from(CfgEditError::IndirectDestinationOutOfRange { index: 1, count: 1 });
     assert_eq!(
-        err,
-        IrError::from(llvmkit_ir::CfgEditError::IndirectDestinationOutOfRange {
-            index: 1,
-            count: 1,
-        })
+        *refusal.borrow(),
+        Some(expected.clone()),
+        "index 1 of a callbr with one indirect destination must be refused"
+    );
+    assert_eq!(
+        expected.to_string(),
+        "redirect_indirect: `callbr` indirect destination index 1 out of range for 1 indirect \
+         destinations"
+    );
+    assert_eq!(
+        format!("{out}"),
+        before,
+        "a refused redirect must leave the function unchanged"
     );
     Ok(())
 }
@@ -358,16 +371,280 @@ fn callbr_redirect_indirect_retargets_indirect_edge() -> Result<(), IrError> {
     let (caller, new_dyn) = build_callbr_caller(&m)?;
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
-    let pass = RedirectCallBrEdge {
-        default_edge: false,
-        new_to: new_dyn,
-    };
+    let pass = RedirectCallBrEdge::new(CallBrEdge::Indirect(0), new_dyn);
+    let refusal = Rc::clone(&pass.refusal);
     let out = run_function_pass(pass, verified, caller, &mut analyses)?;
+    assert_eq!(
+        *refusal.borrow(),
+        None,
+        "indirect edge 0 must be redirected"
+    );
     let reverified = out.verify().expect("callbr redirect output must re-verify");
     let printed = format!("{reverified}");
     assert!(
         printed.contains("to label %cont [label %new]"),
         "indirect edge 0 must now target %new, default untouched, got:\n{printed}"
+    );
+    Ok(())
+}
+
+/// A `ReshapeCfg` pass that narrows `block`'s terminator with the `edit_*`
+/// entry for `kind` and records the refusal.
+struct NarrowAs<B: ModuleBrand> {
+    kind: EditedTerminator,
+    block: BlockId<Dyn, B>,
+    refusal: Rc<RefCell<Option<IrError>>>,
+}
+
+impl<B: ModuleBrand> FunctionPass<B> for NarrowAs<B> {
+    type Access = ReshapeCfg;
+    type Requires = ();
+    const NAME: &'static str = "narrow-as";
+
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
+        let reshape = cx.mutate();
+        let refused = match self.kind {
+            EditedTerminator::Switch => reshape.edit_switch(self.block).err(),
+            EditedTerminator::ConditionalBranch => reshape.edit_cond_br(self.block).err(),
+            EditedTerminator::Branch => reshape.edit_br(self.block).err(),
+            EditedTerminator::Invoke => reshape.edit_invoke(self.block).err(),
+            EditedTerminator::CallBr => reshape.edit_callbr(self.block).err(),
+        };
+        *self.refusal.borrow_mut() = refused;
+        Ok(reshape.done())
+    }
+}
+
+/// Every typed narrowing refuses a block whose terminator is of another kind
+/// — here `%new`'s `ret void` — with the kind it expected, and says so in its
+/// text.
+///
+/// **No upstream counterpart**: upstream narrows with `cast<SwitchInst>` and
+/// friends, which assert; the typed refusal and its text are llvmkit's.
+#[test]
+fn every_typed_narrowing_refuses_a_terminator_of_another_kind() -> Result<(), IrError> {
+    for (kind, text) in [
+        (
+            EditedTerminator::Switch,
+            "edit_switch: `from`'s terminator is not a `switch`",
+        ),
+        (
+            EditedTerminator::ConditionalBranch,
+            "edit_cond_br: `from`'s terminator is not a `cond_br`",
+        ),
+        (
+            EditedTerminator::Branch,
+            "edit_br: `from`'s terminator is not an unconditional `br`",
+        ),
+        (
+            EditedTerminator::Invoke,
+            "edit_invoke: `from`'s terminator is not an `invoke`",
+        ),
+        (
+            EditedTerminator::CallBr,
+            "edit_callbr: `from`'s terminator is not a `callbr`",
+        ),
+    ] {
+        let m = module_new!("narrow-a-ret")?;
+        let (caller, new_dyn) = build_callbr_caller(&m)?;
+        let pass = NarrowAs {
+            kind,
+            block: new_dyn,
+            refusal: Rc::new(RefCell::new(None)),
+        };
+        let refusal = Rc::clone(&pass.refusal);
+        let refused = refusal_leaving_module_unchanged(m, caller, pass, &refusal)?;
+        let expected = IrError::from(CfgEditError::TerminatorKindMismatch { expected: kind });
+        assert_eq!(refused, Some(expected.clone()), "{kind:?}");
+        assert_eq!(expected.to_string(), text, "{kind:?}");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Function scope: a function pass names only its own function's blocks.
+
+/// What a [`ReachOutsideFunction`] pass tries with a block that is not in the
+/// function it runs on.
+enum OutsideReach<B: ModuleBrand> {
+    /// `edit_terminator` of the block.
+    EditTerminator(BlockId<Dyn, B>),
+    /// `builder_at` an insert point in the block. An `Option` because the
+    /// restore consumes it and `run` takes `&mut self`.
+    BuildAt(Option<InsertPoint<'static, (), B, PositionedBefore>>),
+}
+
+/// A `ReshapeCfg` pass that reaches for a block outside its function and
+/// records the refusal, finishing so the caller can compare the module.
+struct ReachOutsideFunction<B: ModuleBrand> {
+    reach: OutsideReach<B>,
+    refusal: Rc<RefCell<Option<IrError>>>,
+}
+
+impl<B: ModuleBrand> ReachOutsideFunction<B> {
+    fn new(reach: OutsideReach<B>) -> Self {
+        Self {
+            reach,
+            refusal: Rc::new(RefCell::new(None)),
+        }
+    }
+}
+
+impl<B: ModuleBrand> FunctionPass<B> for ReachOutsideFunction<B> {
+    type Access = ReshapeCfg;
+    type Requires = ();
+    const NAME: &'static str = "reach-outside-function";
+
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport<B>>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
+        let reshape = cx.mutate();
+        let refused = match &mut self.reach {
+            OutsideReach::EditTerminator(block) => reshape.edit_terminator(*block).err(),
+            OutsideReach::BuildAt(at) => reshape
+                .builder_at(at.take().expect("the pass runs once"))
+                .err(),
+        };
+        *self.refusal.borrow_mut() = refused;
+        Ok(reshape.done())
+    }
+}
+
+/// The callbr fixture plus a second function, `void @other()`, whose `entry`
+/// holds a lone `ret void`, and an orphan block that belongs to no function.
+struct TwoFunctionFixture<B: ModuleBrand> {
+    caller: FunctionId<(), B>,
+    other_entry: BlockId<Dyn, B>,
+    before_other_ret: InsertPoint<'static, (), B, PositionedBefore>,
+    orphan: BlockId<Dyn, B>,
+}
+
+fn build_two_functions<'ctx, B: ModuleBrand + 'ctx>(
+    m: &'ctx Module<B, llvmkit_ir::Unverified>,
+) -> IrResult<TwoFunctionFixture<B>> {
+    let (caller, _new) = build_callbr_caller(m)?;
+    let other = m
+        .add_typed_function::<(), (), _>("other", Linkage::External)?
+        .as_function();
+    let other_entry = m.view(other).append_basic_block(m, "entry");
+    let other_entry_label: BasicBlockLabel<'_, Dyn, _> = other_entry.to_erased().try_into()?;
+    let other_entry_id = other_entry_label.id();
+    let (_block, ret) = IrBuilder::new_for::<()>(m)
+        .position_at_end(other_entry)
+        .ret_void();
+    let before_other_ret = IrBuilder::new_for::<()>(m)
+        .position_before(ret.placed())?
+        .save_insert_point();
+    let orphan = BasicBlock::create_orphan(m, "orphan").id();
+    Ok(TwoFunctionFixture {
+        caller,
+        other_entry: other_entry_id,
+        before_other_ret,
+        orphan,
+    })
+}
+
+/// Run `pass` over `@caller` and return its recorded refusal, asserting the
+/// printed module is unchanged by it.
+fn refusal_leaving_module_unchanged<B: ModuleBrand>(
+    m: Module<B, llvmkit_ir::Unverified>,
+    caller: FunctionId<(), B>,
+    pass: impl FunctionPass<B, Access = ReshapeCfg, Requires = ()>,
+    refusal: &Rc<RefCell<Option<IrError>>>,
+) -> Result<Option<IrError>, IrError> {
+    let before = format!("{m}");
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    let out = run_function_pass(pass, verified, caller, &mut analyses)?;
+    assert_eq!(
+        format!("{out}"),
+        before,
+        "a refused reach outside the function must leave the module unchanged"
+    );
+    Ok(refusal.borrow_mut().take())
+}
+
+/// `edit_terminator` of another function's block is refused before the edit
+/// reads it: a function pass reshapes its own function and no other.
+///
+/// **No upstream counterpart**: the rule is upstream's —
+/// `ModuleToFunctionPassAdaptor`'s comment (`include/llvm/IR/PassManager.h`)
+/// says function passes "should not read or modify any other functions!" —
+/// but nothing there checks it; llvmkit's typed refusal is its own.
+#[test]
+fn a_function_pass_cannot_edit_another_functions_terminator() -> Result<(), IrError> {
+    let m = module_new!("edit-another-functions-terminator")?;
+    let fixture = build_two_functions(&m)?;
+    let pass = ReachOutsideFunction::new(OutsideReach::EditTerminator(fixture.other_entry));
+    let refusal = Rc::clone(&pass.refusal);
+    let refused = refusal_leaving_module_unchanged(m, fixture.caller, pass, &refusal)?;
+    assert_eq!(
+        refused,
+        Some(IrError::from(llvmkit_ir::BlockError::BlockNotInFunction))
+    );
+    Ok(())
+}
+
+/// `edit_terminator` of an orphan block, one that belongs to no function, is
+/// refused as not in the function, ahead of the empty block's missing
+/// terminator — which is why `CfgEditError::NoTerminator` stays unreachable
+/// from a pass.
+///
+/// **No upstream counterpart**: as above.
+#[test]
+fn a_function_pass_cannot_edit_an_orphan_blocks_terminator() -> Result<(), IrError> {
+    let m = module_new!("edit-orphan-terminator")?;
+    let fixture = build_two_functions(&m)?;
+    let pass = ReachOutsideFunction::new(OutsideReach::EditTerminator(fixture.orphan));
+    let refusal = Rc::clone(&pass.refusal);
+    let refused = refusal_leaving_module_unchanged(m, fixture.caller, pass, &refusal)?;
+    assert_eq!(
+        refused,
+        Some(IrError::from(llvmkit_ir::BlockError::BlockNotInFunction))
+    );
+    Ok(())
+}
+
+/// A redirect onto another function's block is refused before any edge or
+/// phi is touched: a branch may name only a block of its own function.
+///
+/// **No upstream counterpart**: as above. Upstream's `Verifier` rejects the
+/// resulting cross-function branch afterwards; llvmkit refuses the edit
+/// itself.
+#[test]
+fn a_function_pass_cannot_redirect_onto_another_functions_block() -> Result<(), IrError> {
+    let m = module_new!("redirect-onto-another-function")?;
+    let fixture = build_two_functions(&m)?;
+    let pass = RedirectCallBrEdge::new(CallBrEdge::Default, fixture.other_entry);
+    let refusal = Rc::clone(&pass.refusal);
+    let refused = refusal_leaving_module_unchanged(m, fixture.caller, pass, &refusal)?;
+    assert_eq!(
+        refused,
+        Some(IrError::from(llvmkit_ir::BlockError::BlockNotInFunction))
+    );
+    Ok(())
+}
+
+/// `builder_at` an insert point in another function is refused, so the pass
+/// gets no builder that could insert there.
+///
+/// **No upstream counterpart**: as above.
+#[test]
+fn a_function_pass_cannot_build_into_another_function() -> Result<(), IrError> {
+    let m = module_new!("build-into-another-function")?;
+    let fixture = build_two_functions(&m)?;
+    let pass = ReachOutsideFunction::new(OutsideReach::BuildAt(Some(fixture.before_other_ret)));
+    let refusal = Rc::clone(&pass.refusal);
+    let refused = refusal_leaving_module_unchanged(m, fixture.caller, pass, &refusal)?;
+    assert_eq!(
+        refused,
+        Some(IrError::from(llvmkit_ir::BlockError::BlockNotInFunction))
     );
     Ok(())
 }

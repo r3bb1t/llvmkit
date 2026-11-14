@@ -4,9 +4,12 @@
 //! **No upstream counterpart.** Upstream's `Function` block-list splice and
 //! `BasicBlock::splitBasicBlock*` `assert` these conditions, so no upstream
 //! unit test can observe them. What these tests pin is llvmkit's typed
-//! refusal. `BlockError::AnchorNotInBlock` and `ParentListMissingBlock` have
-//! none: they report a broken llvmkit invariant, which no public entry can
-//! provoke (`tests/typed_error_coverage.rs` lists the reason).
+//! refusal. `BlockError::AnchorNotInBlock` is asserted in
+//! `tests/builder_errors.rs`, where a builder's stale anchor provokes it, and
+//! `BlockNotInFunction` additionally in `tests/typed_edit_surface.rs`, where a
+//! function pass names a block outside its function. `ParentListMissingBlock`
+//! has no test: it reports a broken llvmkit invariant, which no public entry
+//! can provoke (`tests/typed_error_coverage.rs` lists the reason).
 
 use llvmkit_ir::{
     BasicBlock, Blame, BlockError, Dyn, IrBuilder, IrError, Linkage, Type, module_new,

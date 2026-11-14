@@ -51,7 +51,7 @@ use llvmkit_ir::{
     ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions,
     DllStorageClass, Dyn, FastMathFlags, FloatPredicate, FpClassTest, GepNoWrapFlags, IntDyn,
     IntType, IntValue, IntrinsicNameResolution, IrBuilder, IrError, IrResult, Linkage, MaybeAlign,
-    Module, ModuleBrand, NoFolder, PointerValue, Positioned, RoundingMode, SelectionKind,
+    Module, ModuleBrand, NoFolder, PointerValue, PositionedAtEnd, RoundingMode, SelectionKind,
     Signedness, StructType, SyncScope, ThreadLocalMode, TruncFlags, Type, TypeKind, UiToFpFlags,
     UnnamedAddr, Unverified, ValueCategory, VectorType, Visibility, ZextFlags,
     derived_types::PointerType, resolve_intrinsic_name, shufflevector_mask_from_constant,
@@ -16804,7 +16804,7 @@ enum FpBinOp {
 /// emitting one block's instructions. The terminator-emitting calls
 /// (`ret` / `br` / etc.) take this by value, so the parser
 /// stores it inside an `Option<Self>` for the duration of the block.
-type ParsedBlockBuilder<'m, 'ctx, B> = IrBuilder<'m, 'ctx, B, NoFolder, Positioned, Dyn>;
+type ParsedBlockBuilder<'m, 'ctx, B> = IrBuilder<'m, 'ctx, B, NoFolder, PositionedAtEnd, Dyn>;
 
 fn live_builder_error(loc: Span) -> ParseError {
     ParseError::Expected {

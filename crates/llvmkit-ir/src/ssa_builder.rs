@@ -69,7 +69,7 @@ use super::instruction::{Instruction, state::Attached};
 use super::int_width::{IntWidth, IntoConstantInt, IntoIntValue, StaticIntWidth};
 use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::folder::IrBuilderFolder;
-use super::ir_builder::{IntoReturnValue, Positioned};
+use super::ir_builder::{IntoReturnValue, PositionedAtEnd, PositionedBefore, Positioning};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Invariant, Module, ModuleBrand, ModuleId, ModuleRef, Unverified};
 use super::r#type::TypeSlot;
@@ -591,7 +591,7 @@ where
     /// about "the position is data" is given up.
     ///
     /// [`IrBuilder`]: crate::IrBuilder
-    cursor: Option<super::ir_builder::IrBuilder<'ctx, 'ctx, B, F, Positioned, R>>,
+    cursor: Option<super::ir_builder::IrBuilder<'ctx, 'ctx, B, F, PositionedAtEnd, R>>,
     state: &'s mut SsaState<B>,
 }
 
@@ -1087,7 +1087,9 @@ where
     /// What *did* change in cycle D is only the failure mode: an
     /// unpositioned builder used to be a different type (so this was an
     /// `E0599`), and now reports [`IrError::SsaUnpositioned`].
-    pub fn ins(&self) -> IrResult<&super::ir_builder::IrBuilder<'ctx, 'ctx, B, F, Positioned, R>> {
+    pub fn ins(
+        &self,
+    ) -> IrResult<&super::ir_builder::IrBuilder<'ctx, 'ctx, B, F, PositionedAtEnd, R>> {
         self.cursor.as_ref().ok_or(IrError::SsaUnpositioned)
     }
 
@@ -1499,8 +1501,8 @@ impl<K: FloatKind, B: ModuleBrand> From<VarHandle<B>> for FloatVariable<K, B> {
 /// phi instruction. `ty` is the declared variable's cached [`TypeSlot`];
 /// `module` resolves it back to the category-appropriate typed handle
 /// each dyn phi builder expects.
-fn build_typed_phi<'m, 'ctx, B, F, R>(
-    builder: &super::ir_builder::IrBuilder<'m, 'ctx, B, F, Positioned, R>,
+fn build_typed_phi<'m, 'ctx, B, F, S, R>(
+    builder: &super::ir_builder::IrBuilder<'m, 'ctx, B, F, S, R>,
     category: VarCategory,
     ty: TypeSlot,
     module: ModuleRef<'ctx, B>,
@@ -1509,6 +1511,7 @@ fn build_typed_phi<'m, 'ctx, B, F, R>(
 where
     B: ModuleBrand + 'ctx,
     F: IrBuilderFolder<'ctx, B>,
+    S: Positioning,
     R: ReturnMarker,
 {
     let id = match category {
@@ -1843,7 +1846,7 @@ where
                 anchor,
                 BlockId::<Dyn, B>::from_raw(module.id(), block),
             );
-            let builder: super::ir_builder::IrBuilder<'_, 'ctx, B, F, Positioned, Dyn> =
+            let builder: super::ir_builder::IrBuilder<'_, 'ctx, B, F, PositionedBefore, Dyn> =
                 super::ir_builder::IrBuilder::with_folder(self.module, self.folder.clone())
                     .position_before(placed)?;
             build_typed_phi(&builder, var_category, var_ty, module, &var_name)?
@@ -1853,7 +1856,7 @@ where
             // from the slot states only what the emptiness check just
             // proved.
             let open = BasicBlock::<Dyn, Unterminated, B>::from_parts(block, module, label_ty);
-            let positioned: super::ir_builder::IrBuilder<'_, 'ctx, B, F, Positioned, Dyn> =
+            let positioned: super::ir_builder::IrBuilder<'_, 'ctx, B, F, PositionedAtEnd, Dyn> =
                 super::ir_builder::IrBuilder::with_folder(self.module, self.folder.clone())
                     .position_at_end(open);
             build_typed_phi(&positioned, var_category, var_ty, module, &var_name)?

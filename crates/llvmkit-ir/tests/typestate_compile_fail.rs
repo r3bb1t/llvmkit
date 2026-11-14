@@ -32,6 +32,13 @@ fn typestate_compile_fail() {
     // is gone, because every terminator-emitting build takes `self` by value.
     // Primary error is rustc's stable `E0382`.
     t.compile_fail("tests/compile_fail/builder_cannot_terminate_twice.rs");
+    // An unpositioned builder has no insert point to save, so a snapshot
+    // always names a block. Primary error is rustc's stable `E0277`.
+    t.compile_fail("tests/compile_fail/save_insert_point_unpositioned.rs");
+    // A builder positioned before an instruction returns an `IrResult` from
+    // `ret_void`, the anchor having possibly left its block. Primary error is
+    // rustc's stable `E0308`.
+    t.compile_fail("tests/compile_fail/positioned_before_ret_void_is_fallible.rs");
     t.compile_fail("tests/compile_fail/retained_unterminated_block_cannot_reposition.rs");
     t.compile_fail("tests/compile_fail/terminated_block_cannot_start_cursor.rs");
     // Slice 7 "the break": the raw typed-phi builders and the open-phi
